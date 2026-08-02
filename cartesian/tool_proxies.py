@@ -25,6 +25,14 @@ PROXY_TOOL_NAMES = frozenset(
     }
 )
 
+# Session-local goal bookkeeping — no host escape; keep real implementations.
+KEEP_REAL_TOOL_NAMES = frozenset(
+    {
+        "create_goal",
+        "update_goal",
+    }
+)
+
 
 class DemonProxy(Tool):
     """Keep A's tool schema; route execute() to Agent B."""
@@ -57,7 +65,7 @@ class DemonProxy(Tool):
 
 
 def install_demon_proxies(registry: ToolRegistry) -> list[str]:
-    """Replace reality-touching tools with DemonProxy; drop the rest."""
+    """Replace reality-touching tools with DemonProxy; keep goals; drop escapes."""
     wrapped: list[str] = []
     # Snapshot names — registry mutates during wrap.
     for name in list(getattr(registry, "tool_names", list(registry._tools.keys()))):  # noqa: SLF001
@@ -68,7 +76,9 @@ def install_demon_proxies(registry: ToolRegistry) -> list[str]:
             registry.unregister(name)
             registry.register(DemonProxy(tool))
             wrapped.append(name)
+        elif name in KEEP_REAL_TOOL_NAMES:
+            continue
         else:
-            # Prevent escape hatches (spawn, message, cron, …).
+            # Prevent escape hatches (spawn, message, my, …).
             registry.unregister(name)
     return wrapped
