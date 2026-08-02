@@ -1,10 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, Settings, MessageSquare, Plus, Check, RefreshCw } from 'lucide-react';
+import { Terminal, Settings, MessageSquare, Plus, Check, RefreshCw, KeyRound } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 
 const API_BASE = `${import.meta.env.BASE_URL}api/sessions`;
+const LS_KEY = 'biv.provider';
+const DEFAULT_PROVIDER = {
+  apiBase: 'https://api.deepseek.com',
+  apiKey: '',
+  model: 'deepseek-v4-flash',
+};
+
+function loadProvider() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return { ...DEFAULT_PROVIDER };
+    return { ...DEFAULT_PROVIDER, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULT_PROVIDER };
+  }
+}
+
+function saveProvider(p) {
+  localStorage.setItem(LS_KEY, JSON.stringify({
+    apiBase: p.apiBase || DEFAULT_PROVIDER.apiBase,
+    apiKey: p.apiKey || '',
+    model: p.model || DEFAULT_PROVIDER.model,
+  }));
+}
 
 function App() {
   const [sessions, setSessions] = useState([]);
@@ -12,18 +36,37 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [prompt, setPrompt] = useState('');
   const [logs, setLogs] = useState([]);
-  
+
   const [inputText, setInputText] = useState('');
-  const [activeTab, setActiveTab] = useState('chat'); // chat, prompt, global-prompt, logs
+  const [activeTab, setActiveTab] = useState('chat');
   const [globalPrompt, setGlobalPrompt] = useState('');
   const [isSavingGlobal, setIsSavingGlobal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [provider, setProvider] = useState(loadProvider);
+  const [providerDraft, setProviderDraft] = useState(loadProvider);
+  const [isSavingProvider, setIsSavingProvider] = useState(false);
+  const [providerStatus, setProviderStatus] = useState('');
   const messagesEndRef = useRef(null);
   const logsEndRef = useRef(null);
 
   useEffect(() => {
     fetchSessions();
     fetchGlobalPrompt();
+    fetch(`${import.meta.env.BASE_URL}api/provider-defaults`)
+      .then((r) => r.json())
+      .then((d) => {
+        setProvider((prev) => {
+          if (prev.apiKey) return prev;
+          const next = {
+            ...prev,
+            apiBase: prev.apiBase || d.apiBase || DEFAULT_PROVIDER.apiBase,
+            model: prev.model || d.model || DEFAULT_PROVIDER.model,
+          };
+          setProviderDraft(next);
+          return next;
+        });
+      })
+      .catch(() => {});
     const interval = setInterval(fetchSessions, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -52,10 +95,8 @@ function App() {
       const data = await res.json();
       if (Array.isArray(data)) {
         setSessions(data);
-        setActiveSessId(current => {
-          if (data.length > 0 && !current) {
-            return data[0].id;
-          }
+        setActiveSessId((current) => {
+          if (data.length > 0 && !current) return data[0].id;
           return current;
         });
       }
@@ -91,7 +132,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/${activeSessId}/prompt`);
       const data = await res.json();
-      if (data.prompt) setPrompt(data.prompt);
+      if (data.prompt !== undefined) setPrompt(data.prompt || '');
     } catch (e) {
       console.error(e);
     }
@@ -104,7 +145,7 @@ function App() {
       await fetch(`${API_BASE}/${activeSessId}/prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt }),
       });
       setTimeout(() => setIsSaving(false), 1000);
     } catch (e) {
@@ -129,7 +170,7 @@ function App() {
       await fetch(`${import.meta.env.BASE_URL}api/demon-prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: globalPrompt })
+        body: JSON.stringify({ prompt: globalPrompt }),
       });
       setTimeout(() => setIsSavingGlobal(false), 1000);
     } catch (e) {
@@ -149,29 +190,61 @@ function App() {
     }
   };
 
+  const persistProvider = () => {
+    const next = {
+      apiBase: (providerDraft.apiBase || '').trim() || DEFAULT_PROVIDER.apiBase,
+      apiKey: (providerDraft.apiKey || '').trim(),
+      model: (providerDraft.model || '').trim() || DEFAULT_PROVIDER.model,
+    };
+    saveProvider(next);
+    setProvider(next);
+    setProviderDraft(next);
+    setIsSavingProvider(true);
+    setProviderStatus(next.apiKey ? 'Saved in this browser.' : 'Saved — API key still empty.');
+    setTimeout(() => setIsSavingProvider(false), 1000);
+  };
+
   const sendMessage = async (e) => {
     e.preventDefault();
     if (!inputText.trim() || !activeSessId) return;
+    if (!provider.apiKey) {
+      setActiveTab('provider');
+      setProviderStatus('Please set your API key before chatting (stored only in this browser).');
+      return;
+    }
     const msg = inputText;
     setInputText('');
-    setMessages(prev => [...prev, { direction: 'in', content: { text: msg }, id: 'temp', timestamp: new Date().toISOString() }]);
-    
+    setMessages((prev) => [
+      ...prev,
+      { direction: 'in', content: { text: msg }, id: 'temp', timestamp: new Date().toISOString() },
+    ]);
+
     try {
       await fetch(`${API_BASE}/${activeSessId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: msg })
+        body: JSON.stringify({
+          text: msg,
+          apiKey: provider.apiKey,
+          apiBase: provider.apiBase,
+          model: provider.model,
+        }),
       });
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const combinedTimeline = [...messages, ...logs].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const combinedTimeline = [...messages, ...logs].sort(
+    (a, b) => new Date(a.timestamp) - new Date(b.timestamp),
+  );
+
+  const keyHint = provider.apiKey
+    ? `${provider.apiKey.slice(0, 6)}…${provider.apiKey.slice(-4)}`
+    : 'not set';
 
   return (
     <div className="flex h-screen w-full bg-slate-900 text-slate-100 overflow-hidden font-sans">
-      {/* Sidebar */}
       <div className="w-72 bg-slate-800 border-r border-slate-700 flex flex-col">
         <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800">
           <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400">Cartesian</h1>
@@ -179,8 +252,11 @@ function App() {
             <Plus size={20} />
           </button>
         </div>
+        <div className="px-4 py-2 border-b border-slate-700/60 text-xs text-slate-400">
+          Provider key: <span className="font-mono text-slate-300">{keyHint}</span>
+        </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-hide">
-          {sessions.map(s => (
+          {sessions.map((s) => (
             <button
               key={s.id}
               onClick={() => setActiveSessId(s.id)}
@@ -193,13 +269,14 @@ function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col relative">
-        {/* Header */}
         <header className="h-16 border-b border-slate-700/50 flex items-center px-6 glass absolute top-0 w-full z-10">
           <div className="flex space-x-1 p-1 bg-slate-800/50 rounded-lg border border-slate-700 overflow-x-auto whitespace-nowrap">
             <button onClick={() => setActiveTab('chat')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'chat' ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
               <MessageSquare size={16} className="mr-2" /> Agent A Chat
+            </button>
+            <button onClick={() => { setActiveTab('provider'); setProviderDraft(provider); }} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'provider' ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
+              <KeyRound size={16} className="mr-2" /> Provider
             </button>
             <button onClick={() => setActiveTab('global-prompt')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'global-prompt' ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
               <Settings size={16} className="mr-2" /> Global Matrix Law
@@ -213,14 +290,63 @@ function App() {
           </div>
         </header>
 
-        {/* Content Area */}
         <div className="flex-1 overflow-y-auto mt-16 p-6 scrollbar-hide relative bg-gradient-to-br from-slate-900 to-slate-800">
+          {activeTab === 'provider' && (
+            <div className="max-w-2xl mx-auto h-full flex flex-col pt-4">
+              <div className="flex justify-between items-end mb-4">
+                <div>
+                  <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-400">Provider Settings</h2>
+                  <p className="text-slate-400 text-sm mt-1">
+                    OpenAI-compatible endpoint (nanobot DeepSeek path). URL and API key stay in <span className="font-mono text-slate-300">localStorage</span> on this device and are sent with each chat turn.
+                  </p>
+                </div>
+                <button onClick={persistProvider} className={`flex items-center px-6 py-2.5 rounded-lg font-medium transition-all shadow-lg ${isSavingProvider ? 'bg-cyan-500 text-white' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}>
+                  {isSavingProvider ? <Check size={18} className="mr-2" /> : <RefreshCw size={18} className="mr-2" />}
+                  {isSavingProvider ? 'Saved!' : 'Save in Browser'}
+                </button>
+              </div>
+              <div className="space-y-4 bg-slate-800/50 border border-slate-600/50 rounded-xl p-6">
+                <label className="block">
+                  <span className="text-xs uppercase tracking-wider text-slate-400">API Base URL</span>
+                  <input
+                    type="url"
+                    value={providerDraft.apiBase}
+                    onChange={(e) => setProviderDraft({ ...providerDraft, apiBase: e.target.value })}
+                    placeholder="https://api.deepseek.com"
+                    className="mt-1 w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 font-mono text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs uppercase tracking-wider text-slate-400">API Key</span>
+                  <input
+                    type="password"
+                    value={providerDraft.apiKey}
+                    onChange={(e) => setProviderDraft({ ...providerDraft, apiKey: e.target.value })}
+                    placeholder="sk-..."
+                    autoComplete="off"
+                    className="mt-1 w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 font-mono text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs uppercase tracking-wider text-slate-400">Model</span>
+                  <input
+                    type="text"
+                    value={providerDraft.model}
+                    onChange={(e) => setProviderDraft({ ...providerDraft, model: e.target.value })}
+                    placeholder="deepseek-v4-flash"
+                    className="mt-1 w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 font-mono text-sm text-slate-200 focus:outline-none focus:border-cyan-400"
+                  />
+                </label>
+                {providerStatus && <p className="text-sm text-cyan-300/90">{providerStatus}</p>}
+              </div>
+            </div>
+          )}
+
           {activeTab === 'chat' && (
             <div className="max-w-4xl mx-auto flex flex-col h-full">
               <div className="flex-1 overflow-y-auto pb-32 space-y-6 scrollbar-hide">
                 {combinedTimeline.map((item, i) => {
                   if (item.tool) {
-                    // This is a log from Agent B
                     return (
                       <div key={i} className="flex justify-start">
                         <div className="max-w-[90%] rounded-2xl p-4 shadow-sm bg-slate-800/80 border border-amber-500/30 rounded-tl-sm relative overflow-hidden">
@@ -250,10 +376,9 @@ function App() {
                         </div>
                       </div>
                     );
-                  } else {
-                    // This is a chat message (User or Agent A)
-                    return (
-                      <div key={i} className={`flex ${item.direction === 'in' ? 'justify-end' : 'justify-start'}`}>
+                  }
+                  return (
+                    <div key={i} className={`flex ${item.direction === 'in' ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[80%] rounded-2xl p-5 shadow-sm ${item.direction === 'in' ? 'bg-indigo-500/20 border border-indigo-500/30 text-indigo-100 rounded-tr-sm' : 'glass rounded-tl-sm'}`}>
                         <div className="prose prose-invert prose-indigo max-w-none text-[15px] leading-relaxed">
                           <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
@@ -261,9 +386,8 @@ function App() {
                           </ReactMarkdown>
                         </div>
                       </div>
-                      </div>
-                    );
-                  }
+                    </div>
+                  );
                 })}
                 <div ref={messagesEndRef} />
               </div>
@@ -272,8 +396,8 @@ function App() {
                   <input
                     type="text"
                     value={inputText}
-                    onChange={e => setInputText(e.target.value)}
-                    placeholder="Ask Agent A..."
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder={provider.apiKey ? 'Ask Agent A...' : 'Set Provider API key first…'}
                     className="w-full bg-slate-800/80 border border-slate-600 rounded-full pl-6 pr-14 py-4 text-slate-200 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 shadow-lg backdrop-blur-md transition-all placeholder:text-slate-500"
                   />
                   <button type="submit" className="absolute right-2 top-2 p-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded-full transition-transform active:scale-95 shadow-md">
@@ -298,7 +422,7 @@ function App() {
               </div>
               <textarea
                 value={globalPrompt}
-                onChange={e => setGlobalPrompt(e.target.value)}
+                onChange={(e) => setGlobalPrompt(e.target.value)}
                 className="flex-1 w-full bg-slate-800/50 border border-slate-600/50 rounded-xl p-6 text-slate-300 font-mono text-sm leading-relaxed focus:outline-none focus:border-pink-400 focus:ring-1 focus:ring-pink-400/30 shadow-inner resize-none scrollbar-hide"
               />
             </div>
@@ -318,7 +442,7 @@ function App() {
               </div>
               <textarea
                 value={prompt}
-                onChange={e => setPrompt(e.target.value)}
+                onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Leave blank to use the Global Matrix Law..."
                 className="flex-1 w-full bg-slate-800/50 border border-slate-600/50 rounded-xl p-6 text-slate-300 font-mono text-sm leading-relaxed focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/30 shadow-inner resize-none scrollbar-hide"
               />

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextvars
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +17,6 @@ from cartesian.paths import (
     session_dir,
 )
 
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 _current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -167,22 +165,28 @@ CRITICAL WEBSEARCH FORMAT: For WebSearch, your "output" field MUST be a JSON obj
     history.append({"role": "user", "content": user_message})
     print(f"[demon] Forwarding A's tool {tool_name} call to B (DeepSeek flash+reasoning)...", flush=True)
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        err = "DEEPSEEK_API_KEY is not set"
+    try:
+        from cartesian.provider_creds import chat_completions_url, get_creds_or_env
+
+        creds = get_creds_or_env()
+    except ValueError as exc:
+        err = str(exc)
         _append_log(sess, {"timestamp": _now(), "tool": tool_name, "output": err, "reasoning": ""})
         return {"output": f"Cartesian Demon simulation error: {err}", "isError": True}
+
+    endpoint = chat_completions_url(creds.api_base)
+    model = creds.model or DEEPSEEK_MODEL
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
-                DEEPSEEK_URL,
+                endpoint,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {creds.api_key}",
                 },
                 json={
-                    "model": DEEPSEEK_MODEL,
+                    "model": model,
                     "messages": history,
                     "thinking": {"type": "enabled"},
                     "reasoning_effort": "high",

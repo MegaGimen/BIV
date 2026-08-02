@@ -6,12 +6,18 @@ export default defineConfig({
   base: '/BIV/',
   plugins: [react()],
   server: {
-    allowedHosts: ['llinker.com', 'www.llinker.com', '8.216.48.82'],
+    host: '0.0.0.0',
+    allowedHosts: true,
     proxy: {
+      '/BIV/api': {
+        target: 'http://127.0.0.1:3033',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/BIV/, ''),
+      },
       '/api': {
         target: 'http://127.0.0.1:3033',
         changeOrigin: true,
-      }
-    }
-  }
+      },
+    },
+  },
 })

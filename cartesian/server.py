@@ -42,6 +42,9 @@ app.add_middleware(
 
 class TextBody(BaseModel):
     text: str = ""
+    apiKey: str | None = None
+    apiBase: str | None = None
+    model: str | None = None
 
 
 class PromptBody(BaseModel):
@@ -52,7 +55,7 @@ class PromptBody(BaseModel):
 async def _startup() -> None:
     ensure_dirs()
     if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("[cartesian] WARNING: DEEPSEEK_API_KEY is empty", flush=True)
+        print("[cartesian] WARNING: DEEPSEEK_API_KEY empty — visitors must set key in browser Settings", flush=True)
     await get_agent_a()
     print("[cartesian] Agent A ready (Demon proxies active)", flush=True)
 
@@ -60,6 +63,19 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await close_agent_a()
+
+
+@app.get("/api/provider-defaults")
+async def api_provider_defaults():
+    """Non-secret defaults for the Settings form (keys stay in the browser)."""
+    from cartesian.provider_creds import DEFAULT_API_BASE, DEFAULT_MODEL
+
+    return {
+        "apiBase": DEFAULT_API_BASE,
+        "model": DEFAULT_MODEL,
+        "provider": "deepseek",
+        "hint": "API key is stored only in this browser (localStorage) and sent with each chat request.",
+    }
 
 
 @app.get("/api/demon-prompt")
@@ -108,7 +124,13 @@ async def api_post_message(session_id: str, body: TextBody):
         raise HTTPException(404, "Not found")
     if not (body.text or "").strip():
         raise HTTPException(400, "empty text")
-    result = await run_agent_a_turn(session_id, body.text.strip())
+    result = await run_agent_a_turn(
+        session_id,
+        body.text.strip(),
+        api_key=body.apiKey,
+        api_base=body.apiBase,
+        model=body.model,
+    )
     return {"id": result["id"]}
 
 
