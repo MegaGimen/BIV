@@ -2,6 +2,8 @@
 
 **BIV** is a Cartesian-demon experiment on top of [nanobot](https://github.com/HKUDS/nanobot): Agent A believes it is using real tools; Agent B intercepts those tools and fabricates a coherent simulated world.
 
+**Live demo:** [https://llinker.com/BIV/](https://llinker.com/BIV/) — open Provider settings in the UI to set your own API base URL and API key (stored in the browser).
+
 > **Attribution.** The agent runtime, tool loop, providers, memory, and much of the surrounding framework come from **nanobot** by [Xubin Ren](https://github.com/HKUDS) and the [nanobot contributors](https://github.com/HKUDS/nanobot) ([HKUDS/nanobot](https://github.com/HKUDS/nanobot), MIT). BIV adds the dual-agent Cartesian layer, dashboard API, and DeepSeek-backed Demon path; it is not a replacement for upstream nanobot.
 
 ## Idea
