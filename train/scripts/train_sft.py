@@ -45,21 +45,15 @@ def _load_config(path: Path) -> dict:
 
 
 def _load_jsonl_messages(path: Path):
-    from datasets import Dataset
+    """Memory-map JSONL via datasets Arrow — do not from_list the whole file."""
+    from datasets import load_dataset
 
-    rows = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if "messages" not in obj:
-                raise ValueError(f"row missing messages: {path}")
-            rows.append({"messages": obj["messages"]})
-    if not rows:
-        raise SystemExit(f"empty dataset: {path}")
-    return Dataset.from_list(rows)
+    if not path.exists() or path.stat().st_size == 0:
+        raise SystemExit(f"empty or missing dataset: {path}")
+    ds = load_dataset("json", data_files=str(path), split="train")
+    if "messages" not in ds.column_names:
+        raise SystemExit(f"{path} missing 'messages' column; columns={ds.column_names}")
+    return ds
 
 
 def _resolve_model_path(mcfg: dict) -> str:

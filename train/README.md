@@ -81,16 +81,15 @@ python scripts/prepare_data.py \
   --out-dir data/processed
 
 # Real run (needs network): ISETrace trajectories
+# Streams one row at a time (do NOT need TB-class RAM).
 # Correct HF API: config name="trajectories", split="train"
 python scripts/prepare_data.py \
   --hf-isetrace \
-  --hf-max-rows 10000 \
-  --local data/examples/sample_trajectories.jsonl \
   --out-dir data/processed \
   --eval-ratio 0.05
 ```
 
-`--hf-isetrace` downloads ~5GB once (cached under `~/.cache/huggingface`). Without `--hf-max-rows` it converts all **23,132** trajectories (hundreds of thousands of prefix samples); start with a cap for smoke tests.
+`--hf-isetrace` downloads ~5GB once (cached under `~/.cache/huggingface`). Without `--hf-max-rows` it processes all **23,132** trajectories but **does not** load them all into RAM at once. Start with `--hf-max-rows 2000` if you only want a smoke subset.
 Add more Docker/terminal or SWE execution traces as local JSONL with either:
 
 ```json

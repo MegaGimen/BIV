@@ -32,6 +32,12 @@ def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
     return n
 
 
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def normalize_turn(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize heterogeneous tool-turn schemas into a single shape."""
     tool = raw.get("tool") or raw.get("name") or raw.get("tool_name")
@@ -163,6 +169,34 @@ def expand_trajectory_samples(
     return out
 
 
+def iter_sft_rows_from_turns(
+    turns: list[dict[str, Any]],
+    *,
+    min_turns: int = 1,
+    max_prefix: int | None = None,
+    every_k: int = 1,
+    shuffle_obs: bool = False,
+    obs_pool: list[str] | None = None,
+    rng: random.Random | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield SFT chat rows for one trajectory (constant memory aside from `turns`)."""
+    rng = rng or random.Random(0)
+    for prefix in expand_trajectory_samples(
+        turns, min_turns=min_turns, max_prefix=max_prefix, every_k=every_k
+    ):
+        shuffled = None
+        if shuffle_obs and obs_pool:
+            cand = rng.choice(obs_pool)
+            if cand == prefix[-1]["observation"] and len(obs_pool) > 1:
+                cand = rng.choice(obs_pool)
+            shuffled = cand
+        yield sample_to_chat_dict(
+            prefix,
+            shuffle_observation=shuffle_obs,
+            shuffled_obs=shuffled,
+        )
+
+
 def records_to_sft_rows(
     records: Iterable[dict[str, Any]],
     *,
@@ -172,6 +206,7 @@ def records_to_sft_rows(
     shuffle_obs: bool = False,
     rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
+    """In-memory helper for tiny local fixtures / unit tests only."""
     rng = rng or random.Random(0)
     pool: list[str] = []
     trajs: list[list[dict[str, Any]]] = []
@@ -185,23 +220,17 @@ def records_to_sft_rows(
 
     rows: list[dict[str, Any]] = []
     for turns in trajs:
-        for prefix in expand_trajectory_samples(
-            turns, min_turns=min_turns, max_prefix=max_prefix, every_k=every_k
-        ):
-            shuffled = None
-            if shuffle_obs and pool:
-                # Control: break causal link while keeping length/style distribution.
-                cand = rng.choice(pool)
-                if cand == prefix[-1]["observation"] and len(pool) > 1:
-                    cand = rng.choice(pool)
-                shuffled = cand
-            rows.append(
-                sample_to_chat_dict(
-                    prefix,
-                    shuffle_observation=shuffle_obs,
-                    shuffled_obs=shuffled,
-                )
+        rows.extend(
+            iter_sft_rows_from_turns(
+                turns,
+                min_turns=min_turns,
+                max_prefix=max_prefix,
+                every_k=every_k,
+                shuffle_obs=shuffle_obs,
+                obs_pool=pool,
+                rng=rng,
             )
+        )
     return rows
 
 
@@ -216,24 +245,49 @@ def load_local_trajectories(path: Path) -> list[dict[str, Any]]:
     return list(_read_jsonl(path))
 
 
+def open_isetrace_dataset(
+    config: str = "trajectories",
+    split: str = "train",
+    max_rows: int | None = None,
+):
+    """Return a HF Dataset (Arrow / memory-mapped). Does NOT call to_list()."""
+    from datasets import DatasetDict, load_dataset
+
+    ds = load_dataset("valiere/ISETrace", name=config, split=split)
+    if isinstance(ds, DatasetDict):
+        key = split if split in ds else next(iter(ds.keys()))
+        ds = ds[key]
+    if max_rows is not None:
+        ds = ds.select(range(min(int(max_rows), len(ds))))
+    return ds
+
+
 def try_load_isetrace(
     config: str = "trajectories",
     split: str = "train",
     max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Load valiere/ISETrace (run on a machine with network + disk).
+    """Deprecated for full corpus: materializes rows. Prefer open_isetrace_dataset()."""
+    ds = open_isetrace_dataset(config=config, split=split, max_rows=max_rows)
+    return [ds[i] for i in range(len(ds))]
 
-    HF layout uses *configs* ``trajectories`` / ``intents`` and split ``train``.
-    Do not pass the config name as the positional ``split`` argument.
-    """
-    from datasets import DatasetDict, load_dataset
 
-    ds = load_dataset("valiere/ISETrace", name=config, split=split)
-    if isinstance(ds, DatasetDict):
-        # Defensive: older call sites may still get a dict of splits.
-        key = split if split in ds else next(iter(ds.keys()))
-        ds = ds[key]
-    if max_rows is not None:
-        ds = ds.select(range(min(int(max_rows), len(ds))))
-    # ``to_list()`` preserves nested columns; ``dict(row)`` breaks on HF rows.
-    return ds.to_list()
+def reservoir_add(
+    reservoir: list[str],
+    item: str,
+    *,
+    k: int,
+    seen: int,
+    rng: random.Random,
+    max_chars: int = 4000,
+) -> int:
+    """Algorithm R reservoir sampling; returns updated seen count."""
+    clipped = item if len(item) <= max_chars else item[:max_chars]
+    seen += 1
+    if len(reservoir) < k:
+        reservoir.append(clipped)
+        return seen
+    j = rng.randint(1, seen)
+    if j <= k:
+        reservoir[j - 1] = clipped
+    return seen
