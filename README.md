@@ -25,9 +25,26 @@ Reality-touching tools (`exec`, file tools, web tools, …) are proxied to B. Se
 ├── cartesian/               # Agent A/B wiring + FastAPI (/api compatible with the dashboard)
 ├── config/cartesian.json    # DeepSeek provider + Agent A preset
 ├── cartesian-dashboard/     # Vite UI (Agent A chat, Matrix Law, Demon intercepts)
+├── train/                   # world-model LoRA SFT (CUDA host; see train/README.md)
 ├── data/                    # local sessions, workspace, global_demon_prompt.txt (gitignored)
 └── start-biv.sh             # systemd entry → API :3033 + UI :5174
 ```
+
+## World-model training (`train/`)
+
+GPT-style hypothesis: fit **real** next tool observations \(P(o_t \mid h_{<t}, a_t)\) so environment consistency emerges and **indirectly** lifts coding-agent skill. Uses Unsloth LoRA on `Qwen/Qwen3.5-9B` (40GB-class GPU). Includes a shuffled-observation control arm.
+
+```bash
+cd train
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/smoke_cpu.py          # safe without GPU
+# On a CUDA machine:
+python scripts/prepare_data.py --hf-isetrace --out-dir data/processed
+python scripts/train_sft.py --config configs/default.yaml
+```
+
+Full protocol, data formats, and eval notes: [`train/README.md`](./train/README.md).
 
 ## Quick start
 
