@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -62,9 +63,17 @@ def main() -> None:
     for path in args.local:
         records.extend(load_local_trajectories(path))
     if args.hf_isetrace:
+        # ISETrace is HF-only today (not on ModelScope). Prefer CN mirror.
+        if not os.environ.get("HF_ENDPOINT"):
+            print(
+                "Tip: ISETrace is not on ModelScope. "
+                "For CN download set: export HF_ENDPOINT=https://hf-mirror.com",
+                flush=True,
+            )
         print(
             f"Loading ISETrace from HuggingFace "
-            f"(name={args.hf_config!r}, split={args.hf_split!r})...",
+            f"(name={args.hf_config!r}, split={args.hf_split!r}, "
+            f"HF_ENDPOINT={os.environ.get('HF_ENDPOINT', 'https://huggingface.co')})...",
             flush=True,
         )
         records.extend(

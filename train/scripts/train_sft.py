@@ -62,6 +62,29 @@ def _load_jsonl_messages(path: Path):
     return Dataset.from_list(rows)
 
 
+def _resolve_model_path(mcfg: dict) -> str:
+    """Resolve checkpoint path; prefer ModelScope downloads in CN."""
+    name = str(mcfg["name"])
+    source = str(mcfg.get("source", "modelscope")).lower()
+    if source in {"local", "path"}:
+        path = Path(name)
+        if not path.exists():
+            raise SystemExit(f"Local model path not found: {path}")
+        return str(path)
+
+    if source in {"modelscope", "ms"}:
+        from modelscope import snapshot_download
+
+        print(f"Downloading/loading model from ModelScope: {name}", flush=True)
+        local = snapshot_download(name)
+        print(f"ModelScope cache path: {local}", flush=True)
+        return str(local)
+
+    # huggingface / hf-mirror via HF_ENDPOINT
+    print(f"Loading model id from HuggingFace hub: {name}", flush=True)
+    return name
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -97,8 +120,9 @@ def main() -> None:
         )
 
     max_seq = int(mcfg["max_seq_length"])
+    model_path = _resolve_model_path(mcfg)
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=mcfg["name"],
+        model_name=model_path,
         max_seq_length=max_seq,
         load_in_4bit=bool(mcfg.get("load_in_4bit", False)),
         load_in_16bit=bool(mcfg.get("load_in_16bit", True)),
