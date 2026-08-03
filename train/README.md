@@ -65,6 +65,7 @@ python scripts/prepare_data.py \
   --out-dir data/processed
 
 # Real run (needs network): ISETrace trajectories
+# Correct HF API: config name="trajectories", split="train"
 python scripts/prepare_data.py \
   --hf-isetrace \
   --hf-max-rows 10000 \
@@ -73,6 +74,7 @@ python scripts/prepare_data.py \
   --eval-ratio 0.05
 ```
 
+`--hf-isetrace` downloads ~5GB once (cached under `~/.cache/huggingface`). Without `--hf-max-rows` it converts all **23,132** trajectories (hundreds of thousands of prefix samples); start with a cap for smoke tests.
 Add more Docker/terminal or SWE execution traces as local JSONL with either:
 
 ```json

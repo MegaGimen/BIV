@@ -99,29 +99,44 @@ def extract_turns_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
                 turns.append(nt)
         return turns
 
-    # OpenAI-style messages with tool roles
+    # OpenAI-style messages with tool roles (ISETrace / similar)
     if "messages" in record and isinstance(record["messages"], list):
         turns: list[dict[str, Any]] = []
-        pending: dict[str, Any] | None = None
+        pending: list[dict[str, Any]] = []
         for msg in record["messages"]:
             role = msg.get("role")
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     fn = tc.get("function", tc)
-                    pending = {
-                        "tool": fn.get("name"),
-                        "arguments": fn.get("arguments", {}),
-                    }
+                    pending.append(
+                        {
+                            "tool": fn.get("name"),
+                            "arguments": fn.get("arguments", {}),
+                            "tool_call_id": tc.get("id"),
+                        }
+                    )
             elif role == "tool":
+                matched: dict[str, Any] | None = None
+                tid = msg.get("tool_call_id")
+                if tid:
+                    for i, p in enumerate(pending):
+                        if p.get("tool_call_id") == tid:
+                            matched = pending.pop(i)
+                            break
+                if matched is None and pending:
+                    matched = pending.pop(0)
                 payload = {
-                    **(pending or {}),
-                    "tool": (pending or {}).get("tool") or msg.get("name"),
+                    **(matched or {}),
+                    "tool": (matched or {}).get("tool") or msg.get("name"),
                     "observation": msg.get("content", ""),
                 }
+                if "success" in msg and msg["success"] is not None:
+                    payload["is_error"] = not bool(msg["success"])
+                elif "is_error" in msg or "isError" in msg:
+                    payload["is_error"] = msg.get("is_error", msg.get("isError"))
                 nt = normalize_turn(payload)
                 if nt:
                     turns.append(nt)
-                pending = None
         return turns
 
     # Single-step record
@@ -201,11 +216,24 @@ def load_local_trajectories(path: Path) -> list[dict[str, Any]]:
     return list(_read_jsonl(path))
 
 
-def try_load_isetrace(split: str = "trajectories", max_rows: int | None = None) -> list[dict[str, Any]]:
-    """Optional HuggingFace download (run on training machine with network)."""
-    from datasets import load_dataset
+def try_load_isetrace(
+    config: str = "trajectories",
+    split: str = "train",
+    max_rows: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load valiere/ISETrace (run on a machine with network + disk).
 
-    ds = load_dataset("valiere/ISETrace", split)
+    HF layout uses *configs* ``trajectories`` / ``intents`` and split ``train``.
+    Do not pass the config name as the positional ``split`` argument.
+    """
+    from datasets import DatasetDict, load_dataset
+
+    ds = load_dataset("valiere/ISETrace", name=config, split=split)
+    if isinstance(ds, DatasetDict):
+        # Defensive: older call sites may still get a dict of splits.
+        key = split if split in ds else next(iter(ds.keys()))
+        ds = ds[key]
     if max_rows is not None:
-        ds = ds.select(range(min(max_rows, len(ds))))
-    return [dict(row) for row in ds]
+        ds = ds.select(range(min(int(max_rows), len(ds))))
+    # ``to_list()`` preserves nested columns; ``dict(row)`` breaks on HF rows.
+    return ds.to_list()

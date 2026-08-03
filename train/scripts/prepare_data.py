@@ -40,6 +40,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local", type=Path, nargs="*", default=[], help="Local json/jsonl trajectory files")
     p.add_argument("--hf-isetrace", action="store_true", help="Download valiere/ISETrace trajectories")
+    p.add_argument(
+        "--hf-config",
+        default="trajectories",
+        help="HF dataset config name (trajectories|intents)",
+    )
+    p.add_argument("--hf-split", default="train", help="HF split name")
     p.add_argument("--hf-max-rows", type=int, default=None)
     p.add_argument("--out-dir", type=Path, default=ROOT / "data" / "processed")
     p.add_argument("--eval-ratio", type=float, default=0.05)
@@ -56,8 +62,18 @@ def main() -> None:
     for path in args.local:
         records.extend(load_local_trajectories(path))
     if args.hf_isetrace:
-        print("Loading ISETrace from HuggingFace...", flush=True)
-        records.extend(try_load_isetrace(max_rows=args.hf_max_rows))
+        print(
+            f"Loading ISETrace from HuggingFace "
+            f"(name={args.hf_config!r}, split={args.hf_split!r})...",
+            flush=True,
+        )
+        records.extend(
+            try_load_isetrace(
+                config=args.hf_config,
+                split=args.hf_split,
+                max_rows=args.hf_max_rows,
+            )
+        )
 
     if not records:
         raise SystemExit(
