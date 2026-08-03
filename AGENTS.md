@@ -2,9 +2,101 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## Project Overview
 
-nanobot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.
+This repository is **BIV** (Brain In a Vat / 缸中之脑): a Cartesian-demon experiment **on top of** [nanobot](https://github.com/HKUDS/nanobot).
 
-## Development Commands
+- **Runtime product:** Agent A believes it uses real tools; Agent B (Demon) intercepts world-touching tools and returns a coherent simulated world (see root `README.md`, `cartesian/`).
+- **Research / training track (`train/`):** GPT-style hypothesis — fit **real** next tool observations so environment consistency emerges and **indirectly** improves coding-agent skill. Runtime nanobot code paths are largely upstream; BIV adds the Cartesian layer + world-model SFT scaffold.
+
+Upstream nanobot remains a lightweight Python agent framework (channels → bus → agent loop → LLM → tools → memory) with a React/TypeScript WebUI. Prefer changing `cartesian/` and `train/` for BIV-specific behavior; touch `nanobot/` only when necessary for forks or bugs.
+
+## BIV Runtime (Cartesian layer)
+
+| Role | Location | Job |
+|------|----------|-----|
+| Agent A | nanobot loop + configured provider | Plans, tool calls, user chat |
+| Agent B (Demon) | `cartesian/demon.py` | Fabricates tool results under Matrix Law |
+| Proxies | `cartesian/tool_proxies.py` | Route `exec` / FS / web tools to B; keep `create_goal` / `update_goal` real; drop escape tools |
+
+- Dashboard + API: `cartesian-dashboard/`, `cartesian/server.py`
+- Matrix Law prompt: `data/global_demon_prompt.txt` (runtime only; **not** used as SFT supervision in `train/`)
+- Live demo notes: root `README.md`
+
+## World-model training (`train/`) — hypothesis
+
+**Analogy (GPT):** next-token prediction on text → emergent skills (e.g. translation).  
+**Here:** next-observation prediction on real tool I/O → hoped-for lift in coding-agent benchmarks.
+
+\[
+P(o_t \mid h_{<t}, a_t)
+\]
+
+| Item | Choice |
+|------|--------|
+| Checkpoint | `Qwen/Qwen3.5-9B` (agent-capable Instruct; **not** Base) |
+| Update | Unsloth LoRA; loss **only** on assistant / observation tokens |
+| Labels | Real sandbox tool outputs (from execution-grounded trajectories) |
+| Not in SFT | Matrix Law persona; full agent policy SFT from scratch |
+| Control | `configs/control_shuffled.yaml` — identical setup on **shuffled** observations |
+
+**Claim only if:** world-model metrics improve **and** same-scaffold agent coding metrics improve vs base **and** the shuffled control does **not** explain the gain.
+
+Detailed runbook: [`train/README.md`](./train/README.md).
+
+### Training commands (GPU host)
+
+```bash
+cd train
+python3 -m venv .venv && source .venv/bin/activate
+pip install -U pip && pip install -r requirements.txt
+
+# Data: streams one trajectory at a time (avoid full-corpus to_list OOM)
+# ISETrace is HF-hosted (~5GB raw); optional: export HF_ENDPOINT=https://hf-mirror.com
+python scripts/prepare_data.py --hf-isetrace --out-dir data/processed --eval-ratio 0.05
+
+# Model source: configs default to HuggingFace (`source: huggingface`); ModelScope still supported
+huggingface-cli login   # or: hf auth login
+python scripts/train_sft.py --config configs/default.yaml
+# Control arm:
+python scripts/train_sft.py --config configs/control_shuffled.yaml
+
+# World-model held-out metrics
+python scripts/eval_wm.py --config configs/default.yaml
+```
+
+- Do **not** run `train_sft.py` on CPU-only app servers; `prepare_data.py` / `smoke_cpu.py` are OK without GPU.
+- Disk: `~/.cache/huggingface/datasets` (tokenize/map Arrow) can grow to 100GB+; clear if root fills (`OSError: No space left on device`). Keep `hub/` model weights if possible.
+- VRAM: default bf16 LoRA + seq 8k is conservative (~22–28GB). On ~48GB cards, raise micro-batch / packing / `lora_r` to utilize memory; use QLoRA if ≤24GB.
+
+### Data
+
+Primary corpus: **[ISETrace](https://huggingface.co/datasets/valiere/ISETrace)** — multi-turn OS-agent trajectories with **real** tool execution (paper: [ISE / arXiv:2606.11520](https://arxiv.org/abs/2606.11520), code: [Valiere01/ISE-Trace](https://github.com/Valiere01/ISE-Trace)). Domains include `code-runtime`, `file-io`, `system-infrastructure`, etc. (Linux `exec`, write/run Python, plus multimedia/web — not pure SWE-bench).
+
+`prepare_data.py` extracts tool turns → causal prefixes → chat JSONL (`data/processed/`). That JSONL is what `train_sft.py` consumes.
+
+### Evaluation protocol (hypothesis)
+
+1. **World-model:** held-out observation CE / token-F1 / `isError` accuracy (`scripts/eval_wm.py`).
+2. **Agent transfer:** same scaffold, compare base `Qwen3.5-9B` vs real-I/O LoRA vs shuffled LoRA on Terminal-Bench / Harbor, SWE-style suites, etc.
+3. **Causal check:** if shuffled rises as much as real I/O, reject the GPT-style story.
+
+### Related world-model literature (reference — not fully reimplemented)
+
+Current `train/` is a **minimal** next-observation LoRA SFT (plus shuffled control), inspired by these lines of work. Full CPT→RL stacks, joint \(L_{FC}+L_{SP}\), or test-time SVS/planning are **future** options:
+
+| Work | Links | Idea to steal later |
+|------|-------|---------------------|
+| Qwen-AgentWorld | [GitHub](https://github.com/QwenLM/Qwen-AgentWorld), [paper HTML](https://arxiv.org/html/2606.24597) | Native LWM: CPT→SFT→RL; next-state prediction; AgentWorldBench consistency dimensions; LWM warmup transfers to agent benches |
+| DyMo + SVS | [arXiv:2506.02918](https://arxiv.org/abs/2506.02918), [OpenReview](https://openreview.net/forum?id=DALpFQM3rE) | Joint tool-call + next-state loss; sample → predict state → proceed without oracle env |
+| RAP | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.507/), [arXiv:2305.14992](https://arxiv.org/abs/2305.14992) | Same LM as agent + world model; MCTS-style planning over predicted states |
+| Word2World | [GitHub](https://github.com/X1AOX1A/Word2World) | Text WM fidelity vs agent utility; WM2Real rollout consistency |
+| WorldCoder | [GitHub](https://github.com/haotang1995/WorldCoder), [arXiv:2402.12275](https://arxiv.org/abs/2402.12275) | Explicit code as world-model / transition law |
+| TerminalTraj | [arXiv:2602.01244](https://arxiv.org/abs/2602.01244) | Docker-grounded terminal trajectories at scale |
+| V-JEPA (consistency analogy) | [V-JEPA 2.1](https://arxiv.org/abs/2603.14482) | Spatial/temporal consistency objectives (map to cross-tool / multi-step env consistency in text) |
+| Survey / index | [awesome-world-model-evolution](https://github.com/OpenRaiser/awesome-world-model-evolution) | Broader WM taxonomy |
+
+**Design stance for this repo:** prefer **environment consistency** (causal continuity across tool turns) as the first-class training/eval object; agent coding uplift is the **transfer** metric. Do not confuse runtime Matrix Law (BIV product) with world-model SFT labels (must stay real I/O).
+
+## Development Commands (upstream nanobot)
 
 ```bash
 # Python: run single test / lint
@@ -17,53 +109,54 @@ uv run --no-sync python -m scripts.install_channel_dependencies --all-channels
 uv run --no-sync basedpyright
 
 # WebUI: dev server (proxies API/WS to gateway :8765), build, test
-# Build outputs to ../nanobot/web/dist (bundled into the Python wheel)
-cd webui && bun run dev      # or NANOBOT_API_URL=... bun run dev
+cd webui && bun run dev
 cd webui && bun run build
 cd webui && bun run test
 
-# Gateway
+# Gateway / BIV
 nanobot gateway
+./start-biv.sh
 ```
 
-## High-Level Architecture
+## High-Level Architecture (nanobot runtime)
 
 ### Core Data Flow
 
 Messages flow through an async `MessageBus` (`nanobot/bus/queue.py`) that decouples chat channels from the agent core:
 
-1. **Channels** (`nanobot/channels/`) receive messages from external platforms and publish `InboundMessage` events to the bus.
-2. **`AgentLoop`** (`nanobot/agent/loop.py`) consumes inbound messages, builds context, and coordinates the turn.
-3. **`AgentRunner`** (`nanobot/agent/runner.py`) handles the actual LLM conversation loop: send messages to the provider, receive tool calls, execute tools, and stream responses.
-4. Responses are published as `OutboundMessage` events back to the appropriate channel.
+1. **Channels** (`nanobot/channels/`) publish `InboundMessage` events to the bus.
+2. **`AgentLoop`** (`nanobot/agent/loop.py`) consumes inbound messages and coordinates the turn.
+3. **`AgentRunner`** (`nanobot/agent/runner.py`) runs the LLM ↔ tool loop and streams responses.
+4. Responses are published as `OutboundMessage` events back to the channel.
+
+In BIV, tool execution for reality-touching tools is replaced by Demon proxies before results return to A.
 
 ### Key Subsystems
 
-- **Agent Loop** (`nanobot/agent/loop.py`, `runner.py`): The core processing engine. `AgentLoop` manages session keys, hooks, and context building. `AgentRunner` executes the multi-turn LLM conversation with tool execution.
-- **LLM Providers** (`nanobot/providers/`): Provider implementations (Anthropic, OpenAI-compatible, OpenAI Responses API, Azure, Bedrock, GitHub Copilot, OpenAI Codex, etc.) built on a common base (`base.py`). Includes image generation (`image_generation.py`) and audio transcription (`transcription.py`). `factory.py` and `registry.py` handle instantiation and model discovery.
-- **Channels** (`nanobot/channels/`): Platform integrations (Telegram, Discord, Slack, Feishu, Matrix, WhatsApp, QQ, WeChat, WeCom, DingTalk, Email, MoChat, MS Teams, WebSocket, Mattermost). `manager.py` discovers and coordinates them. Channels are self-contained packages auto-discovered via `pkgutil` scanning.
-- **Tools** (`nanobot/agent/tools/`): Agent capabilities exposed to the LLM: filesystem (read/write/edit/list), shell execution (with sandbox backends), web search/fetch, MCP servers, cron, notebook editing, subagent spawning, long-running tasks / sustained goals (`long_task.py`), image generation, and self-modification. Tools are auto-discovered via `pkgutil` scan + entry-point plugins.
-- **Memory** (`nanobot/agent/memory.py`): Session history persistence with Dream two-phase memory consolidation. Uses atomic writes with fsync for durability.
-- **Session Management** (`nanobot/session/`): Per-session history, context compaction, TTL-based auto-compaction (`manager.py`), and sustained goal state tracking (`goal_state.py`).
-- **Config** (`nanobot/config/schema.py`, `loader.py`): Pydantic-based configuration loaded from `~/.nanobot/config.json`. Supports camelCase aliases for JSON compatibility.
-- **WebUI** (`webui/`): Vite-based React SPA that talks to the gateway over a WebSocket multiplex protocol. The dev server proxies `/api`, `/webui`, `/auth`, and WebSocket traffic to the gateway.
-- **API Server** (`nanobot/api/server.py`): OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`) for programmatic access.
-- **Command Router** (`nanobot/command/`): Slash command routing and built-in command handlers.
-- **Heartbeat** (`nanobot/templates/HEARTBEAT.md`): Periodic task list checked via `cron` jobs (legacy dedicated service removed).
-- **Pairing** (`nanobot/pairing/`): DM sender approval store with persistent pairing codes per channel.
-- **Skills** (`nanobot/skills/`): Built-in skill definitions (cron, github, image-generation, etc.) loaded into agent context.
-- **Security** (`nanobot/security/`): PTH file guard and other security measures activated at CLI entry.
+- **Agent Loop** (`nanobot/agent/loop.py`, `runner.py`)
+- **LLM Providers** (`nanobot/providers/`)
+- **Channels** (`nanobot/channels/`)
+- **Tools** (`nanobot/agent/tools/`) — FS, shell/sandbox, web, MCP, cron, subagents, long tasks, etc.
+- **Memory / sessions** (`nanobot/agent/memory.py`, `nanobot/session/`)
+- **Config** (`nanobot/config/schema.py`, `loader.py`) — typically `~/.nanobot/config.json`; BIV also uses `config/cartesian.json`
+- **WebUI** (`webui/`), **Cartesian dashboard** (`cartesian-dashboard/`)
+- **API** (`nanobot/api/server.py`, `cartesian/server.py`)
+- **Cartesian / Demon** (`cartesian/`)
+- **World-model SFT** (`train/`)
 
 ### Entry Points
 
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
+- **BIV start**: `./start-biv.sh`
+- **WM prepare / train**: `train/scripts/prepare_data.py`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 
 - Architecture constraints: [`.agent/design.md`](.agent/design.md)
 - Security boundaries: [`.agent/security.md`](.agent/security.md)
 - Common gotchas: [`.agent/gotchas.md`](.agent/gotchas.md)
+- Training runbook: [`train/README.md`](./train/README.md)
 
 ## Contribution Flow
 
@@ -71,16 +164,20 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelin
 
 ## Code Style
 
-- Python 3.11+, asyncio throughout.
+- Python 3.11+, asyncio throughout (runtime).
 - Line length: 100.
 - Linting: `ruff` with rules E, F, I, N, W (E501 ignored).
 - pytest with `asyncio_mode = "auto"`.
+- `train/` uses its own venv + `requirements.txt` (Unsloth/TRL); do not assume the app `.venv` has training deps.
 
 ## Common File Locations
 
 - Config schema: `nanobot/config/schema.py`
-- Provider base / new provider template: `nanobot/providers/base.py`
-- Channel base / new channel template: `nanobot/channels/base.py`
+- Provider base: `nanobot/providers/base.py`
+- Channel base: `nanobot/channels/base.py`
 - Tool registry: `nanobot/agent/tools/registry.py`
-- WebUI dev proxy config: `webui/vite.config.ts`
+- Demon / proxies: `cartesian/demon.py`, `cartesian/tool_proxies.py`
+- WM data + metrics: `train/src/biv_wm/`
+- WM configs: `train/configs/default.yaml`, `train/configs/control_shuffled.yaml`
+- WebUI proxy: `webui/vite.config.ts`
 - Tests mirror the `nanobot/` package structure.
