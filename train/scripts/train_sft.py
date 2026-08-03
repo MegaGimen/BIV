@@ -59,7 +59,7 @@ def _load_jsonl_messages(path: Path):
 def _resolve_model_path(mcfg: dict) -> str:
     """Resolve checkpoint path; prefer ModelScope downloads in CN."""
     name = str(mcfg["name"])
-    source = str(mcfg.get("source", "modelscope")).lower()
+    source = str(mcfg.get("source", "huggingface")).lower()
     if source in {"local", "path"}:
         path = Path(name)
         if not path.exists():

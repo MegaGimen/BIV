@@ -53,20 +53,19 @@ pip install -r requirements.txt
 If Unsloth wheels fail for your CUDA/torch combo, install Unsloth first from
 https://unsloth.ai/docs/get-started/install then re-run `pip install -r requirements.txt`.
 
-### China downloads (prefer ModelScope)
+### Downloads (HuggingFace default)
 
-| Asset | Domestic? | How |
-|-------|-----------|-----|
-| **Qwen/Qwen3.5-9B** | Yes — [ModelScope](https://www.modelscope.cn/models/Qwen/Qwen3.5-9B) | default `model.source: modelscope` in configs |
-| **ISETrace** | **No ModelScope copy found** | use HF mirror: `export HF_ENDPOINT=https://hf-mirror.com` |
+Configs default to `model.source: huggingface` (`Qwen/Qwen3.5-9B`).
+
+| Asset | Where |
+|-------|--------|
+| **Qwen/Qwen3.5-9B** | HuggingFace (or set `source: modelscope`) |
+| **ISETrace** | HuggingFace (`--hf-isetrace`); optional mirror `export HF_ENDPOINT=https://hf-mirror.com` |
 
 ```bash
-# optional ModelScope login (public Qwen usually works without)
-pip install modelscope
-# modelscope login   # or: export MODELSCOPE_API_TOKEN=...
-
-export HF_ENDPOINT=https://hf-mirror.com   # for ISETrace only
-huggingface-cli login                      # if mirror/HF still needs token
+huggingface-cli login
+# optional CN mirror for datasets only:
+# export HF_ENDPOINT=https://hf-mirror.com
 ```
 
 ## Pipeline
