@@ -112,6 +112,8 @@ def _export_messages_jsonl(
     if max_samples is not None and max_samples > 0:
         import random
 
+        from tqdm.auto import tqdm
+
         offsets: list[int] = []
         with src.open("rb") as f:
             while True:
@@ -129,7 +131,7 @@ def _export_messages_jsonl(
         with src.open("r", encoding="utf-8") as fin, dst.open(
             "w", encoding="utf-8"
         ) as fout:
-            for idx in chosen:
+            for idx in tqdm(chosen, desc=f"export {src.name}", unit="ex"):
                 fin.seek(offsets[idx])
                 line = fin.readline()
                 obj = json.loads(line)
@@ -138,32 +140,58 @@ def _export_messages_jsonl(
                 written += 1
         return written
 
+    from tqdm.auto import tqdm
+
     written = 0
+    # Approximate progress by file bytes for full export.
+    total_bytes = src.stat().st_size
     with src.open("r", encoding="utf-8") as fin, dst.open("w", encoding="utf-8") as fout:
-        for line_no, line in enumerate(fin, 1):
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            row = _extract_messages_row(obj, line_no=line_no, path=src)
-            fout.write(json.dumps(row, ensure_ascii=False) + "\n")
-            written += 1
+        pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc=f"export {src.name}")
+        try:
+            while True:
+                line = fin.readline()
+                if not line:
+                    break
+                pbar.update(len(line.encode("utf-8")))
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                row = _extract_messages_row(obj, line_no=written + 1, path=src)
+                fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                written += 1
+        finally:
+            pbar.close()
     return written
 
 
 def _upload_file(bucket, key: str, local: Path) -> None:
     import oss2
+    from tqdm.auto import tqdm
 
-    size_mb = local.stat().st_size / (1024 * 1024)
+    total = local.stat().st_size
+    size_mb = total / (1024 * 1024)
     print(f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}", flush=True)
-    oss2.resumable_upload(
-        bucket,
-        key,
-        str(local),
-        multipart_threshold=64 * 1024 * 1024,
-        part_size=16 * 1024 * 1024,
-        num_threads=4,
-    )
+    pbar = tqdm(total=total, unit="B", unit_scale=True, desc=f"oss {local.name}")
+
+    def _progress(consumed_bytes: int, total_bytes: int) -> None:
+        # oss2 may report total_bytes==0 initially; prefer known file size.
+        pbar.total = total_bytes or total
+        pbar.n = min(consumed_bytes, pbar.total)
+        pbar.refresh()
+
+    try:
+        oss2.resumable_upload(
+            bucket,
+            key,
+            str(local),
+            multipart_threshold=64 * 1024 * 1024,
+            part_size=16 * 1024 * 1024,
+            num_threads=4,
+            progress_callback=_progress,
+        )
+    finally:
+        pbar.close()
     print(f"OK: {key}", flush=True)
 
 
