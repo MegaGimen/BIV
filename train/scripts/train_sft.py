@@ -202,37 +202,30 @@ def main() -> None:
         args=sft_args,
     )
 
-    # Unsloth's train_on_responses_only ends with `_filter_fully_masked`, which
-    # iterates the whole tokenized corpus via `to_pydict()` — on ~1e5–1e6 long
-    # sequences this looks "stuck" for tens of minutes with 100% CPU and no bar.
-    # Masking is what we need; dropping the rare all-masked rows is optional.
-    print("Applying response-only loss mask (skipping full-corpus mask filter)...", flush=True)
+    # Keep Unsloth's fully-masked-row filter, but replace the silent to_pydict
+    # scan with a tqdm progress bar + aggregate -100 token stats.
+    print("Applying response-only loss mask + -100 row filter (with progress)...", flush=True)
     try:
         import unsloth_zoo.dataset_utils as _dataset_utils
 
-        def _skip_full_mask_filter(dataset, name="dataset"):  # noqa: ANN001
-            print(
-                f"Skip _filter_fully_masked on {name} "
-                f"(n≈{getattr(dataset, '__len__', lambda: '?')()})",
-                flush=True,
-            )
-            return dataset
-
-        _dataset_utils._filter_fully_masked = _skip_full_mask_filter
+        _dataset_utils._filter_fully_masked = _filter_fully_masked_with_progress
     except Exception as exc:  # noqa: BLE001
-        print(f"Could not patch _filter_fully_masked ({exc}); may be slow.", flush=True)
+        print(f"Could not patch _filter_fully_masked ({exc}); Unsloth default may hang silently.", flush=True)
 
     trainer = train_on_responses_only(
         trainer,
         instruction_part=str(tcfg.get("instruction_part", "<|im_start|>user\n")),
         response_part=str(tcfg.get("response_part", "<|im_start|>assistant\n")),
     )
-    print("Response-only mask applied.", flush=True)
-    _report_label_mask_stats(
-        trainer.train_dataset,
-        sample_size=int(tcfg.get("mask_stats_sample_size", 512)),
-        seed=int(tcfg.get("seed", 42)),
-    )
+    print("Response-only mask + -100 filter done.", flush=True)
+
+    sample = trainer.train_dataset[0]
+    labels = sample.get("labels")
+    if labels is not None:
+        n_sup = sum(1 for x in labels if int(x) != -100)
+        print(f"Row0 supervised tokens: {n_sup}/{len(list(labels))}", flush=True)
+        if n_sup == 0:
+            raise SystemExit("Row 0 is fully -100 after masking — aborting.")
 
     trainer.train()
     adapter_dir = out_dir / "lora_adapter"
@@ -244,75 +237,81 @@ def main() -> None:
     print(f"Saved LoRA adapter -> {adapter_dir}", flush=True)
 
 
-def _report_label_mask_stats(dataset, *, sample_size: int, seed: int) -> None:
-    """Sample rows and print -100 / supervised token ratios (cheap; not full scan)."""
-    import random
+def _filter_fully_masked_with_progress(dataset, name="dataset"):  # noqa: ANN001
+    """Drop rows whose labels are all -100; show tqdm + corpus -100 ratios."""
+    from tqdm.auto import tqdm
 
     n = len(dataset)
     if n == 0:
-        raise SystemExit("train_dataset is empty after masking.")
-    k = min(int(sample_size), n)
-    rng = random.Random(seed)
-    idxs = list(range(n)) if k == n else rng.sample(range(n), k)
+        print(f"{name}: empty dataset", flush=True)
+        return dataset
 
+    batch_size = 1000
+    keep: list[int] = []
     total_tok = 0
     masked_tok = 0
-    supervised_tok = 0
     fully_masked_rows = 0
-    empty_label_rows = 0
+    idx = 0
 
-    for i in idxs:
-        row = dataset[i]
-        labels = row.get("labels")
-        if labels is None:
-            empty_label_rows += 1
-            continue
-        # HF may return list or numpy-like
-        try:
-            labels = list(labels)
-        except TypeError:
-            labels = [labels]
-        if not labels:
-            empty_label_rows += 1
-            continue
-        n_lab = len(labels)
-        n_mask = sum(1 for x in labels if int(x) == -100)
-        n_sup = n_lab - n_mask
-        total_tok += n_lab
-        masked_tok += n_mask
-        supervised_tok += n_sup
-        if n_sup == 0:
-            fully_masked_rows += 1
+    view = dataset
+    if "labels" in getattr(dataset, "column_names", []):
+        view = dataset.select_columns(["labels"])
 
-    scanned = k - empty_label_rows
-    if scanned <= 0 or total_tok == 0:
-        raise SystemExit("No usable labels found while sampling mask stats.")
+    pbar = tqdm(total=n, desc=f"scan -100 ({name})", unit="ex", dynamic_ncols=True)
+    try:
+        for batch in view.iter(batch_size=batch_size):
+            labels_batch = batch["labels"]
+            for labels in labels_batch:
+                try:
+                    labels_list = list(labels)
+                except TypeError:
+                    labels_list = [labels]
+                n_lab = len(labels_list)
+                if n_lab == 0:
+                    fully_masked_rows += 1
+                    idx += 1
+                    pbar.update(1)
+                    continue
+                n_mask = sum(1 for x in labels_list if int(x) == -100)
+                n_sup = n_lab - n_mask
+                total_tok += n_lab
+                masked_tok += n_mask
+                if n_sup == 0:
+                    fully_masked_rows += 1
+                else:
+                    keep.append(idx)
+                idx += 1
+                pbar.update(1)
+                if idx % 5000 == 0 and total_tok:
+                    pbar.set_postfix(
+                        drop=f"{fully_masked_rows}/{idx}",
+                        m100=f"{masked_tok / total_tok:.0%}",
+                        refresh=False,
+                    )
+    finally:
+        pbar.close()
 
-    mask_ratio = masked_tok / total_tok
-    sup_ratio = supervised_tok / total_tok
-    full_mask_row_ratio = fully_masked_rows / scanned
-
+    dropped = n - len(keep)
+    mask_ratio = (masked_tok / total_tok) if total_tok else 0.0
     print(
-        "Label mask stats "
-        f"(sample {scanned}/{n} rows, seed={seed}):\n"
-        f"  tokens: -100={mask_ratio:.1%}  supervised={sup_ratio:.1%}  "
-        f"(tok_total={total_tok})\n"
-        f"  rows fully -100: {fully_masked_rows}/{scanned} = {full_mask_row_ratio:.1%}\n"
-        f"  rows missing labels: {empty_label_rows}/{k}",
+        f"{name} -100 filter:\n"
+        f"  rows kept={len(keep)}/{n}  dropped_fully_masked={dropped} ({dropped / n:.1%})\n"
+        f"  tokens: -100={mask_ratio:.1%}  supervised={1.0 - mask_ratio:.1%}  "
+        f"(tok_total={total_tok})",
         flush=True,
     )
-
-    if full_mask_row_ratio >= 0.30:
-        raise SystemExit(
-            f"Too many fully-masked rows in sample ({full_mask_row_ratio:.1%}). "
-            "Check instruction_part/response_part vs chat template, or max_seq_length."
+    if not keep:
+        raise ValueError(
+            f"{name}: every row was fully -100 after response masking. "
+            "Check instruction_part/response_part vs chat template / max_seq_length."
         )
-    # Spot-check first row too
-    labels0 = dataset[0].get("labels")
-    if labels0 is not None and sum(1 for x in labels0 if int(x) != -100) == 0:
-        raise SystemExit(
-            "Row 0 is fully -100 after masking — aborting before train()."
+    if dropped / n >= 0.30:
+        print(
+            f"WARNING: dropped {dropped / n:.1%} of {name} as fully -100. "
+            "Mask markers or max_seq_length may be wrong.",
+            flush=True,
         )
+    return dataset.select(keep)
 
 
 if __name__ == "__main__":
