@@ -116,17 +116,32 @@ Checkpoints: every `save_steps` (default 35) plus forced save+eval at each epoch
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 
-### 2b) Qwen3.5 fast kernels (optional but faster)
+### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)
 
-If Unsloth prints *Falling back to torch implementation*, install:
+Unsloth may print *Falling back to torch implementation* until these are installed.
+`requirements.txt` intentionally does **not** `pip`-pin `causal-conv1d`: with
+`torch 2.13+cu130` there is often no wheel, and source builds fail if system
+`nvcc` (e.g. 12.8) ≠ `torch.version.cuda` (13.0).
 
 ```bash
-pip install -U "flash-linear-attention[cuda,conv1d]"
-# verify:
-python -c "import fla, causal_conv1d; print('ok', fla.__version__)"
+source .venv/bin/activate
+pip install -U ninja packaging "flash-linear-attention[cuda]"
+pip install -U nvidia-cuda-nvcc-cu13
+
+# Prefer the CUDA 13 nvcc that matches torch (not /usr/local/cuda-12.8)
+export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+# If `nvcc -V` is still 12.x, point CUDA_HOME at the pip package, e.g.:
+#   export CUDA_HOME=$(python -c "import nvidia.cuda_nvcc as m, pathlib; print(pathlib.Path(m.__file__).resolve().parent)")
+export PATH="$CUDA_HOME/bin:$PATH"
+nvcc -V   # should report 13.x for cu130 torch
+
+CAUSAL_CONV1D_FORCE_BUILD=TRUE pip install -U "causal-conv1d>=1.4.0" --no-build-isolation
+python -c "import fla, causal_conv1d; print('fast path ok')"
 ```
 
-Then **restart** training (use `--resume` if a checkpoint exists).
+Restart training afterward (`--resume` if a checkpoint exists).
+Do not set `FLA_CONV_BACKEND=triton` if causal-conv1d imported successfully
+(default CUDA conv backend is what Scheme B wants).
 
 ### 3) World-model eval
 
