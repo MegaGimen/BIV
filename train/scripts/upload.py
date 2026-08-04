@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Upload Bailian-ready SFT JSONL (messages-only) to Aliyun OSS.
 
-Reads credentials from train/.env (see that file for empty keys).
+Non-secret defaults: configs/oss.yaml (Tokyo / ap-northeast-1).
+Secrets only: train/.env → OSS_ACCESS_KEY_ID + OSS_ACCESS_KEY_SECRET.
 
   cd train
-  pip install oss2 python-dotenv
-  # fill .env then:
+  pip install oss2 python-dotenv pyyaml
+  # set bucket in configs/oss.yaml; put AccessKey pair in .env
   python scripts/upload.py
-  python scripts/upload.py --files data/processed/train.jsonl data/processed/eval.jsonl
   python scripts/upload.py --max-samples 320000 --seed 42
 
 Each uploaded line is exactly: {"messages": [...]}  (Bailian / DashScope SFT style).
@@ -18,51 +18,63 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
-import tempfile
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_dotenv() -> Path:
+def _load_oss_public_cfg(path: Path | None = None) -> dict:
+    cfg_path = path or (ROOT / "configs" / "oss.yaml")
+    if not cfg_path.exists():
+        raise SystemExit(f"Missing {cfg_path}")
+    with cfg_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_dotenv() -> None:
     env_path = ROOT / ".env"
     try:
         from dotenv import load_dotenv
     except ImportError as exc:
         raise SystemExit("Missing python-dotenv. pip install python-dotenv") from exc
-    if not env_path.exists():
-        raise SystemExit(f"Missing {env_path}. Create it and fill OSS_* keys.")
-    load_dotenv(env_path)
-    return env_path
+    if env_path.exists():
+        load_dotenv(env_path)
 
 
-def _require_env(name: str) -> str:
+def _require_secret(name: str) -> str:
     val = (os.environ.get(name) or "").strip()
     if not val:
         raise SystemExit(
-            f"Empty {name} in environment / .env. "
-            "See train/.env comments for where to get credentials."
+            f"Empty {name}. Put the AccessKey pair in train/.env only. "
+            "Create at https://ram.console.aliyun.com/manage/ak"
         )
     return val
 
 
-def _oss_bucket():
+def _oss_bucket(public: dict):
     try:
         import oss2
         from oss2.credentials import EnvironmentVariableCredentialsProvider
     except ImportError as Exc:
         raise SystemExit("Missing oss2. pip install oss2") from Exc
 
-    # Prefer explicit names from .env; also accept OSS_ACCESS_KEY_* via dotenv.
-    ak = _require_env("OSS_ACCESS_KEY_ID")
-    sk = _require_env("OSS_ACCESS_KEY_SECRET")
+    ak = _require_secret("OSS_ACCESS_KEY_ID")
+    sk = _require_secret("OSS_ACCESS_KEY_SECRET")
     os.environ["OSS_ACCESS_KEY_ID"] = ak
     os.environ["OSS_ACCESS_KEY_SECRET"] = sk
 
-    endpoint = _require_env("OSS_ENDPOINT")
-    region = _require_env("OSS_REGION")
-    bucket_name = _require_env("OSS_BUCKET")
+    endpoint = str(public.get("endpoint") or "").strip()
+    region = str(public.get("region") or "").strip()
+    bucket_name = str(public.get("bucket") or "").strip()
+    if not endpoint or not region:
+        raise SystemExit("configs/oss.yaml must set endpoint and region")
+    if not bucket_name:
+        raise SystemExit(
+            "Set non-secret `bucket:` in configs/oss.yaml "
+            "(OSS console → create bucket in 东京 ap-northeast-1)"
+        )
 
     auth = oss2.ProviderAuthV4(EnvironmentVariableCredentialsProvider())
     return oss2.Bucket(auth, endpoint, bucket_name, region=region), bucket_name
@@ -84,7 +96,6 @@ def _extract_messages_row(obj: dict, *, line_no: int, path: Path) -> dict:
                 f"{path}:{line_no}: unexpected role {msg['role']!r} "
                 "(expected system/user/assistant/tool)"
             )
-    # Bailian SFT: upload ONLY messages (drop n_turns / extras).
     return {"messages": messages}
 
 
@@ -95,14 +106,10 @@ def _export_messages_jsonl(
     max_samples: int | None,
     seed: int,
 ) -> int:
-    """Stream src → dst with messages-only rows; optional deterministic sample."""
     if not src.exists():
         raise SystemExit(f"Missing input: {src}")
 
-    rows: list[dict] | None = None
     if max_samples is not None and max_samples > 0:
-        # Reservoir needs full load for exact shuffle-subset; for large files
-        # we two-pass: count then shuffle indices — memory bound by index list.
         import random
 
         offsets: list[int] = []
@@ -149,7 +156,6 @@ def _upload_file(bucket, key: str, local: Path) -> None:
 
     size_mb = local.stat().st_size / (1024 * 1024)
     print(f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}", flush=True)
-    # Resumable for large JSONL (common for SFT sets).
     oss2.resumable_upload(
         bucket,
         key,
@@ -171,36 +177,35 @@ def main() -> None:
             ROOT / "data" / "processed" / "train.jsonl",
             ROOT / "data" / "processed" / "eval.jsonl",
         ],
-        help="Local JSONL files (default: processed train+eval)",
     )
     parser.add_argument(
-        "--prefix",
-        default=None,
-        help="OSS key prefix (default: OSS_PREFIX from .env)",
+        "--oss-config",
+        type=Path,
+        default=ROOT / "configs" / "oss.yaml",
     )
-    parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=None,
-        help="Optional deterministic sample size per file (Bailian pilot)",
-    )
+    parser.add_argument("--prefix", default=None)
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Export messages-only JSONL locally only; do not upload",
-    )
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     _load_dotenv()
-    prefix = (args.prefix if args.prefix is not None else os.environ.get("OSS_PREFIX", "")).strip()
+    public = _load_oss_public_cfg(args.oss_config)
+    prefix = (
+        args.prefix if args.prefix is not None else str(public.get("prefix") or "")
+    ).strip()
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
     bucket = None
     bucket_name = None
     if not args.dry_run:
-        bucket, bucket_name = _oss_bucket()
+        bucket, bucket_name = _oss_bucket(public)
+        print(
+            f"OSS region={public.get('region')} endpoint={public.get('endpoint')} "
+            f"bucket={bucket_name} prefix={prefix!r}",
+            flush=True,
+        )
 
     out_dir = ROOT / "data" / "export_bailian"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -220,7 +225,7 @@ def main() -> None:
         key = f"{prefix}{src.name}"
         assert bucket is not None
         _upload_file(bucket, key, export_path)
-        print(f"Public-ish URI hint: oss://{bucket_name}/{key}", flush=True)
+        print(f"URI hint: oss://{bucket_name}/{key}", flush=True)
 
     print("Done.", flush=True)
 
