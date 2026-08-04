@@ -99,7 +99,6 @@ def main() -> None:
 
     # Import Unsloth only after CUDA check so CPU servers fail fast with a clear message.
     from unsloth import FastLanguageModel
-    from unsloth.chat_templates import train_on_responses_only
     from trl import SFTConfig, SFTTrainer
 
     mcfg = cfg["model"]
@@ -202,21 +201,36 @@ def main() -> None:
         args=sft_args,
     )
 
-    # Keep Unsloth's fully-masked-row filter, but replace the silent to_pydict
-    # scan with a tqdm progress bar + aggregate -100 token stats.
-    print("Applying response-only loss mask + -100 row filter (with progress)...", flush=True)
-    try:
-        import unsloth_zoo.dataset_utils as _dataset_utils
-
-        _dataset_utils._filter_fully_masked = _filter_fully_masked_with_progress
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not patch _filter_fully_masked ({exc}); Unsloth default may hang silently.", flush=True)
-
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part=str(tcfg.get("instruction_part", "<|im_start|>user\n")),
-        response_part=str(tcfg.get("response_part", "<|im_start|>assistant\n")),
+    # Do NOT call Unsloth train_on_responses_only: its label-mask map is silent and
+    # can sit for a long time before _filter_fully_masked (where our tqdm runs).
+    # Mirror the same objective with an explicit HF map (progress bar) + our filter.
+    response_part = str(tcfg.get("response_part", "<|im_start|>assistant\n"))
+    print(
+        f"Masking non-response tokens to -100 (response_part={response_part!r})...",
+        flush=True,
     )
+    trainer.train_dataset = _mask_dataset_responses_only(
+        trainer.train_dataset,
+        tokenizer,
+        response_part=response_part,
+        name="train",
+    )
+    if trainer.eval_dataset is not None:
+        trainer.eval_dataset = _mask_dataset_responses_only(
+            trainer.eval_dataset,
+            tokenizer,
+            response_part=response_part,
+            name="eval",
+        )
+
+    print("Filtering fully -100 rows...", flush=True)
+    trainer.train_dataset = _filter_fully_masked_with_progress(
+        trainer.train_dataset, "train_dataset"
+    )
+    if trainer.eval_dataset is not None:
+        trainer.eval_dataset = _filter_fully_masked_with_progress(
+            trainer.eval_dataset, "eval_dataset"
+        )
     print("Response-only mask + -100 filter done.", flush=True)
 
     sample = trainer.train_dataset[0]
@@ -235,6 +249,87 @@ def main() -> None:
         Path(args.config).read_text(encoding="utf-8"), encoding="utf-8"
     )
     print(f"Saved LoRA adapter -> {adapter_dir}", flush=True)
+
+
+def _encode_marker(tokenizer, text: str) -> list[int]:
+    ids = tokenizer.encode(text, add_special_tokens=False)
+    if not ids:
+        raise ValueError(f"Empty token ids for marker {text!r}")
+    return list(ids)
+
+
+def _mask_labels_for_responses(
+    input_ids: list[int],
+    labels: list[int] | None,
+    response_ids: list[int],
+    im_end_ids: list[int],
+) -> list[int]:
+    """Supervise tokens inside assistant spans; everything else → -100."""
+    src = list(labels) if labels is not None else list(input_ids)
+    n = len(input_ids)
+    out = [-100] * n
+    rlen = len(response_ids)
+    elen = len(im_end_ids)
+    i = 0
+    while i <= n - rlen:
+        if input_ids[i : i + rlen] == response_ids:
+            j = i + rlen
+            while j < n:
+                out[j] = int(src[j])
+                j += 1
+                if elen and j >= elen and input_ids[j - elen : j] == im_end_ids:
+                    break
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _mask_dataset_responses_only(dataset, tokenizer, *, response_part: str, name: str):
+    """Apply response-only -100 mask with HuggingFace map progress."""
+    from datasets.utils.logging import enable_progress_bar
+
+    enable_progress_bar()
+    if "input_ids" not in dataset.column_names:
+        raise SystemExit(
+            f"{name} dataset missing input_ids after SFTTrainer init; columns={dataset.column_names}"
+        )
+
+    response_ids = _encode_marker(tokenizer, response_part)
+    # ChatML turn end; if encode fails, disable end detection (mask to sequence end).
+    try:
+        im_end_ids = _encode_marker(tokenizer, "<|im_end|>")
+    except Exception:  # noqa: BLE001
+        im_end_ids = []
+
+    print(
+        f"{name}: response_ids={response_ids[:12]}{'...' if len(response_ids) > 12 else ''} "
+        f"len={len(response_ids)}; im_end_len={len(im_end_ids)}",
+        flush=True,
+    )
+
+    def _batch_mask(batch):
+        input_ids_batch = batch["input_ids"]
+        labels_batch = batch.get("labels", input_ids_batch)
+        new_labels = []
+        for input_ids, labels in zip(input_ids_batch, labels_batch):
+            new_labels.append(
+                _mask_labels_for_responses(
+                    list(input_ids),
+                    list(labels) if labels is not None else None,
+                    response_ids,
+                    im_end_ids,
+                )
+            )
+        return {"labels": new_labels}
+
+    return dataset.map(
+        _batch_mask,
+        batched=True,
+        batch_size=256,
+        desc=f"mask responses ({name})",
+        load_from_cache_file=True,
+    )
 
 
 def _filter_fully_masked_with_progress(dataset, name="dataset"):  # noqa: ANN001
