@@ -215,6 +215,11 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Skip export; upload existing files under data/export_bailian/ matching --files basenames",
+    )
     args = parser.parse_args()
 
     _load_dotenv()
@@ -241,18 +246,38 @@ def main() -> None:
     for src in args.files:
         src = src if src.is_absolute() else (ROOT / src)
         export_path = out_dir / src.name
-        n = _export_messages_jsonl(
-            src,
-            export_path,
-            max_samples=args.max_samples,
-            seed=args.seed,
-        )
-        print(f"Exported {n} messages-only rows → {export_path}", flush=True)
+        if args.upload_only:
+            if not export_path.exists():
+                raise SystemExit(f"--upload-only but missing {export_path}")
+            print(f"Reusing exported file {export_path}", flush=True)
+        else:
+            n = _export_messages_jsonl(
+                src,
+                export_path,
+                max_samples=args.max_samples,
+                seed=args.seed,
+            )
+            print(f"Exported {n} messages-only rows → {export_path}", flush=True)
         if args.dry_run:
             continue
         key = f"{prefix}{src.name}"
         assert bucket is not None
-        _upload_file(bucket, key, export_path)
+        try:
+            _upload_file(bucket, key, export_path)
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            if "AccessDenied" in err or "403" in err:
+                raise SystemExit(
+                    f"OSS AccessDenied for oss://{bucket_name}/{key}\n"
+                    "Export is OK and kept on disk — fix RAM permissions, then:\n"
+                    "  python scripts/upload.py --upload-only\n"
+                    "Checks:\n"
+                    "  1) AccessKey belongs to a RAM user with oss:PutObject (e.g. AliyunOSSFullAccess)\n"
+                    "  2) Bucket agenttools is in 东京 ap-northeast-1\n"
+                    "  3) Bucket policy does not deny this RAM user\n"
+                    f"Raw error: {exc}"
+                ) from exc
+            raise
         print(f"URI hint: oss://{bucket_name}/{key}", flush=True)
 
     print("Done.", flush=True)
