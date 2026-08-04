@@ -100,19 +100,21 @@ or OpenAI-style `messages` with `tool_calls` / `role=tool`.
 ### 2) Train (CUDA required)
 
 ```bash
+# Full-scale (slow)
 python scripts/train_sft.py --config configs/default.yaml
-# Control:
 python scripts/train_sft.py --config configs/control_shuffled.yaml
 
+# Fast pilot (seq 4k + packing + 80k subset + 1 epoch) — preferred for hypothesis screen
+python scripts/train_sft.py --config configs/pilot.yaml
+python scripts/train_sft.py --config configs/pilot_shuffled.yaml
+
 # Resume from latest checkpoint under output_dir (ds_cache still hits):
-python scripts/train_sft.py --config configs/default.yaml --resume
-# Or a specific step/epoch checkpoint:
-python scripts/train_sft.py --config configs/default.yaml \
-  --resume-from outputs/wm_sft/checkpoint-35
+python scripts/train_sft.py --config configs/pilot.yaml --resume
 ```
 
-Checkpoints: every `save_steps` (default 35) plus forced save+eval at each epoch end;
-`save_total_limit: 3` keeps the newest three. Final adapter → `outputs/wm_sft/lora_adapter`.
+Pilot writes to `outputs/wm_sft_pilot/` (separate from full `outputs/wm_sft/`).
+Checkpoints: every `save_steps` plus forced save+eval at each epoch end;
+`save_total_limit: 3` keeps the newest three. Final adapter → `…/lora_adapter`.
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 

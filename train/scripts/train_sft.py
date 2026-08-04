@@ -124,6 +124,10 @@ def main() -> None:
         )
 
     max_seq = int(mcfg["max_seq_length"])
+    max_train_samples = dcfg.get("max_train_samples")
+    max_eval_samples = dcfg.get("max_eval_samples")
+    max_train_samples = int(max_train_samples) if max_train_samples else None
+    max_eval_samples = int(max_eval_samples) if max_eval_samples else None
     model_path = _resolve_model_path(mcfg)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_path,
@@ -156,6 +160,8 @@ def main() -> None:
         response_part=response_part,
         model_name=str(mcfg["name"]),
         packing=bool(dcfg.get("packing", False)),
+        max_train_samples=max_train_samples,
+        max_eval_samples=max_eval_samples,
     )
 
     cached = _try_load_ready_datasets(ds_cache_root, cache_meta)
@@ -180,6 +186,19 @@ def main() -> None:
         eval_ds = (
             _load_jsonl_messages(eval_path) if eval_path and eval_path.exists() else None
         )
+        train_ds = _maybe_subset(
+            train_ds,
+            max_train_samples,
+            name="train",
+            seed=int(tcfg.get("seed", 42)),
+        )
+        if eval_ds is not None:
+            eval_ds = _maybe_subset(
+                eval_ds,
+                max_eval_samples,
+                name="eval",
+                seed=int(tcfg.get("seed", 42)) + 1,
+            )
 
         def formatting_func(examples):
             texts = []
@@ -285,7 +304,7 @@ def main() -> None:
     print(f"Saved LoRA adapter -> {adapter_dir}", flush=True)
 
 
-DS_CACHE_VERSION = 1
+DS_CACHE_VERSION = 2
 
 
 def _resolve_resume_checkpoint(
@@ -376,6 +395,18 @@ def _file_sig(path: Path) -> dict:
     return {"path": str(path.resolve()), "mtime_ns": st.st_mtime_ns, "size": st.st_size}
 
 
+def _maybe_subset(dataset, max_samples: int | None, *, name: str, seed: int):
+    """Deterministic head-after-shuffle subset for fast pilots."""
+    if max_samples is None or max_samples <= 0:
+        return dataset
+    n = len(dataset)
+    if max_samples >= n:
+        print(f"{name}: using full {n} rows (max_samples={max_samples})", flush=True)
+        return dataset
+    print(f"{name}: subset {max_samples}/{n} (seed={seed})", flush=True)
+    return dataset.shuffle(seed=seed).select(range(max_samples))
+
+
 def _build_ds_cache_meta(
     *,
     train_path: Path,
@@ -384,6 +415,8 @@ def _build_ds_cache_meta(
     response_part: str,
     model_name: str,
     packing: bool,
+    max_train_samples: int | None = None,
+    max_eval_samples: int | None = None,
 ) -> dict:
     return {
         "version": DS_CACHE_VERSION,
@@ -393,6 +426,8 @@ def _build_ds_cache_meta(
         "response_part": response_part,
         "model_name": model_name,
         "packing": packing,
+        "max_train_samples": max_train_samples,
+        "max_eval_samples": max_eval_samples,
     }
 
 
