@@ -103,9 +103,30 @@ or OpenAI-style `messages` with `tool_calls` / `role=tool`.
 python scripts/train_sft.py --config configs/default.yaml
 # Control:
 python scripts/train_sft.py --config configs/control_shuffled.yaml
+
+# Resume from latest checkpoint under output_dir (ds_cache still hits):
+python scripts/train_sft.py --config configs/default.yaml --resume
+# Or a specific step/epoch checkpoint:
+python scripts/train_sft.py --config configs/default.yaml \
+  --resume-from outputs/wm_sft/checkpoint-35
 ```
 
+Checkpoints: every `save_steps` (default 35) plus forced save+eval at each epoch end;
+`save_total_limit: 3` keeps the newest three. Final adapter → `outputs/wm_sft/lora_adapter`.
+
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
+
+### 2b) Qwen3.5 fast kernels (optional but faster)
+
+If Unsloth prints *Falling back to torch implementation*, install:
+
+```bash
+pip install -U "flash-linear-attention[cuda,conv1d]"
+# verify:
+python -c "import fla, causal_conv1d; print('ok', fla.__version__)"
+```
+
+Then **restart** training (use `--resume` if a checkpoint exists).
 
 ### 3) World-model eval
 

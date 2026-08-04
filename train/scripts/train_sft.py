@@ -91,6 +91,17 @@ def main() -> None:
         action="store_true",
         help="Dangerous: skip CUDA check (Unsloth training is unsupported here)",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest checkpoint under train.output_dir",
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help="Resume from this checkpoint directory (overrides --resume)",
+    )
     args = parser.parse_args()
     cfg = _load_config(args.config)
 
@@ -162,6 +173,7 @@ def main() -> None:
             train_dataset=train_ready,
             eval_dataset=eval_ready,
             args=sft_args,
+            callbacks=_make_epoch_save_eval_callbacks(eval_ready is not None),
         )
     else:
         train_ds = _load_jsonl_messages(train_path)
@@ -206,6 +218,7 @@ def main() -> None:
             train_dataset=train_ds,
             eval_dataset=eval_ds,
             args=sft_args,
+            callbacks=_make_epoch_save_eval_callbacks(eval_ds is not None),
         )
 
         print(
@@ -252,7 +265,17 @@ def main() -> None:
         if n_sup == 0:
             raise SystemExit("Row 0 is fully -100 after masking — aborting.")
 
-    trainer.train()
+    resume_ckpt = _resolve_resume_checkpoint(
+        out_dir,
+        resume=bool(args.resume or tcfg.get("resume", False)),
+        resume_from=args.resume_from or tcfg.get("resume_from"),
+    )
+    if resume_ckpt:
+        print(f"Resuming training from {resume_ckpt!r}", flush=True)
+        trainer.train(resume_from_checkpoint=resume_ckpt)
+    else:
+        trainer.train()
+
     adapter_dir = out_dir / "lora_adapter"
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
@@ -263,6 +286,57 @@ def main() -> None:
 
 
 DS_CACHE_VERSION = 1
+
+
+def _resolve_resume_checkpoint(
+    out_dir: Path,
+    *,
+    resume: bool,
+    resume_from: Path | str | None,
+):
+    """Return a checkpoint path / True for Trainer, or None to start fresh."""
+    if resume_from:
+        path = Path(resume_from)
+        if not path.is_absolute():
+            path = (ROOT / path).resolve()
+        if not path.exists():
+            raise SystemExit(f"--resume-from not found: {path}")
+        return str(path)
+    if not resume:
+        return None
+    # Trainer interprets True as "latest checkpoint under output_dir"
+    checkpoints = sorted(
+        out_dir.glob("checkpoint-*"),
+        key=lambda p: int(p.name.split("-", 1)[1]) if p.name.split("-", 1)[1].isdigit() else -1,
+    )
+    if not checkpoints:
+        print(
+            f"--resume set but no checkpoint-* under {out_dir}; starting fresh.",
+            flush=True,
+        )
+        return None
+    latest = checkpoints[-1]
+    print(f"Auto-selected latest checkpoint: {latest}", flush=True)
+    return str(latest)
+
+
+def _make_epoch_save_eval_callbacks(has_eval: bool):
+    """Force a checkpoint (+ eval when available) at every epoch boundary."""
+    from transformers import TrainerCallback
+
+    class _EpochSaveEvalCallback(TrainerCallback):
+        def on_epoch_end(self, args, state, control, **kwargs):  # noqa: ANN001
+            control.should_save = True
+            if has_eval:
+                control.should_evaluate = True
+            print(
+                f"Epoch {state.epoch}: requesting checkpoint save"
+                + (" + eval" if has_eval else ""),
+                flush=True,
+            )
+            return control
+
+    return [_EpochSaveEvalCallback()]
 
 
 def _make_sft_config(out_dir, tcfg, dcfg, max_seq, has_eval: bool):
@@ -281,8 +355,10 @@ def _make_sft_config(out_dir, tcfg, dcfg, max_seq, has_eval: bool):
         logging_steps=int(tcfg.get("logging_steps", 10)),
         eval_strategy="steps" if has_eval else "no",
         eval_steps=int(tcfg.get("eval_steps", 200)) if has_eval else None,
-        save_steps=int(tcfg.get("save_steps", 200)),
+        save_strategy="steps",
+        save_steps=int(tcfg.get("save_steps", 35)),
         save_total_limit=int(tcfg.get("save_total_limit", 3)),
+        save_on_each_node=True,
         lr_scheduler_type=str(tcfg.get("lr_scheduler_type", "cosine")),
         optim=str(tcfg.get("optim", "adamw_8bit")),
         bf16=bool(tcfg.get("bf16", True)),
