@@ -228,18 +228,11 @@ def main() -> None:
         response_part=str(tcfg.get("response_part", "<|im_start|>assistant\n")),
     )
     print("Response-only mask applied.", flush=True)
-
-    # Sanity-check masking: some labels must be supervised.
-    sample = trainer.train_dataset[0]
-    labels = sample.get("labels")
-    if labels is not None:
-        n_sup = sum(1 for x in labels if x != -100)
-        print(f"Response-mask check: {n_sup}/{len(labels)} supervised tokens", flush=True)
-        if n_sup == 0:
-            raise SystemExit(
-                "All labels are -100 — instruction/response_part markers do not "
-                "match the chat template. Aborting."
-            )
+    _report_label_mask_stats(
+        trainer.train_dataset,
+        sample_size=int(tcfg.get("mask_stats_sample_size", 512)),
+        seed=int(tcfg.get("seed", 42)),
+    )
 
     trainer.train()
     adapter_dir = out_dir / "lora_adapter"
@@ -249,6 +242,77 @@ def main() -> None:
         Path(args.config).read_text(encoding="utf-8"), encoding="utf-8"
     )
     print(f"Saved LoRA adapter -> {adapter_dir}", flush=True)
+
+
+def _report_label_mask_stats(dataset, *, sample_size: int, seed: int) -> None:
+    """Sample rows and print -100 / supervised token ratios (cheap; not full scan)."""
+    import random
+
+    n = len(dataset)
+    if n == 0:
+        raise SystemExit("train_dataset is empty after masking.")
+    k = min(int(sample_size), n)
+    rng = random.Random(seed)
+    idxs = list(range(n)) if k == n else rng.sample(range(n), k)
+
+    total_tok = 0
+    masked_tok = 0
+    supervised_tok = 0
+    fully_masked_rows = 0
+    empty_label_rows = 0
+
+    for i in idxs:
+        row = dataset[i]
+        labels = row.get("labels")
+        if labels is None:
+            empty_label_rows += 1
+            continue
+        # HF may return list or numpy-like
+        try:
+            labels = list(labels)
+        except TypeError:
+            labels = [labels]
+        if not labels:
+            empty_label_rows += 1
+            continue
+        n_lab = len(labels)
+        n_mask = sum(1 for x in labels if int(x) == -100)
+        n_sup = n_lab - n_mask
+        total_tok += n_lab
+        masked_tok += n_mask
+        supervised_tok += n_sup
+        if n_sup == 0:
+            fully_masked_rows += 1
+
+    scanned = k - empty_label_rows
+    if scanned <= 0 or total_tok == 0:
+        raise SystemExit("No usable labels found while sampling mask stats.")
+
+    mask_ratio = masked_tok / total_tok
+    sup_ratio = supervised_tok / total_tok
+    full_mask_row_ratio = fully_masked_rows / scanned
+
+    print(
+        "Label mask stats "
+        f"(sample {scanned}/{n} rows, seed={seed}):\n"
+        f"  tokens: -100={mask_ratio:.1%}  supervised={sup_ratio:.1%}  "
+        f"(tok_total={total_tok})\n"
+        f"  rows fully -100: {fully_masked_rows}/{scanned} = {full_mask_row_ratio:.1%}\n"
+        f"  rows missing labels: {empty_label_rows}/{k}",
+        flush=True,
+    )
+
+    if full_mask_row_ratio >= 0.30:
+        raise SystemExit(
+            f"Too many fully-masked rows in sample ({full_mask_row_ratio:.1%}). "
+            "Check instruction_part/response_part vs chat template, or max_seq_length."
+        )
+    # Spot-check first row too
+    labels0 = dataset[0].get("labels")
+    if labels0 is not None and sum(1 for x in labels0 if int(x) != -100) == 0:
+        raise SystemExit(
+            "Row 0 is fully -100 after masking — aborting before train()."
+        )
 
 
 if __name__ == "__main__":
