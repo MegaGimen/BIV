@@ -120,23 +120,29 @@ only applies when building from text; pretokenized reuse ignores packing.
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 
-### 2c) Upload messages JSONL to Aliyun OSS (for Bailian SFT)
+### 2c) Upload train/eval to Bailian via API (no OSS)
 
-Beijing defaults in `configs/oss.yaml` (`cn-beijing`, **internal** endpoint,
-bucket `bjagenttools`). JSONL is **split into ≤190MB shards** (line-aligned) then
-uploaded as `train-00001.jsonl`, `train-00002.jsonl`, …
-
-Secrets only in `train/.env`: AccessKey ID + Secret.
+Uses DashScope Files API (`purpose=fine-tune`). Fine-tune file size limit **300MB**
+→ script shards JSONL to ≤190MB. Train + eval both uploaded; `file_id`s written to
+`data/export_bailian/bailian_file_ids.json`.
 
 ```bash
-pip install oss2 python-dotenv pyyaml
-# fill train/.env AccessKeys; ensure RAM can write bjagenttools
-python scripts/upload.py --upload-only          # reuse export, re-shard, upload
-python scripts/upload.py --reuse-shards         # resume shard uploads only
-python scripts/upload.py --dry-run              # export+shard locally, no upload
+pip install requests python-dotenv pyyaml tqdm
+# train/.env → DASHSCOPE_API_KEY=sk-...
+python scripts/upload_bailian.py
+python scripts/upload_bailian.py --reuse-shards
+python scripts/upload_bailian.py --upload-only   # reuse export_bailian/*.jsonl
 ```
 
-AccessKey: https://ram.console.aliyun.com/manage/ak
+Create fine-tune later with:
+`training_datasets` / `validation_datasets` → `data_source_type: file_id`
+([文档](https://help.aliyun.com/zh/model-studio/create-fine-tuning-job-api)).
+
+官方上传：https://help.aliyun.com/zh/model-studio/upload-file-api
+
+### 2c-legacy) Optional: upload via Aliyun OSS
+
+See `scripts/upload.py` + `configs/oss.yaml` (Beijing internal). Prefer 2c above.
 
 ### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)
 
