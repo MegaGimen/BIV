@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Upload Bailian-ready SFT JSONL (messages-only) to Aliyun OSS.
 
-Non-secret defaults: configs/oss.yaml (Ulanqab / cn-wulanchabu public by default).
+Non-secret defaults: configs/oss.yaml (Beijing / cn-beijing public by default).
 Secrets only: train/.env → OSS_ACCESS_KEY_ID + OSS_ACCESS_KEY_SECRET.
 
 JSONL is split into ≤190MB shards (line-aligned) then uploaded as:
