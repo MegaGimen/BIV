@@ -112,9 +112,11 @@ python scripts/train_sft.py --config configs/pilot_shuffled.yaml
 python scripts/train_sft.py --config configs/pilot.yaml --resume
 ```
 
-Pilot writes to `outputs/wm_sft_pilot/` (separate from full `outputs/wm_sft/`).
-Checkpoints: every `save_steps` plus forced save+eval at each epoch end;
-`save_total_limit: 3` keeps the newest three. Final adapter → `…/lora_adapter`.
+Pilot writes adapters to `outputs/wm_sft_pilot/` but **dataset caches are shared** under
+`outputs/ds_cache/` (content-addressed; not tied to `output_dir`). If a longer
+full-corpus ready cache exists (e.g. legacy `outputs/wm_sft/ds_cache`), pilot will
+**truncate + subset** it instead of re-tokenizing. `packing` only applies when
+building from text; pretokenized reuse ignores packing.
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 
