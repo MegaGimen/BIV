@@ -364,7 +364,26 @@ def _save_ready_datasets(cache_root: Path, meta: dict, train_ds, eval_ds) -> Non
     print(f"Dataset disk cache ready under {cache_root}", flush=True)
 
 
-def _encode_marker(tokenizer, text: str) -> list[int]:
+def _unwrap_tokenizer(tokenizer_or_processor):
+    """Qwen3.5 Unsloth may return Qwen3VLProcessor; prefer the inner tokenizer."""
+    if hasattr(tokenizer_or_processor, "encode") and callable(tokenizer_or_processor.encode):
+        return tokenizer_or_processor
+    inner = getattr(tokenizer_or_processor, "tokenizer", None)
+    if inner is not None and hasattr(inner, "encode"):
+        print(
+            f"Using processor.tokenizer ({type(inner).__name__}) "
+            f"instead of {type(tokenizer_or_processor).__name__}",
+            flush=True,
+        )
+        return inner
+    raise TypeError(
+        f"Cannot encode with {type(tokenizer_or_processor)!r}; "
+        "expected a tokenizer or processor with .tokenizer"
+    )
+
+
+def _encode_marker(tokenizer_or_processor, text: str) -> list[int]:
+    tokenizer = _unwrap_tokenizer(tokenizer_or_processor)
     ids = tokenizer.encode(text, add_special_tokens=False)
     if not ids:
         raise ValueError(f"Empty token ids for marker {text!r}")
