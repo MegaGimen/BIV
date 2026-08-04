@@ -104,7 +104,7 @@ or OpenAI-style `messages` with `tool_calls` / `role=tool`.
 python scripts/train_sft.py --config configs/default.yaml
 python scripts/train_sft.py --config configs/control_shuffled.yaml
 
-# Fast pilot (seq 4k + packing + 80k subset + 1 epoch) — preferred for hypothesis screen
+# Fast pilot (keep seq=8192; sample ~half + packing + 1 epoch) — hypothesis screen
 python scripts/train_sft.py --config configs/pilot.yaml
 python scripts/train_sft.py --config configs/pilot_shuffled.yaml
 
@@ -113,10 +113,10 @@ python scripts/train_sft.py --config configs/pilot.yaml --resume
 ```
 
 Pilot writes adapters to `outputs/wm_sft_pilot/` but **dataset caches are shared** under
-`outputs/ds_cache/` (content-addressed; not tied to `output_dir`). If a longer
-full-corpus ready cache exists (e.g. legacy `outputs/wm_sft/ds_cache`), pilot will
-**truncate + subset** it instead of re-tokenizing. `packing` only applies when
-building from text; pretokenized reuse ignores packing.
+`outputs/ds_cache/` (content-addressed; not tied to `output_dir`). If a full-corpus
+ready cache exists (e.g. legacy `outputs/wm_sft/ds_cache` with the same 8192 seq),
+pilot will **subset only** (no seq truncate) instead of re-tokenizing. `packing`
+only applies when building from text; pretokenized reuse ignores packing.
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 
