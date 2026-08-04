@@ -204,8 +204,8 @@ def _upload_file(
     print(
         f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}\n"
         f"  part_size={part_size_mb}MiB threads={num_threads} checkpoint={store}\n"
-        f"  Note: first progress tick waits for the first part to finish; "
-        f"China→Tokyo can be slow.",
+        f"  Note: first progress tick waits for the first part; "
+        f"same-region ECS should use *-internal.aliyuncs.com endpoint.",
         flush=True,
     )
     pbar = tqdm(
@@ -279,14 +279,14 @@ def main() -> None:
     parser.add_argument(
         "--part-size-mb",
         type=int,
-        default=4,
-        help="Multipart part size in MiB (smaller → earlier progress ticks; default 4)",
+        default=16,
+        help="Multipart part size in MiB (default 16; raise on fast internal links)",
     )
     parser.add_argument(
         "--threads",
         type=int,
-        default=2,
-        help="Multipart upload threads (default 2; use 1 to debug)",
+        default=8,
+        help="Multipart upload threads (default 8; raise on same-region internal endpoint)",
     )
     parser.add_argument(
         "--skip-probe",
