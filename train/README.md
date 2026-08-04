@@ -120,6 +120,19 @@ only applies when building from text; pretokenized reuse ignores packing.
 
 `train_sft.py` exits immediately if `torch.cuda.is_available()` is false.
 
+### 2c) Upload messages JSONL to Aliyun OSS (for Bailian SFT)
+
+```bash
+pip install oss2 python-dotenv
+# Edit train/.env — fill OSS_ACCESS_KEY_ID / SECRET / BUCKET / ENDPOINT / REGION
+python scripts/upload.py                          # train+eval, messages-only
+python scripts/upload.py --max-samples 320000     # optional sample
+python scripts/upload.py --dry-run                # export locally only
+```
+
+Exported lines are exactly `{"messages":[...]}`. Credentials: see comments in `train/.env`
+(RAM AccessKey + OSS Bucket 概览).
+
 ### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)
 
 Unsloth may print *Falling back to torch implementation* until these are installed.
