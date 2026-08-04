@@ -122,19 +122,20 @@ only applies when building from text; pretokenized reuse ignores packing.
 
 ### 2c) Upload messages JSONL to Aliyun OSS (for Bailian SFT)
 
-Tokyo defaults are committed in `configs/oss.yaml` (`ap-northeast-1`).
-Secrets only in `train/.env`: **AccessKey ID** + **AccessKey Secret** (one pair).
+Beijing defaults in `configs/oss.yaml` (`cn-beijing`, **internal** endpoint,
+bucket `bjagenttools`). JSONL is **split into ≤190MB shards** (line-aligned) then
+uploaded as `train-00001.jsonl`, `train-00002.jsonl`, …
+
+Secrets only in `train/.env`: AccessKey ID + Secret.
 
 ```bash
 pip install oss2 python-dotenv pyyaml
-# 1) Set `bucket:` in configs/oss.yaml (create bucket in 东京)
-# 2) Fill OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET in train/.env
-python scripts/upload.py
-python scripts/upload.py --max-samples 320000
-python scripts/upload.py --dry-run
+# fill train/.env AccessKeys; ensure RAM can write bjagenttools
+python scripts/upload.py --upload-only          # reuse export, re-shard, upload
+python scripts/upload.py --reuse-shards         # resume shard uploads only
+python scripts/upload.py --dry-run              # export+shard locally, no upload
 ```
 
-Exported lines are exactly `{"messages":[...]}`.  
 AccessKey: https://ram.console.aliyun.com/manage/ak
 
 ### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)

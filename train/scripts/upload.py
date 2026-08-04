@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Upload Bailian-ready SFT JSONL (messages-only) to Aliyun OSS.
 
-Non-secret defaults: configs/oss.yaml (Tokyo / ap-northeast-1).
+Non-secret defaults: configs/oss.yaml (Beijing / cn-beijing, internal endpoint).
 Secrets only: train/.env → OSS_ACCESS_KEY_ID + OSS_ACCESS_KEY_SECRET.
+
+JSONL is split into ≤190MB shards (line-aligned) then uploaded as:
+  {prefix}train-00001.jsonl, train-00002.jsonl, ...
 
   cd train
   pip install oss2 python-dotenv pyyaml
-  # set bucket in configs/oss.yaml; put AccessKey pair in .env
   python scripts/upload.py
+  python scripts/upload.py --upload-only
   python scripts/upload.py --max-samples 320000 --seed 42
 
-Each uploaded line is exactly: {"messages": [...]}  (Bailian / DashScope SFT style).
+Each line is exactly: {"messages": [...]}  (Bailian / DashScope SFT style).
 """
 
 from __future__ import annotations
@@ -71,10 +74,7 @@ def _oss_bucket(public: dict):
     if not endpoint or not region:
         raise SystemExit("configs/oss.yaml must set endpoint and region")
     if not bucket_name:
-        raise SystemExit(
-            "Set non-secret `bucket:` in configs/oss.yaml "
-            "(OSS console → create bucket in 东京 ap-northeast-1)"
-        )
+        raise SystemExit("Set `bucket:` in configs/oss.yaml")
 
     auth = oss2.ProviderAuthV4(EnvironmentVariableCredentialsProvider())
     return oss2.Bucket(auth, endpoint, bucket_name, region=region), bucket_name
@@ -143,10 +143,11 @@ def _export_messages_jsonl(
     from tqdm.auto import tqdm
 
     written = 0
-    # Approximate progress by file bytes for full export.
     total_bytes = src.stat().st_size
     with src.open("r", encoding="utf-8") as fin, dst.open("w", encoding="utf-8") as fout:
-        pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc=f"export {src.name}")
+        pbar = tqdm(
+            total=total_bytes, unit="B", unit_scale=True, desc=f"export {src.name}"
+        )
         try:
             while True:
                 line = fin.readline()
@@ -165,8 +166,81 @@ def _export_messages_jsonl(
     return written
 
 
+def _split_jsonl_shards(
+    src: Path,
+    shard_dir: Path,
+    *,
+    max_bytes: int,
+) -> list[Path]:
+    """Split JSONL into ≤max_bytes files on line boundaries (never break a row)."""
+    from tqdm.auto import tqdm
+
+    if max_bytes < 1024 * 1024:
+        raise SystemExit(f"shard_max too small: {max_bytes}")
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    stem = src.stem
+    for old in shard_dir.glob(f"{stem}-*.jsonl"):
+        old.unlink()
+
+    shards: list[Path] = []
+    idx = 1
+    current_path: Path | None = None
+    current_fh = None
+    current_size = 0
+    rows = 0
+
+    def _open_new() -> None:
+        nonlocal idx, current_path, current_fh, current_size
+        if current_fh is not None:
+            current_fh.close()
+        current_path = shard_dir / f"{stem}-{idx:05d}.jsonl"
+        idx += 1
+        current_fh = current_path.open("w", encoding="utf-8")
+        current_size = 0
+        shards.append(current_path)
+
+    _open_new()
+    total = src.stat().st_size
+    with src.open("r", encoding="utf-8") as fin:
+        pbar = tqdm(total=total, unit="B", unit_scale=True, desc=f"shard {src.name}")
+        try:
+            while True:
+                line = fin.readline()
+                if not line:
+                    break
+                raw = line if line.endswith("\n") else line + "\n"
+                if not raw.strip():
+                    pbar.update(len(line.encode("utf-8")))
+                    continue
+                blen = len(raw.encode("utf-8"))
+                if blen > max_bytes:
+                    raise SystemExit(
+                        f"Single JSONL row is {blen} bytes > shard limit {max_bytes}. "
+                        f"Raise shard_max_mb or skip that row."
+                    )
+                assert current_fh is not None
+                if current_size > 0 and current_size + blen > max_bytes:
+                    _open_new()
+                    assert current_fh is not None
+                current_fh.write(raw)
+                current_size += blen
+                rows += 1
+                pbar.update(len(line.encode("utf-8")))
+        finally:
+            pbar.close()
+            if current_fh is not None:
+                current_fh.close()
+
+    sizes = [p.stat().st_size / (1024 * 1024) for p in shards]
+    print(
+        f"Split {src.name}: {rows} rows → {len(shards)} shards "
+        f"(~{min(sizes):.1f}–{max(sizes):.1f} MiB each, limit {max_bytes / (1024 * 1024):.0f} MiB)",
+        flush=True,
+    )
+    return shards
+
+
 def _probe_oss_write(bucket, prefix: str) -> None:
-    """Fail fast on AccessDenied before starting a multi-GB upload."""
     key = f"{prefix.rstrip('/')}/.biv_upload_probe.txt" if prefix else ".biv_upload_probe.txt"
     body = b"biv oss probe\n"
     print(f"Probing PutObject → {key} ...", flush=True)
@@ -176,9 +250,7 @@ def _probe_oss_write(bucket, prefix: str) -> None:
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(
             f"Probe failed ({type(exc).__name__}): {exc}\n"
-            "Fix RAM/OSS permissions before uploading 50GB+ files.\n"
-            "Need at least: PutObject, DeleteObject, and multipart APIs "
-            "(InitiateMultipartUpload/UploadPart/CompleteMultipartUpload/ListParts)."
+            "Fix RAM/OSS permissions before uploading. Need PutObject + multipart APIs."
         ) from exc
     print("Probe OK (write permission works).", flush=True)
 
@@ -188,8 +260,8 @@ def _upload_file(
     key: str,
     local: Path,
     *,
-    part_size_mb: int = 4,
-    num_threads: int = 2,
+    part_size_mb: int = 16,
+    num_threads: int = 8,
     store_dir: Path | None = None,
 ) -> None:
     import oss2
@@ -202,10 +274,8 @@ def _upload_file(
     Path(store).mkdir(parents=True, exist_ok=True)
 
     print(
-        f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}\n"
-        f"  part_size={part_size_mb}MiB threads={num_threads} checkpoint={store}\n"
-        f"  Note: first progress tick waits for the first part; "
-        f"same-region ECS should use *-internal.aliyuncs.com endpoint.",
+        f"Uploading {local.name} ({size_mb:.1f} MiB) → oss://…/{key}\n"
+        f"  part_size={part_size_mb}MiB threads={num_threads}",
         flush=True,
     )
     pbar = tqdm(
@@ -243,8 +313,7 @@ def _upload_file(
     except KeyboardInterrupt:
         pbar.close()
         raise SystemExit(
-            "\nInterrupted. Partial multipart state is kept under "
-            f"{store}; re-run with --upload-only to resume."
+            f"\nInterrupted. Checkpoint kept under {store}; re-run --upload-only to resume."
         )
     finally:
         pbar.close()
@@ -274,30 +343,23 @@ def main() -> None:
     parser.add_argument(
         "--upload-only",
         action="store_true",
-        help="Skip export; upload existing files under data/export_bailian/ matching --files basenames",
+        help="Skip export; reuse data/export_bailian/<name>.jsonl then re-shard + upload",
     )
     parser.add_argument(
-        "--part-size-mb",
-        type=int,
-        default=16,
-        help="Multipart part size in MiB (default 16; raise on fast internal links)",
-    )
-    parser.add_argument(
-        "--threads",
-        type=int,
-        default=8,
-        help="Multipart upload threads (default 8; raise on same-region internal endpoint)",
-    )
-    parser.add_argument(
-        "--skip-probe",
+        "--reuse-shards",
         action="store_true",
-        help="Skip the tiny PutObject permission probe",
+        help="Skip split; upload existing data/export_bailian/shards/<stem>-*.jsonl",
     )
     parser.add_argument(
-        "--clear-checkpoint",
-        action="store_true",
-        help="Delete local oss2 resumable checkpoints before upload",
+        "--shard-max-mb",
+        type=int,
+        default=None,
+        help="Override configs/oss.yaml shard_max_mb (default 190)",
     )
+    parser.add_argument("--part-size-mb", type=int, default=16)
+    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--skip-probe", action="store_true")
+    parser.add_argument("--clear-checkpoint", action="store_true")
     args = parser.parse_args()
 
     _load_dotenv()
@@ -307,6 +369,12 @@ def main() -> None:
     ).strip()
     if prefix and not prefix.endswith("/"):
         prefix += "/"
+    shard_max_mb = int(
+        args.shard_max_mb
+        if args.shard_max_mb is not None
+        else public.get("shard_max_mb", 190)
+    )
+    shard_max_bytes = shard_max_mb * 1024 * 1024
 
     bucket = None
     bucket_name = None
@@ -314,7 +382,7 @@ def main() -> None:
         bucket, bucket_name = _oss_bucket(public)
         print(
             f"OSS region={public.get('region')} endpoint={public.get('endpoint')} "
-            f"bucket={bucket_name} prefix={prefix!r}",
+            f"bucket={bucket_name} prefix={prefix!r} shard_max={shard_max_mb}MiB",
             flush=True,
         )
         if not args.skip_probe:
@@ -328,15 +396,17 @@ def main() -> None:
         print(f"Cleared checkpoint dir {ckpt_dir}", flush=True)
 
     out_dir = ROOT / "data" / "export_bailian"
+    shard_root = out_dir / "shards"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for src in args.files:
         src = src if src.is_absolute() else (ROOT / src)
         export_path = out_dir / src.name
-        if args.upload_only:
-            if not export_path.exists():
+        if args.upload_only or args.reuse_shards:
+            if not args.reuse_shards and not export_path.exists():
                 raise SystemExit(f"--upload-only but missing {export_path}")
-            print(f"Reusing exported file {export_path}", flush=True)
+            if not args.reuse_shards:
+                print(f"Reusing exported file {export_path}", flush=True)
         else:
             n = _export_messages_jsonl(
                 src,
@@ -345,36 +415,46 @@ def main() -> None:
                 seed=args.seed,
             )
             print(f"Exported {n} messages-only rows → {export_path}", flush=True)
+
+        if args.reuse_shards:
+            shards = sorted(shard_root.glob(f"{src.stem}-*.jsonl"))
+            if not shards:
+                raise SystemExit(f"--reuse-shards but no files match {shard_root}/{src.stem}-*.jsonl")
+            print(f"Reusing {len(shards)} shards under {shard_root}", flush=True)
+        else:
+            shards = _split_jsonl_shards(
+                export_path, shard_root, max_bytes=shard_max_bytes
+            )
+
         if args.dry_run:
             continue
-        key = f"{prefix}{src.name}"
+
         assert bucket is not None
-        try:
-            _upload_file(
-                bucket,
-                key,
-                export_path,
-                part_size_mb=args.part_size_mb,
-                num_threads=args.threads,
-                store_dir=ckpt_dir,
-            )
-        except SystemExit:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            err = str(exc)
-            if "AccessDenied" in err or "403" in err:
-                raise SystemExit(
-                    f"OSS AccessDenied for oss://{bucket_name}/{key}\n"
-                    "Export is OK and kept on disk — fix RAM permissions, then:\n"
-                    "  python scripts/upload.py --upload-only\n"
-                    "Checks:\n"
-                    "  1) AccessKey belongs to a RAM user with oss:PutObject (e.g. AliyunOSSFullAccess)\n"
-                    "  2) Bucket agenttools is in 东京 ap-northeast-1\n"
-                    "  3) Bucket policy does not deny this RAM user\n"
-                    f"Raw error: {exc}"
-                ) from exc
-            raise
-        print(f"URI hint: oss://{bucket_name}/{key}", flush=True)
+        for shard in shards:
+            key = f"{prefix}{shard.name}"
+            try:
+                _upload_file(
+                    bucket,
+                    key,
+                    shard,
+                    part_size_mb=args.part_size_mb,
+                    num_threads=args.threads,
+                    store_dir=ckpt_dir,
+                )
+            except SystemExit:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+                if "AccessDenied" in err or "403" in err:
+                    raise SystemExit(
+                        f"OSS AccessDenied for oss://{bucket_name}/{key}\n"
+                        "Fix RAM permissions, then:\n"
+                        "  python scripts/upload.py --reuse-shards\n"
+                        "Need write access to bucket bjagenttools (cn-beijing).\n"
+                        f"Raw error: {exc}"
+                    ) from exc
+                raise
+            print(f"URI hint: oss://{bucket_name}/{key}", flush=True)
 
     print("Done.", flush=True)
 
