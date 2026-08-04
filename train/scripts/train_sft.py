@@ -193,6 +193,7 @@ def main() -> None:
         remove_unused_columns=False,
     )
 
+    print("Building SFTTrainer (may tokenize; can take a long time)...", flush=True)
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
@@ -201,11 +202,32 @@ def main() -> None:
         args=sft_args,
     )
 
+    # Unsloth's train_on_responses_only ends with `_filter_fully_masked`, which
+    # iterates the whole tokenized corpus via `to_pydict()` — on ~1e5–1e6 long
+    # sequences this looks "stuck" for tens of minutes with 100% CPU and no bar.
+    # Masking is what we need; dropping the rare all-masked rows is optional.
+    print("Applying response-only loss mask (skipping full-corpus mask filter)...", flush=True)
+    try:
+        import unsloth_zoo.dataset_utils as _dataset_utils
+
+        def _skip_full_mask_filter(dataset, name="dataset"):  # noqa: ANN001
+            print(
+                f"Skip _filter_fully_masked on {name} "
+                f"(n≈{getattr(dataset, '__len__', lambda: '?')()})",
+                flush=True,
+            )
+            return dataset
+
+        _dataset_utils._filter_fully_masked = _skip_full_mask_filter
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not patch _filter_fully_masked ({exc}); may be slow.", flush=True)
+
     trainer = train_on_responses_only(
         trainer,
         instruction_part=str(tcfg.get("instruction_part", "<|im_start|>user\n")),
         response_part=str(tcfg.get("response_part", "<|im_start|>assistant\n")),
     )
+    print("Response-only mask applied.", flush=True)
 
     # Sanity-check masking: some labels must be supervised.
     sample = trainer.train_dataset[0]
