@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Upload Bailian-ready SFT JSONL (messages-only) to Aliyun OSS.
 
-Non-secret defaults: configs/oss.yaml (Beijing / cn-beijing, internal endpoint).
+Non-secret defaults: configs/oss.yaml (Ulanqab / cn-wulanchabu public by default).
 Secrets only: train/.env → OSS_ACCESS_KEY_ID + OSS_ACCESS_KEY_SECRET.
 
 JSONL is split into ≤190MB shards (line-aligned) then uploaded as:
@@ -450,7 +450,8 @@ def main() -> None:
                         f"OSS AccessDenied for oss://{bucket_name}/{key}\n"
                         "Fix RAM permissions, then:\n"
                         "  python scripts/upload.py --reuse-shards\n"
-                        "Need write access to bucket bjagenttools (cn-beijing).\n"
+                        f"Need write access to bucket {bucket_name} "
+                        f"({public.get('region')}).\n"
                         f"Raw error: {exc}"
                     ) from exc
                 raise
