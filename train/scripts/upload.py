@@ -276,6 +276,28 @@ def main() -> None:
         action="store_true",
         help="Skip export; upload existing files under data/export_bailian/ matching --files basenames",
     )
+    parser.add_argument(
+        "--part-size-mb",
+        type=int,
+        default=4,
+        help="Multipart part size in MiB (smaller → earlier progress ticks; default 4)",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=2,
+        help="Multipart upload threads (default 2; use 1 to debug)",
+    )
+    parser.add_argument(
+        "--skip-probe",
+        action="store_true",
+        help="Skip the tiny PutObject permission probe",
+    )
+    parser.add_argument(
+        "--clear-checkpoint",
+        action="store_true",
+        help="Delete local oss2 resumable checkpoints before upload",
+    )
     args = parser.parse_args()
 
     _load_dotenv()
@@ -295,6 +317,15 @@ def main() -> None:
             f"bucket={bucket_name} prefix={prefix!r}",
             flush=True,
         )
+        if not args.skip_probe:
+            _probe_oss_write(bucket, prefix)
+
+    ckpt_dir = ROOT / "data" / "export_bailian" / ".oss2_checkpoint"
+    if args.clear_checkpoint and ckpt_dir.exists():
+        import shutil
+
+        shutil.rmtree(ckpt_dir)
+        print(f"Cleared checkpoint dir {ckpt_dir}", flush=True)
 
     out_dir = ROOT / "data" / "export_bailian"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -319,7 +350,16 @@ def main() -> None:
         key = f"{prefix}{src.name}"
         assert bucket is not None
         try:
-            _upload_file(bucket, key, export_path)
+            _upload_file(
+                bucket,
+                key,
+                export_path,
+                part_size_mb=args.part_size_mb,
+                num_threads=args.threads,
+                store_dir=ckpt_dir,
+            )
+        except SystemExit:
+            raise
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
             if "AccessDenied" in err or "403" in err:
