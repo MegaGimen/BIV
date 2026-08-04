@@ -165,30 +165,86 @@ def _export_messages_jsonl(
     return written
 
 
-def _upload_file(bucket, key: str, local: Path) -> None:
+def _probe_oss_write(bucket, prefix: str) -> None:
+    """Fail fast on AccessDenied before starting a multi-GB upload."""
+    key = f"{prefix.rstrip('/')}/.biv_upload_probe.txt" if prefix else ".biv_upload_probe.txt"
+    body = b"biv oss probe\n"
+    print(f"Probing PutObject → {key} ...", flush=True)
+    try:
+        bucket.put_object(key, body)
+        bucket.delete_object(key)
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(
+            f"Probe failed ({type(exc).__name__}): {exc}\n"
+            "Fix RAM/OSS permissions before uploading 50GB+ files.\n"
+            "Need at least: PutObject, DeleteObject, and multipart APIs "
+            "(InitiateMultipartUpload/UploadPart/CompleteMultipartUpload/ListParts)."
+        ) from exc
+    print("Probe OK (write permission works).", flush=True)
+
+
+def _upload_file(
+    bucket,
+    key: str,
+    local: Path,
+    *,
+    part_size_mb: int = 4,
+    num_threads: int = 2,
+    store_dir: Path | None = None,
+) -> None:
     import oss2
     from tqdm.auto import tqdm
 
     total = local.stat().st_size
     size_mb = total / (1024 * 1024)
-    print(f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}", flush=True)
-    pbar = tqdm(total=total, unit="B", unit_scale=True, desc=f"oss {local.name}")
+    part_size = max(part_size_mb, 1) * 1024 * 1024
+    store = str(store_dir or (ROOT / "data" / "export_bailian" / ".oss2_checkpoint"))
+    Path(store).mkdir(parents=True, exist_ok=True)
+
+    print(
+        f"Uploading {local} ({size_mb:.1f} MiB) → oss://…/{key}\n"
+        f"  part_size={part_size_mb}MiB threads={num_threads} checkpoint={store}\n"
+        f"  Note: first progress tick waits for the first part to finish; "
+        f"China→Tokyo can be slow.",
+        flush=True,
+    )
+    pbar = tqdm(
+        total=total,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=f"oss {local.name}",
+        miniters=1,
+        mininterval=0.5,
+    )
+    last = {"n": 0}
 
     def _progress(consumed_bytes: int, total_bytes: int) -> None:
-        # oss2 may report total_bytes==0 initially; prefer known file size.
         pbar.total = total_bytes or total
-        pbar.n = min(consumed_bytes, pbar.total)
-        pbar.refresh()
+        n = min(int(consumed_bytes), int(pbar.total))
+        if n >= last["n"]:
+            pbar.n = n
+            last["n"] = n
+            pbar.refresh()
 
     try:
         oss2.resumable_upload(
             bucket,
             key,
             str(local),
-            multipart_threshold=64 * 1024 * 1024,
-            part_size=16 * 1024 * 1024,
-            num_threads=4,
+            store=oss2.ResumableStore(root=store),
+            multipart_threshold=part_size,
+            part_size=part_size,
+            num_threads=max(num_threads, 1),
             progress_callback=_progress,
+        )
+        pbar.n = pbar.total
+        pbar.refresh()
+    except KeyboardInterrupt:
+        pbar.close()
+        raise SystemExit(
+            "\nInterrupted. Partial multipart state is kept under "
+            f"{store}; re-run with --upload-only to resume."
         )
     finally:
         pbar.close()
