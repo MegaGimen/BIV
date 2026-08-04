@@ -126,14 +126,26 @@ Unsloth may print *Falling back to torch implementation* until these are install
 ```bash
 source .venv/bin/activate
 pip install -U ninja packaging "flash-linear-attention[cuda]"
-pip install -U nvidia-cuda-nvcc-cu13
+pip install -U "nvidia-cuda-nvcc"   # do NOT use nvidia-cuda-nvcc-cu13 (deprecated stub)
 
-# Prefer the CUDA 13 nvcc that matches torch (not /usr/local/cuda-12.8)
-export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
-# If `nvcc -V` is still 12.x, point CUDA_HOME at the pip package, e.g.:
-#   export CUDA_HOME=$(python -c "import nvidia.cuda_nvcc as m, pathlib; print(pathlib.Path(m.__file__).resolve().parent)")
+# Prefer pip CUDA-13 nvcc over system /usr/local/cuda-12.8
+export CUDA_HOME=$(python - <<'PY'
+from importlib.util import find_spec
+from pathlib import Path
+spec = find_spec("nvidia.cuda_nvcc")
+root = Path(spec.submodule_search_locations[0])
+# some wheels nest bin/ under root or root/bin
+for cand in (root, root / "bin", *root.glob("**/nvcc")):
+    p = cand if cand.name != "nvcc" else cand.parent.parent
+    if (Path(p) / "bin" / "nvcc").exists():
+        print(p)
+        break
+else:
+    raise SystemExit(f"nvcc not found under {root}")
+PY
+)
 export PATH="$CUDA_HOME/bin:$PATH"
-nvcc -V   # should report 13.x for cu130 torch
+which nvcc && nvcc -V   # must be 13.x for torch *+cu130
 
 CAUSAL_CONV1D_FORCE_BUILD=TRUE pip install -U "causal-conv1d>=1.4.0" --no-build-isolation
 python -c "import fla, causal_conv1d; print('fast path ok')"
