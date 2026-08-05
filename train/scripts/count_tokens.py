@@ -92,10 +92,8 @@ def _count_train_ready(
         from datasets import load_from_disk
     except ImportError as exc:
         raise SystemExit(
-            f"datasets import failed: {exc!r}
-"
-            "If this script is named token.py, rename it (shadows stdlib/deps).
-"
+            f"datasets import failed: {exc!r}\n"
+            "If this script is named token.py, rename it (shadows stdlib/deps).\n"
             "Otherwise: pip install datasets (same venv as train_sft)."
         ) from exc
 
