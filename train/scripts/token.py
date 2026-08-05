@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Count tokens in prepared SWE-Hero WM JSONL (for cost estimates).
+"""Count tokens from train_sft ds_cache (pretokenized train_ready).
 
-Uses the same ChatML rendering as training (`apply_chat_template` on `messages`).
-Does **not** require GPU / Unsloth — only `transformers` + a tokenizer.
+Uses the same local ChatML token ids as training — no transformers download.
+Prefers `outputs/ds_cache/*/train_ready` (HF Dataset with input_ids).
+
+Fallback: `--from-jsonl` re-tokenizes processed JSONL (needs transformers).
 
 Examples:
   cd train
   python scripts/token.py
-  python scripts/token.py --processed-dir data/processed --splits train,eval
-  python scripts/token.py --model Qwen/Qwen3.5-9B --max-length 8192 --epochs 2
-  python scripts/token.py --price-per-k 0.02   # Bailian-style ¥ / 1k tokens
+  python scripts/token.py --cache-dir outputs/ds_cache/v3_xxxxxxxxxxxx
+  python scripts/token.py --epochs 2 --price-per-k 0.02
+  python scripts/token.py --from-jsonl --processed-dir data/processed
 """
 
 from __future__ import annotations
@@ -22,204 +24,266 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_tokenizer(model_id: str):
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as exc:
-        raise SystemExit("pip install transformers") from exc
-
-    tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    # Qwen VL processor wrappers sometimes appear; unwrap if needed.
-    if not hasattr(tok, "encode") and hasattr(tok, "tokenizer"):
-        tok = tok.tokenizer
-    return tok
+def _iter_ready_dirs(cache_root: Path) -> list[Path]:
+    out: list[Path] = []
+    if not cache_root.exists():
+        return out
+    for meta in sorted(cache_root.rglob("meta.json")):
+        ready = meta.parent / "train_ready"
+        if ready.is_dir():
+            out.append(meta.parent)
+    return out
 
 
-def _row_text(row: dict, tokenizer) -> str:
-    if isinstance(row.get("text"), str) and row["text"].strip():
-        return row["text"]
-    messages = row.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ValueError("row missing messages/text")
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
+def _pick_cache_dir(explicit: Path | None, cache_root: Path) -> Path:
+    if explicit is not None:
+        p = explicit if explicit.is_absolute() else (ROOT / explicit)
+        if not (p / "train_ready").is_dir():
+            raise SystemExit(f"No train_ready under {p}")
+        return p
+    cands = _iter_ready_dirs(cache_root)
+    if not cands:
+        raise SystemExit(
+            f"No ds_cache under {cache_root}.\n"
+            "Build with: python scripts/train_sft.py --config configs/default.yaml\n"
+            "Or: python scripts/token.py --from-jsonl\n"
+            "Or: --cache-dir path/to/v3_<fingerprint>"
+        )
+
+    def _size(d: Path) -> int:
+        tr = d / "train_ready"
+        return sum(f.stat().st_size for f in tr.rglob("*") if f.is_file())
+
+    best = max(cands, key=_size)
+    rel = best.relative_to(ROOT) if best.is_relative_to(ROOT) else best
+    print(f"Auto-picked cache: {rel}", flush=True)
+    return best
 
 
-def _count_file(
-    path: Path,
-    tokenizer,
+def _count_train_ready(
+    train_ready: Path,
     *,
     max_length: int | None,
-    log_every: int,
+    scan_rows: int | None,
 ) -> dict:
-    n_rows = 0
+    try:
+        from datasets import load_from_disk
+    except ImportError as exc:
+        raise SystemExit("Missing datasets. pip install datasets") from exc
+
+    ds = load_from_disk(str(train_ready))
+    if "input_ids" not in ds.column_names:
+        raise SystemExit(f"{train_ready} missing input_ids; columns={ds.column_names}")
+
+    n = len(ds)
+    if scan_rows is not None and scan_rows > 0 and scan_rows < n:
+        ds = ds.select(range(scan_rows))
+        print(f"Scanning first {scan_rows} / {n} rows (--scan-rows)", flush=True)
+        n = len(ds)
+
+    has_mask = "attention_mask" in ds.column_names
+    has_labels = "labels" in ds.column_names
+
     total = 0
-    supervised_hint = 0  # assistant spans not tokenized separately; skip
-    truncated_rows = 0
-    truncated_overflow = 0
+    billable = 0
+    supervised = 0
+    dropped_rows = 0
     max_seen = 0
-    lengths: list[int] = []
+    batch_size = 1024
 
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
+    for start in range(0, n, batch_size):
+        batch = ds[start : start + batch_size]
+        ids_batch = batch["input_ids"]
+        mask_batch = batch["attention_mask"] if has_mask else None
+        labels_batch = batch["labels"] if has_labels else None
+        for i, ids in enumerate(ids_batch):
+            if mask_batch is not None:
+                tok = int(sum(1 for x in mask_batch[i] if x))
+            else:
+                tok = len(ids)
+            total += tok
+            max_seen = max(max_seen, tok)
+            if max_length is not None and tok > max_length:
+                dropped_rows += 1
                 continue
-            row = json.loads(line)
-            text = _row_text(row, tokenizer)
-            ids = tokenizer.encode(text, add_special_tokens=False)
-            n = len(ids)
-            n_rows += 1
-            total += n
-            max_seen = max(max_seen, n)
-            lengths.append(n)
-            if max_length is not None and n > max_length:
-                truncated_rows += 1
-                truncated_overflow += n - max_length
-            if log_every and n_rows % log_every == 0:
-                print(
-                    f"  {path.name}: {n_rows} rows  tokens={total:,}  "
-                    f"last_len={n}  max={max_seen}",
-                    flush=True,
-                )
+            billable += tok
+            if labels_batch is not None:
+                supervised += sum(1 for t in labels_batch[i] if t != -100)
+        if (start // batch_size) % 20 == 0:
+            print(f"  … {min(start + batch_size, n):,}/{n:,} rows", flush=True)
 
-    billable = total
-    if max_length is not None:
-        # Bailian-style: drop rows longer than max_length from training bill
-        billable = 0
-        kept = 0
-        for n in lengths:
-            if n <= max_length:
-                billable += n
-                kept += 1
-        dropped = n_rows - kept
-    else:
-        dropped = 0
-        kept = n_rows
-
-    mean = (total / n_rows) if n_rows else 0.0
+    kept = n - dropped_rows
     return {
-        "path": str(path),
-        "n_rows": n_rows,
-        "token_sum": total,
-        "token_mean": mean,
-        "token_max": max_seen,
+        "n_rows": n,
+        "total_tokens": total,
+        "billable_tokens": billable if max_length else total,
+        "supervised_tokens": supervised,
+        "dropped_rows": dropped_rows,
+        "max_seen": max_seen,
+        "mean_tokens": (billable / kept) if kept else 0.0,
         "max_length": max_length,
-        "rows_kept_under_max": kept,
-        "rows_over_max": dropped if max_length else truncated_rows,
-        "billable_tokens_if_drop_over_max": billable if max_length else total,
-        "supervised_hint": supervised_hint,
+        "columns": list(ds.column_names),
     }
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--processed-dir",
-        type=Path,
-        default=ROOT / "data" / "processed",
-        help="Directory with train.jsonl / eval.jsonl",
-    )
-    p.add_argument(
-        "--splits",
-        default="train,eval",
-        help="Comma-separated split names (files: <name>.jsonl)",
-    )
-    p.add_argument(
-        "--model",
-        default="Qwen/Qwen3.5-9B",
-        help="Tokenizer source (same ChatML as training)",
-    )
-    p.add_argument(
-        "--max-length",
-        type=int,
-        default=8192,
-        help="Report truncation stats; billable excludes rows longer than this "
-        "(set 0 to disable)",
-    )
-    p.add_argument("--epochs", type=float, default=2.0)
-    p.add_argument(
-        "--price-per-k",
-        type=float,
-        default=None,
-        help="Optional ¥ per 1k tokens × epochs (e.g. 0.02 Bailian text SFT)",
-    )
-    p.add_argument("--log-every", type=int, default=2000)
-    args = p.parse_args()
+def _count_jsonl(
+    processed: Path,
+    splits: list[str],
+    model_id: str,
+    *,
+    max_length: int | None,
+) -> dict:
+    try:
+        from transformers import AutoTokenizer
+    except Exception as exc:  # noqa: BLE001 — show real import failure
+        raise SystemExit(
+            f"Cannot import transformers AutoTokenizer ({exc!r}).\n"
+            "Prefer ds_cache instead: python scripts/token.py\n"
+            "Or fix venv / use same env as train_sft."
+        ) from exc
 
-    processed = args.processed_dir if args.processed_dir.is_absolute() else (ROOT / args.processed_dir)
-    max_length = None if not args.max_length else int(args.max_length)
+    tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    if not hasattr(tok, "encode") and hasattr(tok, "tokenizer"):
+        tok = tok.tokenizer
 
-    print(f"Tokenizer: {args.model}", flush=True)
-    tokenizer = _load_tokenizer(args.model)
-
-    split_names = [s.strip() for s in args.splits.split(",") if s.strip()]
-    per_split: list[dict] = []
     grand_total = 0
     grand_billable = 0
     grand_rows = 0
+    max_seen = 0
+    dropped = 0
+    per: list[dict] = []
 
-    for name in split_names:
+    for name in splits:
         path = processed / f"{name}.jsonl"
         if not path.is_file():
             print(f"SKIP missing {path}", flush=True)
             continue
-        print(f"Counting {path} ...", flush=True)
-        stats = _count_file(
-            path, tokenizer, max_length=max_length, log_every=args.log_every
-        )
-        per_split.append(stats)
-        grand_total += stats["token_sum"]
-        grand_billable += stats["billable_tokens_if_drop_over_max"]
-        grand_rows += stats["n_rows"]
-        print(
-            f"  -> rows={stats['n_rows']:,}  tokens={stats['token_sum']:,}  "
-            f"mean={stats['token_mean']:.1f}  max={stats['token_max']:,}",
-            flush=True,
-        )
+        rows = 0
+        total = 0
+        billable = 0
+        drop = 0
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                if isinstance(row.get("text"), str) and row["text"].strip():
+                    text = row["text"]
+                else:
+                    text = tok.apply_chat_template(
+                        row["messages"],
+                        tokenize=False,
+                        add_generation_prompt=False,
+                    )
+                n = len(tok.encode(text, add_special_tokens=False))
+                rows += 1
+                total += n
+                max_seen = max(max_seen, n)
+                if max_length is not None and n > max_length:
+                    drop += 1
+                else:
+                    billable += n
+        per.append({"split": name, "rows": rows, "tokens": total, "billable": billable})
+        grand_rows += rows
+        grand_total += total
+        grand_billable += billable
+        dropped += drop
+        print(f"  {name}: rows={rows:,} tokens={total:,}", flush=True)
 
-    if not per_split:
-        raise SystemExit(f"No jsonl found under {processed} for splits={split_names}")
-
-    summary = {
-        "processed_dir": str(processed),
-        "model_tokenizer": args.model,
-        "splits": per_split,
-        "total_rows": grand_rows,
+    return {
+        "n_rows": grand_rows,
         "total_tokens": grand_total,
-        "billable_tokens_drop_over_max": grand_billable,
+        "billable_tokens": grand_billable,
+        "supervised_tokens": 0,
+        "dropped_rows": dropped,
+        "max_seen": max_seen,
+        "mean_tokens": (grand_billable / (grand_rows - dropped)) if (grand_rows - dropped) else 0.0,
         "max_length": max_length,
+        "splits": per,
+        "source": "jsonl",
+    }
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--cache-root", type=Path, default=ROOT / "outputs" / "ds_cache")
+    p.add_argument("--cache-dir", type=Path, default=None)
+    p.add_argument("--max-length", type=int, default=8192, help="0 = no drop filter")
+    p.add_argument("--epochs", type=float, default=2.0)
+    p.add_argument("--price-per-k", type=float, default=None, help="¥ per 1k tokens")
+    p.add_argument("--scan-rows", type=int, default=None)
+    p.add_argument(
+        "--from-jsonl",
+        action="store_true",
+        help="Re-tokenize processed JSONL (needs transformers); default is ds_cache",
+    )
+    p.add_argument("--processed-dir", type=Path, default=ROOT / "data" / "processed")
+    p.add_argument("--splits", default="train,eval")
+    p.add_argument("--model", default="Qwen/Qwen3.5-9B")
+    args = p.parse_args()
+
+    max_length = None if not args.max_length else int(args.max_length)
+
+    if args.from_jsonl:
+        processed = (
+            args.processed_dir
+            if args.processed_dir.is_absolute()
+            else (ROOT / args.processed_dir)
+        )
+        splits = [s.strip() for s in args.splits.split(",") if s.strip()]
+        print(f"Source: JSONL under {processed}", flush=True)
+        stats = _count_jsonl(processed, splits, args.model, max_length=max_length)
+    else:
+        cache_root = (
+            args.cache_root if args.cache_root.is_absolute() else (ROOT / args.cache_root)
+        )
+        cache_dir = _pick_cache_dir(args.cache_dir, cache_root)
+        meta_path = cache_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        print(f"Source: {cache_dir / 'train_ready'}", flush=True)
+        if meta:
+            print(
+                f"meta: model={meta.get('model_name')} max_seq={meta.get('max_seq_length')} "
+                f"packing={meta.get('packing')}",
+                flush=True,
+            )
+        stats = _count_train_ready(
+            cache_dir / "train_ready",
+            max_length=max_length,
+            scan_rows=args.scan_rows,
+        )
+        stats["cache_dir"] = str(cache_dir)
+        stats["meta"] = meta
+
+    token_epochs = stats["billable_tokens"] * args.epochs
+    out = {
+        **stats,
         "epochs": args.epochs,
-        "token_epochs": grand_billable * args.epochs,
+        "token_epochs": token_epochs,
     }
     if args.price_per_k is not None:
-        # ¥ = (tokens/1000) * price * epochs
-        fee = (grand_billable / 1000.0) * args.price_per_k * args.epochs
-        summary["price_per_k_cny"] = args.price_per_k
-        summary["est_fee_cny"] = round(fee, 4)
+        fee = (stats["billable_tokens"] / 1000.0) * args.price_per_k * args.epochs
+        out["price_per_k_cny"] = args.price_per_k
+        out["est_fee_cny"] = round(fee, 4)
 
-    print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
+    print(json.dumps(out, indent=2, ensure_ascii=False, default=str), flush=True)
     print(
-        f"\nSummary: {grand_rows:,} rows | {grand_total:,} tokens"
+        f"\nSummary: {stats['n_rows']:,} rows | total={stats['total_tokens']:,} | "
+        f"billable={stats['billable_tokens']:,}"
+        + (f" (drop>{max_length}: {stats['dropped_rows']:,})" if max_length else "")
+        + f" | ×{args.epochs:g} → {token_epochs:,.0f} token·epoch"
         + (
-            f" | billable≤{max_length}: {grand_billable:,} "
-            f"| ×{args.epochs:g} epoch → {grand_billable * args.epochs:,.0f} token·epoch"
-            if max_length
+            f" | supervised(labels≠-100)={stats['supervised_tokens']:,}"
+            if stats.get("supervised_tokens")
             else ""
         ),
         flush=True,
     )
     if args.price_per_k is not None:
-        print(
-            f"Est. fee @ ¥{args.price_per_k}/kTok × {args.epochs:g} epoch: "
-            f"¥{summary['est_fee_cny']}",
-            flush=True,
-        )
+        print(f"Est. fee: ¥{out['est_fee_cny']}", flush=True)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-    sys.exit(0)
+    sys.exit(main())
