@@ -42,10 +42,15 @@ def main() -> None:
     assert "str_replace_editor" in user0 or "execute_bash" in user0
 
     rows = records_to_sft_rows(recs, min_turns=1)
-    assert len(rows) > len(recs)
+    # Default: one training row per trajectory with usable turns (no prefix expansion).
+    n_with_turns = sum(1 for r in recs if extract_turns_from_record(r))
+    assert len(rows) == n_with_turns, (len(rows), n_with_turns, len(recs))
 
     shuffled = records_to_sft_rows(recs, min_turns=1, shuffle_obs=True)
     assert len(shuffled) == len(rows)
+
+    legacy = records_to_sft_rows(recs, min_turns=1, expand_prefixes=True)
+    assert len(legacy) >= len(rows)
 
     s = score_pair(
         '{"output": "5\\n", "isError": false}',
@@ -55,11 +60,22 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "train.jsonl"
-        n = write_jsonl(out, rows[:5])
-        assert n == 5
+        chunk = rows[: min(5, len(rows))]
+        n = write_jsonl(out, chunk)
+        assert n == len(chunk)
         assert out.exists()
 
-    print(json.dumps({"ok": True, "n_records": len(recs), "n_rows": len(rows)}, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "n_records": len(recs),
+                "n_rows": len(rows),
+                "n_legacy_prefix_rows": len(legacy),
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

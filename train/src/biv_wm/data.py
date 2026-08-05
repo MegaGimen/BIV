@@ -195,11 +195,25 @@ def expand_trajectory_samples(
     min_turns: int = 1,
     max_prefix: int | None = None,
     every_k: int = 1,
+    expand_prefixes: bool = False,
 ) -> list[list[dict[str, Any]]]:
-    """Causal prefixes: turns[:1], turns[:2], ..."""
+    """Build training sequences from one trajectory's tool turns.
+
+    Default (``expand_prefixes=False``): **one sample per trajectory** — the full
+    chain (optionally truncated by ``max_prefix``). Response-only SFT then puts
+    loss on every observation once (no repeated early-``o`` from short prefixes).
+
+    Legacy (``expand_prefixes=True``): causal prefixes ``turns[:1]``, ``[:2]``, …
+    with stride ``every_k`` (over-samples early observations).
+    """
     if not turns:
         return []
     last = len(turns) if max_prefix is None else min(max_prefix, len(turns))
+    if last < min_turns:
+        return []
+    if not expand_prefixes:
+        return [turns[:last]]
+
     out: list[list[dict[str, Any]]] = []
     for i in range(min_turns, last + 1):
         if (i - min_turns) % every_k != 0:
@@ -214,14 +228,19 @@ def iter_sft_rows_from_turns(
     min_turns: int = 1,
     max_prefix: int | None = None,
     every_k: int = 1,
+    expand_prefixes: bool = False,
     shuffle_obs: bool = False,
     obs_pool: list[str] | None = None,
     rng: random.Random | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield SFT chat rows for one trajectory."""
+    """Yield SFT chat rows for one trajectory (default: a single full-chain row)."""
     rng = rng or random.Random(0)
     for prefix in expand_trajectory_samples(
-        turns, min_turns=min_turns, max_prefix=max_prefix, every_k=every_k
+        turns,
+        min_turns=min_turns,
+        max_prefix=max_prefix,
+        every_k=every_k,
+        expand_prefixes=expand_prefixes,
     ):
         shuffled = None
         if shuffle_obs and obs_pool:
@@ -242,6 +261,7 @@ def records_to_sft_rows(
     min_turns: int = 1,
     max_prefix: int | None = None,
     every_k: int = 1,
+    expand_prefixes: bool = False,
     shuffle_obs: bool = False,
     rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
@@ -265,6 +285,7 @@ def records_to_sft_rows(
                 min_turns=min_turns,
                 max_prefix=max_prefix,
                 every_k=every_k,
+                expand_prefixes=expand_prefixes,
                 shuffle_obs=shuffle_obs,
                 obs_pool=pool,
                 rng=rng,

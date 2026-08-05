@@ -73,6 +73,7 @@ def _process_record(
         min_turns=args.min_turns,
         max_prefix=args.max_prefix,
         every_k=args.every_k,
+        expand_prefixes=args.expand_prefixes,
         shuffle_obs=False,
         rng=rng,
     ):
@@ -86,6 +87,7 @@ def _process_record(
             min_turns=args.min_turns,
             max_prefix=args.max_prefix,
             every_k=args.every_k,
+            expand_prefixes=args.expand_prefixes,
             shuffle_obs=True,
             obs_pool=obs_pool or ["<<empty_pool>>"],
             rng=rng,
@@ -119,10 +121,24 @@ def main() -> None:
     p.add_argument("--out-dir", type=Path, default=ROOT / "data" / "processed")
     p.add_argument("--eval-ratio", type=float, default=0.05)
     p.add_argument("--min-turns", type=int, default=1)
-    p.add_argument("--max-prefix", type=int, default=None)
-    p.add_argument("--every-k", type=int, default=1)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--also-shuffled-control", action="store_true", default=True)
+    p.add_argument(
+        "--max-prefix",
+        type=int,
+        default=None,
+        help="Optional cap on tool turns kept per trajectory (truncate long chains)",
+    )
+    p.add_argument(
+        "--expand-prefixes",
+        action="store_true",
+        help="Legacy: emit turns[:1],[:2],… (over-samples early observations)",
+    )
+    p.add_argument(
+        "--every-k",
+        type=int,
+        default=1,
+        help="Only with --expand-prefixes: keep every k-th prefix length",
+    )
+    p.add_argument("--seed", type=int, default=42)    p.add_argument("--also-shuffled-control", action="store_true", default=True)
     p.add_argument("--no-shuffled-control", action="store_false", dest="also_shuffled_control")
     p.add_argument(
         "--obs-pool-size",
@@ -264,6 +280,10 @@ def main() -> None:
         "seed": args.seed,
         "streamed": True,
         "corpus": "swe_hero_openhands",
+        "expand_prefixes": bool(args.expand_prefixes),
+        "sample_policy": "one_traj_one_row_all_obs_loss"
+        if not args.expand_prefixes
+        else "causal_prefixes",
         "sources": {
             "local": [str(x) for x in args.local],
             "swe_hero": bool(args.swe_hero),

@@ -113,9 +113,10 @@ Default download: ModelScope
 [`nv-community/SWE-Hero-openhands-trajectories`](https://www.modelscope.cn/datasets/nv-community/SWE-Hero-openhands-trajectories).
 
 `prepare_data.py` keeps OpenHands tool names (`execute_bash`, `str_replace_editor`, …),
-drops non-env tools (`think`, `finish`), expands causal prefixes → chat JSONL
-(`data/processed/`). That JSONL is what `train_sft.py` consumes.
-
+drops non-env tools (`think`, `finish`), emits **one JSONL row per trajectory**
+(full tool chain; response-only loss on every observation once — no causal-prefix
+expansion). Optional legacy: `prepare_data.py --expand-prefixes`.
+That JSONL is what `train_sft.py` consumes.
 ### Future TODO (training data)
 
 - [ ] **ISETrace (OS-agent) as an optional second corpus:** when adding
