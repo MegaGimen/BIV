@@ -245,15 +245,36 @@ def load_local_trajectories(path: Path) -> list[dict[str, Any]]:
     return list(_read_jsonl(path))
 
 
+DEFAULT_ISETRACE_MS = "LambdaLinker/ISETrace"
+DEFAULT_ISETRACE_HF = "valiere/ISETrace"
+
+
 def open_isetrace_dataset(
     config: str = "trajectories",
     split: str = "train",
     max_rows: int | None = None,
+    *,
+    source: str = "modelscope",
+    repo_id: str | None = None,
 ):
-    """Return a HF Dataset (Arrow / memory-mapped). Does NOT call to_list()."""
+    """Return a HF Dataset (Arrow / memory-mapped). Does NOT call to_list().
+
+    source:
+      - modelscope (default): download via ModelScope then load with datasets
+      - huggingface: load_dataset hub id directly
+    """
     from datasets import DatasetDict, load_dataset
 
-    ds = load_dataset("valiere/ISETrace", name=config, split=split)
+    src = (source or "modelscope").strip().lower()
+    if src in {"modelscope", "ms"}:
+        rid = repo_id or DEFAULT_ISETRACE_MS
+        ds = _load_isetrace_modelscope(rid, config=config, split=split)
+    elif src in {"huggingface", "hf"}:
+        rid = repo_id or DEFAULT_ISETRACE_HF
+        ds = load_dataset(rid, name=config, split=split)
+    else:
+        raise ValueError(f"Unknown ISETrace source={source!r}; use modelscope|huggingface")
+
     if isinstance(ds, DatasetDict):
         key = split if split in ds else next(iter(ds.keys()))
         ds = ds[key]
@@ -262,13 +283,73 @@ def open_isetrace_dataset(
     return ds
 
 
+def _load_isetrace_modelscope(repo_id: str, *, config: str, split: str):
+    """Prefer snapshot + HF datasets (mirrors HF layout); fall back to MsDataset.load."""
+    from datasets import Dataset, DatasetDict, load_dataset
+
+    local_dir = None
+    snap_err: Exception | None = None
+    try:
+        try:
+            from modelscope.hub.snapshot_download import dataset_snapshot_download
+        except ImportError:  # older SDK
+            from modelscope import dataset_snapshot_download  # type: ignore
+
+        print(f"ModelScope dataset_snapshot_download: {repo_id}", flush=True)
+        try:
+            local_dir = dataset_snapshot_download(repo_id, repo_type="dataset")
+        except TypeError:
+            local_dir = dataset_snapshot_download(repo_id)  # type: ignore[misc]
+    except Exception as exc:  # noqa: BLE001
+        snap_err = exc
+        print(f"snapshot_download failed ({exc!r}); trying MsDataset.load", flush=True)
+
+    if local_dir is not None:
+        try:
+            return load_dataset(str(local_dir), name=config, split=split)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"load_dataset({local_dir}, name={config!r}) failed ({exc!r}); "
+                "trying MsDataset.load",
+                flush=True,
+            )
+
+    from modelscope.msdatasets import MsDataset
+
+    print(f"MsDataset.load({repo_id!r}, subset_name={config!r}, split={split!r})", flush=True)
+    raw = MsDataset.load(repo_id, subset_name=config, split=split)
+    if hasattr(raw, "to_hf_dataset"):
+        out = raw.to_hf_dataset()
+    elif isinstance(raw, (Dataset, DatasetDict)):
+        out = raw
+    else:
+        raise TypeError(
+            f"Unsupported MsDataset result type {type(raw)!r} for {repo_id}. "
+            f"snapshot_error={snap_err!r}. Upload a HF-compatible dataset layout "
+            "(parquet + dataset_infos) to ModelScope."
+        )
+    if isinstance(out, DatasetDict):
+        key = split if split in out else next(iter(out.keys()))
+        return out[key]
+    return out
+
+
 def try_load_isetrace(
     config: str = "trajectories",
     split: str = "train",
     max_rows: int | None = None,
+    *,
+    source: str = "modelscope",
+    repo_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Deprecated for full corpus: materializes rows. Prefer open_isetrace_dataset()."""
-    ds = open_isetrace_dataset(config=config, split=split, max_rows=max_rows)
+    ds = open_isetrace_dataset(
+        config=config,
+        split=split,
+        max_rows=max_rows,
+        source=source,
+        repo_id=repo_id,
+    )
     return [ds[i] for i in range(len(ds))]
 
 

@@ -60,12 +60,19 @@ Configs default to `model.source: huggingface` (`Qwen/Qwen3.5-9B`).
 | Asset | Where |
 |-------|--------|
 | **Qwen/Qwen3.5-9B** | HuggingFace (or set `source: modelscope`) |
-| **ISETrace** | HuggingFace (`--hf-isetrace`); optional mirror `export HF_ENDPOINT=https://hf-mirror.com` |
+| **ISETrace** | ModelScope `LambdaLinker/ISETrace` via `--isetrace` (HF: `--isetrace-source huggingface`) |
 
 ```bash
-huggingface-cli login
-# optional CN mirror for datasets only:
-# export HF_ENDPOINT=https://hf-mirror.com
+# optional: ModelScope login for private datasets
+# modelscope login --token $MODELSCOPE_API_TOKEN
+```
+
+Upload HF → ModelScope (on a server that can reach HuggingFace):
+
+```bash
+export MODELSCOPE_API_TOKEN=ms-xxxxxxxx
+# optional: export HF_ENDPOINT=https://hf-mirror.com
+python scripts/upload_isetrace_modelscope.py --ms-repo LambdaLinker/ISETrace
 ```
 
 ## Pipeline
@@ -79,16 +86,16 @@ python scripts/prepare_data.py \
   --local data/examples/sample_trajectories.jsonl \
   --out-dir data/processed
 
-# Real run (needs network): ISETrace trajectories
-# Streams one row at a time (do NOT need TB-class RAM).
-# Correct HF API: config name="trajectories", split="train"
+# Real run (needs network): ISETrace from ModelScope (default)
 python scripts/prepare_data.py \
-  --hf-isetrace \
+  --isetrace \
   --out-dir data/processed \
   --eval-ratio 0.05
 ```
 
-`--hf-isetrace` downloads ~5GB once (cached under `~/.cache/huggingface`). Without `--hf-max-rows` it processes all **23,132** trajectories but **does not** load them all into RAM at once. Start with `--hf-max-rows 2000` if you only want a smoke subset.
+`--isetrace` pulls ~5GB once (ModelScope cache). Without `--isetrace-max-rows` it processes all
+**23,132** trajectories but **does not** load them all into RAM at once. Start with
+`--isetrace-max-rows 2000` for a smoke subset. Legacy alias: `--hf-isetrace`.
 Add more Docker/terminal or SWE execution traces as local JSONL with either:
 
 ```json

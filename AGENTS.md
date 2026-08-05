@@ -80,8 +80,9 @@ pip install -U pip && pip install -r requirements.txt
 # Optional Qwen3.5 fast kernels (match nvcc to torch.version.cuda; see train/README.md §2b)
 
 # Data: streams one trajectory at a time (avoid full-corpus to_list OOM)
-# ISETrace is HF-hosted (~5GB raw); optional: export HF_ENDPOINT=https://hf-mirror.com
-python scripts/prepare_data.py --hf-isetrace --out-dir data/processed --eval-ratio 0.05
+# ISETrace default: ModelScope `LambdaLinker/ISETrace` (mirror of HF valiere/ISETrace)
+python scripts/prepare_data.py --isetrace --out-dir data/processed --eval-ratio 0.05
+# HF fallback: --isetrace-source huggingface  (optional: export HF_ENDPOINT=https://hf-mirror.com)
 
 huggingface-cli login   # or: hf auth login
 
@@ -104,7 +105,11 @@ python scripts/eval_wm.py --config configs/pilot.yaml
 
 ### Data
 
-Primary corpus: **[ISETrace](https://huggingface.co/datasets/valiere/ISETrace)** — multi-turn OS-agent trajectories with **real** tool execution (paper: [ISE / arXiv:2606.11520](https://arxiv.org/abs/2606.11520), code: [Valiere01/ISE-Trace](https://github.com/Valiere01/ISE-Trace)). Domains include `code-runtime`, `file-io`, `system-infrastructure`, etc. (Linux `exec`, write/run Python, plus multimedia/web — not pure SWE-bench).
+Primary corpus: **ISETrace** — multi-turn OS-agent trajectories with **real** tool execution
+([paper](https://arxiv.org/abs/2606.11520), [code](https://github.com/Valiere01/ISE-Trace)).
+Default download: ModelScope [`LambdaLinker/ISETrace`](https://www.modelscope.cn/datasets/LambdaLinker/ISETrace)
+(mirror of HuggingFace [`valiere/ISETrace`](https://huggingface.co/datasets/valiere/ISETrace)).
+Domains include `code-runtime`, `file-io`, `system-infrastructure`, etc.
 
 `prepare_data.py` extracts tool turns → causal prefixes → chat JSONL (`data/processed/`). That JSONL is what `train_sft.py` consumes.
 

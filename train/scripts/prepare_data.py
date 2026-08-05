@@ -10,8 +10,11 @@ Examples:
       --out-dir data/processed
 
   python scripts/prepare_data.py \\
-      --hf-isetrace --hf-max-rows 2000 \\
+      --isetrace --isetrace-max-rows 2000 \\
       --out-dir data/processed --eval-ratio 0.05
+
+  # HuggingFace fallback:
+  python scripts/prepare_data.py --isetrace --isetrace-source huggingface
 """
 
 from __future__ import annotations
@@ -95,10 +98,33 @@ def _process_record(
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local", type=Path, nargs="*", default=[], help="Local json/jsonl trajectory files")
-    p.add_argument("--hf-isetrace", action="store_true", help="Download valiere/ISETrace trajectories")
-    p.add_argument("--hf-config", default="trajectories")
-    p.add_argument("--hf-split", default="train")
-    p.add_argument("--hf-max-rows", type=int, default=None)
+    p.add_argument(
+        "--isetrace",
+        "--hf-isetrace",
+        dest="isetrace",
+        action="store_true",
+        help="Load ISETrace trajectories (default: ModelScope LambdaLinker/ISETrace)",
+    )
+    p.add_argument(
+        "--isetrace-source",
+        choices=["modelscope", "huggingface"],
+        default="modelscope",
+        help="Hub to load ISETrace from (default: modelscope)",
+    )
+    p.add_argument(
+        "--isetrace-repo",
+        default=None,
+        help="Override repo id (default: LambdaLinker/ISETrace or valiere/ISETrace)",
+    )
+    p.add_argument("--isetrace-config", "--hf-config", dest="isetrace_config", default="trajectories")
+    p.add_argument("--isetrace-split", "--hf-split", dest="isetrace_split", default="train")
+    p.add_argument(
+        "--isetrace-max-rows",
+        "--hf-max-rows",
+        dest="isetrace_max_rows",
+        type=int,
+        default=None,
+    )
     p.add_argument("--out-dir", type=Path, default=ROOT / "data" / "processed")
     p.add_argument("--eval-ratio", type=float, default=0.05)
     p.add_argument("--min-turns", type=int, default=1)
@@ -128,28 +154,29 @@ def main() -> None:
     for path in args.local:
         sources.append(("local", load_local_trajectories(path)))
 
-    if args.hf_isetrace:
-        if not os.environ.get("HF_ENDPOINT"):
+    if args.isetrace:
+        if args.isetrace_source == "huggingface" and not os.environ.get("HF_ENDPOINT"):
             print(
-                "Tip: ISETrace is not on ModelScope. "
-                "For CN download set: export HF_ENDPOINT=https://hf-mirror.com",
+                "Tip: for CN HF download set: export HF_ENDPOINT=https://hf-mirror.com",
                 flush=True,
             )
         print(
-            f"Opening ISETrace (Arrow, streamed rows) "
-            f"name={args.hf_config!r} split={args.hf_split!r} "
-            f"HF_ENDPOINT={os.environ.get('HF_ENDPOINT', 'https://huggingface.co')}",
+            f"Opening ISETrace source={args.isetrace_source!r} "
+            f"repo={args.isetrace_repo or '(default)'} "
+            f"name={args.isetrace_config!r} split={args.isetrace_split!r}",
             flush=True,
         )
         ds = open_isetrace_dataset(
-            config=args.hf_config,
-            split=args.hf_split,
-            max_rows=args.hf_max_rows,
+            config=args.isetrace_config,
+            split=args.isetrace_split,
+            max_rows=args.isetrace_max_rows,
+            source=args.isetrace_source,
+            repo_id=args.isetrace_repo,
         )
-        sources.append(("hf", ds))
+        sources.append(("isetrace", ds))
 
     if not sources:
-        raise SystemExit("No records loaded. Pass --local and/or --hf-isetrace.")
+        raise SystemExit("No records loaded. Pass --local and/or --isetrace.")
 
     for kind, blob in sources:
         if kind == "local":
@@ -250,8 +277,10 @@ def main() -> None:
         "streamed": True,
         "sources": {
             "local": [str(x) for x in args.local],
-            "hf_isetrace": bool(args.hf_isetrace),
-            "hf_max_rows": args.hf_max_rows,
+            "isetrace": bool(args.isetrace),
+            "isetrace_source": args.isetrace_source if args.isetrace else None,
+            "isetrace_repo": args.isetrace_repo,
+            "isetrace_max_rows": args.isetrace_max_rows,
         },
     }
     (args.out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
