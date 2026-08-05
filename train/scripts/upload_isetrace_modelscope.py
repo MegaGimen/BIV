@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Upload an already-local ISETrace tree to ModelScope (no re-download by default).
+"""Upload local ISETrace artifacts to ModelScope (no re-download by default).
 
-Prefer pointing at an existing snapshot on the inference server:
-
-  # 1) Find HF hub cache (raw ISETrace, best for LambdaLinker/ISETrace mirror)
-  ls ~/.cache/huggingface/hub/datasets--valiere--ISETrace/
-  # often: .../snapshots/<hash>/
-
-  # 2) Or upload our prepared JSONL (SFT-ready, not the HF trajectories config)
-  #    ~/BIV/train/data/processed/{train,eval}.jsonl
+Default for our pipeline: only upload processed SFT JSONL files
+  data/processed/train.jsonl
+  data/processed/eval.jsonl
 
   export MODELSCOPE_API_TOKEN=ms-xxxxxxxx
   python scripts/upload_isetrace_modelscope.py \\
-      --local-dir /path/to/existing/isetrace_or_processed \\
+      --files data/processed/train.jsonl data/processed/eval.jsonl \\
       --ms-repo LambdaLinker/ISETrace
 
-Optional: only if local tree is missing, pass --download-hf to fetch valiere/ISETrace once.
+Or shorthand (same two files under --processed-dir):
+
+  python scripts/upload_isetrace_modelscope.py --processed-dir data/processed
 """
 
 from __future__ import annotations
@@ -25,102 +22,56 @@ import os
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
 
-def _guess_hf_isetrace_dirs() -> list[Path]:
-    hub = Path.home() / ".cache" / "huggingface" / "hub"
-    root = hub / "datasets--valiere--ISETrace"
-    cands: list[Path] = []
-    snap = root / "snapshots"
-    if snap.is_dir():
-        cands.extend(sorted(p for p in snap.iterdir() if p.is_dir()))
-    if root.is_dir():
-        cands.append(root)
-    # datasets library arrow cache (less ideal for hub upload)
-    ds = Path.home() / ".cache" / "huggingface" / "datasets"
-    if ds.is_dir():
-        for p in ds.rglob("*"):
-            if p.is_dir() and "isetrace" in p.name.lower():
-                cands.append(p)
-                break
-    return cands
+
+def _upload_files(api, *, repo_id: str, files: list[Path], commit_message: str) -> None:
+    if not hasattr(api, "upload_file"):
+        raise SystemExit(
+            "HubApi.upload_file missing. Upgrade modelscope, or run for each file:\n"
+            f"  ms upload {repo_id} <file> --repo-type dataset"
+        )
+    for path in files:
+        remote_name = path.name
+        size_gb = path.stat().st_size / (1024**3)
+        print(f"Uploading {path} ({size_gb:.2f} GiB) -> {repo_id}/{remote_name}", flush=True)
+        api.upload_file(
+            path_or_fileobj=str(path),
+            path_in_repo=remote_name,
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message=f"{commit_message}: {remote_name}",
+        )
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--ms-repo", default="LambdaLinker/ISETrace")
     p.add_argument(
+        "--files",
+        type=Path,
+        nargs="+",
+        default=None,
+        help="Explicit files to upload (e.g. train.jsonl eval.jsonl)",
+    )
+    p.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=None,
+        help="Upload only train.jsonl + eval.jsonl from this dir (default if no --files)",
+    )
+    p.add_argument(
         "--local-dir",
         type=Path,
         default=None,
-        help="Existing local folder to upload (HF snapshot or data/processed). No download.",
-    )
-    p.add_argument(
-        "--download-hf",
-        action="store_true",
-        help="ONLY if local data is missing: download valiere/ISETrace into --work-dir first",
-    )
-    p.add_argument("--hf-repo", default="valiere/ISETrace")
-    p.add_argument(
-        "--work-dir",
-        type=Path,
-        default=Path("/tmp/isetrace_ms_upload"),
-        help="Used only with --download-hf",
+        help="Upload an entire folder (discouraged; prefer --files / --processed-dir)",
     )
     p.add_argument(
         "--token",
         default=os.environ.get("MODELSCOPE_API_TOKEN") or os.environ.get("MODELSCOPE_TOKEN"),
-        help="ModelScope SDK token (or set MODELSCOPE_API_TOKEN)",
     )
-    p.add_argument(
-        "--commit-message",
-        default="Upload local ISETrace snapshot",
-    )
-    p.add_argument(
-        "--list-guesses",
-        action="store_true",
-        help="Print guessed local HF ISETrace paths and exit",
-    )
+    p.add_argument("--commit-message", default="Add processed ISETrace train/eval JSONL")
     args = p.parse_args()
-
-    guesses = _guess_hf_isetrace_dirs()
-    if args.list_guesses:
-        if not guesses:
-            print("No guessed ISETrace dirs under ~/.cache/huggingface", flush=True)
-        for g in guesses:
-            print(g, flush=True)
-        return
-
-    local: Path | None = args.local_dir
-    if local is None and not args.download_hf:
-        if guesses:
-            local = guesses[0]
-            print(f"Auto-using guessed local dir: {local}", flush=True)
-        else:
-            raise SystemExit(
-                "No --local-dir and no HF cache guess.\n"
-                "Pass --local-dir ~/BIV/train/data/processed\n"
-                "  or --local-dir ~/.cache/huggingface/hub/datasets--valiere--ISETrace/snapshots/<hash>\n"
-                "  or --list-guesses / --download-hf"
-            )
-
-    if args.download_hf:
-        work = args.work_dir
-        work.mkdir(parents=True, exist_ok=True)
-        print(f"Downloading HF dataset {args.hf_repo} -> {work}", flush=True)
-        from huggingface_hub import snapshot_download
-
-        snapshot_download(
-            repo_id=args.hf_repo,
-            repo_type="dataset",
-            local_dir=str(work),
-            local_dir_use_symlinks=False,
-        )
-        local = work
-
-    assert local is not None
-    local = local.expanduser().resolve()
-    if not local.is_dir() or not any(local.iterdir()):
-        raise SystemExit(f"Local dir missing or empty: {local}")
 
     if not args.token:
         raise SystemExit(
@@ -128,26 +79,51 @@ def main() -> None:
             "(https://www.modelscope.cn/my/myaccesstoken)"
         )
 
-    n_files = sum(1 for f in local.rglob("*") if f.is_file())
-    print(f"Uploading {local} ({n_files} files) -> ModelScope dataset {args.ms_repo}", flush=True)
+    files: list[Path] = []
+    if args.files:
+        files = [f.expanduser().resolve() for f in args.files]
+    elif args.processed_dir or args.local_dir is None:
+        proc = (args.processed_dir or (ROOT / "data" / "processed")).expanduser().resolve()
+        files = [proc / "train.jsonl", proc / "eval.jsonl"]
+        print(f"Using processed pair under {proc}", flush=True)
+    elif args.local_dir is not None:
+        # Legacy whole-folder path
+        local = args.local_dir.expanduser().resolve()
+        if not local.is_dir():
+            raise SystemExit(f"Not a directory: {local}")
+        from modelscope import HubApi
+
+        api = HubApi()
+        api.login(args.token)
+        if not hasattr(api, "upload_folder"):
+            raise SystemExit("HubApi.upload_folder missing; upgrade modelscope")
+        print(f"Uploading entire folder {local} -> {args.ms_repo}", flush=True)
+        api.upload_folder(
+            repo_id=args.ms_repo,
+            folder_path=str(local),
+            path_in_repo="",
+            repo_type="dataset",
+            commit_message=args.commit_message,
+        )
+        print("Upload done.", flush=True)
+        return
+
+    missing = [str(f) for f in files if not f.is_file()]
+    if missing:
+        raise SystemExit("Missing files:\n  " + "\n  ".join(missing))
 
     from modelscope import HubApi
 
     api = HubApi()
     api.login(args.token)
-    if not hasattr(api, "upload_folder"):
-        raise SystemExit(
-            "HubApi.upload_folder missing. Upgrade modelscope, or run:\n"
-            f"  ms upload {args.ms_repo} {local} --repo-type dataset"
-        )
-    api.upload_folder(
+    _upload_files(
+        api,
         repo_id=args.ms_repo,
-        folder_path=str(local),
-        path_in_repo="",
-        repo_type="dataset",
+        files=files,
         commit_message=args.commit_message,
     )
     print("Upload done.", flush=True)
+    print("Repo files should include: train.jsonl, eval.jsonl", flush=True)
 
 
 if __name__ == "__main__":
