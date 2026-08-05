@@ -95,6 +95,9 @@ def _upload_file_to_bailian(
         f"Uploading {path.name} ({size_mb:.1f} MiB) → {files_url} ...",
         flush=True,
     )
+    # PrivateLink default ep-* hosts are HTTP-only; following a redirect to HTTPS
+    # fails with SSL hostname mismatch on the ep-*.privatelink name.
+    allow_redirects = not files_url.lower().startswith("http://")
     with path.open("rb") as fh:
         files = {"files": (path.name, fh, "application/jsonl")}
         data = {"purpose": purpose}
@@ -106,6 +109,16 @@ def _upload_file_to_bailian(
             files=files,
             data=data,
             timeout=3600,
+            allow_redirects=allow_redirects,
+        )
+    if resp.is_redirect or resp.status_code in {301, 302, 303, 307, 308}:
+        loc = resp.headers.get("Location", "")
+        raise SystemExit(
+            f"HTTP {resp.status_code} redirect → {loc}\n"
+            "PrivateLink default ep-* domain is HTTP-only; do not use HTTPS on it.\n"
+            "Prefer the custom service domain (HTTPS):\n"
+            "  --base-url https://vpc-cn-beijing.dashscope.aliyuncs.com\n"
+            "Or keep http://ep-… and ensure the endpoint does not redirect."
         )
     try:
         payload = resp.json()
