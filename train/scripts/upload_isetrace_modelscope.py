@@ -31,17 +31,48 @@ def _upload_files(api, *, repo_id: str, files: list[Path], commit_message: str) 
             "HubApi.upload_file missing. Upgrade modelscope, or run for each file:\n"
             f"  ms upload {repo_id} <file> --repo-type dataset"
         )
+    import threading
+    import time
+
     for path in files:
         remote_name = path.name
-        size_gb = path.stat().st_size / (1024**3)
+        size = path.stat().st_size
+        size_gb = size / (1024**3)
         print(f"Uploading {path} ({size_gb:.2f} GiB) -> {repo_id}/{remote_name}", flush=True)
-        api.upload_file(
-            path_or_fileobj=str(path),
-            path_in_repo=remote_name,
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"{commit_message}: {remote_name}",
+        print(
+            "Note: ModelScope first SHA256-hashes the whole file (often NO bar). "
+            "After hashing finishes you should see a tqdm like `[Uploading] train.jsonl`. "
+            f"For ~{size_gb:.0f} GiB this silent hash can take many minutes.",
+            flush=True,
         )
+
+        stop = threading.Event()
+
+        def _heartbeat() -> None:
+            t0 = time.time()
+            while not stop.wait(30.0):
+                elapsed = int(time.time() - t0)
+                print(
+                    f"  ... still working on {remote_name} ({elapsed}s elapsed; "
+                    "hashing or uploading)",
+                    flush=True,
+                )
+
+        hb = threading.Thread(target=_heartbeat, daemon=True)
+        hb.start()
+        try:
+            api.upload_file(
+                path_or_fileobj=str(path),
+                path_in_repo=remote_name,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"{commit_message}: {remote_name}",
+                disable_tqdm=False,
+            )
+        finally:
+            stop.set()
+            hb.join(timeout=1.0)
+        print(f"Finished {remote_name}", flush=True)
 
 
 def main() -> None:
