@@ -138,7 +138,8 @@ def main() -> None:
         default=1,
         help="Only with --expand-prefixes: keep every k-th prefix length",
     )
-    p.add_argument("--seed", type=int, default=42)    p.add_argument("--also-shuffled-control", action="store_true", default=True)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--also-shuffled-control", action="store_true", default=True)
     p.add_argument("--no-shuffled-control", action="store_false", dest="also_shuffled_control")
     p.add_argument(
         "--obs-pool-size",
