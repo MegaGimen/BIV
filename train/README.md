@@ -132,17 +132,23 @@ pip install requests python-dotenv pyyaml tqdm
 python scripts/upload_bailian.py
 python scripts/upload_bailian.py --reuse-shards
 python scripts/upload_bailian.py --upload-only   # reuse export_bailian/*.jsonl
+# PrivateLink (run on ECS in the endpoint VPC; default ep-* host is HTTP-only):
+python scripts/upload_bailian.py --reuse-shards \
+  --base-url http://ep-xxxx.dashscope.cn-beijing.privatelink.aliyuncs.com
+# or .env DASHSCOPE_BASE_URL=... / DASHSCOPE_FILES_URL=.../api/v1/files
 ```
 
 Create fine-tune later with:
 `training_datasets` / `validation_datasets` → `data_source_type: file_id`
 ([文档](https://help.aliyun.com/zh/model-studio/create-fine-tuning-job-api)).
+Console「数据管理」单次上传约 10 个文件；大量 `file_id` 请用 **API 创建调优任务**
+（`training_datasets` 数组可列多项），勿指望面板勾选上百个分片。
 
 官方上传：https://help.aliyun.com/zh/model-studio/upload-file-api
 
 ### 2c-legacy) Optional: upload via Aliyun OSS
 
-See `scripts/upload.py` + `configs/oss.yaml` (Beijing internal). Prefer 2c above.
+See `scripts/upload.py` + `configs/oss.yaml` (Ulanqab internal by default).
 
 ### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)
 

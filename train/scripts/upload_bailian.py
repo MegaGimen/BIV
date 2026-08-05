@@ -8,13 +8,16 @@ Docs:
 Flow:
   1) Export messages-only JSONL (or reuse export_bailian/)
   2) Split into ≤ shard_max_mb (default 190; API fine-tune limit is 300MB)
-  3) POST multipart to https://dashscope.aliyuncs.com/api/v1/files  purpose=fine-tune
+  3) POST multipart to Files API purpose=fine-tune
   4) Write file_id manifest for creating a fine-tune job later
 
   cd train
   # train/.env must contain DASHSCOPE_API_KEY=
-  python scripts/upload_bailian.py
   python scripts/upload_bailian.py --reuse-shards
+  # PrivateLink (same VPC as endpoint; default ep-* host is HTTP-only):
+  python scripts/upload_bailian.py --reuse-shards \\
+    --base-url http://ep-xxxx.dashscope.cn-beijing.privatelink.aliyuncs.com
+  # or in .env: DASHSCOPE_BASE_URL=http://ep-.... / DASHSCOPE_FILES_URL=.../api/v1/files
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from upload import (  # noqa: E402
     _split_jsonl_shards,
 )
 
-DASHSCOPE_FILES_URL = "https://dashscope.aliyuncs.com/api/v1/files"
+DEFAULT_FILES_URL = "https://dashscope.aliyuncs.com/api/v1/files"
 
 
 def _require_dashscope_key() -> str:
@@ -48,10 +51,32 @@ def _require_dashscope_key() -> str:
     return key
 
 
+def _resolve_files_url(*, base_url: str | None = None) -> str:
+    """Resolve Files API URL (public or PrivateLink).
+
+    Precedence:
+      1) --base-url CLI / DASHSCOPE_BASE_URL → {base}/api/v1/files
+      2) DASHSCOPE_FILES_URL → full files endpoint
+      3) public https://dashscope.aliyuncs.com/api/v1/files
+    """
+    explicit = (os.environ.get("DASHSCOPE_FILES_URL") or "").strip()
+    base = (base_url or os.environ.get("DASHSCOPE_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        if base.endswith("/api/v1/files"):
+            return base
+        if base.endswith("/api/v1"):
+            return f"{base}/files"
+        return f"{base}/api/v1/files"
+    if explicit:
+        return explicit.rstrip("/")
+    return DEFAULT_FILES_URL
+
+
 def _upload_file_to_bailian(
     path: Path,
     *,
     api_key: str,
+    files_url: str,
     purpose: str = "fine-tune",
     description: str = "",
 ) -> dict:
@@ -66,14 +91,17 @@ def _upload_file_to_bailian(
             f"{path} is {size_mb:.1f} MiB > Bailian fine-tune limit 300MB. "
             "Lower --shard-max-mb."
         )
-    print(f"Uploading {path.name} ({size_mb:.1f} MiB) → Bailian Files API ...", flush=True)
+    print(
+        f"Uploading {path.name} ({size_mb:.1f} MiB) → {files_url} ...",
+        flush=True,
+    )
     with path.open("rb") as fh:
         files = {"files": (path.name, fh, "application/jsonl")}
         data = {"purpose": purpose}
         if description:
             data["descriptions"] = description
         resp = requests.post(
-            DASHSCOPE_FILES_URL,
+            files_url,
             headers={"Authorization": f"Bearer {api_key}"},
             files=files,
             data=data,
@@ -137,10 +165,23 @@ def main() -> None:
         type=Path,
         default=ROOT / "data" / "export_bailian" / "bailian_file_ids.json",
     )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help=(
+            "DashScope API base (no trailing path), e.g. PrivateLink "
+            "http://ep-….dashscope.cn-beijing.privatelink.aliyuncs.com "
+            "or https://vpc-cn-beijing.dashscope.aliyuncs.com. "
+            "Also: DASHSCOPE_BASE_URL / DASHSCOPE_FILES_URL in .env"
+        ),
+    )
     args = parser.parse_args()
 
     _load_dotenv()
     api_key = _require_dashscope_key()
+    files_url = _resolve_files_url(base_url=args.base_url)
+    print(f"Bailian Files URL: {files_url}", flush=True)
     shard_max_bytes = args.shard_max_mb * 1024 * 1024
 
     out_dir = ROOT / "data" / "export_bailian"
@@ -190,6 +231,7 @@ def main() -> None:
             info = _upload_file_to_bailian(
                 shard,
                 api_key=api_key,
+                files_url=files_url,
                 purpose="fine-tune",
                 description=f"biv-wm {split} {shard.name}",
             )
