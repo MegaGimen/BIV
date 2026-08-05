@@ -8,10 +8,10 @@ Fallback: `--from-jsonl` re-tokenizes processed JSONL (needs transformers).
 
 Examples:
   cd train
-  python scripts/token.py
-  python scripts/token.py --cache-dir outputs/ds_cache/v3_xxxxxxxxxxxx
-  python scripts/token.py --epochs 2 --price-per-k 0.02
-  python scripts/token.py --from-jsonl --processed-dir data/processed
+  python scripts/count_tokens.py
+  python scripts/count_tokens.py --cache-dir outputs/ds_cache/v3_xxxxxxxxxxxx
+  python scripts/count_tokens.py --epochs 2 --price-per-k 0.02
+  python scripts/count_tokens.py --from-jsonl --processed-dir data/processed
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _pick_cache_dir(explicit: Path | None, cache_root: Path) -> Path:
         raise SystemExit(
             f"No ds_cache under {cache_root}.\n"
             "Build with: python scripts/train_sft.py --config configs/default.yaml\n"
-            "Or: python scripts/token.py --from-jsonl\n"
+            "Or: python scripts/count_tokens.py --from-jsonl\n"
             "Or: --cache-dir path/to/v3_<fingerprint>"
         )
 
@@ -69,7 +69,13 @@ def _count_train_ready(
     try:
         from datasets import load_from_disk
     except ImportError as exc:
-        raise SystemExit("Missing datasets. pip install datasets") from exc
+        raise SystemExit(
+            f"datasets import failed: {exc!r}
+"
+            "If this script is named token.py, rename it (shadows stdlib/deps).
+"
+            "Otherwise: pip install datasets (same venv as train_sft)."
+        ) from exc
 
     ds = load_from_disk(str(train_ready))
     if "input_ids" not in ds.column_names:
@@ -138,7 +144,7 @@ def _count_jsonl(
     except Exception as exc:  # noqa: BLE001 — show real import failure
         raise SystemExit(
             f"Cannot import transformers AutoTokenizer ({exc!r}).\n"
-            "Prefer ds_cache instead: python scripts/token.py\n"
+            "Prefer ds_cache instead: python scripts/count_tokens.py\n"
             "Or fix venv / use same env as train_sft."
         ) from exc
 
