@@ -24,6 +24,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _tqdm(iterable=None, **kwargs):
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable if iterable is not None else _NoopBar()
+    return tqdm(iterable, **kwargs) if iterable is not None else tqdm(**kwargs)
+
+
+class _NoopBar:
+    def update(self, n: int = 1) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
 def _iter_ready_dirs(cache_root: Path) -> list[Path]:
     out: list[Path] = []
     if not cache_root.exists():
@@ -97,26 +119,35 @@ def _count_train_ready(
     max_seen = 0
     batch_size = 1024
 
-    for start in range(0, n, batch_size):
-        batch = ds[start : start + batch_size]
-        ids_batch = batch["input_ids"]
-        mask_batch = batch["attention_mask"] if has_mask else None
-        labels_batch = batch["labels"] if has_labels else None
-        for i, ids in enumerate(ids_batch):
-            if mask_batch is not None:
-                tok = int(sum(1 for x in mask_batch[i] if x))
-            else:
-                tok = len(ids)
-            total += tok
-            max_seen = max(max_seen, tok)
-            if max_length is not None and tok > max_length:
-                dropped_rows += 1
-                continue
-            billable += tok
-            if labels_batch is not None:
-                supervised += sum(1 for t in labels_batch[i] if t != -100)
-        if (start // batch_size) % 20 == 0:
-            print(f"  … {min(start + batch_size, n):,}/{n:,} rows", flush=True)
+    pbar = _tqdm(total=n, desc="count tokens", unit="ex", dynamic_ncols=True)
+    try:
+        for start in range(0, n, batch_size):
+            batch = ds[start : start + batch_size]
+            ids_batch = batch["input_ids"]
+            mask_batch = batch["attention_mask"] if has_mask else None
+            labels_batch = batch["labels"] if has_labels else None
+            for i, ids in enumerate(ids_batch):
+                if mask_batch is not None:
+                    tok = int(sum(1 for x in mask_batch[i] if x))
+                else:
+                    tok = len(ids)
+                total += tok
+                max_seen = max(max_seen, tok)
+                if max_length is not None and tok > max_length:
+                    dropped_rows += 1
+                    continue
+                billable += tok
+                if labels_batch is not None:
+                    supervised += sum(1 for t in labels_batch[i] if t != -100)
+            pbar.update(len(ids_batch))
+            pbar.set_postfix(
+                tokens=f"{total:,}",
+                billable=f"{billable:,}",
+                drop=dropped_rows,
+                refresh=False,
+            )
+    finally:
+        pbar.close()
 
     kept = n - dropped_rows
     return {
@@ -169,7 +200,11 @@ def _count_jsonl(
         billable = 0
         drop = 0
         with path.open(encoding="utf-8") as f:
-            for line in f:
+            n_lines = sum(1 for _ in f)
+        with path.open(encoding="utf-8") as f:
+            for line in _tqdm(
+                f, total=n_lines, desc=f"jsonl {name}", unit="ln", dynamic_ncols=True
+            ):
                 line = line.strip()
                 if not line:
                     continue
@@ -182,14 +217,14 @@ def _count_jsonl(
                         tokenize=False,
                         add_generation_prompt=False,
                     )
-                n = len(tok.encode(text, add_special_tokens=False))
+                ntok = len(tok.encode(text, add_special_tokens=False))
                 rows += 1
-                total += n
-                max_seen = max(max_seen, n)
-                if max_length is not None and n > max_length:
+                total += ntok
+                max_seen = max(max_seen, ntok)
+                if max_length is not None and ntok > max_length:
                     drop += 1
                 else:
-                    billable += n
+                    billable += ntok
         per.append({"split": name, "rows": rows, "tokens": total, "billable": billable})
         grand_rows += rows
         grand_total += total
