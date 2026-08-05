@@ -1,0 +1,62 @@
+# Target: peak training VRAM roughly ≤20GB (9B, seq 8k).
+# QLoRA 4-bit base + LoRA; micro-batch 1; accum 16 → effective batch ~16
+# (same update size as bf16 8×2 / 2×8 recipes).
+#
+# Usage:
+#   python scripts/train_sft.py --config configs/qlora_20gb.yaml
+#
+# Notes:
+# - Quantization ≠ identical to bf16 LoRA (small quality gap possible).
+# - ds_cache keys ignore load_in_4bit / batch; tokenize+mask cache still hits.
+# - If still >20GB: set max_seq_length: 4096 (will miss ds_cache) or shorten packing.
+
+model:
+  name: Qwen/Qwen3.5-9B
+  source: huggingface
+  max_seq_length: 8192
+  load_in_4bit: true
+  load_in_16bit: false
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+data:
+  train_file: data/processed/train.jsonl
+  eval_file: data/processed/eval.jsonl
+  control_train_file: data/processed/train_shuffled.jsonl
+  packing: false
+  ds_cache_dir: outputs/ds_cache
+
+train:
+  output_dir: outputs/wm_sft_qlora20
+  seed: 42
+  num_train_epochs: 2
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16   # effective batch ~16
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  logging_steps: 10
+  eval_steps: 200
+  save_steps: 35
+  save_total_limit: 3
+  lr_scheduler_type: cosine
+  optim: adamw_8bit
+  bf16: true
+  report_to: tensorboard
+  instruction_part: "<|im_start|>user\n"
+  response_part: "<|im_start|>assistant\n"
+
+eval:
+  max_new_tokens: 1024
+  temperature: 0.0
+  max_samples: 200
