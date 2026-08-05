@@ -146,6 +146,17 @@ Console「数据管理」单次上传约 10 个文件；大量 `file_id` 请用 
 
 官方上传：https://help.aliyun.com/zh/model-studio/upload-file-api
 
+费用粗估（本地 `outputs/ds_cache/*/train_ready` Token × epoch × 单价）：
+
+```bash
+python scripts/cost.py
+python scripts/cost.py --epochs 1 --max-length 8192 --price-per-k 0.02
+# 若开启百炼「混合训练」data_augmentation（额外预置语料也计费）:
+python scripts/cost.py --mix-ratios 0.1,0.05,0.15
+```
+
+`qwen3.5-9b` 列表价约 ¥0.02/千Token（以官方计费页为准）。混合训练说明见 `scripts/cost.py` 文档字符串。
+
 ### 2c-legacy) Optional: upload via Aliyun OSS
 
 See `scripts/upload.py` + `configs/oss.yaml` (Ulanqab internal by default).
