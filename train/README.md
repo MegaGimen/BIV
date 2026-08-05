@@ -67,12 +67,15 @@ Configs default to `model.source: huggingface` (`Qwen/Qwen3.5-9B`).
 # modelscope login --token $MODELSCOPE_API_TOKEN
 ```
 
-Upload HF → ModelScope (on a server that can reach HuggingFace):
+Upload existing local data → ModelScope (no re-download):
 
 ```bash
 export MODELSCOPE_API_TOKEN=ms-xxxxxxxx
-# optional: export HF_ENDPOINT=https://hf-mirror.com
-python scripts/upload_isetrace_modelscope.py --ms-repo LambdaLinker/ISETrace
+# list guessed HF hub snapshots, or point at processed JSONL:
+python scripts/upload_isetrace_modelscope.py --list-guesses
+python scripts/upload_isetrace_modelscope.py \
+  --local-dir data/processed \
+  --ms-repo LambdaLinker/ISETrace
 ```
 
 ## Pipeline
