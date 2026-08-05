@@ -1,4 +1,9 @@
-"""Trajectory loaders and JSONL writers for world-model SFT."""
+"""Trajectory loaders and JSONL writers for world-model SFT (SWE-Hero native).
+
+Primary corpus: ModelScope ``nv-community/SWE-Hero-openhands-trajectories``
+(OpenHands tool I/O). ISETrace is **not** wired in yet — see AGENTS.md future TODO
+for a conversion layer when / if we mix OS-agent traces.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,12 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from biv_wm.formatting import sample_to_chat_dict
+
+# OpenHands tools that are not real environment transitions for WM SFT.
+WM_SKIP_TOOLS = frozenset({"think", "finish"})
+
+DEFAULT_SWE_HERO_MS = "nv-community/SWE-Hero-openhands-trajectories"
+DEFAULT_SWE_HERO_HF = "nvidia/SWE-Hero-openhands-trajectories"
 
 
 def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -39,7 +50,7 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 
 def normalize_turn(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize heterogeneous tool-turn schemas into a single shape."""
+    """Normalize a single (tool, args, observation) dict."""
     tool = raw.get("tool") or raw.get("name") or raw.get("tool_name")
     if not tool and "function" in raw:
         fn = raw["function"]
@@ -50,6 +61,8 @@ def normalize_turn(raw: dict[str, Any]) -> dict[str, Any] | None:
                 "arguments": fn.get("arguments", raw.get("arguments")),
             }
     if not tool:
+        return None
+    if str(tool) in WM_SKIP_TOOLS:
         return None
 
     args = (
@@ -75,6 +88,8 @@ def normalize_turn(raw: dict[str, Any]) -> dict[str, Any] | None:
     if is_error is None and isinstance(obs, dict):
         is_error = obs.get("isError")
         obs = obs.get("output", obs)
+    if is_error is None and isinstance(obs, str):
+        is_error = _guess_is_error(obs)
 
     return {
         "tool": str(tool),
@@ -84,68 +99,92 @@ def normalize_turn(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _guess_is_error(obs: str) -> bool:
+    low = obs.lower()
+    markers = (
+        "traceback (most recent call last)",
+        "error:",
+        "exception:",
+        "command failed",
+        "no such file or directory",
+        "permission denied",
+    )
+    return any(m in low for m in markers)
+
+
+def extract_turns_from_openai_tool_messages(
+    messages: list[dict[str, Any]],
+    *,
+    skip_tools: frozenset[str] = WM_SKIP_TOOLS,
+) -> list[dict[str, Any]]:
+    """Pair assistant.tool_calls with following role=tool messages → WM turns.
+
+    Used for SWE-Hero ``trajectory`` and any OpenAI-style message log.
+    Non-env tools in ``skip_tools`` drop both the call and its tool reply.
+    """
+    turns: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", tc) if isinstance(tc, dict) else {}
+                if not isinstance(fn, dict):
+                    fn = {}
+                name = fn.get("name")
+                pending.append(
+                    {
+                        "tool": name,
+                        "arguments": fn.get("arguments", {}),
+                        "tool_call_id": tc.get("id") if isinstance(tc, dict) else None,
+                        "_skip": str(name) in skip_tools if name else True,
+                    }
+                )
+        elif role == "tool":
+            matched: dict[str, Any] | None = None
+            tid = msg.get("tool_call_id")
+            if tid:
+                for i, p in enumerate(pending):
+                    if p.get("tool_call_id") == tid:
+                        matched = pending.pop(i)
+                        break
+            if matched is None and pending:
+                matched = pending.pop(0)
+            if matched is None:
+                continue
+            if matched.get("_skip"):
+                continue
+            payload = {
+                "tool": matched.get("tool") or msg.get("name"),
+                "arguments": matched.get("arguments", {}),
+                "observation": msg.get("content", ""),
+            }
+            if "success" in msg and msg["success"] is not None:
+                payload["is_error"] = not bool(msg["success"])
+            elif "is_error" in msg or "isError" in msg:
+                payload["is_error"] = msg.get("is_error", msg.get("isError"))
+            nt = normalize_turn(payload)
+            if nt:
+                turns.append(nt)
+    return turns
+
+
 def extract_turns_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
-    """Best-effort turn extraction from ISETrace-like or local schemas."""
+    """Extract WM turns from SWE-Hero rows or compact local fixtures."""
+    # SWE-Hero / OpenHands
+    if "trajectory" in record and isinstance(record["trajectory"], list):
+        return extract_turns_from_openai_tool_messages(record["trajectory"])
+
+    # Compact local fixtures: already (tool, args, observation) lists
     if "turns" in record and isinstance(record["turns"], list):
         turns = [normalize_turn(t) for t in record["turns"]]
         return [t for t in turns if t]
 
-    if "tool_calls" in record and "observations" in record:
-        calls = record["tool_calls"]
-        obs = record["observations"]
-        turns = []
-        for c, o in zip(calls, obs):
-            merged = dict(c) if isinstance(c, dict) else {"tool": str(c)}
-            if isinstance(o, dict):
-                merged = {**merged, **o}
-            else:
-                merged["observation"] = o
-            nt = normalize_turn(merged)
-            if nt:
-                turns.append(nt)
-        return turns
-
-    # OpenAI-style messages with tool roles (ISETrace / similar)
+    # OpenAI messages without the SWE-Hero wrapper key
     if "messages" in record and isinstance(record["messages"], list):
-        turns: list[dict[str, Any]] = []
-        pending: list[dict[str, Any]] = []
-        for msg in record["messages"]:
-            role = msg.get("role")
-            if role == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    fn = tc.get("function", tc)
-                    pending.append(
-                        {
-                            "tool": fn.get("name"),
-                            "arguments": fn.get("arguments", {}),
-                            "tool_call_id": tc.get("id"),
-                        }
-                    )
-            elif role == "tool":
-                matched: dict[str, Any] | None = None
-                tid = msg.get("tool_call_id")
-                if tid:
-                    for i, p in enumerate(pending):
-                        if p.get("tool_call_id") == tid:
-                            matched = pending.pop(i)
-                            break
-                if matched is None and pending:
-                    matched = pending.pop(0)
-                payload = {
-                    **(matched or {}),
-                    "tool": (matched or {}).get("tool") or msg.get("name"),
-                    "observation": msg.get("content", ""),
-                }
-                if "success" in msg and msg["success"] is not None:
-                    payload["is_error"] = not bool(msg["success"])
-                elif "is_error" in msg or "isError" in msg:
-                    payload["is_error"] = msg.get("is_error", msg.get("isError"))
-                nt = normalize_turn(payload)
-                if nt:
-                    turns.append(nt)
-        return turns
+        return extract_turns_from_openai_tool_messages(record["messages"])
 
-    # Single-step record
     nt = normalize_turn(record)
     return [nt] if nt else []
 
@@ -157,7 +196,7 @@ def expand_trajectory_samples(
     max_prefix: int | None = None,
     every_k: int = 1,
 ) -> list[list[dict[str, Any]]]:
-    """Create causal prefixes: turns[:1], turns[:2], ... (environment consistency)."""
+    """Causal prefixes: turns[:1], turns[:2], ..."""
     if not turns:
         return []
     last = len(turns) if max_prefix is None else min(max_prefix, len(turns))
@@ -179,7 +218,7 @@ def iter_sft_rows_from_turns(
     obs_pool: list[str] | None = None,
     rng: random.Random | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield SFT chat rows for one trajectory (constant memory aside from `turns`)."""
+    """Yield SFT chat rows for one trajectory."""
     rng = rng or random.Random(0)
     for prefix in expand_trajectory_samples(
         turns, min_turns=min_turns, max_prefix=max_prefix, every_k=every_k
@@ -245,35 +284,25 @@ def load_local_trajectories(path: Path) -> list[dict[str, Any]]:
     return list(_read_jsonl(path))
 
 
-DEFAULT_ISETRACE_MS = "LambdaLinker/ISETrace"
-DEFAULT_ISETRACE_HF = "valiere/ISETrace"
-
-
-def open_isetrace_dataset(
-    config: str = "trajectories",
+def open_swe_hero_dataset(
     split: str = "train",
     max_rows: int | None = None,
     *,
     source: str = "modelscope",
     repo_id: str | None = None,
 ):
-    """Return a HF Dataset (Arrow / memory-mapped). Does NOT call to_list().
-
-    source:
-      - modelscope (default): download via ModelScope then load with datasets
-      - huggingface: load_dataset hub id directly
-    """
+    """Return a HF Dataset for SWE-Hero (Arrow / mmap). Does NOT call to_list()."""
     from datasets import DatasetDict, load_dataset
 
     src = (source or "modelscope").strip().lower()
     if src in {"modelscope", "ms"}:
-        rid = repo_id or DEFAULT_ISETRACE_MS
-        ds = _load_isetrace_modelscope(rid, config=config, split=split)
+        rid = repo_id or DEFAULT_SWE_HERO_MS
+        ds = _load_swe_hero_modelscope(rid, split=split)
     elif src in {"huggingface", "hf"}:
-        rid = repo_id or DEFAULT_ISETRACE_HF
-        ds = load_dataset(rid, name=config, split=split)
+        rid = repo_id or DEFAULT_SWE_HERO_HF
+        ds = load_dataset(rid, split=split)
     else:
-        raise ValueError(f"Unknown ISETrace source={source!r}; use modelscope|huggingface")
+        raise ValueError(f"Unknown SWE-Hero source={source!r}; use modelscope|huggingface")
 
     if isinstance(ds, DatasetDict):
         key = split if split in ds else next(iter(ds.keys()))
@@ -283,8 +312,8 @@ def open_isetrace_dataset(
     return ds
 
 
-def _load_isetrace_modelscope(repo_id: str, *, config: str, split: str):
-    """Prefer snapshot + HF datasets (mirrors HF layout); fall back to MsDataset.load."""
+def _load_swe_hero_modelscope(repo_id: str, *, split: str):
+    """ModelScope snapshot → datasets.load_dataset; fall back to MsDataset.load."""
     from datasets import Dataset, DatasetDict, load_dataset
 
     local_dir = None
@@ -292,7 +321,7 @@ def _load_isetrace_modelscope(repo_id: str, *, config: str, split: str):
     try:
         try:
             from modelscope.hub.snapshot_download import dataset_snapshot_download
-        except ImportError:  # older SDK
+        except ImportError:
             from modelscope import dataset_snapshot_download  # type: ignore
 
         print(f"ModelScope dataset_snapshot_download: {repo_id}", flush=True)
@@ -306,18 +335,18 @@ def _load_isetrace_modelscope(repo_id: str, *, config: str, split: str):
 
     if local_dir is not None:
         try:
-            return load_dataset(str(local_dir), name=config, split=split)
+            return load_dataset(str(local_dir), split=split)
         except Exception as exc:  # noqa: BLE001
             print(
-                f"load_dataset({local_dir}, name={config!r}) failed ({exc!r}); "
+                f"load_dataset({local_dir}, split={split!r}) failed ({exc!r}); "
                 "trying MsDataset.load",
                 flush=True,
             )
 
     from modelscope.msdatasets import MsDataset
 
-    print(f"MsDataset.load({repo_id!r}, subset_name={config!r}, split={split!r})", flush=True)
-    raw = MsDataset.load(repo_id, subset_name=config, split=split)
+    print(f"MsDataset.load({repo_id!r}, split={split!r})", flush=True)
+    raw = MsDataset.load(repo_id, split=split)
     if hasattr(raw, "to_hf_dataset"):
         out = raw.to_hf_dataset()
     elif isinstance(raw, (Dataset, DatasetDict)):
@@ -325,32 +354,12 @@ def _load_isetrace_modelscope(repo_id: str, *, config: str, split: str):
     else:
         raise TypeError(
             f"Unsupported MsDataset result type {type(raw)!r} for {repo_id}. "
-            f"snapshot_error={snap_err!r}. Upload a HF-compatible dataset layout "
-            "(parquet + dataset_infos) to ModelScope."
+            f"snapshot_error={snap_err!r}."
         )
     if isinstance(out, DatasetDict):
         key = split if split in out else next(iter(out.keys()))
         return out[key]
     return out
-
-
-def try_load_isetrace(
-    config: str = "trajectories",
-    split: str = "train",
-    max_rows: int | None = None,
-    *,
-    source: str = "modelscope",
-    repo_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Deprecated for full corpus: materializes rows. Prefer open_isetrace_dataset()."""
-    ds = open_isetrace_dataset(
-        config=config,
-        split=split,
-        max_rows=max_rows,
-        source=source,
-        repo_id=repo_id,
-    )
-    return [ds[i] for i in range(len(ds))]
 
 
 def reservoir_add(

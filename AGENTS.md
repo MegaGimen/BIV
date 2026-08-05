@@ -79,10 +79,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip && pip install -r requirements.txt
 # Optional Qwen3.5 fast kernels (match nvcc to torch.version.cuda; see train/README.md §2b)
 
-# Data: streams one trajectory at a time (avoid full-corpus to_list OOM)
-# ISETrace default: ModelScope `LambdaLinker/ISETrace` (mirror of HF valiere/ISETrace)
-python scripts/prepare_data.py --isetrace --out-dir data/processed --eval-ratio 0.05
-# HF fallback: --isetrace-source huggingface  (optional: export HF_ENDPOINT=https://hf-mirror.com)
+# Data: streams one SWE-Hero trajectory at a time (avoid full-corpus to_list OOM)
+# Default: ModelScope `nv-community/SWE-Hero-openhands-trajectories`
+python scripts/prepare_data.py --swe-hero --out-dir data/processed --eval-ratio 0.05
+# HF fallback: --swe-hero-source huggingface  (optional: export HF_ENDPOINT=https://hf-mirror.com)
 
 huggingface-cli login   # or: hf auth login
 
@@ -105,13 +105,25 @@ python scripts/eval_wm.py --config configs/pilot.yaml
 
 ### Data
 
-Primary corpus: **ISETrace** — multi-turn OS-agent trajectories with **real** tool execution
-([paper](https://arxiv.org/abs/2606.11520), [code](https://github.com/Valiere01/ISE-Trace)).
-Default download: ModelScope [`LambdaLinker/ISETrace`](https://www.modelscope.cn/datasets/LambdaLinker/ISETrace)
-(mirror of HuggingFace [`valiere/ISETrace`](https://huggingface.co/datasets/valiere/ISETrace)).
-Domains include `code-runtime`, `file-io`, `system-infrastructure`, etc.
+Primary corpus: **SWE-Hero OpenHands trajectories** — execution-grounded SWE agent tool I/O
+for next-observation WM SFT
+([HF mirror](https://huggingface.co/datasets/nvidia/SWE-Hero-openhands-trajectories),
+[paper](https://arxiv.org/abs/2604.01496)).
+Default download: ModelScope
+[`nv-community/SWE-Hero-openhands-trajectories`](https://www.modelscope.cn/datasets/nv-community/SWE-Hero-openhands-trajectories).
 
-`prepare_data.py` extracts tool turns → causal prefixes → chat JSONL (`data/processed/`). That JSONL is what `train_sft.py` consumes.
+`prepare_data.py` keeps OpenHands tool names (`execute_bash`, `str_replace_editor`, …),
+drops non-env tools (`think`, `finish`), expands causal prefixes → chat JSONL
+(`data/processed/`). That JSONL is what `train_sft.py` consumes.
+
+### Future TODO (training data)
+
+- [ ] **ISETrace (OS-agent) as an optional second corpus:** when adding
+  [ISETrace](https://huggingface.co/datasets/valiere/ISETrace) / ModelScope mirrors into
+  training, implement a **conversion layer** that maps ISE tool schemas (`exec` / `read` /
+  `write` / …) into the current OpenHands-native WM turn format (or a shared canonical
+  action space). Do **not** mix raw ISE messages into prepare without that adapter.
+  Skeleton location (when implemented): `train/src/biv_wm/adapters/isetrace.py` + prepare flag.
 
 ### Evaluation protocol (hypothesis)
 

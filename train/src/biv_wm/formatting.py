@@ -10,11 +10,12 @@ from typing import Any
 
 # Short, domain-agnostic system prompt (language world-model style).
 DEFAULT_WM_SYSTEM = (
-    "You are an environment dynamics model for a coding agent. "
-    "Given the interaction history and the agent's latest tool call, "
+    "You are an environment dynamics model for an OpenHands-style coding agent. "
+    "Given the interaction history and the agent's latest tool call "
+    "(e.g. execute_bash, str_replace_editor), "
     "predict the exact tool observation that a real sandbox would return. "
     "Stay faithful to prior state; do not invent contradictions. "
-    "Reply with only the tool observation text."
+    "Reply with only the tool observation JSON."
 )
 
 

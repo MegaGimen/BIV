@@ -60,21 +60,20 @@ Configs default to `model.source: huggingface` (`Qwen/Qwen3.5-9B`).
 | Asset | Where |
 |-------|--------|
 | **Qwen/Qwen3.5-9B** | HuggingFace (or set `source: modelscope`) |
-| **ISETrace** | ModelScope `LambdaLinker/ISETrace` via `--isetrace` (HF: `--isetrace-source huggingface`) |
+| **SWE-Hero** | ModelScope `nv-community/SWE-Hero-openhands-trajectories` via `--swe-hero` |
 
 ```bash
-# optional: ModelScope login for private datasets
-# modelscope login --token $MODELSCOPE_API_TOKEN
+# optional CN HF mirror if using --swe-hero-source huggingface
+# export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-Upload existing local data → ModelScope (**only** `train.jsonl` + `eval.jsonl`):
+Upload processed train/eval JSONL to your own ModelScope dataset (optional):
 
 ```bash
 export MODELSCOPE_API_TOKEN=ms-xxxxxxxx
-python scripts/upload_isetrace_modelscope.py --processed-dir data/processed
-# equivalent:
-# python scripts/upload_isetrace_modelscope.py \
-#   --files data/processed/train.jsonl data/processed/eval.jsonl
+python scripts/upload_processed_modelscope.py \
+  --processed-dir data/processed \
+  --ms-repo YourOrg/wm-sft-processed
 ```
 
 ## Pipeline
@@ -88,23 +87,24 @@ python scripts/prepare_data.py \
   --local data/examples/sample_trajectories.jsonl \
   --out-dir data/processed
 
-# Real run (needs network): ISETrace from ModelScope (default)
+# Real run (needs network): SWE-Hero from ModelScope (default)
 python scripts/prepare_data.py \
-  --isetrace \
+  --swe-hero \
   --out-dir data/processed \
   --eval-ratio 0.05
 ```
 
-`--isetrace` pulls ~5GB once (ModelScope cache). Without `--isetrace-max-rows` it processes all
-**23,132** trajectories but **does not** load them all into RAM at once. Start with
-`--isetrace-max-rows 2000` for a smoke subset. Legacy alias: `--hf-isetrace`.
+`--swe-hero` pulls the OpenHands trajectory corpus (~2–3GB compressed). Without
+`--swe-hero-max-rows` it processes the full split but **does not** load all rows into RAM.
+Start with `--swe-hero-max-rows 2000` for a smoke subset. HF fallback:
+`--swe-hero-source huggingface`.
 Add more Docker/terminal or SWE execution traces as local JSONL with either:
 
 ```json
-{"turns":[{"tool":"exec","arguments":{"command":"..."},"observation":"...","is_error":false}]}
+{"trajectory":[{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"execute_bash","arguments":"{\"command\":\"echo hi\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"hi\n"}]}
 ```
 
-or OpenAI-style `messages` with `tool_calls` / `role=tool`.
+or compact `turns` with OpenHands tool names (`execute_bash`, `str_replace_editor`).
 
 ### 2) Train (CUDA required)
 

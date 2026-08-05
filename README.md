@@ -40,7 +40,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/smoke_cpu.py          # safe without GPU
 # On a CUDA machine:
-python scripts/prepare_data.py --hf-isetrace --out-dir data/processed
+python scripts/prepare_data.py --swe-hero --out-dir data/processed
 python scripts/train_sft.py --config configs/default.yaml
 ```
 

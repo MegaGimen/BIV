@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU unit checks for dataset formatting (safe on this non-GPU host)."""
+"""CPU unit checks for SWE-Hero-style dataset formatting (safe without GPU)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from biv_wm.data import (  # noqa: E402
+    WM_SKIP_TOOLS,
     extract_turns_from_record,
     load_local_trajectories,
     records_to_sft_rows,
@@ -28,10 +29,17 @@ def main() -> None:
 
     turns0 = extract_turns_from_record(recs[0])
     assert len(turns0) >= 3, turns0
+    # finish / think must be dropped from WM turns
+    assert all(t["tool"] not in WM_SKIP_TOOLS for t in turns0)
+    assert any(t["tool"] == "execute_bash" for t in turns0)
+    assert any(t["tool"] == "str_replace_editor" for t in turns0)
+
     chat = sample_to_chat_dict(turns0, up_to=2)
     assert chat["messages"][0]["role"] == "system"
     assert chat["messages"][-1]["role"] == "assistant"
     assert "isError" in chat["messages"][-1]["content"]
+    user0 = chat["messages"][1]["content"]
+    assert "str_replace_editor" in user0 or "execute_bash" in user0
 
     rows = records_to_sft_rows(recs, min_turns=1)
     assert len(rows) > len(recs)
@@ -50,10 +58,6 @@ def main() -> None:
         n = write_jsonl(out, rows[:5])
         assert n == 5
         assert out.exists()
-
-    # messages-schema record
-    msg_rec = [r for r in recs if "messages" in r][0]
-    assert extract_turns_from_record(msg_rec)
 
     print(json.dumps({"ok": True, "n_records": len(recs), "n_rows": len(rows)}, indent=2))
 

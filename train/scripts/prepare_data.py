@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare world-model SFT JSONL from local trajectories and/or ISETrace.
+"""Prepare world-model SFT JSONL from local trajectories and/or SWE-Hero.
 
 Streams one trajectory at a time (no full-corpus to_list) to avoid RAM blowups.
 
@@ -10,11 +10,11 @@ Examples:
       --out-dir data/processed
 
   python scripts/prepare_data.py \\
-      --isetrace --isetrace-max-rows 2000 \\
+      --swe-hero --swe-hero-max-rows 2000 \\
       --out-dir data/processed --eval-ratio 0.05
 
-  # HuggingFace fallback:
-  python scripts/prepare_data.py --isetrace --isetrace-source huggingface
+  # HuggingFace fallback (same schema as ModelScope mirror):
+  python scripts/prepare_data.py --swe-hero --swe-hero-source huggingface
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from biv_wm.data import (  # noqa: E402
     extract_turns_from_record,
     iter_sft_rows_from_turns,
     load_local_trajectories,
-    open_isetrace_dataset,
+    open_swe_hero_dataset,
     reservoir_add,
 )
 
@@ -99,32 +99,23 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--local", type=Path, nargs="*", default=[], help="Local json/jsonl trajectory files")
     p.add_argument(
-        "--isetrace",
-        "--hf-isetrace",
-        dest="isetrace",
+        "--swe-hero",
         action="store_true",
-        help="Load ISETrace trajectories (default: ModelScope LambdaLinker/ISETrace)",
+        help="Load SWE-Hero OpenHands trajectories (default: ModelScope nv-community/...)",
     )
     p.add_argument(
-        "--isetrace-source",
+        "--swe-hero-source",
         choices=["modelscope", "huggingface"],
         default="modelscope",
-        help="Hub to load ISETrace from (default: modelscope)",
+        help="Hub for SWE-Hero (default: modelscope)",
     )
     p.add_argument(
-        "--isetrace-repo",
+        "--swe-hero-repo",
         default=None,
-        help="Override repo id (default: LambdaLinker/ISETrace or valiere/ISETrace)",
+        help="Override repo id (default MS: nv-community/SWE-Hero-openhands-trajectories)",
     )
-    p.add_argument("--isetrace-config", "--hf-config", dest="isetrace_config", default="trajectories")
-    p.add_argument("--isetrace-split", "--hf-split", dest="isetrace_split", default="train")
-    p.add_argument(
-        "--isetrace-max-rows",
-        "--hf-max-rows",
-        dest="isetrace_max_rows",
-        type=int,
-        default=None,
-    )
+    p.add_argument("--swe-hero-split", default="train")
+    p.add_argument("--swe-hero-max-rows", type=int, default=None)
     p.add_argument("--out-dir", type=Path, default=ROOT / "data" / "processed")
     p.add_argument("--eval-ratio", type=float, default=0.05)
     p.add_argument("--min-turns", type=int, default=1)
@@ -154,29 +145,27 @@ def main() -> None:
     for path in args.local:
         sources.append(("local", load_local_trajectories(path)))
 
-    if args.isetrace:
-        if args.isetrace_source == "huggingface" and not os.environ.get("HF_ENDPOINT"):
+    if args.swe_hero:
+        if args.swe_hero_source == "huggingface" and not os.environ.get("HF_ENDPOINT"):
             print(
                 "Tip: for CN HF download set: export HF_ENDPOINT=https://hf-mirror.com",
                 flush=True,
             )
         print(
-            f"Opening ISETrace source={args.isetrace_source!r} "
-            f"repo={args.isetrace_repo or '(default)'} "
-            f"name={args.isetrace_config!r} split={args.isetrace_split!r}",
+            f"Opening SWE-Hero source={args.swe_hero_source!r} "
+            f"repo={args.swe_hero_repo or '(default)'} split={args.swe_hero_split!r}",
             flush=True,
         )
-        ds = open_isetrace_dataset(
-            config=args.isetrace_config,
-            split=args.isetrace_split,
-            max_rows=args.isetrace_max_rows,
-            source=args.isetrace_source,
-            repo_id=args.isetrace_repo,
+        ds = open_swe_hero_dataset(
+            split=args.swe_hero_split,
+            max_rows=args.swe_hero_max_rows,
+            source=args.swe_hero_source,
+            repo_id=args.swe_hero_repo,
         )
-        sources.append(("isetrace", ds))
+        sources.append(("swe_hero", ds))
 
     if not sources:
-        raise SystemExit("No records loaded. Pass --local and/or --isetrace.")
+        raise SystemExit("No records loaded. Pass --local and/or --swe-hero.")
 
     for kind, blob in sources:
         if kind == "local":
@@ -187,7 +176,6 @@ def main() -> None:
             n_eval = max(1, int(n * args.eval_ratio)) if n > 1 else 0
             eval_set = set(indices[:n_eval])
 
-            # Reservoir from all local turns first (tiny).
             obs_pool: list[str] = []
             seen = 0
             for rec in records:
@@ -216,7 +204,7 @@ def main() -> None:
             last_obs_pool_size = len(obs_pool)
             continue
 
-        # HuggingFace Dataset: two lightweight passes (index + one row at a time).
+        # HF Dataset: two lightweight passes (index + one row at a time).
         ds = blob
         n = len(ds)
         indices = list(range(n))
@@ -275,12 +263,13 @@ def main() -> None:
         "obs_pool_size": last_obs_pool_size,
         "seed": args.seed,
         "streamed": True,
+        "corpus": "swe_hero_openhands",
         "sources": {
             "local": [str(x) for x in args.local],
-            "isetrace": bool(args.isetrace),
-            "isetrace_source": args.isetrace_source if args.isetrace else None,
-            "isetrace_repo": args.isetrace_repo,
-            "isetrace_max_rows": args.isetrace_max_rows,
+            "swe_hero": bool(args.swe_hero),
+            "swe_hero_source": args.swe_hero_source if args.swe_hero else None,
+            "swe_hero_repo": args.swe_hero_repo,
+            "swe_hero_max_rows": args.swe_hero_max_rows,
         },
     }
     (args.out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
