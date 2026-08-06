@@ -54,14 +54,59 @@ from biv_wm.formatting import (  # noqa: E402
 from biv_wm.hub import open_dataset_with_cache  # noqa: E402
 
 
-def _count_lines(path: Path) -> int:
-    if not path.is_file() or path.stat().st_size == 0:
+def _count_lines(path: Path, *, desc: str | None = None) -> int:
+    """Count lines; show tqdm when the file is large so it never looks hung."""
+    if not path.is_file():
         return 0
+    size = path.stat().st_size
+    if size == 0:
+        return 0
+    label = desc or path.name
+    # Small files: no bar
+    if size < 8 * 1024 * 1024:
+        n = 0
+        with path.open("rb") as f:
+            for _ in f:
+                n += 1
+        return n
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        tqdm = None  # type: ignore[assignment]
+
     n = 0
     with path.open("rb") as f:
-        for _ in f:
-            n += 1
+        if tqdm is None:
+            print(f"  counting lines: {label} ({size / 1e9:.2f} GB)…", flush=True)
+            for _ in f:
+                n += 1
+                if n % 50_000 == 0:
+                    print(f"    … {n:,} lines", flush=True)
+            return n
+        # Byte-based bar (line count unknown a priori)
+        with tqdm(
+            total=size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"count {label}",
+            dynamic_ncols=True,
+        ) as pbar:
+            for line in f:
+                n += 1
+                pbar.update(len(line))
     return n
+
+
+def _train_line_count_from_stats(st: dict[str, Any], train_p: Path) -> int:
+    """Prefer cached counts; only scan the file if missing."""
+    jl = st.get("jsonl_line_counts") or {}
+    if "train" in jl and jl["train"] is not None:
+        return int(jl["train"])
+    written = st.get("written") or {}
+    if "train" in written and written["train"] is not None:
+        return int(written["train"])
+    return _count_lines(train_p, desc=str(train_p))
 
 
 def _fingerprint(payload: dict[str, Any]) -> str:
@@ -192,7 +237,7 @@ def _prepare_wm_openhands(
             )
         del rec
 
-    line_counts = {name: _count_lines(path) for name, path in paths.items()}
+    line_counts = dict(counts)  # one JSONL line per successful write; no recount
     stats = {
         "source": source_tag,
         "kind": kind,
@@ -285,7 +330,7 @@ def _prepare_wm_isetrace(
             )
         del rec
 
-    line_counts = {name: _count_lines(path) for name, path in paths.items()}
+    line_counts = dict(counts)
     stats = {
         "source": SOURCE_WM_OS,
         "kind": "isetrace",
@@ -380,7 +425,7 @@ def _prepare_anti_forget(
             )
         del rec
 
-    line_counts = {name: _count_lines(path) for name, path in paths.items()}
+    line_counts = dict(counts)
     msg_ratio = (
         clip_agg["messages_clipped"] / clip_agg["messages_seen"]
         if clip_agg["messages_seen"]
@@ -422,10 +467,19 @@ def _write_mix_manifest(
     }
     for name in stats:
         sub = out_root / name
+        cached = stats[name].get("jsonl_line_counts") or {}
+        written = stats[name].get("written") or {}
         for split in ("train", "eval", "train_shuffled", "eval_shuffled"):
             p = sub / f"{split}.jsonl"
-            if p.is_file():
-                global_counts[f"{name}/{split}.jsonl"] = _count_lines(p)
+            if not p.is_file():
+                continue
+            key = f"{name}/{split}.jsonl"
+            if split in cached and cached[split] is not None:
+                global_counts[key] = int(cached[split])
+            elif split in written and written[split] is not None:
+                global_counts[key] = int(written[split])
+            else:
+                global_counts[key] = _count_lines(p, desc=key)
         train_p = sub / "train.jsonl"
         n = global_counts.get(f"{name}/train.jsonl", 0)
         if n > 0:
@@ -589,24 +643,27 @@ def main() -> None:
             return None
         sub = out_root / name
         train_p = sub / "train.jsonl"
-        if not train_p.is_file() or _count_lines(train_p) <= 0:
+        # Cheap emptiness check — do NOT full-scan huge jsonl here
+        if not train_p.is_file() or train_p.stat().st_size <= 0:
             return None
         cpath = sub / "counts.json"
         if cpath.is_file():
             st = json.loads(cpath.read_text(encoding="utf-8"))
         else:
+            print(
+                f"  {name}/counts.json missing; counting train.jsonl once…",
+                flush=True,
+            )
+            n_train = _count_lines(train_p, desc=f"{name}/train.jsonl")
+            n_eval = _count_lines(sub / "eval.jsonl", desc=f"{name}/eval.jsonl")
             st = {
                 "source": name,
-                "reused": True,
-                "jsonl_line_counts": {
-                    "train": _count_lines(train_p),
-                    "eval": _count_lines(sub / "eval.jsonl"),
-                },
+                "jsonl_line_counts": {"train": n_train, "eval": n_eval},
             }
         st["reused"] = True
+        n_train = _train_line_count_from_stats(st, train_p)
         print(
-            f"=== Reusing existing {name}/ "
-            f"(train lines={st.get('jsonl_line_counts', {}).get('train', _count_lines(train_p))}) "
+            f"=== Reusing existing {name}/ (train lines={n_train:,}) "
             f"— pass --force to rebuild ===",
             flush=True,
         )
