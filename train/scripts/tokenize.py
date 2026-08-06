@@ -97,6 +97,74 @@ def _count_lines(path: Path) -> int:
     return n
 
 
+def _available_from_prepare_cache(
+    mix_dir: Path, sources: dict[str, Path]
+) -> dict[str, int] | None:
+    """Reuse prepare_data line counts — do not rescan multi‑GB anti_forget JSONL."""
+    available: dict[str, int] = {}
+
+    root_counts = mix_dir / "counts.json"
+    if root_counts.is_file():
+        try:
+            blob = json.loads(root_counts.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            blob = {}
+        jl = blob.get("jsonl_line_counts") or {}
+        for name in SOURCE_KEYS:
+            key = f"{name}/train.jsonl"
+            if key in jl and jl[key] is not None:
+                available[name] = int(jl[key])
+
+    if len(available) == len(SOURCE_KEYS):
+        print(f"Using line counts from {root_counts}", flush=True)
+        return available
+
+    # Per-source counts.json (written during prepare even before mix rollup)
+    for name, path in sources.items():
+        if name in available:
+            continue
+        cpath = mix_dir / name / "counts.json"
+        if not cpath.is_file():
+            continue
+        try:
+            st = json.loads(cpath.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        jl = st.get("jsonl_line_counts") or {}
+        written = st.get("written") or {}
+        n = jl.get("train")
+        if n is None:
+            n = written.get("train")
+        if n is not None:
+            available[name] = int(n)
+            print(f"Using line count from {cpath} ({name}/train={n:,})", flush=True)
+
+    if len(available) == len(SOURCE_KEYS):
+        return available
+    return None
+
+
+def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int]:
+    cached = _available_from_prepare_cache(mix_dir, sources)
+    if cached is not None:
+        for name, n in cached.items():
+            print(f"  available {name}: {n:,} (cached)", flush=True)
+        return cached
+
+    print(
+        "WARNING: prepare counts.json incomplete — scanning JSONL "
+        "(anti_forget can take a long time). Prefer re-running prepare "
+        "or ensure mix_v1/counts.json exists.",
+        flush=True,
+    )
+    available: dict[str, int] = {}
+    for name, path in sources.items():
+        print(f"  counting {name}: {path} …", flush=True)
+        available[name] = _count_lines(path)
+        print(f"  available {name}: {available[name]:,}", flush=True)
+    return available
+
+
 def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
     raw = cfg.get("biv_mix")
     if not isinstance(raw, dict):
@@ -326,7 +394,7 @@ def main() -> None:
         mix["total_rows"] = int(args.total_rows)
 
     sources = _resolve_full_sources(mix_dir)
-    available = {k: _count_lines(p) for k, p in sources.items()}
+    available = _resolve_available(mix_dir, sources)
     targets = _target_counts(available, mix)
     tag = _sample_tag(mix, targets)
     sample_root = mix_dir / "sampled" / tag
