@@ -111,17 +111,31 @@ def open_dataset_with_cache(
         )
         if local_dir is not None:
             ds = _try_load_local_dataset(Path(local_dir), split=split)
-        elif src in {"modelscope", "ms"}:
-            ds = _load_modelscope_dataset(rid, split=split)
         else:
-            # try local HF cache first
+            ds = None
+            # Prefer complete local HF snapshot first (any hub_source).
             for snap in _hf_hub_snapshot_dirs(DEFAULT_SWE_ZERO_HF):
-                files = [p for p in snap.rglob("*") if p.is_file() and p.stat().st_size > 10_000]
+                files = [
+                    p for p in snap.rglob("*") if p.is_file() and p.stat().st_size > 10_000
+                ]
                 if files:
                     print(f"Reusing HF hub snapshot: {snap}", flush=True)
-                    ds = _try_load_local_dataset(snap, split=split)
-                    break
-            else:
+                    try:
+                        ds = _try_load_local_dataset(snap, split=split)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"Local HF snap failed ({exc!r})", flush=True)
+            if ds is None and src in {"modelscope", "ms", "auto"}:
+                try:
+                    ds = _load_modelscope_dataset(rid, split=split)
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"ModelScope SWE-Zero failed ({exc!r}); "
+                        f"falling back to HuggingFace {DEFAULT_SWE_ZERO_HF}",
+                        flush=True,
+                    )
+                    ds = None
+            if ds is None:
                 print(f"load_dataset({DEFAULT_SWE_ZERO_HF!r})", flush=True)
                 ds = load_dataset(DEFAULT_SWE_ZERO_HF, split=split)
     elif kind == "isetrace":
@@ -188,8 +202,19 @@ def _load_modelscope_dataset(repo_id: str, *, split: str, config_name: str | Non
         return _try_load_local_dataset(Path(local_dir), split=split, name=config_name)
     try:
         return load_dataset(str(local_dir), split=split)
-    except Exception:
-        from modelscope.msdatasets import MsDataset
+    except Exception as load_exc:
+        print(
+            f"load_dataset({local_dir}) failed ({load_exc!r}); trying MsDataset.load",
+            flush=True,
+        )
+        try:
+            from modelscope.msdatasets import MsDataset
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                f"{exc}. Fix: pip install addict  (and modelscope deps). "
+                "Or re-run with --hub-source huggingface / set a completed "
+                "--swe-zero-local-dir."
+            ) from exc
 
         raw = MsDataset.load(repo_id, split=split)
         if hasattr(raw, "to_hf_dataset"):

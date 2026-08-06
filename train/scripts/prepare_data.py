@@ -583,35 +583,87 @@ def main() -> None:
     stats: dict[str, Any] = {}
     banned: set[str] = set()
 
-    if args.wm_code:
-        print("=== Preparing wm_code (SWE-Hero) ===", flush=True)
-        sub = out_root / "wm_code"
-        stats["wm_code"] = _prepare_wm_openhands(
-            kind="swe_hero",
-            source_tag=SOURCE_WM_CODE,
-            out_dir=sub,
-            args=args,
-            rng=rng,
+    def _reuse_source(name: str) -> dict[str, Any] | None:
+        """Reuse an already-written source dir unless --force."""
+        if args.force:
+            return None
+        sub = out_root / name
+        train_p = sub / "train.jsonl"
+        if not train_p.is_file() or _count_lines(train_p) <= 0:
+            return None
+        cpath = sub / "counts.json"
+        if cpath.is_file():
+            st = json.loads(cpath.read_text(encoding="utf-8"))
+        else:
+            st = {
+                "source": name,
+                "reused": True,
+                "jsonl_line_counts": {
+                    "train": _count_lines(train_p),
+                    "eval": _count_lines(sub / "eval.jsonl"),
+                },
+            }
+        st["reused"] = True
+        print(
+            f"=== Reusing existing {name}/ "
+            f"(train lines={st.get('jsonl_line_counts', {}).get('train', _count_lines(train_p))}) "
+            f"— pass --force to rebuild ===",
+            flush=True,
         )
-        ids_path = sub / "instance_ids.json"
+        return st
+
+    if args.wm_code:
+        reused = _reuse_source("wm_code")
+        if reused is not None:
+            stats["wm_code"] = reused
+        else:
+            print("=== Preparing wm_code (SWE-Hero) ===", flush=True)
+            sub = out_root / "wm_code"
+            stats["wm_code"] = _prepare_wm_openhands(
+                kind="swe_hero",
+                source_tag=SOURCE_WM_CODE,
+                out_dir=sub,
+                args=args,
+                rng=rng,
+            )
+            for path in args.local:
+                print(f"=== Merging local fixture {path} ===", flush=True)
+                for rec in load_local_trajectories(path):
+                    for row in wm_row_from_openhands_record(
+                        rec, source=SOURCE_WM_CODE, min_turns=args.min_turns
+                    ):
+                        append_jsonl(sub / "train.jsonl", row)
+                        stats["wm_code"]["written"]["train"] = (
+                            stats["wm_code"]["written"].get("train", 0) + 1
+                        )
+        ids_path = out_root / "wm_code" / "instance_ids.json"
         if ids_path.is_file():
             banned |= set(json.loads(ids_path.read_text(encoding="utf-8")))
-        for path in args.local:
-            print(f"=== Merging local fixture {path} ===", flush=True)
-            for rec in load_local_trajectories(path):
-                for row in wm_row_from_openhands_record(
-                    rec, source=SOURCE_WM_CODE, min_turns=args.min_turns
-                ):
-                    append_jsonl(sub / "train.jsonl", row)
-                    stats["wm_code"]["written"]["train"] = (
-                        stats["wm_code"]["written"].get("train", 0) + 1
-                    )
+    else:
+        # Still ban Hero instances when only continuing anti_forget
+        ids_path = out_root / "wm_code" / "instance_ids.json"
+        if ids_path.is_file():
+            banned |= set(json.loads(ids_path.read_text(encoding="utf-8")))
+            print(
+                f"Loaded {len(banned)} Hero instance_ids for anti_forget dedupe",
+                flush=True,
+            )
 
     if args.wm_os:
-        print("=== Preparing wm_os (ISETrace) ===", flush=True)
-        stats["wm_os"] = _prepare_wm_isetrace(
-            out_dir=out_root / "wm_os", args=args, rng=rng
+        reused = _reuse_source("wm_os")
+        if reused is not None:
+            stats["wm_os"] = reused
+        else:
+            print("=== Preparing wm_os (ISETrace) ===", flush=True)
+            stats["wm_os"] = _prepare_wm_isetrace(
+                out_dir=out_root / "wm_os", args=args, rng=rng
+            )
+    elif (out_root / "wm_os" / "counts.json").is_file():
+        # Keep prior OS stats in the final mix manifest when only resuming Zero
+        stats["wm_os"] = json.loads(
+            (out_root / "wm_os" / "counts.json").read_text(encoding="utf-8")
         )
+        stats["wm_os"]["reused"] = True
 
     if args.anti_forget:
         print("=== Preparing anti_forget (SWE-Zero) ===", flush=True)
@@ -621,6 +673,18 @@ def main() -> None:
             rng=rng,
             banned_instances=banned,
         )
+    elif (out_root / "anti_forget" / "counts.json").is_file():
+        stats["anti_forget"] = json.loads(
+            (out_root / "anti_forget" / "counts.json").read_text(encoding="utf-8")
+        )
+        stats["anti_forget"]["reused"] = True
+
+    # If user only asked anti_forget, still include reused wm_code in manifest
+    if "wm_code" not in stats and (out_root / "wm_code" / "counts.json").is_file():
+        stats["wm_code"] = json.loads(
+            (out_root / "wm_code" / "counts.json").read_text(encoding="utf-8")
+        )
+        stats["wm_code"]["reused"] = True
 
     _write_mix_manifest(out_root, stats, args)
     fp_path.write_text(
