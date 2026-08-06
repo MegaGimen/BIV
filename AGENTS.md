@@ -103,7 +103,7 @@ python scripts/train_sft.py --config configs/control_shuffled.yaml
 python scripts/eval_wm.py --config configs/pilot.yaml
 ```
 
-- Do **not** run `train_sft.py` on CPU-only app servers; `prepare_data.py` / `smoke_cpu.py` are OK without GPU.
+- Do **not** run `train_sft.py` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `tokenize.py` / `smoke_cpu.py` are OK without GPU.
 - Disk: `~/.cache/huggingface/datasets` (tokenize/map Arrow) + `outputs/ds_cache/` can be large; clear HF caches if root fills. Keep `hub/` model weights if possible.
 - VRAM: L20-class (~46GB) can use larger micro-batch (e.g. 8×accum 2, eff≈16). Keep **effective batch** stable if comparing runs; raising only micro-batch with fixed eff batch barely changes optimization.
 - Checkpoints: every `save_steps` (default 35) + forced save/eval each epoch; `save_total_limit: 3`.
@@ -139,13 +139,19 @@ Weights default ~0.45 / 0.40 / 0.15 (`--weight-*`).
 
 ```bash
 cd train
+pip install axolotl cut-cross-entropy   # + flash-linear-attention per Axolotl Qwen3-Next docs
+
+# 1) JSONL
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 # pilot:
 # python scripts/prepare_data.py --all --max-rows-per-source 500 --anti-forget-max-rows 200
 
-pip install axolotl cut-cross-entropy
-# flash-linear-attention per Axolotl Qwen3-Next docs
-bash scripts/train_coder_next.sh   # configs/axolotl/coder_next_qlora.yaml
+# 2) CPU tokenize → outputs/axolotl_cache/coder_next_mix_v1 (no GPU)
+python scripts/tokenize.py
+
+# 3) Dual-GPU train (loads cache)
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
+# configs/axolotl/coder_next_qlora.yaml
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
@@ -236,7 +242,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / train**: `train/scripts/prepare_data.py`, `train/scripts/train_sft.py`
+- **WM prepare / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/tokenize.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 
