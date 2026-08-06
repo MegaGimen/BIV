@@ -89,11 +89,44 @@ def _resolve_full_sources(mix_dir: Path) -> dict[str, Path]:
     return out
 
 
-def _count_lines(path: Path) -> int:
+def _tqdm(**kwargs):
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return None
+    kwargs.setdefault("dynamic_ncols", True)
+    kwargs.setdefault("mininterval", 0.3)
+    return tqdm(**kwargs)
+
+
+def _count_lines(path: Path, *, desc: str | None = None) -> int:
+    """Count lines with a progress bar (byte-based when size is known)."""
+    if not path.is_file():
+        return 0
+    size = path.stat().st_size
+    if size == 0:
+        return 0
+    label = desc or path.name
     n = 0
     with path.open("rb") as f:
-        for _ in f:
-            n += 1
+        bar = _tqdm(
+            total=size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"count {label}",
+        )
+        if bar is None:
+            print(f"  counting lines: {label} ({size / 1e9:.2f} GB)…", flush=True)
+            for line in f:
+                n += 1
+                if n % 50_000 == 0:
+                    print(f"    … {n:,} lines", flush=True)
+            return n
+        with bar:
+            for line in f:
+                n += 1
+                bar.update(len(line))
     return n
 
 
@@ -159,8 +192,7 @@ def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int
     )
     available: dict[str, int] = {}
     for name, path in sources.items():
-        print(f"  counting {name}: {path} …", flush=True)
-        available[name] = _count_lines(path)
+        available[name] = _count_lines(path, desc=f"{name}/train.jsonl")
         print(f"  available {name}: {available[name]:,}", flush=True)
     return available
 
@@ -269,20 +301,55 @@ def _sample_jsonl(
 ) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if n_take >= n_total:
-        shutil.copyfile(src, dst)
-        print(f"  {name}: copy all {n_total} → {dst}", flush=True)
+        size = src.stat().st_size
+        bar = _tqdm(
+            total=size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=f"copy {name}",
+        )
+        with src.open("rb") as fin, dst.open("wb") as fout:
+            if bar is None:
+                shutil.copyfileobj(fin, fout, length=1024 * 1024)
+            else:
+                with bar:
+                    while True:
+                        chunk = fin.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        fout.write(chunk)
+                        bar.update(len(chunk))
+        print(f"  {name}: copy all {n_total:,} → {dst}", flush=True)
         return
+
+    print(f"  {name}: drawing {n_take:,}/{n_total:,} indices (seed={seed})…", flush=True)
     rng = random.Random(seed)
     chosen = set(rng.sample(range(n_total), n_take))
     written = 0
+    bar = _tqdm(total=n_total, unit="rows", desc=f"sample {name}")
     with src.open("rb") as fin, dst.open("wb") as fout:
-        for i, line in enumerate(fin):
-            if i in chosen:
-                fout.write(line)
-                written += 1
+        if bar is None:
+            for i, line in enumerate(fin):
+                if i in chosen:
+                    fout.write(line)
+                    written += 1
+                if (i + 1) % 50_000 == 0:
+                    print(
+                        f"    {name}: scanned {i + 1:,}/{n_total:,} wrote {written:,}",
+                        flush=True,
+                    )
+        else:
+            with bar:
+                for i, line in enumerate(fin):
+                    if i in chosen:
+                        fout.write(line)
+                        written += 1
+                    bar.update(1)
+                    bar.set_postfix(wrote=written, refresh=False)
     if written != n_take:
         raise SystemExit(f"{name}: expected {n_take} lines, wrote {written}")
-    print(f"  {name}: sampled {n_take}/{n_total} → {dst}", flush=True)
+    print(f"  {name}: sampled {n_take:,}/{n_total:,} → {dst}", flush=True)
 
 
 def _cache_ready(cache_dir: Path) -> bool:
@@ -449,6 +516,7 @@ def main() -> None:
 
     if not sample_ok:
         print("Sampling full JSONL → ratio-matched subsets…", flush=True)
+        src_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="sample sources")
         for i, name in enumerate(SOURCE_KEYS):
             _sample_jsonl(
                 sources[name],
@@ -458,6 +526,11 @@ def main() -> None:
                 seed=mix["seed"] + i * 17,
                 name=name,
             )
+            if src_bar is not None:
+                src_bar.update(1)
+                src_bar.set_postfix_str(name)
+        if src_bar is not None:
+            src_bar.close()
         meta = {
             "tag": tag,
             "seed": mix["seed"],
@@ -537,6 +610,10 @@ def main() -> None:
     print(f"Running: {' '.join(cmd)}", flush=True)
     print(
         f"(Tokenizing only sampled rows: {total:,} total, not full anti_forget.)",
+        flush=True,
+    )
+    print(
+        "(Axolotl preprocess shows its own Tokenizing Prompts bars next.)",
         flush=True,
     )
 
