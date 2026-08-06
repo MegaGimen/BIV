@@ -142,10 +142,16 @@ def wm_row_from_isetrace_record(
     return rows
 
 
-def _clip_content(text: Any, max_chars: int) -> Any:
+def _clip_content(text: Any, max_chars: int) -> tuple[Any, bool, int]:
+    """Return (maybe_clipped_text, was_clipped, overflow_chars)."""
     if not isinstance(text, str) or max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+        return text, False, 0
+    overflow = len(text) - max_chars
+    return (
+        text[:max_chars] + f"\n...[truncated {overflow} chars]",
+        True,
+        overflow,
+    )
 
 
 def policy_row_from_openhands_record(
@@ -153,14 +159,39 @@ def policy_row_from_openhands_record(
     *,
     max_tool_chars: int = 8000,
     drop_think_tool: bool = True,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, int]]:
+    """Build anti-forget row.
+
+    Returns ``(row_or_none, clip_stats)`` where clip_stats always has:
+      messages_seen, messages_clipped, traj_clipped (0/1), chars_overflow
+    """
+    empty_stats = {
+        "messages_seen": 0,
+        "messages_clipped": 0,
+        "traj_clipped": 0,
+        "chars_overflow": 0,
+    }
     traj = record.get("trajectory")
     if not isinstance(traj, list) or not traj:
-        return None
+        return None, empty_stats
 
     skip = {"think", "finish"} if drop_think_tool else set()
     cleaned: list[dict[str, Any]] = []
     skip_ids: set[str] = set()
+    messages_seen = 0
+    messages_clipped = 0
+    chars_overflow = 0
+
+    def _maybe_clip_field(msg: dict[str, Any], key: str = "content") -> None:
+        nonlocal messages_seen, messages_clipped, chars_overflow
+        if key not in msg:
+            return
+        messages_seen += 1
+        new_val, clipped, overflow = _clip_content(msg.get(key, ""), max_tool_chars)
+        msg[key] = new_val
+        if clipped:
+            messages_clipped += 1
+            chars_overflow += overflow
 
     for msg in traj:
         role = msg.get("role")
@@ -188,26 +219,32 @@ def policy_row_from_openhands_record(
             else:
                 new_msg.pop("tool_calls", None)
             if isinstance(new_msg.get("content"), str):
-                new_msg["content"] = _clip_content(new_msg["content"], max_tool_chars)
+                _maybe_clip_field(new_msg)
             cleaned.append(new_msg)
         elif role == "tool":
             tid = msg.get("tool_call_id")
             if tid is not None and str(tid) in skip_ids:
                 continue
             new_msg = dict(msg)
-            new_msg["content"] = _clip_content(new_msg.get("content", ""), max_tool_chars)
+            _maybe_clip_field(new_msg)
             cleaned.append(new_msg)
         else:
             new_msg = dict(msg)
             if isinstance(new_msg.get("content"), str):
-                new_msg["content"] = _clip_content(new_msg["content"], max_tool_chars)
+                _maybe_clip_field(new_msg)
             cleaned.append(new_msg)
 
+    clip_stats = {
+        "messages_seen": messages_seen,
+        "messages_clipped": messages_clipped,
+        "traj_clipped": 1 if messages_clipped else 0,
+        "chars_overflow": chars_overflow,
+    }
     if len(cleaned) < 2:
-        return None
+        return None, clip_stats
     has_act = any(m.get("role") == "assistant" and m.get("tool_calls") for m in cleaned)
     if not has_act:
-        return None
+        return None, clip_stats
     instance_id, trajectory_id = record_ids(record)
     return {
         "messages": cleaned,
@@ -215,4 +252,5 @@ def policy_row_from_openhands_record(
         "instance_id": instance_id,
         "trajectory_id": trajectory_id,
         "n_turns": sum(1 for m in cleaned if m.get("role") == "assistant"),
-    }
+    }, clip_stats
+

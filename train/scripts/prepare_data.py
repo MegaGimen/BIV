@@ -246,6 +246,7 @@ def _prepare_wm_isetrace(
     )
 
     print(f"  Pass 2/2: writing WM-OS jsonl ({raw_rows}) → {out_dir}", flush=True)
+    skipped_empty = 0
     for i in range(raw_rows):
         rec = ds[i]
         is_eval = i in eval_set
@@ -257,6 +258,8 @@ def _prepare_wm_isetrace(
             every_k=args.every_k,
             shuffle_obs=False,
         )
+        if not rows:
+            skipped_empty += 1
         key = "eval" if is_eval else "train"
         for row in rows:
             append_jsonl(paths[key], row)
@@ -287,8 +290,11 @@ def _prepare_wm_isetrace(
         "source": SOURCE_WM_OS,
         "kind": "isetrace",
         "raw_hub_rows": raw_rows,
+        "skipped_empty_or_no_env_tools": skipped_empty,
         "written": counts,
         "jsonl_line_counts": line_counts,
+        "content_clip": None,
+        "note": "wm_os does not apply max_tool_chars; gap raw-(train+eval) ≈ skipped_empty",
     }
     (out_dir / "counts.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     print(json.dumps({"wm_os": stats}, indent=2), flush=True)
@@ -318,10 +324,18 @@ def _prepare_anti_forget(
     skipped_bad = 0
     kept = 0
     target = args.anti_forget_max_rows
+    clip_agg = {
+        "max_tool_chars": int(args.max_tool_chars),
+        "messages_seen": 0,
+        "messages_clipped": 0,
+        "trajs_with_clip": 0,
+        "chars_overflow_total": 0,
+    }
 
     print(
         f"  Writing anti_forget from SWE-Zero ({raw_rows} raw; "
-        f"banned_instances={len(banned_instances)}; target_rows={target})",
+        f"banned_instances={len(banned_instances)}; target_rows={target}; "
+        f"max_tool_chars={args.max_tool_chars})",
         flush=True,
     )
     order = list(range(raw_rows))
@@ -334,7 +348,13 @@ def _prepare_anti_forget(
         if iid and iid in banned_instances:
             skipped_dup += 1
             continue
-        row = policy_row_from_openhands_record(rec, max_tool_chars=args.max_tool_chars)
+        row, clip_stats = policy_row_from_openhands_record(
+            rec, max_tool_chars=args.max_tool_chars
+        )
+        clip_agg["messages_seen"] += clip_stats["messages_seen"]
+        clip_agg["messages_clipped"] += clip_stats["messages_clipped"]
+        clip_agg["trajs_with_clip"] += clip_stats["traj_clipped"]
+        clip_agg["chars_overflow_total"] += clip_stats["chars_overflow"]
         if row is None:
             skipped_bad += 1
             continue
@@ -344,14 +364,31 @@ def _prepare_anti_forget(
         counts[key] += 1
         kept += 1
         if args.log_every and n_seen % args.log_every == 0:
+            msg_ratio = (
+                clip_agg["messages_clipped"] / clip_agg["messages_seen"]
+                if clip_agg["messages_seen"]
+                else 0.0
+            )
+            traj_ratio = clip_agg["trajs_with_clip"] / kept if kept else 0.0
             print(
                 f"    scanned={n_seen} kept={kept} "
-                f"dup_skip={skipped_dup} bad_skip={skipped_bad}",
+                f"dup_skip={skipped_dup} bad_skip={skipped_bad} "
+                f"clip_msg={clip_agg['messages_clipped']}/{clip_agg['messages_seen']} "
+                f"({msg_ratio:.1%}) clip_traj={clip_agg['trajs_with_clip']}/{kept} "
+                f"({traj_ratio:.1%})",
                 flush=True,
             )
         del rec
 
     line_counts = {name: _count_lines(path) for name, path in paths.items()}
+    msg_ratio = (
+        clip_agg["messages_clipped"] / clip_agg["messages_seen"]
+        if clip_agg["messages_seen"]
+        else 0.0
+    )
+    traj_ratio = clip_agg["trajs_with_clip"] / kept if kept else 0.0
+    clip_agg["messages_clipped_ratio"] = round(msg_ratio, 6)
+    clip_agg["trajs_with_clip_ratio_among_kept"] = round(traj_ratio, 6)
     stats = {
         "source": SOURCE_ANTI_FORGET,
         "kind": "swe_zero",
@@ -362,6 +399,11 @@ def _prepare_anti_forget(
         "written": counts,
         "jsonl_line_counts": line_counts,
         "banned_instance_count": len(banned_instances),
+        "content_clip": clip_agg,
+        "note": (
+            "content_clip only applies to anti_forget message bodies; "
+            "wm_code/wm_os do not use max_tool_chars truncation"
+        ),
     }
     (out_dir / "counts.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
     print(json.dumps({"anti_forget": stats}, indent=2), flush=True)
@@ -463,7 +505,13 @@ def main() -> None:
     p.add_argument("--also-shuffled-control", action="store_true", default=True)
     p.add_argument("--no-shuffled-control", action="store_false", dest="also_shuffled_control")
     p.add_argument("--obs-pool-size", type=int, default=8192)
-    p.add_argument("--max-tool-chars", type=int, default=8000)
+    p.add_argument(
+        "--max-tool-chars",
+        type=int,
+        default=8000,
+        help="anti_forget only: clip each message content to this many chars "
+        "(0 = disable). Stats written to anti_forget/counts.json content_clip.",
+    )
     p.add_argument("--log-every", type=int, default=200)
     p.add_argument("--weight-wm-code", type=float, default=0.45)
     p.add_argument("--weight-wm-os", type=float, default=0.40)
