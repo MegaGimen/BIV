@@ -1,8 +1,9 @@
-"""Trajectory loaders and JSONL writers for world-model SFT (SWE-Hero native).
+"""Trajectory loaders and JSONL writers for world-model SFT.
 
-Primary corpus: ModelScope ``nv-community/SWE-Hero-openhands-trajectories``
-(OpenHands tool I/O). ISETrace is **not** wired in yet — see AGENTS.md future TODO
-for a conversion layer when / if we mix OS-agent traces.
+Primary corpora (via ``scripts/prepare_data.py`` + ``biv_wm.hub`` / adapters):
+  - SWE-Hero OpenHands trajectories → wm_code
+  - ISETrace OS trajectories → wm_os
+  - SWE-Zero OpenHands trajectories → anti_forget (policy replay)
 """
 
 from __future__ import annotations

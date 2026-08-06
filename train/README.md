@@ -13,23 +13,38 @@
 ```text
 train/
 ├── README.md
-├── requirements.txt          # pin stack for GPU training hosts
+├── requirements.txt
 ├── configs/
-│   ├── default.yaml          # real-observation SFT
-│   └── control_shuffled.yaml # shuffled-o control arm
-├── src/biv_wm/               # data formatting + metrics
+│   ├── default.yaml                 # Qwen3.5-9B Unsloth (legacy/pilot)
+│   ├── control_shuffled.yaml
+│   └── axolotl/coder_next_qlora.yaml  # Qwen3-Coder-Next QLoRA (2×GPU)
+├── src/biv_wm/                      # formatting, hub cache, adapters
 ├── scripts/
-│   ├── prepare_data.py       # CPU OK — build JSONL
-│   ├── smoke_cpu.py          # CPU OK — sanity checks
-│   ├── train_sft.py          # CUDA required — Unsloth LoRA
-│   └── eval_wm.py            # CUDA for generation; metrics dry-run on CPU
-├── data/
-│   ├── examples/             # tiny checked-in trajectories
-│   └── processed/            # generated JSONL (gitignored)
-└── outputs/                  # adapters / preds (gitignored)
+│   ├── prepare_data.py              # multi-source mix + counts + fingerprint cache
+│   ├── train_coder_next.sh          # Axolotl dual-GPU entry
+│   ├── train_sft.py                 # Unsloth 9B
+│   └── test_adapters_offline.py
+├── data/processed/mix_v1/           # wm_code / wm_os / anti_forget JSONL
+└── outputs/
 ```
 
-## What we train
+## Pipeline (Coder-Next mix)
+
+```bash
+cd train && source .venv/bin/activate
+
+# Full mix (reuses HF/ModelScope hub caches when present)
+python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+# prints raw hub rows + every JSONL line count; second run hits fingerprint cache
+
+# Dual ~44GB GPUs
+pip install axolotl cut-cross-entropy
+bash scripts/train_coder_next.sh
+```
+
+Weights (default): wm_code 0.45 / wm_os 0.40 / anti_forget 0.15. One traj → one row.
+
+## Pipeline (legacy 9B Unsloth)
 
 | Item | Choice |
 |------|--------|

@@ -118,32 +118,43 @@ Learn \(P(o\mid h,a)\) from **real** \((a,o)\) in OS + code worlds:
 
 | Domain | Corpus (intent) | Status |
 |--------|-----------------|--------|
-| **Code / SWE tool I/O** | **SWE-Hero** OpenHands trajectories — execution-grounded | **Wired now** ([HF](https://huggingface.co/datasets/nvidia/SWE-Hero-openhands-trajectories), [paper](https://arxiv.org/abs/2604.01496); ModelScope [`nv-community/SWE-Hero-openhands-trajectories`](https://www.modelscope.cn/datasets/nv-community/SWE-Hero-openhands-trajectories)) |
-| **OS / desktop agent** | **ISETrace** (and similar real OS interaction logs) | **Planned** — primary OS-world signal once adapter exists (not “bad coding-agent mix”) |
-| **Terminal** (optional) | Shell / Terminal-domain env trajectories (AgentWorld-style or self-collected) | Optional breadth for console physics |
+| **Code / SWE tool I/O** | **SWE-Hero** OpenHands trajectories — execution-grounded | **Wired** (`--wm-code`; hub cache reuse) |
+| **OS / desktop agent** | **ISETrace** real OS tool I/O | **Wired** (`--wm-os` → `adapters/normalize.py`) |
+| **Terminal** (optional) | Shell / Terminal-domain env trajectories | Optional later |
 
-`prepare_data.py` (SWE-Hero): keeps OpenHands env tools (`execute_bash`, `str_replace_editor`, …), drops non-env tools (`think`, `finish`), emits **one JSONL row per trajectory** (response-only loss on observations once; no causal-prefix expansion by default). Optional legacy: `--expand-prefixes`. That JSONL is what `train_sft.py` consumes today.
+`prepare_data.py --all` writes `data/processed/mix_v1/{wm_code,wm_os,anti_forget}/`, prints **per-file JSONL line counts**, fingerprints for cache hits, and `mix_manifest.json` for Axolotl. Default: **one traj → one row** (no prefix expansion). Hub loaders prefer existing HF/ModelScope snapshots.
 
 #### B. Auxiliary — anti-forgetting (regularizer only)
 
-Small mix of **native agentic coding / multi-tool agent trajectories** so updates do not wipe tool-*selection* priors. This path is **not** the hypothesis channel; keep **token share modest** and prove agent gains are not “just more policy SFT.”
+Small mix of **native agentic coding** trajectories (not the hypothesis channel):
 
-| Prefer | Why |
-|--------|-----|
-| [SWE-Zero OpenHands trajectories](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | Same SWE/OpenHands **semantics**, different corpus from Hero (avoid replaying WM rows as policy) |
-| [Nebius SWE-rebench OpenHands trajectories](https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories) | Extra OpenHands agent rollouts; **dedupe `instance_id` vs Hero** |
-| Light Instruct / chat replay or KL to base | Classic capability anchor if policy mix is costly |
+| Prefer | Status |
+|--------|--------|
+| [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
+| Nebius OpenHands / Instruct replay | Optional later |
 
-**Do not** reuse the **same SWE-Hero rows** as both WM and anti-forget policy mix (duplicate semantics + muddy controls).  
-**Do not** treat ISETrace as the anti-forget “coding agent” mix — it belongs in **primary OS-world** understanding once converted.
+Weights default ~0.45 / 0.40 / 0.15 (`--weight-*`).
 
-Suggested starting mix (when implemented): WM-dominant (e.g. ~70–90% env-obs tokens) vs small policy replay (~10–30%); tune by agent retention, not by maximizing agent SFT score.
+### Train Qwen3-Coder-Next (2×~44GB)
+
+```bash
+cd train
+python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+# pilot:
+# python scripts/prepare_data.py --all --max-rows-per-source 500 --anti-forget-max-rows 200
+
+pip install axolotl cut-cross-entropy
+# flash-linear-attention per Axolotl Qwen3-Next docs
+bash scripts/train_coder_next.sh   # configs/axolotl/coder_next_qlora.yaml
+```
+
+Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
 
 ### Future TODO (training data)
 
-- [ ] **ISETrace → WM primary (OS):** conversion layer mapping ISE tools (`exec` / `read` / `write` / …) into shared canonical / OpenHands-native WM turns. Skeleton: `train/src/biv_wm/adapters/isetrace.py` + prepare flag. No raw ISE in prepare without adapter.
-- [ ] **Anti-forget mix:** prepare + interleave SWE-Zero (and optional Nebius) full agent trajectories at low ratio; `instance_id` decontam vs Hero; optional KL/Instruct replay.
-- [ ] Optional Terminal-domain env trajectories for broader console world modeling.
+- [ ] Optional Nebius trajectories + Terminal-domain env corpus
+- [ ] Stronger Coder-XML render check for anti_forget under Axolotl chat_template
+- [ ] eval_wm cross-domain OS held-out panel
 
 ### Evaluation protocol (hypothesis)
 
@@ -155,7 +166,7 @@ Suggested starting mix (when implemented): WM-dominant (e.g. ~70–90% env-obs t
 
 ### Related literature (reference — not fully reimplemented)
 
-Current `train/` is a **minimal** next-observation LoRA SFT (plus shuffled control). Multi-domain CPT→RL, anti-forget mixes, or joint loss designs are **future**:
+Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-Next Axolotl QLoRA**. Full CPT→RL stacks remain future.
 
 | Work | Links | Relevance to our goals |
 |------|-------|------------------------|

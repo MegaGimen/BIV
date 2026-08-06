@@ -1,0 +1,98 @@
+# Qwen3-Coder-Next QLoRA SFT on multi-source mix (Axolotl).
+# Peak VRAM (attn-only LoRA, no expert targets): ~47 GiB — use 2x44GB with FSDP.
+#
+# Prerequisites:
+#   pip install axolotl cut-cross-entropy
+#   uv pip uninstall causal-conv1d && uv pip install flash-linear-attention==0.4.1
+#
+# Prepare data first:
+#   python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+#
+# Train (2 GPU):
+#   CUDA_VISIBLE_DEVICES=0,1 axolotl train configs/axolotl/coder_next_qlora.yaml
+#
+# Or: bash scripts/train_coder_next.sh
+
+base_model: Qwen/Qwen3-Coder-Next
+# Optional ModelScope: set env MS_MODEL=Qwen/Qwen3-Coder-Next and download externally,
+# then point base_model at the local path.
+
+load_in_4bit: true
+adapter: qlora
+lora_r: 16
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  # Do NOT target MoE experts on 44GB cards (~71GiB if enabled)
+
+chat_template: tokenizer_default
+# Coder chat_template from the model repo handles tool_calls / ChatML.
+
+datasets:
+  - path: data/processed/mix_v1/wm_code/train.jsonl
+    type: chat_template
+    field_messages: messages
+    weight: 0.45
+  - path: data/processed/mix_v1/wm_os/train.jsonl
+    type: chat_template
+    field_messages: messages
+    weight: 0.40
+  - path: data/processed/mix_v1/anti_forget/train.jsonl
+    type: chat_template
+    field_messages: messages
+    weight: 0.15
+
+val_set_size: 0.0
+# Use dedicated eval jsonl in prepare if needed; keep train loop simple.
+
+dataset_prepared_path: outputs/axolotl_cache/coder_next_mix_v1
+output_dir: outputs/coder_next_wm_mix
+
+sequence_len: 8192
+sample_packing: false
+pad_to_sequence_len: true
+
+micro_batch_size: 1
+gradient_accumulation_steps: 8
+num_epochs: 2
+optimizer: adamw_bnb_8bit
+lr_scheduler: cosine
+learning_rate: 1.0e-4
+weight_decay: 0.01
+warmup_ratio: 0.03
+
+bf16: true
+tf32: true
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+flash_attention: true
+
+logging_steps: 10
+saves_per_epoch: 2
+save_total_limit: 3
+
+# Dual 44GB GPUs: FSDP shard (required headroom for 8k + QLoRA)
+fsdp:
+  - full_shard
+  - auto_wrap
+fsdp_config:
+  fsdp_limit_all_gathers: true
+  fsdp_sync_module_states: true
+  fsdp_offload_params: false
+  fsdp_use_orig_params: false
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_transformer_layer_cls_to_wrap: Qwen3NextDecoderLayer
+  fsdp_state_dict_type: FULL_STATE_DICT
+  fsdp_sharding_strategy: FULL_SHARD
+
+special_tokens:
+  pad_token: "<|endoftext|>"
+
+wandb_project:
+wandb_name:

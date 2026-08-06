@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# Short, domain-agnostic system prompt (language world-model style).
+# Short, domain-agnostic system prompts (language world-model style).
 DEFAULT_WM_SYSTEM = (
     "You are an environment dynamics model for an OpenHands-style coding agent. "
     "Given the interaction history and the agent's latest tool call "
@@ -17,6 +17,19 @@ DEFAULT_WM_SYSTEM = (
     "Stay faithful to prior state; do not invent contradictions. "
     "Reply with only the tool observation JSON."
 )
+
+OS_WM_SYSTEM = (
+    "You are an environment dynamics model for an OS/desktop agent. "
+    "Given the interaction history and the agent's latest tool call "
+    "(e.g. exec, read, write, and other OS tools), "
+    "predict the exact tool observation a real isolated OS workspace would return. "
+    "Stay faithful to prior state; do not invent contradictions. "
+    "Reply with only the tool observation JSON."
+)
+
+SOURCE_WM_CODE = "wm_code"
+SOURCE_WM_OS = "wm_os"
+SOURCE_ANTI_FORGET = "anti_forget"
 
 
 def format_tool_call(tool_name: str, arguments: dict[str, Any] | str | None) -> str:
@@ -36,7 +49,6 @@ def format_observation(output: Any, is_error: bool | None = None) -> str:
     else:
         text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
         err = bool(is_error) if is_error is not None else False
-    # Structured enough for CE, still plain text for chat templates.
     return json.dumps({"output": text, "isError": err}, ensure_ascii=False)
 
 
@@ -69,7 +81,6 @@ def history_to_messages(
         is_error = turn.get("is_error", turn.get("isError"))
 
         user_content = format_tool_call(str(tool), args)
-        # Include a thin running state summary pointer for multi-step pressure.
         if i > 0:
             user_content = (
                 f"Previous tool steps in this session: {i}.\n"
@@ -95,6 +106,9 @@ def sample_to_chat_dict(
     system: str = DEFAULT_WM_SYSTEM,
     shuffle_observation: bool = False,
     shuffled_obs: str | None = None,
+    source: str | None = None,
+    instance_id: str | None = None,
+    trajectory_id: str | None = None,
 ) -> dict[str, Any]:
     """Prefix sample: keep turns[:up_to] as the supervised sequence.
 
@@ -114,4 +128,11 @@ def sample_to_chat_dict(
         prefix[-1].pop("output", None)
         prefix[-1].pop("content", None)
     messages = history_to_messages(prefix, system=system)
-    return {"messages": messages, "n_turns": end}
+    row: dict[str, Any] = {"messages": messages, "n_turns": end}
+    if source:
+        row["source"] = source
+    if instance_id is not None:
+        row["instance_id"] = instance_id
+    if trajectory_id is not None:
+        row["trajectory_id"] = trajectory_id
+    return row
