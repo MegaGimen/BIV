@@ -133,7 +133,9 @@ Small mix of **native agentic coding** trajectories (not the hypothesis channel)
 | [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
 | Nebius OpenHands / Instruct replay | Optional later |
 
-Weights default ~0.45 / 0.40 / 0.15 (`--weight-*`).
+Train mix ratios live in `configs/axolotl/coder_next_qlora.yaml` → `biv_mix`
+(default **code:os:anti = 1:1:0.35** ≈ 42.5%/42.5%/15%). `tokenize.py` samples
+full JSONL down to those counts before preprocess; train uses `*.run.yaml` only.
 
 ### Train Qwen3-Coder-Next (2×~44GB)
 
@@ -141,17 +143,17 @@ Weights default ~0.45 / 0.40 / 0.15 (`--weight-*`).
 cd train
 pip install axolotl cut-cross-entropy   # + flash-linear-attention per Axolotl Qwen3-Next docs
 
-# 1) JSONL
+# 1) Full JSONL
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 # pilot:
 # python scripts/prepare_data.py --all --max-rows-per-source 500 --anti-forget-max-rows 200
 
-# 2) CPU tokenize → outputs/axolotl_cache/coder_next_mix_v1 (no GPU)
+# 2) Ratio-sample + CPU tokenize → sampled JSONL + *.run.yaml + token cache
 python scripts/tokenize.py
 
-# 3) Dual-GPU train (loads cache)
+# 3) Dual-GPU train on sampled mix only
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# configs/axolotl/coder_next_qlora.yaml
+# = axolotl train configs/axolotl/coder_next_qlora.run.yaml
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).

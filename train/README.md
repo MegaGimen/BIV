@@ -21,8 +21,8 @@ train/
 ├── src/biv_wm/                      # formatting, hub cache, adapters
 ├── scripts/
 │   ├── prepare_data.py              # step 1: multi-source mix JSONL + counts
-│   ├── tokenize.py                  # step 2: Axolotl preprocess (CPU tokenize → cache)
-│   ├── train_coder_next.sh          # step 3: Axolotl dual-GPU entry (expects cache)
+│   ├── tokenize.py                  # step 2: ratio-sample + Axolotl CPU tokenize
+│   ├── train_coder_next.sh          # step 3: train *.run.yaml (sampled only)
 │   ├── train_sft.py                 # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v1/           # wm_code / wm_os / anti_forget JSONL
@@ -35,21 +35,23 @@ train/
 cd train && source .venv/bin/activate
 pip install axolotl cut-cross-entropy   # once
 
-# 1) JSONL mix (reuses HF/ModelScope hub caches when present)
+# 1) Full JSONL corpora (hub cache reuse)
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 
-# 2) CPU tokenize → dataset_prepared_path (no GPU; do this before train)
+# 2) Ratio-sample + CPU tokenize (no GPU)
+#    biv_mix in coder_next_qlora.yaml: code:os:anti = 1:1:0.35 (~42.5/42.5/15)
+#    writes sampled JSONL + coder_next_qlora.run.yaml + token cache
 python scripts/tokenize.py
-# python scripts/tokenize.py --force   # rebuild cache
-# python scripts/tokenize.py --check   # exit 0 if cache ready
+# python scripts/tokenize.py --force
+# python scripts/tokenize.py --check
 
-# 3) Dual ~44GB GPUs (loads cache; refuses if step 2 missing)
+# 3) Dual ~44GB GPUs — trains ONLY on sampled mix (*.run.yaml)
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# or: CUDA_VISIBLE_DEVICES=0,1 axolotl train configs/axolotl/coder_next_qlora.yaml
+# or: CUDA_VISIBLE_DEVICES=0,1 axolotl train configs/axolotl/coder_next_qlora.run.yaml
 ```
 
-Weights (default): wm_code 0.45 / wm_os 0.40 / anti_forget 0.15. One traj → one row.
-Token cache: `outputs/axolotl_cache/coder_next_mix_v1` (`dataset_prepared_path` in yaml).
+Do **not** `axolotl train` the unsampled `coder_next_qlora.yaml` (full anti_forget would dominate).
+One traj → one row. Sampled cache under `outputs/axolotl_cache/coder_next_mix_v1/<tag>/`.
 
 ## Pipeline (legacy 9B Unsloth)
 

@@ -7,15 +7,32 @@
 #
 # Pipeline:
 #   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
-#   2) python scripts/tokenize.py          # CPU: chat template + tokenize → cache
-#   3) CUDA_VISIBLE_DEVICES=0,1 axolotl train configs/axolotl/coder_next_qlora.yaml
-#      # or: bash scripts/train_coder_next.sh  (requires step 2 cache)
+#   2) python scripts/tokenize.py
+#        - reads biv_mix ratios below
+#        - samples JSONL to data/processed/mix_v1/sampled/<tag>/
+#        - writes configs/axolotl/coder_next_qlora.run.yaml
+#        - CPU tokenizes ONLY the sampled rows → dataset_prepared_path/<tag>
+#   3) CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
+#        (trains on *.run.yaml — sampled sizes, not full corpora)
 #
-# dataset_prepared_path below is the token cache shared by preprocess + train.
+# Mix ratio (empirical): wm_code : wm_os : anti_forget = 1 : 1 : 0.35
+#   ≈ 42.5% / 42.5% / 15% of the merged train set (max_fill under corpus caps).
 
 base_model: Qwen/Qwen3-Coder-Next
 # Optional ModelScope: set env MS_MODEL=Qwen/Qwen3-Coder-Next and download externally,
 # then point base_model at the local path.
+
+# ---------------------------------------------------------------------------
+# BIV mix policy (read by scripts/tokenize.py; stripped from *.run.yaml for Axolotl)
+# ---------------------------------------------------------------------------
+biv_mix:
+  seed: 42
+  mode: max_fill          # largest N under ratios × available rows; or total_rows
+  # total_rows: 50000     # only when mode: total_rows
+  ratios:
+    wm_code: 1.0          # code:os must stay 1:1
+    wm_os: 1.0
+    anti_forget: 0.35     # relative to one WM leg → ~15% of merged set
 
 load_in_4bit: true
 adapter: qlora
@@ -32,19 +49,18 @@ lora_target_modules:
 chat_template: tokenizer_default
 # Coder chat_template from the model repo handles tool_calls / ChatML.
 
+# Source corpora (FULL paths). tokenize.py samples these before preprocess/train.
+# Do not point axolotl train at this file for training — use *.run.yaml.
 datasets:
   - path: data/processed/mix_v1/wm_code/train.jsonl
     type: chat_template
     field_messages: messages
-    weight: 0.45
   - path: data/processed/mix_v1/wm_os/train.jsonl
     type: chat_template
     field_messages: messages
-    weight: 0.40
   - path: data/processed/mix_v1/anti_forget/train.jsonl
     type: chat_template
     field_messages: messages
-    weight: 0.15
 
 val_set_size: 0.0
 # Use dedicated eval jsonl in prepare if needed; keep train loop simple.
