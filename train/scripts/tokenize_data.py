@@ -163,16 +163,39 @@ def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
     raw = cfg.get("biv_mix")
     if not isinstance(raw, dict):
         raise SystemExit(f"Config missing biv_mix: block")
+    mode = str(raw.get("mode", "full_wm"))
+    if mode not in {"full_wm", "max_fill", "total_rows"}:
+        raise SystemExit("biv_mix.mode must be full_wm, max_fill, or total_rows")
+
+    # full_wm: keep all wm_code + wm_os; only cap anti vs |wm_os|
+    if mode == "full_wm":
+        anti_to_os = raw.get("anti_to_os")
+        if anti_to_os is None:
+            ratios = raw.get("ratios") or {}
+            anti_to_os = ratios.get("anti_forget", 0.35)
+        anti_to_os = float(anti_to_os)
+        if anti_to_os <= 0:
+            raise SystemExit("biv_mix.anti_to_os must be > 0")
+        return {
+            "seed": int(raw.get("seed", 42)),
+            "mode": mode,
+            "total_rows": None,
+            "anti_to_os": anti_to_os,
+            # keep ratios for cache tag / legacy logging
+            "ratios": {
+                "wm_code": 1.0,
+                "wm_os": 1.0,
+                "anti_forget": anti_to_os,
+            },
+        }
+
     ratios = raw.get("ratios") or {}
     for k in SOURCE_KEYS:
         if k not in ratios or float(ratios[k]) <= 0:
             raise SystemExit(f"biv_mix.ratios.{k} must be > 0")
     r_c, r_o = float(ratios["wm_code"]), float(ratios["wm_os"])
     if abs(r_c - r_o) > 1e-9:
-        raise SystemExit(f"biv_mix requires wm_code:wm_os = 1:1, got {r_c}:{r_o}")
-    mode = str(raw.get("mode", "max_fill"))
-    if mode not in {"max_fill", "total_rows"}:
-        raise SystemExit("biv_mix.mode must be max_fill or total_rows")
+        raise SystemExit(f"biv_mix max_fill/total_rows require wm_code:wm_os = 1:1, got {r_c}:{r_o}")
     total_rows = raw.get("total_rows")
     if mode == "total_rows":
         if total_rows is None or int(total_rows) <= 0:
@@ -184,52 +207,61 @@ def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
         "seed": int(raw.get("seed", 42)),
         "mode": mode,
         "total_rows": total_rows,
+        "anti_to_os": float(ratios["anti_forget"]) / float(ratios["wm_os"]),
         "ratios": {k: float(ratios[k]) for k in SOURCE_KEYS},
     }
 
 
 def _target_counts(available: dict[str, int], mix: dict[str, Any]) -> dict[str, int]:
-    ratios = mix["ratios"]
-    rsum = sum(ratios[k] for k in SOURCE_KEYS)
-    if mix["mode"] == "total_rows":
-        T = int(mix["total_rows"])
-        targets = {k: max(1, int(T * ratios[k] / rsum)) for k in SOURCE_KEYS}
-        n_wm = min(targets["wm_code"], targets["wm_os"])
-        targets["wm_code"] = n_wm
-        targets["wm_os"] = n_wm
-        targets["anti_forget"] = max(
-            1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
-        )
+    if mix["mode"] == "full_wm":
+        n_os = int(available["wm_os"])
+        targets = {
+            "wm_code": int(available["wm_code"]),
+            "wm_os": n_os,
+            "anti_forget": max(1, int(round(n_os * float(mix["anti_to_os"])))),
+        }
     else:
-        s = min(available[k] / ratios[k] for k in SOURCE_KEYS)
-        targets = {k: max(1, int(s * ratios[k])) for k in SOURCE_KEYS}
-        n_wm = min(targets["wm_code"], targets["wm_os"])
-        targets["wm_code"] = n_wm
-        targets["wm_os"] = n_wm
-        targets["anti_forget"] = max(
-            1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
-        )
+        ratios = mix["ratios"]
+        rsum = sum(ratios[k] for k in SOURCE_KEYS)
+        if mix["mode"] == "total_rows":
+            T = int(mix["total_rows"])
+            targets = {k: max(1, int(T * ratios[k] / rsum)) for k in SOURCE_KEYS}
+            n_wm = min(targets["wm_code"], targets["wm_os"])
+            targets["wm_code"] = n_wm
+            targets["wm_os"] = n_wm
+            targets["anti_forget"] = max(
+                1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
+            )
+        else:
+            s = min(available[k] / ratios[k] for k in SOURCE_KEYS)
+            targets = {k: max(1, int(s * ratios[k])) for k in SOURCE_KEYS}
+            n_wm = min(targets["wm_code"], targets["wm_os"])
+            targets["wm_code"] = n_wm
+            targets["wm_os"] = n_wm
+            targets["anti_forget"] = max(
+                1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
+            )
+        if targets["wm_code"] != targets["wm_os"]:
+            raise SystemExit("Internal error: code/os targets not equal")
     for k in SOURCE_KEYS:
         if targets[k] > available[k]:
             raise SystemExit(
                 f"Need {targets[k]} rows for {k} but only {available[k]} available."
             )
-    if targets["wm_code"] != targets["wm_os"]:
-        raise SystemExit("Internal error: code/os targets not equal")
     return targets
 
 
 def _sample_tag(mix: dict[str, Any], targets: dict[str, int]) -> str:
-    r = mix["ratios"]
+    a2o = float(mix["anti_to_os"])
     blob = (
         f"seed={mix['seed']}|mode={mix['mode']}|total={mix['total_rows']}|"
-        f"r={r['wm_code']}:{r['wm_os']}:{r['anti_forget']}|"
+        f"anti_to_os={a2o:g}|"
         f"n={targets['wm_code']}:{targets['wm_os']}:{targets['anti_forget']}"
     )
     h = hashlib.sha1(blob.encode()).hexdigest()[:8]
     return (
-        f"r{r['wm_code']:g}_{r['wm_os']:g}_{r['anti_forget']:g}"
-        f"_n{targets['wm_code']}_{targets['anti_forget']}_{h}"
+        f"{mix['mode']}_a2o{a2o:g}"
+        f"_n{targets['wm_code']}_{targets['wm_os']}_{targets['anti_forget']}_{h}"
     )
 
 
@@ -449,8 +481,15 @@ def main() -> None:
     print(f"Model:      {model}", flush=True)
     print(f"Mix dir:    {mix_dir}", flush=True)
     print(
-        f"Ratios:     code:os:anti = "
-        f"{mix['ratios']['wm_code']:g}:{mix['ratios']['wm_os']:g}:{mix['ratios']['anti_forget']:g}",
+        f"Mix mode:   {mix['mode']}  anti_to_os={mix['anti_to_os']:g}"
+        + (
+            ""
+            if mix["mode"] == "full_wm"
+            else (
+                f"  ratios={mix['ratios']['wm_code']:g}:"
+                f"{mix['ratios']['wm_os']:g}:{mix['ratios']['anti_forget']:g}"
+            )
+        ),
         flush=True,
     )
     print(

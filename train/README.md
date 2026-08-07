@@ -41,7 +41,7 @@ pip install 'ms-swift>=3.11' deepspeed bitsandbytes
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 
 # 2) Ratio-sample + ms-swift cached_dataset (CPU OK; no max_length bake-in)
-#    biv_mix: code:os:anti = 1:1:0.35 → configs/swift/coder_next_qlora.yaml
+#    biv_mix: full wm_code+wm_os; anti = 0.35×|wm_os| → configs/swift/coder_next_qlora.yaml
 python scripts/tokenize_data.py
 # python scripts/tokenize_data.py --force
 
