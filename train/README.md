@@ -22,7 +22,7 @@ train/
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
-│   ├── tokenize.py                    # step 2: ratio-sample + ms-swift export
+│   ├── tokenize_data.py               # step 2: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 3 (optional): length stats per source
 │   ├── train_coder_next.sh            # step 4: ms-swift dual-GPU SFT
 │   ├── train_sft.py                   # Unsloth 9B
@@ -42,8 +42,8 @@ python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 
 # 2) Ratio-sample + ms-swift cached_dataset (CPU OK; no max_length bake-in)
 #    biv_mix: code:os:anti = 1:1:0.35 → configs/swift/coder_next_qlora.yaml
-python scripts/tokenize.py
-# python scripts/tokenize.py --force
+python scripts/tokenize_data.py
+# python scripts/tokenize_data.py --force
 
 # 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py

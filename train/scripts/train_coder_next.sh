@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dual-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next on ratio-sampled mix.
-# Expects: python scripts/tokenize.py  (+ optional: python scripts/stat.py)
+# Expects: python scripts/tokenize_data.py  (+ optional: python scripts/stat.py)
 #
 # Env overrides:
 #   MAX_LENGTH=16384 TRUNCATION_STRATEGY=right CUDA_VISIBLE_DEVICES=0,1
@@ -23,10 +23,10 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! python scripts/tokenize.py --config "$CONFIG" --mix-dir "$MIX_DIR" --check; then
+if ! python scripts/tokenize_data.py --config "$CONFIG" --mix-dir "$MIX_DIR" --check; then
   echo ""
   echo "Tokenize cache not ready. Run:"
-  echo "  python scripts/tokenize.py --config $CONFIG"
+  echo "  python scripts/tokenize_data.py --config $CONFIG"
   exit 1
 fi
 
@@ -43,7 +43,7 @@ if not cache_root.is_absolute():
     cache_root = ROOT / cache_root
 latest_path = cache_root / "LATEST"
 if not latest_path.is_file():
-    raise SystemExit(f"Missing {latest_path} — run tokenize.py")
+    raise SystemExit(f"Missing {latest_path} — run tokenize_data.py")
 latest = latest_path.read_text(encoding="utf-8").strip()
 manifest = cache_root / latest / "tokenize_manifest.json"
 m = json.loads(manifest.read_text(encoding="utf-8"))

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Step 2: ratio-sample mix JSONL, then ms-swift cached_dataset export (CPU OK).
 
+Note: named tokenize_data.py (not tokenize.py) so it does not shadow stdlib ``tokenize``
+(breaks pandas/datasets imports when running sibling scripts like ``stat.py``).
+
 Reads ``biv_mix`` from ``configs/swift/coder_next_qlora.yaml``.
 
 For each source (wm_code / wm_os / anti_forget):
@@ -14,10 +17,10 @@ max_length on the GPU box without re-exporting.
 Does **not** need a GPU — forces ``CUDA_VISIBLE_DEVICES=""``.
 
 Examples:
-  python scripts/tokenize.py
-  python scripts/tokenize.py --force
-  python scripts/tokenize.py --check
-  python scripts/tokenize.py --sample-only
+  python scripts/tokenize_data.py
+  python scripts/tokenize_data.py --force
+  python scripts/tokenize_data.py --check
+  python scripts/tokenize_data.py --sample-only
 """
 
 from __future__ import annotations

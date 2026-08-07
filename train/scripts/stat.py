@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Step 3 (optional): token-length stats per source from ms-swift cached_dataset.
 
-Reads ``tokenize_manifest.json`` written by ``scripts/tokenize.py`` and loads each
+Reads ``tokenize_manifest.json`` written by ``scripts/tokenize_data.py`` and loads each
 source's HF dataset (``length`` field). Prints distribution + how many rows
 survive common ``max_length`` cutoffs (delete-style), so you can pick train
 ``--max_length`` against GPU VRAM without re-exporting.
@@ -70,7 +70,7 @@ def _find_manifest(cache_root: Path, tag: str | None) -> Path:
     cands = sorted(cache_root.glob(f"*/{MANIFEST_NAME}"), key=lambda x: x.stat().st_mtime)
     if not cands:
         raise SystemExit(
-            f"No {MANIFEST_NAME} under {cache_root}. Run:\n  python scripts/tokenize.py"
+            f"No {MANIFEST_NAME} under {cache_root}. Run:\n  python scripts/tokenize_data.py"
         )
     return cands[-1]
 

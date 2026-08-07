@@ -11,7 +11,6 @@ Requires a CUDA GPU (designed for ~40GB; bf16 LoRA). Do not run on CPU-only host
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -92,17 +91,6 @@ def main() -> None:
         action="store_true",
         help="Dangerous: skip CUDA check (Unsloth training is unsupported here)",
     )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume from the latest checkpoint under train.output_dir",
-    )
-    parser.add_argument(
-        "--resume-from",
-        type=Path,
-        default=None,
-        help="Resume from this checkpoint directory (overrides --resume)",
-    )
     args = parser.parse_args()
     cfg = _load_config(args.config)
 
@@ -125,10 +113,6 @@ def main() -> None:
         )
 
     max_seq = int(mcfg["max_seq_length"])
-    max_train_samples = dcfg.get("max_train_samples")
-    max_eval_samples = dcfg.get("max_eval_samples")
-    max_train_samples = int(max_train_samples) if max_train_samples else None
-    max_eval_samples = int(max_eval_samples) if max_eval_samples else None
     model_path = _resolve_model_path(mcfg)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_path,
@@ -153,40 +137,24 @@ def main() -> None:
     out_dir = ROOT / tcfg["output_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
     response_part = str(tcfg.get("response_part", "<|im_start|>assistant\n"))
-    packing = bool(dcfg.get("packing", False))
+    ds_cache_root = out_dir / "ds_cache"
     cache_meta = _build_ds_cache_meta(
         train_path=train_path,
         eval_path=eval_path if eval_path and eval_path.exists() else None,
         max_seq_length=max_seq,
         response_part=response_part,
         model_name=str(mcfg["name"]),
-        packing=packing,
-        max_train_samples=max_train_samples,
-        max_eval_samples=max_eval_samples,
+        packing=bool(dcfg.get("packing", False)),
     )
-    shared_cache_root = _shared_ds_cache_root(dcfg)
-    ds_cache_dir = _variant_cache_dir(shared_cache_root, cache_meta)
-    print(f"Shared dataset cache root: {shared_cache_root}", flush=True)
-    print(f"This-run cache dir: {ds_cache_dir}", flush=True)
 
-    cached = _resolve_ready_datasets(
-        shared_cache_root,
-        cache_meta,
-        seed=int(tcfg.get("seed", 42)),
-        legacy_dirs=[
-            out_dir / "ds_cache",
-            ROOT / "outputs" / "wm_sft" / "ds_cache",
-            ROOT / "outputs" / "wm_sft_pilot" / "ds_cache",
-            ROOT / "outputs" / "wm_sft_pilot_shuffled" / "ds_cache",
-        ],
-    )
-    # Pretokenized ready data: packing is a tokenize-time option only.
+    cached = _try_load_ready_datasets(ds_cache_root, cache_meta)
     if cached is not None:
-        train_ready, eval_ready, cache_note = cached
-        print(cache_note, flush=True)
-        sft_args = _make_sft_config(
-            out_dir, tcfg, dcfg, max_seq, eval_ready is not None, packing=False
+        train_ready, eval_ready = cached
+        print(
+            f"Using disk cache for masked+filtered datasets under {ds_cache_root}",
+            flush=True,
         )
+        sft_args = _make_sft_config(out_dir, tcfg, dcfg, max_seq, eval_ready is not None)
         print("Building SFTTrainer from cached tokenized datasets...", flush=True)
         trainer = SFTTrainer(
             model=model,
@@ -194,14 +162,7 @@ def main() -> None:
             train_dataset=train_ready,
             eval_dataset=eval_ready,
             args=sft_args,
-            callbacks=_make_epoch_save_eval_callbacks(eval_ready is not None),
         )
-        if packing:
-            print(
-                "Note: packing=true ignored for pretokenized cache reuse "
-                "(sequences already built). Truncate/subset reuse still applied.",
-                flush=True,
-            )
     else:
         train_ds = _load_jsonl_messages(train_path)
         eval_ds = (
@@ -220,7 +181,6 @@ def main() -> None:
                 texts.append(text)
             return {"text": texts}
 
-        # Format BEFORE subset so HuggingFace map cache from full-corpus runs can hit.
         train_ds = train_ds.map(
             formatting_func,
             batched=True,
@@ -236,23 +196,8 @@ def main() -> None:
                 desc="format eval",
                 load_from_cache_file=True,
             )
-        train_ds = _maybe_subset(
-            train_ds,
-            max_train_samples,
-            name="train",
-            seed=int(tcfg.get("seed", 42)),
-        )
-        if eval_ds is not None:
-            eval_ds = _maybe_subset(
-                eval_ds,
-                max_eval_samples,
-                name="eval",
-                seed=int(tcfg.get("seed", 42)) + 1,
-            )
 
-        sft_args = _make_sft_config(
-            out_dir, tcfg, dcfg, max_seq, eval_ds is not None, packing=packing
-        )
+        sft_args = _make_sft_config(out_dir, tcfg, dcfg, max_seq, eval_ds is not None)
 
         print("Building SFTTrainer (may tokenize; can take a long time)...", flush=True)
         trainer = SFTTrainer(
@@ -261,7 +206,6 @@ def main() -> None:
             train_dataset=train_ds,
             eval_dataset=eval_ds,
             args=sft_args,
-            callbacks=_make_epoch_save_eval_callbacks(eval_ds is not None),
         )
 
         print(
@@ -273,7 +217,7 @@ def main() -> None:
             tokenizer,
             response_part=response_part,
             name="train",
-            cache_dir=ds_cache_dir / "map",
+            cache_dir=ds_cache_root / "map",
         )
         if trainer.eval_dataset is not None:
             trainer.eval_dataset = _mask_dataset_responses_only(
@@ -281,7 +225,7 @@ def main() -> None:
                 tokenizer,
                 response_part=response_part,
                 name="eval",
-                cache_dir=ds_cache_dir / "map",
+                cache_dir=ds_cache_root / "map",
             )
 
         print("Filtering fully -100 rows...", flush=True)
@@ -294,7 +238,7 @@ def main() -> None:
             )
         print("Response-only mask + -100 filter done.", flush=True)
         _save_ready_datasets(
-            ds_cache_dir,
+            ds_cache_root,
             cache_meta,
             trainer.train_dataset,
             trainer.eval_dataset,
@@ -308,17 +252,7 @@ def main() -> None:
         if n_sup == 0:
             raise SystemExit("Row 0 is fully -100 after masking — aborting.")
 
-    resume_ckpt = _resolve_resume_checkpoint(
-        out_dir,
-        resume=bool(args.resume or tcfg.get("resume", False)),
-        resume_from=args.resume_from or tcfg.get("resume_from"),
-    )
-    if resume_ckpt:
-        print(f"Resuming training from {resume_ckpt!r}", flush=True)
-        trainer.train(resume_from_checkpoint=resume_ckpt)
-    else:
-        trainer.train()
-
+    trainer.train()
     adapter_dir = out_dir / "lora_adapter"
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
@@ -328,65 +262,12 @@ def main() -> None:
     print(f"Saved LoRA adapter -> {adapter_dir}", flush=True)
 
 
-DS_CACHE_VERSION = 3
+DS_CACHE_VERSION = 1
 
 
-def _resolve_resume_checkpoint(
-    out_dir: Path,
-    *,
-    resume: bool,
-    resume_from: Path | str | None,
-):
-    """Return a checkpoint path / True for Trainer, or None to start fresh."""
-    if resume_from:
-        path = Path(resume_from)
-        if not path.is_absolute():
-            path = (ROOT / path).resolve()
-        if not path.exists():
-            raise SystemExit(f"--resume-from not found: {path}")
-        return str(path)
-    if not resume:
-        return None
-    # Trainer interprets True as "latest checkpoint under output_dir"
-    checkpoints = sorted(
-        out_dir.glob("checkpoint-*"),
-        key=lambda p: int(p.name.split("-", 1)[1]) if p.name.split("-", 1)[1].isdigit() else -1,
-    )
-    if not checkpoints:
-        print(
-            f"--resume set but no checkpoint-* under {out_dir}; starting fresh.",
-            flush=True,
-        )
-        return None
-    latest = checkpoints[-1]
-    print(f"Auto-selected latest checkpoint: {latest}", flush=True)
-    return str(latest)
-
-
-def _make_epoch_save_eval_callbacks(has_eval: bool):
-    """Force a checkpoint (+ eval when available) at every epoch boundary."""
-    from transformers import TrainerCallback
-
-    class _EpochSaveEvalCallback(TrainerCallback):
-        def on_epoch_end(self, args, state, control, **kwargs):  # noqa: ANN001
-            control.should_save = True
-            if has_eval:
-                control.should_evaluate = True
-            print(
-                f"Epoch {state.epoch}: requesting checkpoint save"
-                + (" + eval" if has_eval else ""),
-                flush=True,
-            )
-            return control
-
-    return [_EpochSaveEvalCallback()]
-
-
-def _make_sft_config(out_dir, tcfg, dcfg, max_seq, has_eval: bool, packing: bool | None = None):
+def _make_sft_config(out_dir, tcfg, dcfg, max_seq, has_eval: bool):
     from trl import SFTConfig
 
-    if packing is None:
-        packing = bool(dcfg.get("packing", False))
     return SFTConfig(
         output_dir=str(out_dir),
         seed=int(tcfg.get("seed", 42)),
@@ -400,17 +281,15 @@ def _make_sft_config(out_dir, tcfg, dcfg, max_seq, has_eval: bool, packing: bool
         logging_steps=int(tcfg.get("logging_steps", 10)),
         eval_strategy="steps" if has_eval else "no",
         eval_steps=int(tcfg.get("eval_steps", 200)) if has_eval else None,
-        save_strategy="steps",
-        save_steps=int(tcfg.get("save_steps", 35)),
+        save_steps=int(tcfg.get("save_steps", 200)),
         save_total_limit=int(tcfg.get("save_total_limit", 3)),
-        save_on_each_node=True,
         lr_scheduler_type=str(tcfg.get("lr_scheduler_type", "cosine")),
         optim=str(tcfg.get("optim", "adamw_8bit")),
         bf16=bool(tcfg.get("bf16", True)),
         fp16=False,
         report_to=tcfg.get("report_to", "none"),
         max_seq_length=max_seq,
-        packing=packing,
+        packing=bool(dcfg.get("packing", False)),
         dataset_text_field="text",
         remove_unused_columns=False,
     )
@@ -421,25 +300,6 @@ def _file_sig(path: Path) -> dict:
     return {"path": str(path.resolve()), "mtime_ns": st.st_mtime_ns, "size": st.st_size}
 
 
-def _maybe_subset(dataset, max_samples: int | None, *, name: str, seed: int):
-    """Deterministic head-after-shuffle subset for fast pilots."""
-    if max_samples is None or max_samples <= 0:
-        return dataset
-    n = len(dataset)
-    if max_samples >= n:
-        print(f"{name}: using full {n} rows (max_samples={max_samples})", flush=True)
-        return dataset
-    print(f"{name}: subset {max_samples}/{n} (seed={seed})", flush=True)
-    return dataset.shuffle(seed=seed).select(range(max_samples))
-
-
-def _sample_cap(meta: dict, key: str) -> int | None:
-    v = meta.get(key)
-    if v is None or v == "" or int(v) <= 0:
-        return None
-    return int(v)
-
-
 def _build_ds_cache_meta(
     *,
     train_path: Path,
@@ -448,8 +308,6 @@ def _build_ds_cache_meta(
     response_part: str,
     model_name: str,
     packing: bool,
-    max_train_samples: int | None = None,
-    max_eval_samples: int | None = None,
 ) -> dict:
     return {
         "version": DS_CACHE_VERSION,
@@ -459,286 +317,36 @@ def _build_ds_cache_meta(
         "response_part": response_part,
         "model_name": model_name,
         "packing": packing,
-        "max_train_samples": max_train_samples,
-        "max_eval_samples": max_eval_samples,
     }
-
-
-def _meta_fingerprint(meta: dict) -> str:
-    blob = json.dumps(meta, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
-
-
-def _shared_ds_cache_root(dcfg: dict) -> Path:
-    raw = dcfg.get("ds_cache_dir", "outputs/ds_cache")
-    path = Path(raw)
-    return path if path.is_absolute() else (ROOT / path)
-
-
-def _variant_cache_dir(shared_root: Path, meta: dict) -> Path:
-    return shared_root / f"v{meta.get('version', DS_CACHE_VERSION)}_{_meta_fingerprint(meta)}"
-
-
-def _same_source_meta(a: dict, b: dict) -> bool:
-    return (
-        a.get("train") == b.get("train")
-        and a.get("eval") == b.get("eval")
-        and a.get("response_part") == b.get("response_part")
-        and a.get("model_name") == b.get("model_name")
-    )
-
-
-def _is_exact_meta(prev: dict, meta: dict) -> bool:
-    # Ignore version drift between 2↔3 if content fields match.
-    keys = [
-        "train",
-        "eval",
-        "max_seq_length",
-        "response_part",
-        "model_name",
-        "packing",
-        "max_train_samples",
-        "max_eval_samples",
-    ]
-    for k in keys:
-        if prev.get(k) != meta.get(k):
-            return False
-    return True
-
-
-def _is_superset_meta(prev: dict, meta: dict) -> bool:
-    """True if prev tokenized ready can be truncated/subsetted into meta."""
-    if not _same_source_meta(prev, meta):
-        return False
-    if int(prev.get("max_seq_length", 0)) < int(meta["max_seq_length"]):
-        return False
-    # Cannot unpack packed sequences back into rows.
-    if prev.get("packing") and not meta.get("packing"):
-        return False
-    pt, mt = _sample_cap(prev, "max_train_samples"), _sample_cap(meta, "max_train_samples")
-    pe, me = _sample_cap(prev, "max_eval_samples"), _sample_cap(meta, "max_eval_samples")
-    if mt is None and pt is not None:
-        return False
-    if mt is not None and pt is not None and pt < mt:
-        return False
-    if me is None and pe is not None:
-        return False
-    if me is not None and pe is not None and pe < me:
-        return False
-    return True
-
-
-def _iter_cache_candidate_dirs(shared_root: Path, legacy_dirs: list[Path]) -> list[Path]:
-    out: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(p: Path) -> None:
-        key = str(p.resolve()) if p.exists() else str(p)
-        if key in seen:
-            return
-        seen.add(key)
-        out.append(p)
-
-    if shared_root.exists():
-        for child in sorted(shared_root.iterdir()):
-            if child.is_dir() and (child / "meta.json").exists():
-                _add(child)
-    for leg in legacy_dirs:
-        if (leg / "meta.json").exists() and (leg / "train_ready").exists():
-            _add(leg)
-    return out
-
-
-def _load_meta(cache_dir: Path) -> dict | None:
-    path = cache_dir / "meta.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _load_ready_pair(cache_dir: Path, meta: dict):
-    from datasets import load_from_disk
-
-    train_dir = cache_dir / "train_ready"
-    if not train_dir.exists():
-        return None
-    train_ds = load_from_disk(str(train_dir))
-    eval_ds = None
-    if meta.get("eval") is not None:
-        eval_dir = cache_dir / "eval_ready"
-        if not eval_dir.exists():
-            return None
-        eval_ds = load_from_disk(str(eval_dir))
-    return train_ds, eval_ds
-
-
-def _truncate_token_fields(dataset, max_len: int, desc: str):
-    cols = [c for c in ("input_ids", "labels", "attention_mask") if c in dataset.column_names]
-    if not cols:
-        return dataset
-
-    def _batch(batch):
-        out = {}
-        for k, vals in batch.items():
-            if k in cols:
-                out[k] = [row[:max_len] for row in vals]
-            else:
-                out[k] = vals
-        return out
-
-    return dataset.map(_batch, batched=True, desc=desc, load_from_cache_file=False)
-
-
-def _derive_ready_from_superset(
-    src_dir: Path,
-    src_meta: dict,
-    want_meta: dict,
-    *,
-    seed: int,
-    dest_dir: Path,
-):
-    loaded = _load_ready_pair(src_dir, src_meta)
-    if loaded is None:
-        return None
-    train_ds, eval_ds = loaded
-    max_len = int(want_meta["max_seq_length"])
-    if int(src_meta.get("max_seq_length", 0)) > max_len:
-        print(
-            f"Deriving cache: truncate seq {src_meta.get('max_seq_length')} → {max_len}",
-            flush=True,
-        )
-        train_ds = _truncate_token_fields(train_ds, max_len, "truncate train")
-        if eval_ds is not None:
-            eval_ds = _truncate_token_fields(eval_ds, max_len, "truncate eval")
-
-    train_ds = _maybe_subset(
-        train_ds,
-        _sample_cap(want_meta, "max_train_samples"),
-        name="train",
-        seed=seed,
-    )
-    if eval_ds is not None:
-        eval_ds = _maybe_subset(
-            eval_ds,
-            _sample_cap(want_meta, "max_eval_samples"),
-            name="eval",
-            seed=seed + 1,
-        )
-
-    # Pretokenized reuse stores packing=false (cannot invent packing after the fact).
-    save_meta = dict(want_meta)
-    save_meta["packing"] = False
-    save_meta["derived_from"] = {
-        "dir": str(src_dir),
-        "max_seq_length": src_meta.get("max_seq_length"),
-        "packing": src_meta.get("packing"),
-    }
-    _save_ready_datasets(dest_dir, save_meta, train_ds, eval_ds)
-    return train_ds, eval_ds
-
-
-def _resolve_ready_datasets(
-    shared_root: Path,
-    meta: dict,
-    *,
-    seed: int,
-    legacy_dirs: list[Path],
-):
-    """Exact hit, packing-relaxed hit, or derive via truncate/subset from a longer ready cache."""
-    dest = _variant_cache_dir(shared_root, meta)
-    candidates = _iter_cache_candidate_dirs(shared_root, legacy_dirs)
-
-    # 1) Exact
-    for cdir in [dest, *candidates]:
-        prev = _load_meta(cdir)
-        if prev is None:
-            continue
-        if _is_exact_meta(prev, meta):
-            loaded = _load_ready_pair(cdir, prev)
-            if loaded is not None:
-                train_ds, eval_ds = loaded
-                note = (
-                    f"Using exact dataset cache under {cdir} "
-                    f"(train={len(train_ds)}"
-                    + (f" eval={len(eval_ds)}" if eval_ds is not None else "")
-                    + ")"
-                )
-                if cdir != dest and not dest.exists():
-                    _save_ready_datasets(dest, meta, train_ds, eval_ds)
-                    note += f"; mirrored → {dest}"
-                return train_ds, eval_ds, note
-
-    # 2) Same rows/seq, only packing differs (want packed, have unpacked pretokenized)
-    for cdir in candidates:
-        prev = _load_meta(cdir)
-        if prev is None:
-            continue
-        if (
-            _same_source_meta(prev, meta)
-            and int(prev.get("max_seq_length", -1)) == int(meta["max_seq_length"])
-            and _sample_cap(prev, "max_train_samples") == _sample_cap(meta, "max_train_samples")
-            and _sample_cap(prev, "max_eval_samples") == _sample_cap(meta, "max_eval_samples")
-            and (not prev.get("packing"))
-            and meta.get("packing")
-        ):
-            loaded = _load_ready_pair(cdir, prev)
-            if loaded is not None:
-                train_ds, eval_ds = loaded
-                note = (
-                    f"Reusing unpacked tokenized cache under {cdir} "
-                    f"(packing request relaxed for pretokenized data)"
-                )
-                return train_ds, eval_ds, note
-
-    # 3) Derive from longer / fuller unpacked (or compatible) ready cache
-    supersets = []
-    for cdir in candidates:
-        prev = _load_meta(cdir)
-        if prev is None:
-            continue
-        if _is_superset_meta(prev, meta):
-            supersets.append((cdir, prev))
-    # Prefer closest max_seq_length, then largest train coverage.
-    supersets.sort(
-        key=lambda x: (
-            int(x[1].get("max_seq_length", 0)),
-            _sample_cap(x[1], "max_train_samples") is None,
-            _sample_cap(x[1], "max_train_samples") or 0,
-        )
-    )
-    if supersets:
-        cdir, prev = supersets[0]
-        print(f"Dataset cache derive from {cdir}", flush=True)
-        # Derived artifacts are always unpacked sequences.
-        save_meta = dict(meta)
-        save_meta["packing"] = False
-        dest_eff = _variant_cache_dir(shared_root, save_meta)
-        derived = _derive_ready_from_superset(
-            cdir, prev, save_meta, seed=seed, dest_dir=dest_eff
-        )
-        if derived is not None:
-            train_ds, eval_ds = derived
-            note = (
-                f"Derived dataset cache → {dest_eff} "
-                f"(train={len(train_ds)}"
-                + (f" eval={len(eval_ds)}" if eval_ds is not None else "")
-                + "). packing ignored for pretokenized reuse."
-            )
-            return train_ds, eval_ds, note
-
-    print("Dataset disk cache miss (no exact/compatible ready cache).", flush=True)
-    return None
 
 
 def _try_load_ready_datasets(cache_root: Path, meta: dict):
-    """Backward-compatible helper (exact load only)."""
-    prev = _load_meta(cache_root)
-    if prev is None or not _is_exact_meta(prev, meta):
+    meta_path = cache_root / "meta.json"
+    train_dir = cache_root / "train_ready"
+    if not meta_path.exists() or not train_dir.exists():
         return None
-    return _load_ready_pair(cache_root, prev)
+    try:
+        prev = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if prev != meta:
+        print("Dataset disk cache miss (inputs/config changed).", flush=True)
+        return None
+    from datasets import load_from_disk
+
+    train_ds = load_from_disk(str(train_dir))
+    eval_ds = None
+    eval_dir = cache_root / "eval_ready"
+    if meta.get("eval") is not None:
+        if not eval_dir.exists():
+            return None
+        eval_ds = load_from_disk(str(eval_dir))
+    print(
+        f"Loaded cached datasets: train={len(train_ds)}"
+        + (f" eval={len(eval_ds)}" if eval_ds is not None else ""),
+        flush=True,
+    )
+    return train_ds, eval_ds
 
 
 def _save_ready_datasets(cache_root: Path, meta: dict, train_ds, eval_ds) -> None:
