@@ -111,10 +111,32 @@ def test_anti_forget_policy() -> None:
             {"role": "tool", "tool_call_id": "1", "content": "main.py"},
         ],
     }
-    row = policy_row_from_openhands_record(rec)
+    row, clip_stats = policy_row_from_openhands_record(rec)
     assert row is not None
     assert row["source"] == "anti_forget"
     assert any(m.get("tool_calls") for m in row["messages"] if m.get("role") == "assistant")
+    assert clip_stats["messages_clipped"] == 0
+
+    long_rec = {
+        "instance_id": "y",
+        "trajectory": [
+            {"role": "user", "content": "x"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "1",
+                        "function": {"name": "execute_bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "1", "content": "A" * 100},
+        ],
+    }
+    row2, st2 = policy_row_from_openhands_record(long_rec, max_tool_chars=50)
+    assert row2 is not None
+    assert st2["messages_clipped"] >= 1
+    assert st2["traj_clipped"] == 1
 
 
 if __name__ == "__main__":
