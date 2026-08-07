@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
-"""Step 2: ratio-sample mix JSONL, then Axolotl CPU tokenize.
+"""Step 2: ratio-sample mix JSONL, then ms-swift cached_dataset export (CPU OK).
 
-Reads ``biv_mix`` from the Axolotl yaml (ignored by Axolotl itself after we
-strip it into a generated ``*.run.yaml``):
+Reads ``biv_mix`` from ``configs/swift/coder_next_qlora.yaml``.
 
-  biv_mix:
-    seed: 42
-    mode: max_fill          # or total_rows
-    total_rows: null        # used when mode=total_rows
-    ratios:                 # relative shares; code:os should be 1:1
-      wm_code: 1.0
-      wm_os: 1.0
-      anti_forget: 0.35     # ~15% of the merged train set
+For each source (wm_code / wm_os / anti_forget):
+  1) sample ratio-matched JSONL under ``mix_dir/sampled/<tag>/``
+  2) ``swift export --to_cached_dataset true`` → ``cache_root/<tag>/<source>/``
 
-Sampling writes ``{mix_dir}/sampled/<tag>/{source}/train.jsonl``, then runs
-``axolotl preprocess`` on a generated run config that points at those files.
-Training must use the same ``*.run.yaml`` so train sees only the sampled rows.
+Length filtering is NOT applied here — training sets ``--max_length``.
+Cache mainly stores per-row ``length`` (ms-swift>=3.11) so you can retune
+max_length on the GPU box without re-exporting.
 
 Does **not** need a GPU — forces ``CUDA_VISIBLE_DEVICES=""``.
 
@@ -23,7 +17,7 @@ Examples:
   python scripts/tokenize.py
   python scripts/tokenize.py --force
   python scripts/tokenize.py --check
-  python scripts/tokenize.py --sample-only   # write subsets, skip axolotl
+  python scripts/tokenize.py --sample-only
 """
 
 from __future__ import annotations
@@ -40,9 +34,20 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "configs" / "axolotl" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 DEFAULT_MIX = ROOT / "data" / "processed" / "mix_v1"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
+MANIFEST_NAME = "tokenize_manifest.json"
+
+
+def _tqdm(**kwargs):
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return None
+    kwargs.setdefault("dynamic_ncols", True)
+    kwargs.setdefault("mininterval", 0.3)
+    return tqdm(**kwargs)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -57,50 +62,12 @@ def _load_yaml(path: Path) -> dict:
     return data
 
 
-def _dump_yaml(data: dict, path: Path) -> None:
-    import yaml
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
-
-
-def _prepared_path(cfg: dict, config_path: Path) -> Path:
-    raw = cfg.get("dataset_prepared_path")
-    if not raw:
-        raise SystemExit(
-            f"{config_path}: missing dataset_prepared_path "
-            "(required so train can reuse the token cache)"
-        )
+def _resolve_path(raw: str | Path, *, base: Path = ROOT) -> Path:
     p = Path(str(raw))
-    return p if p.is_absolute() else (ROOT / p)
-
-
-def _resolve_full_sources(mix_dir: Path) -> dict[str, Path]:
-    out: dict[str, Path] = {}
-    for name in SOURCE_KEYS:
-        p = mix_dir / name / "train.jsonl"
-        if not p.is_file():
-            raise SystemExit(
-                f"Missing {p} — run prepare first:\n"
-                f"  python scripts/prepare_data.py --all --out-dir {mix_dir.relative_to(ROOT)}"
-            )
-        out[name] = p
-    return out
-
-
-def _tqdm(**kwargs):
-    try:
-        from tqdm.auto import tqdm
-    except ImportError:
-        return None
-    kwargs.setdefault("dynamic_ncols", True)
-    kwargs.setdefault("mininterval", 0.3)
-    return tqdm(**kwargs)
+    return p if p.is_absolute() else (base / p)
 
 
 def _count_lines(path: Path, *, desc: str | None = None) -> int:
-    """Count lines with a progress bar (byte-based when size is known)."""
     if not path.is_file():
         return 0
     size = path.stat().st_size
@@ -117,11 +84,8 @@ def _count_lines(path: Path, *, desc: str | None = None) -> int:
             desc=f"count {label}",
         )
         if bar is None:
-            print(f"  counting lines: {label} ({size / 1e9:.2f} GB)…", flush=True)
-            for line in f:
+            for _ in f:
                 n += 1
-                if n % 50_000 == 0:
-                    print(f"    … {n:,} lines", flush=True)
             return n
         with bar:
             for line in f:
@@ -133,9 +97,7 @@ def _count_lines(path: Path, *, desc: str | None = None) -> int:
 def _available_from_prepare_cache(
     mix_dir: Path, sources: dict[str, Path]
 ) -> dict[str, int] | None:
-    """Reuse prepare_data line counts — do not rescan multi‑GB anti_forget JSONL."""
     available: dict[str, int] = {}
-
     root_counts = mix_dir / "counts.json"
     if root_counts.is_file():
         try:
@@ -147,13 +109,11 @@ def _available_from_prepare_cache(
             key = f"{name}/train.jsonl"
             if key in jl and jl[key] is not None:
                 available[name] = int(jl[key])
+        if len(available) == len(SOURCE_KEYS):
+            print(f"Using line counts from {root_counts}", flush=True)
+            return available
 
-    if len(available) == len(SOURCE_KEYS):
-        print(f"Using line counts from {root_counts}", flush=True)
-        return available
-
-    # Per-source counts.json (written during prepare even before mix rollup)
-    for name, path in sources.items():
+    for name in SOURCE_KEYS:
         if name in available:
             continue
         cpath = mix_dir / name / "counts.json"
@@ -171,7 +131,6 @@ def _available_from_prepare_cache(
         if n is not None:
             available[name] = int(n)
             print(f"Using line count from {cpath} ({name}/train={n:,})", flush=True)
-
     if len(available) == len(SOURCE_KEYS):
         return available
     return None
@@ -183,11 +142,8 @@ def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int
         for name, n in cached.items():
             print(f"  available {name}: {n:,} (cached)", flush=True)
         return cached
-
     print(
-        "WARNING: prepare counts.json incomplete — scanning JSONL "
-        "(anti_forget can take a long time). Prefer re-running prepare "
-        "or ensure mix_v1/counts.json exists.",
+        "WARNING: prepare counts.json incomplete — scanning JSONL…",
         flush=True,
     )
     available: dict[str, int] = {}
@@ -200,29 +156,14 @@ def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int
 def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
     raw = cfg.get("biv_mix")
     if not isinstance(raw, dict):
-        raise SystemExit(
-            "Config missing biv_mix: block. Example:\n"
-            "biv_mix:\n"
-            "  seed: 42\n"
-            "  mode: max_fill\n"
-            "  ratios:\n"
-            "    wm_code: 1.0\n"
-            "    wm_os: 1.0\n"
-            "    anti_forget: 0.35\n"
-        )
+        raise SystemExit(f"Config missing biv_mix: block")
     ratios = raw.get("ratios") or {}
-    if not isinstance(ratios, dict):
-        raise SystemExit("biv_mix.ratios must be a mapping")
     for k in SOURCE_KEYS:
-        if k not in ratios:
-            raise SystemExit(f"biv_mix.ratios missing {k}")
-        if float(ratios[k]) <= 0:
+        if k not in ratios or float(ratios[k]) <= 0:
             raise SystemExit(f"biv_mix.ratios.{k} must be > 0")
     r_c, r_o = float(ratios["wm_code"]), float(ratios["wm_os"])
     if abs(r_c - r_o) > 1e-9:
-        raise SystemExit(
-            f"biv_mix requires wm_code:wm_os = 1:1, got {r_c}:{r_o}"
-        )
+        raise SystemExit(f"biv_mix requires wm_code:wm_os = 1:1, got {r_c}:{r_o}")
     mode = str(raw.get("mode", "max_fill"))
     if mode not in {"max_fill", "total_rows"}:
         raise SystemExit("biv_mix.mode must be max_fill or total_rows")
@@ -241,15 +182,12 @@ def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
     }
 
 
-def _target_counts(
-    available: dict[str, int], mix: dict[str, Any]
-) -> dict[str, int]:
+def _target_counts(available: dict[str, int], mix: dict[str, Any]) -> dict[str, int]:
     ratios = mix["ratios"]
     rsum = sum(ratios[k] for k in SOURCE_KEYS)
     if mix["mode"] == "total_rows":
         T = int(mix["total_rows"])
         targets = {k: max(1, int(T * ratios[k] / rsum)) for k in SOURCE_KEYS}
-        # Keep exact 1:1 for code/os after rounding
         n_wm = min(targets["wm_code"], targets["wm_os"])
         targets["wm_code"] = n_wm
         targets["wm_os"] = n_wm
@@ -257,7 +195,6 @@ def _target_counts(
             1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
         )
     else:
-        # Largest scale s such that floor(s*r_i) <= available[i]
         s = min(available[k] / ratios[k] for k in SOURCE_KEYS)
         targets = {k: max(1, int(s * ratios[k])) for k in SOURCE_KEYS}
         n_wm = min(targets["wm_code"], targets["wm_os"])
@@ -266,19 +203,13 @@ def _target_counts(
         targets["anti_forget"] = max(
             1, int(round(n_wm * ratios["anti_forget"] / ratios["wm_code"]))
         )
-
     for k in SOURCE_KEYS:
         if targets[k] > available[k]:
             raise SystemExit(
-                f"Need {targets[k]} rows for {k} but only {available[k]} available. "
-                "Lower anti ratio / total_rows, or prepare more data."
+                f"Need {targets[k]} rows for {k} but only {available[k]} available."
             )
-    # Final 1:1 check
     if targets["wm_code"] != targets["wm_os"]:
-        raise SystemExit(
-            f"Internal error: code/os targets not equal "
-            f"{targets['wm_code']} vs {targets['wm_os']}"
-        )
+        raise SystemExit("Internal error: code/os targets not equal")
     return targets
 
 
@@ -334,11 +265,6 @@ def _sample_jsonl(
                 if i in chosen:
                     fout.write(line)
                     written += 1
-                if (i + 1) % 50_000 == 0:
-                    print(
-                        f"    {name}: scanned {i + 1:,}/{n_total:,} wrote {written:,}",
-                        flush=True,
-                    )
         else:
             with bar:
                 for i, line in enumerate(fin):
@@ -352,106 +278,102 @@ def _sample_jsonl(
     print(f"  {name}: sampled {n_take:,}/{n_total:,} → {dst}", flush=True)
 
 
-def _cache_ready(cache_dir: Path) -> bool:
-    if not cache_dir.is_dir():
+def _find_swift() -> str:
+    exe = shutil.which("swift")
+    if exe:
+        return exe
+    raise SystemExit(
+        "ms-swift `swift` CLI not found. Install:\n"
+        "  pip install 'ms-swift>=3.11'\n"
+    )
+
+
+def _cache_train_dir(source_cache: Path) -> Path:
+    """swift export writes ``<output_dir>/train`` (and optional val)."""
+    train = source_cache / "train"
+    if train.is_dir():
+        return train
+    # older / single-dir layouts
+    if (source_cache / "dataset_info.json").is_file() or any(source_cache.glob("*.arrow")):
+        return source_cache
+    return train
+
+
+def _cache_ready(source_cache: Path) -> bool:
+    train = _cache_train_dir(source_cache)
+    if not train.is_dir():
         return False
-    for p in cache_dir.rglob("*"):
+    for p in train.rglob("*"):
         if p.is_file() and (
             p.suffix in {".arrow", ".parquet"}
             or p.name in {"dataset_info.json", "state.json"}
-            or p.stat().st_size > 1024
+            or p.stat().st_size > 256
         ):
             return True
     return False
 
 
-def _find_axolotl() -> list[str]:
-    exe = shutil.which("axolotl")
-    if exe:
-        return [exe, "preprocess"]
-    return [sys.executable, "-m", "axolotl.cli.preprocess"]
-
-
-def _run_config_path(config_path: Path) -> Path:
-    return config_path.with_suffix(".run.yaml")
-
-
-def _build_run_config(
-    cfg: dict,
+def _export_one(
     *,
-    sampled_paths: dict[str, Path],
-    mix: dict[str, Any],
-    targets: dict[str, int],
-    tag: str,
-    cache_dir: Path,
-) -> dict:
-    run = {k: v for k, v in cfg.items() if k != "biv_mix"}
-    # Point at sampled JSONL; sizes already enforce mix ratio → equal concat.
-    run["datasets"] = [
-        {
-            "path": str(sampled_paths[name].relative_to(ROOT)),
-            "type": "chat_template",
-            "field_messages": "messages",
-        }
-        for name in SOURCE_KEYS
+    swift: str,
+    model: str,
+    jsonl: Path,
+    out_dir: Path,
+    dataset_num_proc: int,
+) -> Path:
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        swift,
+        "export",
+        "--model",
+        model,
+        "--dataset",
+        str(jsonl),
+        "--to_cached_dataset",
+        "true",
+        "--output_dir",
+        str(out_dir),
+        "--dataset_num_proc",
+        str(max(1, dataset_num_proc)),
+        "--split_dataset_ratio",
+        "0",
     ]
-    # Namespace cache by sample tag so ratio changes do not reuse wrong tokens.
-    base_cache = cache_dir
-    # If yaml already ends with mix name, nest tag underneath
-    run["dataset_prepared_path"] = str(
-        (base_cache / tag).relative_to(ROOT)
-        if base_cache.is_absolute()
-        else Path(str(cfg["dataset_prepared_path"])) / tag
-    )
-    run["biv_mix_applied"] = {
-        "tag": tag,
-        "seed": mix["seed"],
-        "mode": mix["mode"],
-        "total_rows": mix["total_rows"],
-        "ratios": mix["ratios"],
-        "targets": targets,
-        "note": "sizes enforce mix; datasets concatenated without weight re-sampling",
-    }
-    return run
+    print(f"Running: {' '.join(cmd)}", flush=True)
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    proc = subprocess.run(cmd, check=False, cwd=str(ROOT), env=env)
+    if proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+    train = _cache_train_dir(out_dir)
+    if not _cache_ready(out_dir):
+        raise SystemExit(f"swift export finished but cache empty under {out_dir}")
+    return train
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ratio-sample mix JSONL then Axolotl CPU tokenize (step 2)."
+        description="Ratio-sample + ms-swift cached_dataset export (step 2)."
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--mix-dir", type=Path, default=DEFAULT_MIX)
-    parser.add_argument("--force", action="store_true", help="Rebuild sample + token cache")
-    parser.add_argument("--check", action="store_true", help="Verify sample+token cache ready")
+    parser.add_argument("--mix-dir", type=Path, default=None)
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--sample-only", action="store_true")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--total-rows", type=int, default=None)
     parser.add_argument(
-        "--sample-only",
-        action="store_true",
-        help="Only write sampled JSONL + run yaml; skip axolotl preprocess",
-    )
-    parser.add_argument(
-        "--allow-gpu",
-        action="store_true",
-        help="Do not clear CUDA_VISIBLE_DEVICES (not recommended)",
-    )
-    parser.add_argument(
-        "--seed",
+        "--dataset-num-proc",
         type=int,
         default=None,
-        help="Override biv_mix.seed",
-    )
-    parser.add_argument(
-        "--total-rows",
-        type=int,
-        default=None,
-        help="Override: set mode=total_rows and this budget",
+        help="Override config dataset_num_proc for swift export",
     )
     args = parser.parse_args()
 
     config_path = args.config if args.config.is_absolute() else (ROOT / args.config)
     if not config_path.is_file():
         raise SystemExit(f"Config not found: {config_path}")
-    mix_dir = args.mix_dir if args.mix_dir.is_absolute() else (ROOT / args.mix_dir)
-
     cfg = _load_yaml(config_path)
     mix = _parse_biv_mix(cfg)
     if args.seed is not None:
@@ -460,32 +382,46 @@ def main() -> None:
         mix["mode"] = "total_rows"
         mix["total_rows"] = int(args.total_rows)
 
-    sources = _resolve_full_sources(mix_dir)
+    mix_dir = (
+        _resolve_path(args.mix_dir)
+        if args.mix_dir
+        else _resolve_path(cfg.get("mix_dir", DEFAULT_MIX))
+    )
+    cache_root = _resolve_path(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
+    model = str(cfg.get("model", "Qwen/Qwen3-Coder-Next"))
+    dataset_num_proc = int(
+        args.dataset_num_proc
+        if args.dataset_num_proc is not None
+        else cfg.get("dataset_num_proc", 8)
+    )
+
+    sources = {k: mix_dir / k / "train.jsonl" for k in SOURCE_KEYS}
+    for name, p in sources.items():
+        if not p.is_file():
+            raise SystemExit(
+                f"Missing {p} — run prepare first:\n"
+                f"  python scripts/prepare_data.py --all --out-dir {mix_dir.relative_to(ROOT)}"
+            )
+
     available = _resolve_available(mix_dir, sources)
     targets = _target_counts(available, mix)
     tag = _sample_tag(mix, targets)
     sample_root = mix_dir / "sampled" / tag
-    sampled_paths = {
-        k: sample_root / k / "train.jsonl" for k in SOURCE_KEYS
-    }
-    meta_path = sample_root / "sample_manifest.json"
-    run_path = _run_config_path(config_path)
-
-    # Cache dir from base config (tag nested in run config)
-    base_cache = _prepared_path(cfg, config_path)
-    token_cache = base_cache / tag
+    sampled_paths = {k: sample_root / k / "train.jsonl" for k in SOURCE_KEYS}
+    tag_cache = cache_root / tag
+    source_caches = {k: tag_cache / k for k in SOURCE_KEYS}
+    manifest_path = tag_cache / MANIFEST_NAME
 
     total = sum(targets.values())
     shares = {k: targets[k] / total for k in SOURCE_KEYS}
     print(f"Config:     {config_path}", flush=True)
+    print(f"Model:      {model}", flush=True)
     print(f"Mix dir:    {mix_dir}", flush=True)
     print(
         f"Ratios:     code:os:anti = "
         f"{mix['ratios']['wm_code']:g}:{mix['ratios']['wm_os']:g}:{mix['ratios']['anti_forget']:g}",
         flush=True,
     )
-    print(f"Mode:       {mix['mode']} seed={mix['seed']}", flush=True)
-    print("Available:  " + ", ".join(f"{k}={available[k]:,}" for k in SOURCE_KEYS), flush=True)
     print(
         "Targets:    "
         + ", ".join(f"{k}={targets[k]:,} ({shares[k]*100:.1f}%)" for k in SOURCE_KEYS)
@@ -493,21 +429,25 @@ def main() -> None:
         flush=True,
     )
     print(f"Sample dir: {sample_root}", flush=True)
-    print(f"Run yaml:   {run_path}", flush=True)
-    print(f"Token cache:{token_cache}", flush=True)
+    print(f"Cache root: {tag_cache}", flush=True)
 
-    sample_ok = meta_path.is_file() and all(p.is_file() for p in sampled_paths.values())
+    sample_ok = all(p.is_file() for p in sampled_paths.values())
     if sample_ok and not args.force:
-        prev = json.loads(meta_path.read_text(encoding="utf-8"))
-        if prev.get("targets") != targets or prev.get("seed") != mix["seed"]:
+        meta_p = sample_root / "sample_manifest.json"
+        if meta_p.is_file():
+            prev = json.loads(meta_p.read_text(encoding="utf-8"))
+            if prev.get("targets") != targets or prev.get("seed") != mix["seed"]:
+                sample_ok = False
+        else:
             sample_ok = False
 
+    caches_ok = all(_cache_ready(source_caches[k]) for k in SOURCE_KEYS)
+
     if args.check:
-        tok_ok = _cache_ready(token_cache) and run_path.is_file()
         print(f"Sample ready: {sample_ok}", flush=True)
-        print(f"Token cache ready: {tok_ok}", flush=True)
-        print(f"Run config present: {run_path.is_file()}", flush=True)
-        raise SystemExit(0 if (sample_ok and tok_ok and run_path.is_file()) else 1)
+        print(f"Swift caches ready: {caches_ok}", flush=True)
+        print(f"Manifest: {manifest_path.is_file()}", flush=True)
+        raise SystemExit(0 if (sample_ok and caches_ok and manifest_path.is_file()) else 1)
 
     if args.force and sample_root.exists():
         print(f"--force: removing {sample_root}", flush=True)
@@ -531,107 +471,93 @@ def main() -> None:
                 src_bar.set_postfix_str(name)
         if src_bar is not None:
             src_bar.close()
-        meta = {
-            "tag": tag,
-            "seed": mix["seed"],
-            "mode": mix["mode"],
-            "total_rows": mix["total_rows"],
-            "ratios": mix["ratios"],
-            "available": available,
-            "targets": targets,
-            "shares": shares,
-            "paths": {k: str(p.relative_to(ROOT)) for k, p in sampled_paths.items()},
-        }
-        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        print(f"Wrote {meta_path}", flush=True)
+        (sample_root / "sample_manifest.json").write_text(
+            json.dumps(
+                {
+                    "tag": tag,
+                    "seed": mix["seed"],
+                    "mode": mix["mode"],
+                    "ratios": mix["ratios"],
+                    "available": available,
+                    "targets": targets,
+                    "shares": shares,
+                    "paths": {
+                        k: str(p.relative_to(ROOT)) for k, p in sampled_paths.items()
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     else:
         print(f"Reusing sampled JSONL under {sample_root}", flush=True)
 
-    run_cfg = _build_run_config(
-        cfg,
-        sampled_paths=sampled_paths,
-        mix=mix,
-        targets=targets,
-        tag=tag,
-        cache_dir=base_cache,
-    )
-    # Drop keys Axolotl may not accept
-    run_cfg.pop("biv_mix_applied", None)
-    # Keep a sibling sidecar for humans
-    sidecar = {
+    if args.sample_only:
+        print("--sample-only: skip swift export.", flush=True)
+        return
+
+    if args.force and tag_cache.exists():
+        print(f"--force: removing {tag_cache}", flush=True)
+        shutil.rmtree(tag_cache)
+        caches_ok = False
+
+    train_dirs: dict[str, str] = {}
+    if caches_ok and not args.force:
+        print(f"Reusing swift caches under {tag_cache}", flush=True)
+        for k in SOURCE_KEYS:
+            train_dirs[k] = str(_cache_train_dir(source_caches[k]).relative_to(ROOT))
+    else:
+        swift = _find_swift()
+        print(
+            "Exporting per-source cached_dataset via ms-swift "
+            "(no max_length bake-in; lengths stored for train-time filter)…",
+            flush=True,
+        )
+        exp_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="swift export")
+        for name in SOURCE_KEYS:
+            train_path = _export_one(
+                swift=swift,
+                model=model,
+                jsonl=sampled_paths[name],
+                out_dir=source_caches[name],
+                dataset_num_proc=dataset_num_proc,
+            )
+            train_dirs[name] = str(train_path.relative_to(ROOT))
+            if exp_bar is not None:
+                exp_bar.update(1)
+                exp_bar.set_postfix_str(name)
+        if exp_bar is not None:
+            exp_bar.close()
+
+    manifest = {
+        "framework": "ms-swift",
         "tag": tag,
+        "model": model,
+        "config": str(config_path.relative_to(ROOT)),
         "seed": mix["seed"],
         "mode": mix["mode"],
         "ratios": mix["ratios"],
         "targets": targets,
         "shares": shares,
-        "sample_dir": str(sample_root.relative_to(ROOT)),
-        "dataset_prepared_path": run_cfg["dataset_prepared_path"],
-        "run_config": str(run_path.relative_to(ROOT)),
+        "sampled": {k: str(p.relative_to(ROOT)) for k, p in sampled_paths.items()},
+        "cached_train": train_dirs,
+        "cache_root": str(tag_cache.relative_to(ROOT)),
+        "note": (
+            "Train with --cached_dataset on each cached_train path; "
+            "set --max_length / --truncation_strategy at train time."
+        ),
     }
-    _dump_yaml(run_cfg, run_path)
-    (sample_root / "tokenize_sidecar.json").write_text(
-        json.dumps(sidecar, indent=2), encoding="utf-8"
-    )
-    print(f"Wrote run config {run_path} (Axolotl trains on sampled paths only)", flush=True)
-
-    if args.sample_only:
-        print("--sample-only: skip axolotl preprocess.", flush=True)
-        return
-
-    tok_cache_resolved = (
-        Path(run_cfg["dataset_prepared_path"])
-        if Path(run_cfg["dataset_prepared_path"]).is_absolute()
-        else ROOT / run_cfg["dataset_prepared_path"]
-    )
-    if _cache_ready(tok_cache_resolved) and not args.force:
-        print(
-            f"\nToken cache already present under {tok_cache_resolved}\n"
-            "Skip preprocess. Use --force to rebuild.\n"
-            "Train with:\n"
-            f"  CUDA_VISIBLE_DEVICES=0,1 axolotl train {run_path.relative_to(ROOT)}\n"
-            "  # or: bash scripts/train_coder_next.sh",
-            flush=True,
-        )
-        return
-
-    if args.force and tok_cache_resolved.exists():
-        print(f"--force: removing {tok_cache_resolved}", flush=True)
-        shutil.rmtree(tok_cache_resolved)
-
-    if not args.allow_gpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        print('CUDA_VISIBLE_DEVICES="" (CPU tokenize)', flush=True)
-
-    # Prefer single-process map if stuck issues; user can override.
-    os.environ.setdefault("AXOLOTL_DATASET_NUM_PROC", "1")
-
-    cmd = _find_axolotl() + [str(run_path)]
-    print(f"Running: {' '.join(cmd)}", flush=True)
+    tag_cache.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # convenient pointer for train/stat defaults
+    latest = cache_root / "LATEST"
+    latest.write_text(tag + "\n", encoding="utf-8")
+    print(f"Wrote {manifest_path}", flush=True)
+    print(f"Wrote {latest} → {tag}", flush=True)
     print(
-        f"(Tokenizing only sampled rows: {total:,} total, not full anti_forget.)",
-        flush=True,
-    )
-    print(
-        "(Axolotl preprocess shows its own Tokenizing Prompts bars next.)",
-        flush=True,
-    )
-
-    os.chdir(ROOT)
-    proc = subprocess.run(cmd, check=False)
-    if proc.returncode != 0:
-        raise SystemExit(proc.returncode)
-
-    if not _cache_ready(tok_cache_resolved):
-        raise SystemExit(
-            f"preprocess finished but cache still empty under {tok_cache_resolved}"
-        )
-
-    print(
-        f"\nDone. Token cache ready: {tok_cache_resolved}\n"
-        "Start training (sampled mix only):\n"
-        f"  CUDA_VISIBLE_DEVICES=0,1 axolotl train {run_path.relative_to(ROOT)}\n"
-        "  # or: bash scripts/train_coder_next.sh",
+        "\nDone. Next:\n"
+        "  python scripts/stat.py\n"
+        "  CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh\n",
         flush=True,
     )
 

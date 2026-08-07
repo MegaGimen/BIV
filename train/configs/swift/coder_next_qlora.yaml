@@ -1,0 +1,55 @@
+# Qwen3-Coder-Next QLoRA via ms-swift (multi-GPU).
+#
+# Pipeline:
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+#   2) python scripts/tokenize.py      # ratio-sample + swift export cached_dataset
+#   3) python scripts/stat.py          # optional: length stats per source
+#   4) CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
+#
+# Install (GPU box):
+#   pip install 'ms-swift>=3.11' deepspeed bitsandbytes
+#
+# Mix ratio (empirical): wm_code : wm_os : anti_forget = 1 : 1 : 0.35
+# Train length is NOT baked into the cache — set at train time (--max_length).
+
+model: Qwen/Qwen3-Coder-Next
+
+biv_mix:
+  seed: 42
+  mode: max_fill
+  # total_rows: 50000
+  ratios:
+    wm_code: 1.0
+    wm_os: 1.0
+    anti_forget: 0.35
+
+# Where tokenize.py writes per-source swift caches + manifest
+cache_root: outputs/swift_cache/coder_next_mix_v1
+mix_dir: data/processed/mix_v1
+
+# tokenize / export
+dataset_num_proc: 8
+
+# train defaults (override via train_coder_next.sh env / CLI)
+train:
+  max_length: 16384
+  truncation_strategy: right   # left | right | delete | raise
+  num_epochs: 2
+  learning_rate: 1.0e-4
+  lora_rank: 16
+  lora_alpha: 16
+  # attn only — avoid MoE experts on ~44GB cards
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  deepspeed: zero2
+  output_dir: outputs/swift_coder_next_wm_mix
+  torch_dtype: bfloat16
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  save_total_limit: 3

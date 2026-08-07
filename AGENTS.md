@@ -103,7 +103,7 @@ python scripts/train_sft.py --config configs/control_shuffled.yaml
 python scripts/eval_wm.py --config configs/pilot.yaml
 ```
 
-- Do **not** run `train_sft.py` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `tokenize.py` / `smoke_cpu.py` are OK without GPU.
+- Do **not** run `train_sft.py` / `swift sft` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `tokenize.py` / `stat.py` / `smoke_cpu.py` are OK without GPU.
 - Disk: `~/.cache/huggingface/datasets` (tokenize/map Arrow) + `outputs/ds_cache/` can be large; clear HF caches if root fills. Keep `hub/` model weights if possible.
 - VRAM: L20-class (~46GB) can use larger micro-batch (e.g. 8×accum 2, eff≈16). Keep **effective batch** stable if comparing runs; raising only micro-batch with fixed eff batch barely changes optimization.
 - Checkpoints: every `save_steps` (default 35) + forced save/eval each epoch; `save_total_limit: 3`.
@@ -133,30 +133,33 @@ Small mix of **native agentic coding** trajectories (not the hypothesis channel)
 | [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
 | Nebius OpenHands / Instruct replay | Optional later |
 
-Train mix ratios live in `configs/axolotl/coder_next_qlora.yaml` → `biv_mix`
+Train mix ratios live in `configs/swift/coder_next_qlora.yaml` → `biv_mix`
 (default **code:os:anti = 1:1:0.35** ≈ 42.5%/42.5%/15%). `tokenize.py` samples
-full JSONL down to those counts before preprocess; train uses `*.run.yaml` only.
+then runs `swift export --to_cached_dataset`; `stat.py` reports length distributions;
+train applies `--max_length` (default 16384, truncate right) without re-export.
 
-### Train Qwen3-Coder-Next (2×~44GB)
+### Train Qwen3-Coder-Next (2×~44GB, ms-swift)
 
 ```bash
 cd train
-pip install axolotl cut-cross-entropy   # + flash-linear-attention per Axolotl Qwen3-Next docs
+pip install 'ms-swift>=3.11' deepspeed bitsandbytes
 
 # 1) Full JSONL
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
-# pilot:
-# python scripts/prepare_data.py --all --max-rows-per-source 500 --anti-forget-max-rows 200
 
-# 2) Ratio-sample + CPU tokenize → sampled JSONL + *.run.yaml + token cache
+# 2) Ratio-sample + cached_dataset export (per source)
 python scripts/tokenize.py
 
-# 3) Dual-GPU train on sampled mix only
+# 3) Optional length stats / retention tables
+python scripts/stat.py
+
+# 4) Dual-GPU train (tune MAX_LENGTH from VRAM)
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# = axolotl train configs/axolotl/coder_next_qlora.run.yaml
+# MAX_LENGTH=32768 bash scripts/train_coder_next.sh
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
+Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
 
 ### Future TODO (training data)
 
@@ -244,7 +247,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/tokenize.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
+- **WM prepare / tokenize / stat / train**: `train/scripts/prepare_data.py`, `train/scripts/tokenize.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 

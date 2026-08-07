@@ -15,43 +15,46 @@ train/
 ├── README.md
 ├── requirements.txt
 ├── configs/
-│   ├── default.yaml                 # Qwen3.5-9B Unsloth (legacy/pilot)
+│   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
-│   └── axolotl/coder_next_qlora.yaml  # Qwen3-Coder-Next QLoRA (2×GPU)
-├── src/biv_wm/                      # formatting, hub cache, adapters
+│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
+│   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
+├── src/biv_wm/
 ├── scripts/
-│   ├── prepare_data.py              # step 1: multi-source mix JSONL + counts
-│   ├── tokenize.py                  # step 2: ratio-sample + Axolotl CPU tokenize
-│   ├── train_coder_next.sh          # step 3: train *.run.yaml (sampled only)
-│   ├── train_sft.py                 # Unsloth 9B
+│   ├── prepare_data.py                # step 1: multi-source mix JSONL
+│   ├── tokenize.py                    # step 2: ratio-sample + ms-swift export
+│   ├── stat.py                        # step 3 (optional): length stats per source
+│   ├── train_coder_next.sh            # step 4: ms-swift dual-GPU SFT
+│   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
-├── data/processed/mix_v1/           # wm_code / wm_os / anti_forget JSONL
+├── data/processed/mix_v1/
 └── outputs/
 ```
 
-## Pipeline (Coder-Next mix)
+## Pipeline (Coder-Next mix — ms-swift)
 
 ```bash
 cd train && source .venv/bin/activate
-pip install axolotl cut-cross-entropy   # once
+pip install 'ms-swift>=3.11' deepspeed bitsandbytes
 
-# 1) Full JSONL corpora (hub cache reuse)
+# 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 
-# 2) Ratio-sample + CPU tokenize (no GPU)
-#    biv_mix in coder_next_qlora.yaml: code:os:anti = 1:1:0.35 (~42.5/42.5/15)
-#    writes sampled JSONL + coder_next_qlora.run.yaml + token cache
+# 2) Ratio-sample + ms-swift cached_dataset (CPU OK; no max_length bake-in)
+#    biv_mix: code:os:anti = 1:1:0.35 → configs/swift/coder_next_qlora.yaml
 python scripts/tokenize.py
 # python scripts/tokenize.py --force
-# python scripts/tokenize.py --check
 
-# 3) Dual ~44GB GPUs — trains ONLY on sampled mix (*.run.yaml)
+# 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
+python scripts/stat.py
+
+# 4) Dual ~44GB GPUs — max_length applied at train time (default 16384, truncate right)
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# or: CUDA_VISIBLE_DEVICES=0,1 axolotl train configs/axolotl/coder_next_qlora.run.yaml
+# MAX_LENGTH=32768 TRUNCATION_STRATEGY=right bash scripts/train_coder_next.sh
 ```
 
-Do **not** `axolotl train` the unsampled `coder_next_qlora.yaml` (full anti_forget would dominate).
-One traj → one row. Sampled cache under `outputs/axolotl_cache/coder_next_mix_v1/<tag>/`.
+Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
+Change train `--max_length` without re-export (ms-swift cached_dataset length field).
 
 ## Pipeline (legacy 9B Unsloth)
 
