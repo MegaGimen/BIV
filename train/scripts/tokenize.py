@@ -321,9 +321,11 @@ def _export_one(
     out_dir: Path,
     dataset_num_proc: int,
 ) -> Path:
+    # ms-swift requires output_dir to NOT exist (it creates the folder itself).
     if out_dir.exists():
+        print(f"Removing stale export dir: {out_dir}", flush=True)
         shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         swift,
         "export",
