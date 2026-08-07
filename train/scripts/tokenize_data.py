@@ -10,9 +10,12 @@ For each source (wm_code / wm_os / anti_forget):
   1) sample ratio-matched JSONL under ``mix_dir/sampled/<tag>/``
   2) ``swift export --to_cached_dataset true`` → ``cache_root/<tag>/<source>/``
 
-Length filtering is NOT applied here — training sets ``--max_length``.
-Cache mainly stores per-row ``length`` (ms-swift>=3.11) so you can retune
-max_length on the GPU box without re-exporting.
+Length filtering / truncation is NOT applied at export — training sets
+``--max_length`` / ``--truncation_strategy``. Export uses a huge ceiling so
+ms-swift does not delete at the model max (262144).
+Cache stores per-row ``length`` (ms-swift>=3.11) so you can retune train
+max_length on the GPU box without re-exporting (re-export only if you need
+rows that were previously dropped under the model-max delete).
 
 Does **not** need a GPU — forces ``CUDA_VISIBLE_DEVICES=""``.
 
@@ -323,12 +326,16 @@ def _export_one(
     jsonl: Path,
     out_dir: Path,
     dataset_num_proc: int,
+    export_max_length: int,
+    export_truncation_strategy: str,
 ) -> Path:
     # ms-swift requires output_dir to NOT exist (it creates the folder itself).
     if out_dir.exists():
         print(f"Removing stale export dir: {out_dir}", flush=True)
         shutil.rmtree(out_dir)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Export must NOT apply train-time length policy:
+    # use a huge max_length so delete never fires and lengths stay full-sequence.
     cmd = [
         swift,
         "export",
@@ -344,8 +351,18 @@ def _export_one(
         str(max(1, dataset_num_proc)),
         "--split_dataset_ratio",
         "0",
+        "--max_length",
+        str(export_max_length),
+        "--truncation_strategy",
+        export_truncation_strategy,
     ]
     print(f"Running: {' '.join(cmd)}", flush=True)
+    print(
+        f"  export length policy: max_length={export_max_length} "
+        f"strategy={export_truncation_strategy} "
+        "(train-time max_length/truncation apply later)",
+        flush=True,
+    )
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
     proc = subprocess.run(cmd, check=False, cwd=str(ROOT), env=env)
@@ -399,6 +416,15 @@ def main() -> None:
         if args.dataset_num_proc is not None
         else cfg.get("dataset_num_proc", 8)
     )
+    export_cfg = cfg.get("export") or {}
+    export_max_length = int(export_cfg.get("max_length", 1_048_576))
+    export_truncation_strategy = str(export_cfg.get("truncation_strategy", "delete"))
+    if export_max_length < 262_144:
+        print(
+            f"WARNING: export.max_length={export_max_length} is low; "
+            "train-length policy should not be applied at export.",
+            flush=True,
+        )
 
     sources = {k: mix_dir / k / "train.jsonl" for k in SOURCE_KEYS}
     for name, p in sources.items():
@@ -515,7 +541,8 @@ def main() -> None:
         swift = _find_swift()
         print(
             "Exporting per-source cached_dataset via ms-swift "
-            "(no max_length bake-in; lengths stored for train-time filter)…",
+            f"(export ceiling max_length={export_max_length}, "
+            "no train-time truncate/drop)…",
             flush=True,
         )
         exp_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="swift export")
@@ -526,6 +553,8 @@ def main() -> None:
                 jsonl=sampled_paths[name],
                 out_dir=source_caches[name],
                 dataset_num_proc=dataset_num_proc,
+                export_max_length=export_max_length,
+                export_truncation_strategy=export_truncation_strategy,
             )
             train_dirs[name] = str(train_path.relative_to(ROOT))
             if exp_bar is not None:
@@ -547,9 +576,14 @@ def main() -> None:
         "sampled": {k: str(p.relative_to(ROOT)) for k, p in sampled_paths.items()},
         "cached_train": train_dirs,
         "cache_root": str(tag_cache.relative_to(ROOT)),
+        "export": {
+            "max_length": export_max_length,
+            "truncation_strategy": export_truncation_strategy,
+            "note": "Export must not apply train max_length; use a huge ceiling only.",
+        },
         "note": (
             "Train with --cached_dataset on each cached_train path; "
-            "set --max_length / --truncation_strategy at train time."
+            "set --max_length / --truncation_strategy at train time only."
         ),
     }
     tag_cache.mkdir(parents=True, exist_ok=True)
