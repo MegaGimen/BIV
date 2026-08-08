@@ -96,6 +96,35 @@ def _length_column(ds) -> str:
     )
 
 
+def _as_int_length(v: Any) -> int | None:
+    """Normalize ms-swift length field (scalar or list) to one int."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if hasattr(v, "tolist") and not isinstance(v, (str, bytes)):
+        try:
+            v = v.tolist()
+        except Exception:
+            pass
+    if isinstance(v, list):
+        if not v:
+            return None
+        # common: [seq_len]
+        if len(v) == 1 and isinstance(v[0], (int, float)):
+            return int(v[0])
+        # packing / multi-segment: sum segment lengths
+        if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
+            return int(sum(v))
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _as_seq(v: Any) -> list[Any]:
     if v is None:
         return []
@@ -279,53 +308,40 @@ def _scan_and_maybe_build(
     dropped = 0
     truncated = 0
     delete_keep = 0
-    keep_flags: list[int] = []
-
     lengths = ds[length_col]
     messages_all = ds["messages"] if has_messages else None
     labels_all = ds["labels"] if has_labels else None
 
     bar = _tqdm(total=total, unit="rows", desc=desc)
     for i in range(total):
-        L = int(lengths[i])
-        if L <= max_length:
+        L = _as_int_length(lengths[i])
+        if L is not None and L <= max_length:
             delete_keep += 1
 
-        kept_msgs = None
-        new_len = 0
         ok = False
         if has_messages:
             msgs = messages_all[i]
-            if L <= max_length:
-                # still require at least one assistant
+            # Unknown/missing length → always try message struct cut.
+            if L is not None and L <= max_length:
                 if isinstance(msgs, list) and any(
                     isinstance(m, dict) and m.get("role") == "assistant" for m in msgs
                 ):
-                    kept_msgs = msgs
-                    new_len = L
                     ok = True
-                    # no trunc
-                else:
-                    ok = False
             else:
-                kept_msgs, new_len = struct_right_cut_messages(msgs, max_length, tokenizer)
+                kept_msgs, _new_len = struct_right_cut_messages(msgs, max_length, tokenizer)
                 ok = kept_msgs is not None
-                if ok and len(kept_msgs) < len(msgs):
+                if ok and isinstance(msgs, list) and len(kept_msgs) < len(msgs):
                     truncated += 1
         else:
             cut = struct_right_cut_labels(labels_all[i], max_length)
             ok = cut is not None
-            if ok and cut < L:
+            if ok and L is not None and cut < L:
                 truncated += 1
-            new_len = cut or 0
-            kept_msgs = cut  # misuse marker for labels path
 
         if ok:
             survivors += 1
-            keep_flags.append(1)
         else:
             dropped += 1
-            keep_flags.append(0)
 
         if bar is not None:
             bar.update(1)
@@ -350,13 +366,18 @@ def _scan_and_maybe_build(
     tok = tokenizer
 
     def _map(ex):
-        L = int(ex[length_col])
+        L = _as_int_length(ex[length_col])
         if has_messages:
             msgs = ex["messages"]
-            if L <= max_length and isinstance(msgs, list) and any(
-                isinstance(m, dict) and m.get("role") == "assistant" for m in msgs
+            if (
+                L is not None
+                and L <= max_length
+                and isinstance(msgs, list)
+                and any(isinstance(m, dict) and m.get("role") == "assistant" for m in msgs)
             ):
                 out = dict(ex)
+                # normalize length field to scalar for train filtering
+                out[length_col] = int(L)
                 out["_biv_keep"] = 1
                 return out
             kept, nlen = struct_right_cut_messages(msgs, max_length, tok)
@@ -367,9 +388,9 @@ def _scan_and_maybe_build(
             out = dict(ex)
             out["messages"] = kept
             out[length_col] = int(nlen)
-            if length_col != "lengths" and "lengths" in out:
+            if "lengths" in out:
                 out["lengths"] = int(nlen)
-            if length_col != "length" and "length" in out:
+            if "length" in out:
                 out["length"] = int(nlen)
             out["_biv_keep"] = 1
             return out
@@ -385,11 +406,8 @@ def _scan_and_maybe_build(
         for k, v in ex.items():
             if k in {"labels", "_biv_keep", "length", "lengths"}:
                 continue
-            seq = _as_seq(v) if not isinstance(v, (str, dict, bool, type(None), int, float)) else None
             if isinstance(v, list) and len(v) == n and v and isinstance(v[0], (int, float)):
                 out[k] = v[:cut]
-            elif seq is not None and len(seq) == n and seq and isinstance(seq[0], (int, float)):
-                out[k] = seq[:cut]
         out[length_col] = int(cut)
         out["_biv_keep"] = 1
         return out
