@@ -40,13 +40,13 @@ pip install 'ms-swift>=3.11' deepspeed bitsandbytes
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 
+# 1b) Optional: strip legacy WM user wrappers → mix_v2 (does not overwrite mix_v1)
+# python scripts/delta.py --apply --force
+# (copies anti_forget + manifests; config defaults to mix_v2)
+
 # 2) Ratio-sample + ms-swift cached_dataset (CPU OK; no max_length bake-in)
 #    biv_mix: full wm_code+wm_os; anti = 0.35×|wm_os| → configs/swift/coder_next_qlora.yaml
 python scripts/tokenize_data.py
-# python scripts/tokenize_data.py --force
-
-# Optional: strip legacy WM user wrappers from JSONL without re-prepare, then re-tokenize
-# python scripts/delta.py --mix-dir data/processed/mix_v1 --apply
 # python scripts/tokenize_data.py --force
 
 # 3) Optional: per-source token length distribution + retention @ 8k/16k/32k

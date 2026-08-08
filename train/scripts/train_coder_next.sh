@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export CONFIG="${CONFIG:-configs/swift/coder_next_qlora.yaml}"
-MIX_DIR="${MIX_DIR:-data/processed/mix_v1}"
+MIX_DIR="${MIX_DIR:-data/processed/mix_v2}"
 
 MAX_LENGTH=""
 CHOICE="${TRAIN_CHOICE:-}"
