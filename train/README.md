@@ -53,15 +53,13 @@ python scripts/tokenize_data.py
 python scripts/stat.py
 
 # 4) Multi-GPU (~48GB/card) — MUST pass --max-length (manual).
-#    Default parallel=device_map (NPROC=1): split QLoRA 4bit weights across GPUs at load.
-#    Do NOT use DeepSpeed DDP for this QLoRA+48GB setup — rank0 loads full ~40GB+ → OOM.
-#    Script: struct-right trunc (end on complete assistant) → show survivors → prompt:
-#      1 = train survivors as-is (no code/os 1:1)
-#      2 = re-sample survivors at 1:1:0.35 then train
-#      3 = abort
-#    If OOM at 16k: try --max-length 8192; tune train.max_memory in the yaml.
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
-# non-interactive:  --choice 2
+#    Default parallel=device_map (no torchrun): bnb QLoRA + device_map across GPUs,
+#    with CPU offload enabled (2×48GB is below the planner's MoE footprint).
+#    Do NOT use DeepSpeed DDP for this QLoRA+48GB setup — rank0 loads full weights → OOM.
+#    Script: struct-right trunc → survivors → 1=as-is / 2=1:1:0.35 / 3=abort
+#    Prefer --max-length 8192 first; use `export CUDA_VISIBLE_DEVICES=0,1` (not bare assign).
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/train_coder_next.sh --max-length 8192 --choice 2
 #
 # After changing WM chat wrappers in formatting.py, re-run prepare_data + tokenize_data.
 ```

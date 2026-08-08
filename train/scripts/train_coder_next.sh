@@ -169,20 +169,24 @@ if [[ "$PARALLEL" == "device_map" ]]; then
   unset NPROC_PER_NODE
   unset NNODES
 
-  # Qwen3-Coder-Next Q4 ≈ 48–53GB > one L20 (46GB), so device_map=auto will place
-  # overflow on GPU1. Do NOT default-cap max_memory below that size — caps like 28/40/42GiB
-  # force modules onto CPU/disk and bnb raises ValueError (4bit is NOT >84GB; bf16 is ~150GB).
-  # Optional: MAX_MEMORY='{0: "44GiB", 1: "44GiB"}' or BIV_MAX_MEMORY_PER_GPU=44GiB
-  if [[ -z "$MAX_MEMORY" && -n "${BIV_MAX_MEMORY_PER_GPU:-}" ]]; then
-    _per="$BIV_MAX_MEMORY_PER_GPU"
+  # Planner still puts some MoE/custom modules on CPU even with 2×L20 (estimates those
+  # layers near bf16). Default max_memory leaves GPUs nearly full and allows CPU spill;
+  # run_swift_sft.py forces llm_int8_enable_fp32_cpu_offload=True so bnb accepts it.
+  # Override: MAX_MEMORY='...' or BIV_MAX_MEMORY_PER_GPU=44GiB / BIV_CPU_MEMORY=200GiB
+  if [[ -z "$MAX_MEMORY" ]]; then
+    _per="${BIV_MAX_MEMORY_PER_GPU:-44GiB}"
+    _cpu="${BIV_CPU_MEMORY:-200GiB}"
     if [[ "$_per" != "none" && "$_per" != "skip" && "$_per" != "0" ]]; then
       MAX_MEMORY="$(
-        BIV_MAX_MEMORY_PER_GPU="$_per" python - <<'PY'
+        BIV_MAX_MEMORY_PER_GPU="$_per" BIV_CPU_MEMORY="$_cpu" python - <<'PY'
 import os
 xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
 n = len(xs) if xs else 1
 per = os.environ["BIV_MAX_MEMORY_PER_GPU"]
-print("{" + ", ".join(f'{i}: "{per}"' for i in range(n)) + "}")
+cpu = os.environ["BIV_CPU_MEMORY"]
+parts = [f'{i}: "{per}"' for i in range(n)]
+parts.append(f'"cpu": "{cpu}"')
+print("{" + ", ".join(parts) + "}")
 PY
       )"
     fi
@@ -289,8 +293,26 @@ else
   echo "  deepspeed=$DEEPSPEED"
 fi
 
+# Visible CUDA devices (catch "CUDA_VISIBLE_DEVICES=0,1" without export)
+python - <<'PY'
+import os, torch
+print(
+    f"  torch.cuda.device_count={torch.cuda.device_count()} "
+    f"visible={os.environ.get('CUDA_VISIBLE_DEVICES', '')!r}",
+    flush=True,
+)
+if torch.cuda.device_count() < 1:
+    raise SystemExit("ERROR: no CUDA devices visible to torch")
+PY
+
+SWIFT_LAUNCH=(swift sft)
+if [[ "$PARALLEL" == "device_map" ]]; then
+  # Patch bnb cpu-offload (ms-swift CLI has no flag for it).
+  SWIFT_LAUNCH=(python "$ROOT/scripts/run_swift_sft.py")
+fi
+
 # shellcheck disable=SC2086
-exec swift sft \
+exec "${SWIFT_LAUNCH[@]}" \
   --model "$MODEL" \
   --tuner_type lora \
   --quant_method bnb \
