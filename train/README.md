@@ -58,12 +58,15 @@ python scripts/tokenize_data.py
 python scripts/stat.py
 
 # 4) Multi-GPU (~48GB/card) — MUST pass --max-length (manual).
-#    Default parallel=fsdp: accelerate FSDP+QLoRA (ms-swift fsdp_qlora recipe).
-#    Needs host RAM for CPU-efficient load; do not use device_map CPU offload for train.
-#    Script: struct-right trunc → survivors → 1=as-is / 2=1:1:0.35 / 3=abort
-#    Prefer --max-length 8192 first; use `export CUDA_VISIBLE_DEVICES=0,1`.
+#    Default parallel=fsdp: accelerate FSDP+QLoRA (load on CPU, then shard).
+#    If nvidia-smi shows GPU0 ~full and GPU1 idle during load, FSDP did not shard yet /
+#    model was placed on cuda:0 — pull latest (ACCELERATE_USE_FSDP + device_map=cpu).
+#    Host RAM ~80GB+ recommended. More GPUs → less VRAM per card after shard.
+#    Prefer --max-length 8192 first.
 export CUDA_VISIBLE_DEVICES=0,1
 bash scripts/train_coder_next.sh --max-length 8192 --choice 2
+# 4×48GB example:
+# export CUDA_VISIBLE_DEVICES=0,1,2,3
 #
 # After changing WM chat wrappers in formatting.py, re-run prepare_data + tokenize_data.
 ```
