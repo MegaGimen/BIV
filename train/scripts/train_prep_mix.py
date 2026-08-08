@@ -293,19 +293,15 @@ def _scan_fast(
     length_col: str,
     desc: str,
 ) -> dict[str, int]:
-    """Seconds-scale scan: lengths + has-assistant only (no chat_template)."""
+    """Seconds-scale scan: **only** the lengths column (no messages / tokenizer)."""
     cols = set(ds.column_names)
-    has_messages = "messages" in cols
-    if not has_messages and "labels" not in cols:
+    if "messages" not in cols and "labels" not in cols:
         raise SystemExit(f"{desc}: need 'messages' or 'labels' (got {ds.column_names})")
 
     total = len(ds)
-    survivors = 0
-    dropped = 0
     need_trunc = 0
     delete_keep = 0
     lengths = ds[length_col]
-    messages_all = ds["messages"] if has_messages else None
 
     bar = _tqdm(total=total, unit="rows", desc=desc)
     for i in range(total):
@@ -313,31 +309,23 @@ def _scan_fast(
         if L is not None and L <= max_length:
             delete_keep += 1
         else:
+            # None or > max → will attempt char-budget trim at build
             need_trunc += 1
-
-        if has_messages:
-            ok = _has_assistant(messages_all[i])
-        else:
-            # labels path: treat any row as potentially truncatable; drop decided at build
-            ok = True
-        if ok:
-            survivors += 1
-        else:
-            dropped += 1
         if bar is not None:
             bar.update(1)
-            if i % 256 == 0:
-                bar.set_postfix(ok=survivors, drop=dropped, refresh=False)
+            if i % 1024 == 0:
+                bar.set_postfix(fit=delete_keep, trim=need_trunc, refresh=False)
     if bar is not None:
         bar.close()
 
+    # Assume nearly all rows have an assistant; rare empties dropped at build.
     return {
         "total": total,
-        "survivors": survivors,
-        "dropped": dropped,
-        "truncated": need_trunc,  # rows with L>max (will char-trim at build)
+        "survivors": total,
+        "dropped": 0,
+        "truncated": need_trunc,
         "delete_keep": delete_keep,
-        "backend": "messages+lengths" if has_messages else "labels",
+        "backend": "lengths-only",
     }
 
 
