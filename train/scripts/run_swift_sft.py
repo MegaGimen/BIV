@@ -2,25 +2,34 @@
 """Launch ms-swift SFT with BitsAndBytes patches for 2×~48GB Qwen3-Coder-Next.
 
 1) llm_int8_enable_fp32_cpu_offload=True — accelerate may place MoE/custom layers on CPU.
-2) Params4bit/Int8Params accept **kwargs — transformers≥5 passes `_is_hf_initialized`
-   via accelerate; bitsandbytes<0.50 crashes without this (or upgrade bnb≥0.50).
+2) bnb_4bit_use_double_quant=False — double-quant nested_offset.item() crashes on meta
+   tensors when accelerate attaches device hooks after device_map load.
+3) Params4bit/Int8Params accept **kwargs — transformers≥5 `_is_hf_initialized`
+   (or upgrade bitsandbytes≥0.50).
 """
 from __future__ import annotations
 
 import inspect
 
 
-def _patch_bnb_cpu_offload() -> None:
+def _patch_bnb_config() -> None:
     from transformers import BitsAndBytesConfig
 
     orig = BitsAndBytesConfig.__init__
 
     def patched(self, *args, **kwargs):
+        # device_map + CPU/meta dispatch: nested double-quant state hits
+        # Tensor.item() on meta tensors inside accelerate hooks.
+        kwargs["bnb_4bit_use_double_quant"] = False
         kwargs["llm_int8_enable_fp32_cpu_offload"] = True
         return orig(self, *args, **kwargs)
 
     BitsAndBytesConfig.__init__ = patched  # type: ignore[method-assign]
-    print("[biv] BitsAndBytesConfig.llm_int8_enable_fp32_cpu_offload=True", flush=True)
+    print(
+        "[biv] BitsAndBytesConfig: "
+        "bnb_4bit_use_double_quant=False, llm_int8_enable_fp32_cpu_offload=True",
+        flush=True,
+    )
 
 
 def _patch_bnb_params_kwargs() -> None:
@@ -55,7 +64,7 @@ def _patch_bnb_params_kwargs() -> None:
 
 
 def main() -> None:
-    _patch_bnb_cpu_offload()
+    _patch_bnb_config()
     _patch_bnb_params_kwargs()
     # Mirror swift/cli/sft.py __main__
     from swift.cli.utils import try_use_single_device_mode

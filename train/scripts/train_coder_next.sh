@@ -317,6 +317,7 @@ exec "${SWIFT_LAUNCH[@]}" \
   --tuner_type lora \
   --quant_method bnb \
   --quant_bits 4 \
+  --bnb_4bit_use_double_quant false \
   --cached_dataset $CACHED_DATASETS \
   --torch_dtype "$DTYPE" \
   --num_train_epochs "$EPOCHS" \

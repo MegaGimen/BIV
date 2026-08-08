@@ -37,6 +37,10 @@ train/
 cd train && source .venv/bin/activate
 pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
 # If load dies with Params4bit … _is_hf_initialized: pip install -U 'bitsandbytes>=0.50'
+# Qwen3-Next / Coder-Next GatedDeltaNet fast path (recommended; else torch fallback):
+#   pip install -U ninja packaging
+#   pip install -U "flash-linear-attention>=0.4.1" --no-build-isolation
+#   # causal-conv1d: match torch.version.cuda toolkit; see requirements.txt notes
 
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
