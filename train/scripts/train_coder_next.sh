@@ -177,13 +177,14 @@ EXTRA_PARALLEL_ARGS=()
 if [[ "$PARALLEL" == "device_map" ]]; then
   if [[ -z "$MAX_MEMORY" ]]; then
     # Force weight split across all visible GPUs; leave headroom for activations.
+    # Accelerate wants int device keys (0,1,…). json.dumps makes "0"/"1" strings → ValueError.
     MAX_MEMORY="$(
       BIV_MAX_MEMORY_PER_GPU="${BIV_MAX_MEMORY_PER_GPU:-28GiB}" python - <<'PY'
-import json, os
+import os
 xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
 n = len(xs) if xs else 1
 per = os.environ["BIV_MAX_MEMORY_PER_GPU"]
-print(json.dumps({i: per for i in range(n)}))
+print("{" + ", ".join(f'{i}: "{per}"' for i in range(n)) + "}")
 PY
     )"
   fi
