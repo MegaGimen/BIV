@@ -158,10 +158,14 @@ DEEPSPEED="${DEEPSPEED:-zero3}"
 
 # device_map: one process owns all visible GPUs (model-parallel load).
 # deepspeed: one process per GPU (only viable if each card can hold full QLoRA weights).
-if [[ -z "${NPROC_PER_NODE:-}" ]]; then
-  if [[ "$PARALLEL" == "device_map" ]]; then
-    NPROC_PER_NODE=1
-  else
+if [[ "$PARALLEL" == "device_map" ]]; then
+  # Must force: a stale NPROC_PER_NODE=2 from the env reintroduces rank0 full-load OOM.
+  if [[ -n "${NPROC_PER_NODE:-}" && "$NPROC_PER_NODE" != "1" ]]; then
+    echo "NOTE: parallel=device_map forces NPROC_PER_NODE=1 (was $NPROC_PER_NODE)."
+  fi
+  NPROC_PER_NODE=1
+else
+  if [[ -z "${NPROC_PER_NODE:-}" ]]; then
     NPROC_PER_NODE="$(python - <<'PY'
 import os
 xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
@@ -175,24 +179,29 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 
 EXTRA_PARALLEL_ARGS=()
 if [[ "$PARALLEL" == "device_map" ]]; then
+  # L20 ~46GB can hold the whole ~40–45GB 4bit checkpoint alone, so device_map=auto
+  # without a cap parks everything on GPU0. Cap each GPU below full-model size to force
+  # a split, but keep the sum >> model size so nothing spills to CPU/disk (bnb forbids that
+  # unless llm_int8_enable_fp32_cpu_offload). 28GiB×2 was too tight → CPU spill ValueError.
+  # Override: BIV_MAX_MEMORY_PER_GPU=40GiB | none (skip --max_memory).
   if [[ -z "$MAX_MEMORY" ]]; then
-    # Force weight split across all visible GPUs; leave headroom for activations.
-    # Accelerate wants int device keys (0,1,…). json.dumps makes "0"/"1" strings → ValueError.
-    MAX_MEMORY="$(
-      BIV_MAX_MEMORY_PER_GPU="${BIV_MAX_MEMORY_PER_GPU:-28GiB}" python - <<'PY'
+    _per="${BIV_MAX_MEMORY_PER_GPU:-40GiB}"
+    if [[ "$_per" != "none" && "$_per" != "skip" && "$_per" != "0" ]]; then
+      MAX_MEMORY="$(
+        BIV_MAX_MEMORY_PER_GPU="$_per" python - <<'PY'
 import os
 xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
 n = len(xs) if xs else 1
 per = os.environ["BIV_MAX_MEMORY_PER_GPU"]
+# Accelerate wants int keys (0,1,…), not JSON "0"/"1".
 print("{" + ", ".join(f'{i}: "{per}"' for i in range(n)) + "}")
 PY
-    )"
+      )"
+    fi
   fi
   EXTRA_PARALLEL_ARGS+=(--device_map "$DEVICE_MAP")
-  EXTRA_PARALLEL_ARGS+=(--max_memory "$MAX_MEMORY")
-  if [[ "$NPROC_PER_NODE" != "1" ]]; then
-    echo "WARNING: parallel=device_map expects NPROC_PER_NODE=1 (got $NPROC_PER_NODE)."
-    echo "  Each DDP rank would still try to load a full QLoRA copy → GPU0 OOM risk."
+  if [[ -n "$MAX_MEMORY" ]]; then
+    EXTRA_PARALLEL_ARGS+=(--max_memory "$MAX_MEMORY")
   fi
 elif [[ "$PARALLEL" == "deepspeed" ]]; then
   EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
