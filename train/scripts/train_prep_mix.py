@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Train-time structure-preserving right trunc + optional 1:1:0.35 rebalance.
 
-Called by ``scripts/train_coder_next.sh`` after ``--max-length``.
+ms-swift ``cached_dataset`` keeps ``messages`` + ``lengths`` (not token ``labels``).
+Prep therefore truncates **message lists** so the kept prefix ends on a complete
+``assistant`` turn and recomputed token length ≤ ``--max-length``.
 
-1) For each cached row, if token length > max_length, walk left from the cut
-   so the kept prefix ends on a **complete assistant** span (via labels != -100).
-   Rows that cannot fit even one complete assistant are dropped.
-2) Print survivors / would-delete reference counts.
-3) Interactive choice:
-     1 = keep survivors as-is (no code/os 1:1 flatten)
-     2 = re-sample survivors at code:os:anti = 1:1:0.35 (max_fill)
-     3 = abort
-4) Write truncated HF datasets + run_manifest; emit shell exports via --write-env.
+1) Truncate/drop using chat messages + tokenizer length.
+2) Print survivors (+ delete-ref from stored lengths).
+3) Interactive choice: 1=as-is / 2=1:1:0.35 / 3=abort
+4) Write HF datasets + run_manifest; emit shell exports via --write-env.
 """
 
 from __future__ import annotations
@@ -90,22 +87,13 @@ def _load_dataset(path: Path):
 
 
 def _length_column(ds) -> str:
-    for name in ("length", "lengths"):
+    for name in ("lengths", "length"):
         if name in ds.column_names:
             return name
     raise SystemExit(
         f"Dataset missing length column (got {ds.column_names}). "
         "Re-run tokenize_data.py with ms-swift>=3.11."
     )
-
-
-def _labels_column(ds) -> str:
-    if "labels" not in ds.column_names:
-        raise SystemExit(
-            f"Dataset missing 'labels' column (got {ds.column_names}); "
-            "needed for structure-preserving right trunc."
-        )
-    return "labels"
 
 
 def _as_seq(v: Any) -> list[Any]:
@@ -118,19 +106,47 @@ def _as_seq(v: Any) -> list[Any]:
     return list(v)
 
 
-def struct_right_cut(
+def _load_tokenizer(model: str):
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as e:
+        raise SystemExit(f"transformers required: {e}") from e
+    print(f"Loading tokenizer: {model} …", flush=True)
+    return AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+
+
+def token_len_messages(messages: list[dict], tokenizer) -> int:
+    """Token count after chat template (best-effort)."""
+    if not messages:
+        return 0
+    # Drop non-serializable oddities; keep role/content/tool fields.
+    clean = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        item = {k: m[k] for k in m if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+        clean.append(item)
+    try:
+        ids = tokenizer.apply_chat_template(
+            clean, tokenize=True, add_generation_prompt=False
+        )
+        return len(ids)
+    except Exception:
+        try:
+            text = tokenizer.apply_chat_template(
+                clean, tokenize=False, add_generation_prompt=False
+            )
+            return len(tokenizer.encode(text, add_special_tokens=False))
+        except Exception:
+            # last resort rough bound
+            blob = json.dumps(clean, ensure_ascii=False)
+            return max(1, len(blob) // 3)
+
+
+def struct_right_cut_labels(
     labels: Any, max_length: int, *, ignore_index: int = LABEL_IGNORE
 ) -> int | None:
-    """Largest cut ``c`` with ``c <= max_length`` ending on a complete assistant span.
-
-    A cut ``c`` means keep ``labels[:c]``. Complete assistant end:
-      - ``labels[c-1]`` is supervised (not ignore), and
-      - ``c == len(labels)`` or ``labels[c]`` is ignore (next message is non-response).
-
-    Walking left from ``min(len, max_length)`` avoids tearing a partial assistant
-    (and drops a trailing partial user after the last full assistant).
-    Returns None if no complete assistant fits in max_length.
-    """
+    """Legacy path if tokenized labels exist."""
     labs = _as_seq(labels)
     n = len(labs)
     lim = min(n, int(max_length))
@@ -140,8 +156,7 @@ def struct_right_cut(
     def is_complete_assistant_end(c: int) -> bool:
         if c <= 0 or c > n:
             return False
-        prev = int(labs[c - 1])
-        if prev == ignore_index:
+        if int(labs[c - 1]) == ignore_index:
             return False
         if c == n:
             return True
@@ -153,118 +168,35 @@ def struct_right_cut(
     return None
 
 
-def _truncate_example(ex: dict[str, Any], cut: int, labels_key: str) -> dict[str, Any]:
-    labs = _as_seq(ex[labels_key])
-    n = len(labs)
-    out = dict(ex)
-    for k, v in ex.items():
-        if k == labels_key:
-            out[k] = labs[:cut]
-            continue
-        if isinstance(v, str) or v is None or isinstance(v, (bool, float)):
-            continue
-        if isinstance(v, int) and k in {"length", "lengths"}:
-            continue
-        seq = _as_seq(v) if not isinstance(v, list) else v
-        if isinstance(seq, list) and len(seq) == n and seq and isinstance(seq[0], (int, float)):
-            out[k] = seq[:cut]
-    out["length"] = int(cut)
-    if "lengths" in out:
-        out["lengths"] = int(cut)
-    return out
+def struct_right_cut_messages(
+    messages: Any, max_length: int, tokenizer
+) -> tuple[list[dict] | None, int]:
+    """Keep longest prefix ending on ``assistant`` with token_len ≤ max_length.
 
+    Returns (kept_messages_or_None, token_length).
+    """
+    if not isinstance(messages, list) or not messages:
+        return None, 0
+    ends = [i + 1 for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"]
+    if not ends:
+        return None, 0
 
-def _scan_struct(
-    ds, *, max_length: int, length_col: str, labels_col: str, desc: str
-) -> dict[str, int]:
-    """Return survivor / drop / trunc / delete_ref counts (no materialize)."""
-    total = len(ds)
-    survivors = 0
-    dropped = 0
-    truncated = 0
-    delete_keep = 0
-    lengths = ds[length_col]
-    labels_all = ds[labels_col]
-    bar = _tqdm(total=total, unit="rows", desc=desc)
-    it = range(total)
-    if bar is not None:
-        bar_ctx = bar
-    else:
-        bar_ctx = None
-
-    def _one(i: int) -> None:
-        nonlocal survivors, dropped, truncated, delete_keep
-        L = int(lengths[i])
-        if L <= max_length:
-            delete_keep += 1
-        cut = struct_right_cut(labels_all[i], max_length)
-        if cut is None:
-            dropped += 1
+    # Fast path: full conversation already short (use binary search still for truth)
+    lo, hi = 0, len(ends) - 1
+    best_msgs: list[dict] | None = None
+    best_len = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cut = ends[mid]
+        prefix = messages[:cut]
+        n = token_len_messages(prefix, tokenizer)
+        if n <= max_length:
+            best_msgs = prefix
+            best_len = n
+            lo = mid + 1
         else:
-            survivors += 1
-            if cut < L:
-                truncated += 1
-
-    if bar_ctx is None:
-        for i in it:
-            _one(i)
-    else:
-        with bar_ctx:
-            for i in it:
-                _one(i)
-                bar_ctx.update(1)
-    return {
-        "total": total,
-        "survivors": survivors,
-        "dropped": dropped,
-        "truncated": truncated,
-        "delete_keep": delete_keep,
-    }
-
-
-def _apply_struct_and_sample(
-    ds,
-    *,
-    max_length: int,
-    labels_col: str,
-    n_take: int,
-    seed: int,
-    name: str,
-    num_proc: int,
-):
-    """Truncate all rows (struct-right), drop unsavable, then sample n_take."""
-
-    def _map(ex):
-        cut = struct_right_cut(ex[labels_col], max_length)
-        if cut is None:
-            ex = dict(ex)
-            ex["_biv_keep"] = 0
-            return ex
-        out = _truncate_example(ex, cut, labels_col)
-        out["_biv_keep"] = 1
-        return out
-
-    mapped = ds.map(
-        _map,
-        num_proc=max(1, num_proc),
-        desc=f"struct-right {name}",
-    )
-    kept_ds = mapped.filter(
-        lambda x: int(x["_biv_keep"]) == 1,
-        num_proc=max(1, num_proc),
-        desc=f"keep {name}",
-    )
-    if "_biv_keep" in kept_ds.column_names:
-        kept_ds = kept_ds.remove_columns(["_biv_keep"])
-    n_f = len(kept_ds)
-    if n_take > n_f:
-        raise SystemExit(f"{name}: need {n_take} but only {n_f} survived struct-right")
-    idxs = _sample_indices(n_f, n_take, seed)
-    if n_take < n_f:
-        print(f"  {name}: sample {n_take:,}/{n_f:,}", flush=True)
-        return kept_ds.select(idxs)
-    print(f"  {name}: keep all {n_f:,}", flush=True)
-    return kept_ds
+            hi = mid - 1
+    return best_msgs, best_len
 
 
 def _sample_indices(n_keep: int, n_take: int, seed: int) -> list[int]:
@@ -322,46 +254,186 @@ def _write_env(path: Path, exports: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _scan_and_maybe_build(
+    ds,
+    *,
+    max_length: int,
+    length_col: str,
+    tokenizer,
+    mode: str,
+    desc: str,
+    num_proc: int,
+):
+    """mode='scan' → stats only; mode='build' → return filtered truncated dataset."""
+    cols = set(ds.column_names)
+    has_messages = "messages" in cols
+    has_labels = "labels" in cols
+    if not has_messages and not has_labels:
+        raise SystemExit(
+            f"{desc}: need 'messages' or 'labels' (got {ds.column_names})"
+        )
+
+    # Fast scan using stored lengths for delete-ref; struct needs tokenize when long.
+    total = len(ds)
+    survivors = 0
+    dropped = 0
+    truncated = 0
+    delete_keep = 0
+    keep_flags: list[int] = []
+
+    lengths = ds[length_col]
+    messages_all = ds["messages"] if has_messages else None
+    labels_all = ds["labels"] if has_labels else None
+
+    bar = _tqdm(total=total, unit="rows", desc=desc)
+    for i in range(total):
+        L = int(lengths[i])
+        if L <= max_length:
+            delete_keep += 1
+
+        kept_msgs = None
+        new_len = 0
+        ok = False
+        if has_messages:
+            msgs = messages_all[i]
+            if L <= max_length:
+                # still require at least one assistant
+                if isinstance(msgs, list) and any(
+                    isinstance(m, dict) and m.get("role") == "assistant" for m in msgs
+                ):
+                    kept_msgs = msgs
+                    new_len = L
+                    ok = True
+                    # no trunc
+                else:
+                    ok = False
+            else:
+                kept_msgs, new_len = struct_right_cut_messages(msgs, max_length, tokenizer)
+                ok = kept_msgs is not None
+                if ok and len(kept_msgs) < len(msgs):
+                    truncated += 1
+        else:
+            cut = struct_right_cut_labels(labels_all[i], max_length)
+            ok = cut is not None
+            if ok and cut < L:
+                truncated += 1
+            new_len = cut or 0
+            kept_msgs = cut  # misuse marker for labels path
+
+        if ok:
+            survivors += 1
+            keep_flags.append(1)
+        else:
+            dropped += 1
+            keep_flags.append(0)
+
+        if bar is not None:
+            bar.update(1)
+            if i % 64 == 0:
+                bar.set_postfix(ok=survivors, drop=dropped, refresh=False)
+
+    if bar is not None:
+        bar.close()
+
+    stats = {
+        "total": total,
+        "survivors": survivors,
+        "dropped": dropped,
+        "truncated": truncated,
+        "delete_keep": delete_keep,
+        "backend": "messages" if has_messages else "labels",
+    }
+    if mode == "scan":
+        return stats, None
+
+    # build: map truncate then filter
+    tok = tokenizer
+
+    def _map(ex):
+        L = int(ex[length_col])
+        if has_messages:
+            msgs = ex["messages"]
+            if L <= max_length and isinstance(msgs, list) and any(
+                isinstance(m, dict) and m.get("role") == "assistant" for m in msgs
+            ):
+                out = dict(ex)
+                out["_biv_keep"] = 1
+                return out
+            kept, nlen = struct_right_cut_messages(msgs, max_length, tok)
+            if kept is None:
+                out = dict(ex)
+                out["_biv_keep"] = 0
+                return out
+            out = dict(ex)
+            out["messages"] = kept
+            out[length_col] = int(nlen)
+            if length_col != "lengths" and "lengths" in out:
+                out["lengths"] = int(nlen)
+            if length_col != "length" and "length" in out:
+                out["length"] = int(nlen)
+            out["_biv_keep"] = 1
+            return out
+        cut = struct_right_cut_labels(ex["labels"], max_length)
+        if cut is None:
+            out = dict(ex)
+            out["_biv_keep"] = 0
+            return out
+        labs = _as_seq(ex["labels"])
+        n = len(labs)
+        out = dict(ex)
+        out["labels"] = labs[:cut]
+        for k, v in ex.items():
+            if k in {"labels", "_biv_keep", "length", "lengths"}:
+                continue
+            seq = _as_seq(v) if not isinstance(v, (str, dict, bool, type(None), int, float)) else None
+            if isinstance(v, list) and len(v) == n and v and isinstance(v[0], (int, float)):
+                out[k] = v[:cut]
+            elif seq is not None and len(seq) == n and seq and isinstance(seq[0], (int, float)):
+                out[k] = seq[:cut]
+        out[length_col] = int(cut)
+        out["_biv_keep"] = 1
+        return out
+
+    # Prefer single-process map for tokenizer safety (chat template often not fork-safe).
+    mapped = ds.map(_map, num_proc=1, desc=f"struct-right {desc}")
+    kept_ds = mapped.filter(lambda x: int(x["_biv_keep"]) == 1, num_proc=max(1, num_proc), desc=f"keep {desc}")
+    if "_biv_keep" in kept_ds.column_names:
+        kept_ds = kept_ds.remove_columns(["_biv_keep"])
+    return stats, kept_ds
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--max-length", type=int, required=True)
     p.add_argument("--tag", type=str, default=None)
-    p.add_argument(
-        "--choice",
-        type=int,
-        default=None,
-        help="Skip prompt: 1=as-is, 2=rebalance 1:1:0.35, 3=abort",
-    )
+    p.add_argument("--choice", type=int, default=None)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-proc", type=int, default=8)
-    p.add_argument(
-        "--write-env",
-        type=Path,
-        required=True,
-        help="Shell env file for train_coder_next.sh to source",
-    )
-    p.add_argument("--force", action="store_true", help="Rebuild run cache even if present")
+    p.add_argument("--write-env", type=Path, required=True)
+    p.add_argument("--force", action="store_true")
     args = p.parse_args()
 
     if args.max_length <= 0:
         raise SystemExit("--max-length must be > 0")
 
     cfg = _load_yaml(_resolve(args.config))
-    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
+    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v2"))
     manifest_path = _find_manifest(cache_root, args.tag)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cached = manifest.get("cached_train") or {}
     tag = str(manifest.get("tag") or manifest_path.parent.name)
-    model = manifest.get("model") or cfg.get("model")
+    model = str(manifest.get("model") or cfg.get("model") or "Qwen/Qwen3-Coder-Next")
     train_cfg = cfg.get("train") or {}
+
+    tokenizer = _load_tokenizer(model)
 
     print(f"Manifest:    {manifest_path}", flush=True)
     print(f"Tag:         {tag}", flush=True)
     print(f"Model:       {model}", flush=True)
     print(
         f"max_length:  {args.max_length}  "
-        "(struct-right: keep prefix ending on complete assistant)",
+        "(struct-right on messages → end on complete assistant)",
         flush=True,
     )
     print("", flush=True)
@@ -369,7 +441,6 @@ def main() -> None:
 
     datasets_raw: dict[str, Any] = {}
     length_cols: dict[str, str] = {}
-    labels_cols: dict[str, str] = {}
     kept_counts: dict[str, int] = {}
     scan_stats: dict[str, dict[str, int]] = {}
 
@@ -382,24 +453,25 @@ def main() -> None:
             raise SystemExit(f"Missing cached dataset: {path}")
         ds = _load_dataset(path)
         length_col = _length_column(ds)
-        labels_col = _labels_column(ds)
-        st = _scan_struct(
+        print(f"  {name}: columns={ds.column_names}", flush=True)
+        st, _ = _scan_and_maybe_build(
             ds,
             max_length=args.max_length,
             length_col=length_col,
-            labels_col=labels_col,
+            tokenizer=tokenizer,
+            mode="scan",
             desc=f"scan {name}",
+            num_proc=args.num_proc,
         )
         datasets_raw[name] = ds
         length_cols[name] = length_col
-        labels_cols[name] = labels_col
         scan_stats[name] = st
         kept_counts[name] = st["survivors"]
         tot = st["total"]
         print(
             f"  {name:12s}: survivors {st['survivors']:7,} / {tot:,} "
             f"(struct-trunc {st['truncated']:,}, drop {st['dropped']:,}); "
-            f"delete-ref keep {st['delete_keep']:,}",
+            f"delete-ref keep {st['delete_keep']:,}  [{st['backend']}]",
             flush=True,
         )
 
@@ -407,8 +479,8 @@ def main() -> None:
     total_all = sum(scan_stats[k]["total"] for k in SOURCE_KEYS)
     print(f"  {'TOTAL':12s}: survivors {total_keep:7,} / {total_all:,}", flush=True)
     print(
-        "  note: delete-ref = rows with length<=max (整行丢弃口径，仅对照；"
-        "实际用结构右截断保行)",
+        "  note: delete-ref = rows with lengths≤max（整行丢弃对照）；"
+        "实际按 messages 结构右截断保行",
         flush=True,
     )
 
@@ -426,10 +498,7 @@ def main() -> None:
             print(f"  {k:12s}: {preview2[k]:7,} ({share:5.1f}%)", flush=True)
         print(f"  {'TOTAL':12s}: {tsum:7,}", flush=True)
     else:
-        print(
-            "\nWARNING: 至少一个源存活为 0，选项 2 不可用；只能选 1 或 3。",
-            flush=True,
-        )
+        print("\nWARNING: 至少一个源存活为 0，选项 2 不可用。", flush=True)
 
     choice = _prompt_choice(args.choice)
     if choice == 3:
@@ -446,14 +515,11 @@ def main() -> None:
         mode = "struct_right_rebalance_1_1_0.35"
 
     if any(int(targets[k]) <= 0 for k in SOURCE_KEYS):
-        raise SystemExit(
-            "At least one source has 0 rows after struct-right/rebalance. "
-            "Raise --max-length or adjust choice."
-        )
+        raise SystemExit("At least one source has 0 rows after struct-right/rebalance.")
 
     blob = (
         f"tag={tag}|ml={args.max_length}|mode={mode}|seed={args.seed}|"
-        f"t={targets['wm_code']}:{targets['wm_os']}:{targets['anti_forget']}"
+        f"t={targets['wm_code']}:{targets['wm_os']}:{targets['anti_forget']}|backend=messages"
     )
     run_id = (
         f"ml{args.max_length}_{mode}"
@@ -477,15 +543,23 @@ def main() -> None:
         run_root.mkdir(parents=True, exist_ok=True)
         print(f"\nBuilding train mix under {run_root} …", flush=True)
         for i, name in enumerate(SOURCE_KEYS):
-            final = _apply_struct_and_sample(
+            _st, kept_ds = _scan_and_maybe_build(
                 datasets_raw[name],
                 max_length=args.max_length,
-                labels_col=labels_cols[name],
-                n_take=targets[name],
-                seed=args.seed + i * 17,
-                name=name,
+                length_col=length_cols[name],
+                tokenizer=tokenizer,
+                mode="build",
+                desc=name,
                 num_proc=args.num_proc,
             )
+            assert kept_ds is not None
+            n_f = len(kept_ds)
+            n_take = targets[name]
+            if n_take > n_f:
+                raise SystemExit(f"{name}: need {n_take} but only {n_f} survived")
+            idxs = _sample_indices(n_f, n_take, seed=args.seed + i * 17)
+            final = kept_ds.select(idxs) if n_take < n_f else kept_ds
+            print(f"  {name}: {'sample' if n_take < n_f else 'keep all'} {len(final):,}/{n_f:,}", flush=True)
             out = out_paths[name]
             if out.exists():
                 shutil.rmtree(out)
@@ -505,10 +579,10 @@ def main() -> None:
             "targets": targets,
             "cached_train": {k: str(out_paths[k].relative_to(ROOT)) for k in SOURCE_KEYS},
             "truncation_strategy": "delete",
-            "prep_truncation": "struct_right_assistant",
+            "prep_truncation": "struct_right_messages_assistant",
             "note": (
-                "Rows truncated to end on a complete assistant via labels; "
-                "train uses delete so nothing longer than max_length remains."
+                "messages truncated to end on complete assistant; lengths recomputed; "
+                "train uses delete as safety net."
             ),
         }
         (run_root / "run_manifest.json").write_text(
@@ -543,8 +617,7 @@ def main() -> None:
         "SAVE_STEPS": str(train_cfg.get("save_steps", 200)),
         "SAVE_LIMIT": str(train_cfg.get("save_total_limit", 3)),
         "TARGET_MODULES": " ".join(
-            train_cfg.get("target_modules")
-            or ["q_proj", "k_proj", "v_proj", "o_proj"]
+            train_cfg.get("target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
         ),
     }
     env_path = Path(args.write_env)
