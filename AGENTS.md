@@ -103,7 +103,7 @@ python scripts/train_sft.py --config configs/control_shuffled.yaml
 python scripts/eval_wm.py --config configs/pilot.yaml
 ```
 
-- Do **not** run `train_sft.py` / `swift sft` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `tokenize_data.py` / `stat.py` / `smoke_cpu.py` are OK without GPU.
+- Do **not** run `train_sft.py` / `swift sft` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `prepare_model.py` / `tokenize_data.py` / `stat.py` / `smoke_cpu.py` are OK without GPU.
 - Disk: `~/.cache/huggingface/datasets` (tokenize/map Arrow) + `outputs/ds_cache/` can be large; clear HF caches if root fills. Keep `hub/` model weights if possible.
 - VRAM: L20-class (~46GB) can use larger micro-batch (e.g. 8×accum 2, eff≈16). Keep **effective batch** stable if comparing runs; raising only micro-batch with fixed eff batch barely changes optimization.
 - Checkpoints: every `save_steps` (default 35) + forced save/eval each epoch; `save_total_limit: 3`.
@@ -145,17 +145,19 @@ cd train
 pip install 'ms-swift>=3.11' deepspeed bitsandbytes
 
 # 1) Full JSONL
-python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Ratio-sample + cached_dataset export (per source)
+# 2) Download base LLM (separate from data / tokenize)
+python scripts/prepare_model.py
+
+# 3) Ratio-sample + cached_dataset export (per source)
 python scripts/tokenize_data.py
 
-# 3) Optional length stats / retention tables
+# 4) Optional length stats / retention tables
 python scripts/stat.py
 
-# 4) Multi-GPU QLoRA: device_map split (not DeepSpeed DDP — avoids rank0 load OOM)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
-# If OOM: --max-length 8192
+# 5) Multi-GPU QLoRA (FSDP default)
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
@@ -247,7 +249,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / tokenize / stat / train**: `train/scripts/prepare_data.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
+- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 

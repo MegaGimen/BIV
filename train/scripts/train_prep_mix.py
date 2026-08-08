@@ -26,6 +26,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
@@ -444,7 +447,12 @@ def main() -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cached = manifest.get("cached_train") or {}
     tag = str(manifest.get("tag") or manifest_path.parent.name)
-    model = str(manifest.get("model") or cfg.get("model") or "Qwen/Qwen3-Coder-Next")
+    from biv_wm.model_store import resolve_model_for_train
+
+    model = resolve_model_for_train(cfg, root=ROOT)
+    man_model = manifest.get("model")
+    if man_model and Path(str(man_model)).is_dir():
+        model = str(Path(str(man_model)).resolve())
     train_cfg = cfg.get("train") or {}
 
     print(f"Manifest:    {manifest_path}", flush=True)

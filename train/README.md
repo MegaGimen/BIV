@@ -22,12 +22,13 @@ train/
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
-│   ├── tokenize_data.py               # step 2: ratio-sample + ms-swift export
-│   ├── stat.py                        # step 3 (optional): length stats per source
-│   ├── train_coder_next.sh            # step 4: ms-swift dual-GPU SFT
+│   ├── prepare_model.py               # step 2: download base LLM
+│   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
+│   ├── stat.py                        # step 4 (optional): length stats
+│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
-├── data/processed/mix_v1/
+├── data/processed/mix_v2/
 └── outputs/
 ```
 
@@ -43,32 +44,24 @@ pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
 #   # causal-conv1d: match torch.version.cuda toolkit; see requirements.txt notes
 
 # 1) Full JSONL corpora
-python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
+python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 1b) Optional: strip legacy WM user wrappers → mix_v2 (does not overwrite mix_v1)
-# python scripts/delta.py --apply --force
-# (copies anti_forget + manifests; config defaults to mix_v2)
+# 2) Download base LLM (CPU OK; needs ~150GB+ disk — use data disk on AutoDL)
+python scripts/prepare_model.py
+# python scripts/prepare_model.py --source huggingface   # + HF_ENDPOINT=https://hf-mirror.com
+# python scripts/prepare_model.py --check
 
-# 2) Ratio-sample + ms-swift cached_dataset (CPU OK; no max_length bake-in)
-#    biv_mix: full wm_code+wm_os; anti = 0.35×|wm_os| → configs/swift/coder_next_qlora.yaml
+# 3) Ratio-sample + ms-swift cached_dataset (CPU OK; uses local model_dir)
 python scripts/tokenize_data.py
 # python scripts/tokenize_data.py --force
 
-# 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
+# 4) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py
 
-# 4) Multi-GPU (~48GB/card) — MUST pass --max-length (manual).
+# 5) Train — MUST pass --max-length (manual).
 #    Default parallel=fsdp: accelerate FSDP+QLoRA (load on CPU, then shard).
-#    If nvidia-smi shows GPU0 ~full and GPU1 idle during load, FSDP did not shard yet /
-#    model was placed on cuda:0 — pull latest (ACCELERATE_USE_FSDP + device_map=cpu).
-#    Host RAM ~80GB+ recommended. More GPUs → less VRAM per card after shard.
-#    Prefer --max-length 8192 first.
 export CUDA_VISIBLE_DEVICES=0,1
 bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-# 4×48GB example:
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
-#
-# After changing WM chat wrappers in formatting.py, re-run prepare_data + tokenize_data.
 ```
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.

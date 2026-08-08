@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Step 2: ratio-sample mix JSONL, then ms-swift cached_dataset export (CPU OK).
+"""Step 3: ratio-sample mix JSONL, then ms-swift cached_dataset export (CPU OK).
 
 Note: named tokenize_data.py (not tokenize.py) so it does not shadow stdlib ``tokenize``
 (breaks pandas/datasets imports when running sibling scripts like ``stat.py``).
 
 Reads ``biv_mix`` from ``configs/swift/coder_next_qlora.yaml``.
+Uses local weights from ``prepare_model.py`` when ``model_dir`` is ready.
 
 For each source (wm_code / wm_os / anti_forget):
   1) sample ratio-matched JSONL under ``mix_dir/sampled/<tag>/``
@@ -40,6 +41,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 DEFAULT_MIX = ROOT / "data" / "processed" / "mix_v1"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
@@ -442,7 +446,19 @@ def main() -> None:
         else _resolve_path(cfg.get("mix_dir", DEFAULT_MIX))
     )
     cache_root = _resolve_path(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
-    model = str(cfg.get("model", "Qwen/Qwen3-Coder-Next"))
+    from biv_wm.model_store import model_dir_ready, resolve_model_dir, resolve_model_for_train
+
+    model = resolve_model_for_train(cfg, root=ROOT)
+    prepared = resolve_model_dir(cfg, root=ROOT)
+    if model_dir_ready(prepared):
+        print(f"Using prepared local model: {model}", flush=True)
+    else:
+        print(
+            "WARNING: prepared model_dir not ready — tokenize will pull tokenizer/weights "
+            f"via hub id {model!r}. Prefer:\n"
+            "  python scripts/prepare_model.py",
+            flush=True,
+        )
     dataset_num_proc = int(
         args.dataset_num_proc
         if args.dataset_num_proc is not None

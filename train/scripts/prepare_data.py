@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare multi-source world-model + anti-forget JSONL for Qwen3-Coder-Next.
+"""Step 1: prepare multi-source world-model + anti-forget JSONL for Qwen3-Coder-Next.
+
+Next: ``python scripts/prepare_model.py`` then ``python scripts/tokenize_data.py``.
 
 Sources (unified OpenAI-style ``messages`` + ``source`` field):
   - wm_code:      SWE-Hero OpenHands env I/O  → P(o|h,a)  [primary]
