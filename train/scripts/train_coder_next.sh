@@ -155,37 +155,26 @@ PARALLEL="${PARALLEL:-device_map}"
 DEVICE_MAP="${DEVICE_MAP:-auto}"
 MAX_MEMORY="${MAX_MEMORY:-}"
 DEEPSPEED="${DEEPSPEED:-zero3}"
-
-# device_map: one process owns all visible GPUs (model-parallel load).
-# deepspeed: one process per GPU (only viable if each card can hold full QLoRA weights).
-if [[ "$PARALLEL" == "device_map" ]]; then
-  # Must force: a stale NPROC_PER_NODE=2 from the env reintroduces rank0 full-load OOM.
-  if [[ -n "${NPROC_PER_NODE:-}" && "$NPROC_PER_NODE" != "1" ]]; then
-    echo "NOTE: parallel=device_map forces NPROC_PER_NODE=1 (was $NPROC_PER_NODE)."
-  fi
-  NPROC_PER_NODE=1
-else
-  if [[ -z "${NPROC_PER_NODE:-}" ]]; then
-    NPROC_PER_NODE="$(python - <<'PY'
-import os
-xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
-print(len(xs) if xs else 1)
-PY
-)"
-  fi
-fi
-export NPROC_PER_NODE
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+# device_map: plain single-process load (NO torchrun). ms-swift enables torchrun whenever
+# NPROC_PER_NODE is set — even to 1 — which breaks multi-GPU device_map and shows [rank0].
+# deepspeed: one process per GPU via torchrun.
 EXTRA_PARALLEL_ARGS=()
 if [[ "$PARALLEL" == "device_map" ]]; then
-  # L20 ~46GB can hold the whole ~40–45GB 4bit checkpoint alone, so device_map=auto
-  # without a cap parks everything on GPU0. Cap each GPU below full-model size to force
-  # a split, but keep the sum >> model size so nothing spills to CPU/disk (bnb forbids that
-  # unless llm_int8_enable_fp32_cpu_offload). 28GiB×2 was too tight → CPU spill ValueError.
-  # Override: BIV_MAX_MEMORY_PER_GPU=40GiB | none (skip --max_memory).
-  if [[ -z "$MAX_MEMORY" ]]; then
-    _per="${BIV_MAX_MEMORY_PER_GPU:-40GiB}"
+  if [[ -n "${NPROC_PER_NODE:-}" || -n "${NNODES:-}" ]]; then
+    echo "NOTE: parallel=device_map unsets NPROC_PER_NODE/NNODES (was NPROC=${NPROC_PER_NODE:-unset})."
+    echo "  ms-swift uses torchrun if NPROC_PER_NODE is set; that hides multi-GPU device_map."
+  fi
+  unset NPROC_PER_NODE
+  unset NNODES
+
+  # Qwen3-Coder-Next Q4 ≈ 48–53GB > one L20 (46GB), so device_map=auto will place
+  # overflow on GPU1. Do NOT default-cap max_memory below that size — caps like 28/40/42GiB
+  # force modules onto CPU/disk and bnb raises ValueError (4bit is NOT >84GB; bf16 is ~150GB).
+  # Optional: MAX_MEMORY='{0: "44GiB", 1: "44GiB"}' or BIV_MAX_MEMORY_PER_GPU=44GiB
+  if [[ -z "$MAX_MEMORY" && -n "${BIV_MAX_MEMORY_PER_GPU:-}" ]]; then
+    _per="$BIV_MAX_MEMORY_PER_GPU"
     if [[ "$_per" != "none" && "$_per" != "skip" && "$_per" != "0" ]]; then
       MAX_MEMORY="$(
         BIV_MAX_MEMORY_PER_GPU="$_per" python - <<'PY'
@@ -193,7 +182,6 @@ import os
 xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
 n = len(xs) if xs else 1
 per = os.environ["BIV_MAX_MEMORY_PER_GPU"]
-# Accelerate wants int keys (0,1,…), not JSON "0"/"1".
 print("{" + ", ".join(f'{i}: "{per}"' for i in range(n)) + "}")
 PY
       )"
@@ -203,7 +191,17 @@ PY
   if [[ -n "$MAX_MEMORY" ]]; then
     EXTRA_PARALLEL_ARGS+=(--max_memory "$MAX_MEMORY")
   fi
+  NPROC_PER_NODE="(unset — no torchrun)"
 elif [[ "$PARALLEL" == "deepspeed" ]]; then
+  if [[ -z "${NPROC_PER_NODE:-}" ]]; then
+    NPROC_PER_NODE="$(python - <<'PY'
+import os
+xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
+print(len(xs) if xs else 1)
+PY
+)"
+  fi
+  export NPROC_PER_NODE
   EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
 else
   echo "ERROR: unknown PARALLEL=$PARALLEL (use device_map or deepspeed)"
