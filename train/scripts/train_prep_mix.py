@@ -351,34 +351,41 @@ def _build_truncated_sample(
     subset = ds.select(idxs)
     print(f"  {name}: selected {len(subset):,} rows → char-budget trim …", flush=True)
 
+    def _set_length_fields(out: dict, n: int) -> dict:
+        """Keep Arrow schema stable: ms-swift uses list-valued ``lengths``."""
+        n = int(n)
+        # Always list for `lengths` to avoid "cannot mix list and non-list"
+        if "lengths" in out or length_col == "lengths":
+            out["lengths"] = [n]
+        if "length" in out or length_col == "length":
+            out["length"] = n
+        if length_col not in {"lengths", "length"}:
+            out[length_col] = n
+        return out
+
     def _map(ex):
         if has_messages:
             msgs = ex["messages"]
             L = _as_int_length(ex[length_col])
             if L is not None and L <= max_length and _has_assistant(msgs):
-                out = dict(ex)
-                out[length_col] = int(L)
-                if "lengths" in out:
-                    out["lengths"] = int(L)
+                out = _set_length_fields(dict(ex), L)
                 out["_biv_keep"] = 1
                 return out
             kept, nlen = struct_right_cut_messages(msgs, max_length)
             if kept is None:
-                out = dict(ex)
+                # still normalize length type so the column stays list[int]
+                out = _set_length_fields(dict(ex), L if L is not None else 0)
                 out["_biv_keep"] = 0
                 return out
             out = dict(ex)
             out["messages"] = kept
-            out[length_col] = int(nlen)
-            if "lengths" in out:
-                out["lengths"] = int(nlen)
-            if "length" in out:
-                out["length"] = int(nlen)
+            out = _set_length_fields(out, nlen)
             out["_biv_keep"] = 1
             return out
         cut = struct_right_cut_labels(ex["labels"], max_length)
         if cut is None:
-            out = dict(ex)
+            L = _as_int_length(ex[length_col])
+            out = _set_length_fields(dict(ex), L if L is not None else 0)
             out["_biv_keep"] = 0
             return out
         labs = _as_seq(ex["labels"])
@@ -390,11 +397,12 @@ def _build_truncated_sample(
                 continue
             if isinstance(v, list) and len(v) == n and v and isinstance(v[0], (int, float)):
                 out[k] = v[:cut]
-        out[length_col] = int(cut)
+        out = _set_length_fields(out, cut)
         out["_biv_keep"] = 1
         return out
 
-    mapped = subset.map(_map, num_proc=max(1, min(num_proc, 4)), desc=f"trim {name}")
+    # num_proc=1 avoids rare arrow schema races across workers
+    mapped = subset.map(_map, num_proc=1, desc=f"trim {name}")
     kept_ds = mapped.filter(
         lambda x: int(x["_biv_keep"]) == 1,
         num_proc=max(1, min(num_proc, 4)),
