@@ -66,7 +66,7 @@ def history_to_messages(
       - is_error / isError: optional
     """
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-    for i, turn in enumerate(turns):
+    for turn in turns:
         tool = turn.get("tool") or turn.get("name") or turn.get("tool_name")
         args = (
             turn.get("arguments")
@@ -80,16 +80,9 @@ def history_to_messages(
             obs = turn.get("output", turn.get("content", ""))
         is_error = turn.get("is_error", turn.get("isError"))
 
-        user_content = format_tool_call(str(tool), args)
-        if i > 0:
-            user_content = (
-                f"Previous tool steps in this session: {i}.\n"
-                f"Latest tool call:\n{user_content}"
-            )
-        else:
-            user_content = f"Latest tool call:\n{user_content}"
-
-        messages.append({"role": "user", "content": user_content})
+        # Plain tool-call JSON as user; observation JSON as assistant.
+        # No "Latest tool call" / step-count wrappers (history is prior messages).
+        messages.append({"role": "user", "content": format_tool_call(str(tool), args)})
         messages.append(
             {
                 "role": "assistant",

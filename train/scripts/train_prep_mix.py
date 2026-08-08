@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Train-time length clean + optional 1:1:0.35 rebalance on ms-swift caches.
+"""Train-time structure-preserving right trunc + optional 1:1:0.35 rebalance.
 
-Called by ``scripts/train_coder_next.sh`` after the user passes ``--max-length``.
+Called by ``scripts/train_coder_next.sh`` after ``--max-length``.
 
-1) Drop rows with ``length > max_length`` (delete-style clean) from each source.
-2) Print how many remain per source.
+1) For each cached row, if token length > max_length, walk left from the cut
+   so the kept prefix ends on a **complete assistant** span (via labels != -100).
+   Rows that cannot fit even one complete assistant are dropped.
+2) Print survivors / would-delete reference counts.
 3) Interactive choice:
-     1 = keep cleaned counts as-is (no code/os 1:1 flatten)
-     2 = re-sample cleaned pools at code:os:anti = 1:1:0.35 (max_fill)
+     1 = keep survivors as-is (no code/os 1:1 flatten)
+     2 = re-sample survivors at code:os:anti = 1:1:0.35 (max_fill)
      3 = abort
-4) Write filtered HF datasets + a run_manifest; emit shell exports via --write-env.
+4) Write truncated HF datasets + run_manifest; emit shell exports via --write-env.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import hashlib
 import json
 import random
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,7 @@ DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 REBALANCE_RATIOS = {"wm_code": 1.0, "wm_os": 1.0, "anti_forget": 0.35}
+LABEL_IGNORE = -100
 
 
 def _tqdm(iterable=None, **kwargs):
@@ -95,32 +99,172 @@ def _length_column(ds) -> str:
     )
 
 
-def _count_kept(ds, col: str, max_length: int, *, desc: str) -> tuple[int, int]:
-    """Return (kept, total) without materializing a filtered copy yet."""
+def _labels_column(ds) -> str:
+    if "labels" not in ds.column_names:
+        raise SystemExit(
+            f"Dataset missing 'labels' column (got {ds.column_names}); "
+            "needed for structure-preserving right trunc."
+        )
+    return "labels"
+
+
+def _as_seq(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if hasattr(v, "tolist"):
+        return list(v.tolist())
+    return list(v)
+
+
+def struct_right_cut(
+    labels: Any, max_length: int, *, ignore_index: int = LABEL_IGNORE
+) -> int | None:
+    """Largest cut ``c`` with ``c <= max_length`` ending on a complete assistant span.
+
+    A cut ``c`` means keep ``labels[:c]``. Complete assistant end:
+      - ``labels[c-1]`` is supervised (not ignore), and
+      - ``c == len(labels)`` or ``labels[c]`` is ignore (next message is non-response).
+
+    Walking left from ``min(len, max_length)`` avoids tearing a partial assistant
+    (and drops a trailing partial user after the last full assistant).
+    Returns None if no complete assistant fits in max_length.
+    """
+    labs = _as_seq(labels)
+    n = len(labs)
+    lim = min(n, int(max_length))
+    if lim <= 0:
+        return None
+
+    def is_complete_assistant_end(c: int) -> bool:
+        if c <= 0 or c > n:
+            return False
+        prev = int(labs[c - 1])
+        if prev == ignore_index:
+            return False
+        if c == n:
+            return True
+        return int(labs[c]) == ignore_index
+
+    for c in range(lim, 0, -1):
+        if is_complete_assistant_end(c):
+            return c
+    return None
+
+
+def _truncate_example(ex: dict[str, Any], cut: int, labels_key: str) -> dict[str, Any]:
+    labs = _as_seq(ex[labels_key])
+    n = len(labs)
+    out = dict(ex)
+    for k, v in ex.items():
+        if k == labels_key:
+            out[k] = labs[:cut]
+            continue
+        if isinstance(v, str) or v is None or isinstance(v, (bool, float)):
+            continue
+        if isinstance(v, int) and k in {"length", "lengths"}:
+            continue
+        seq = _as_seq(v) if not isinstance(v, list) else v
+        if isinstance(seq, list) and len(seq) == n and seq and isinstance(seq[0], (int, float)):
+            out[k] = seq[:cut]
+    out["length"] = int(cut)
+    if "lengths" in out:
+        out["lengths"] = int(cut)
+    return out
+
+
+def _scan_struct(
+    ds, *, max_length: int, length_col: str, labels_col: str, desc: str
+) -> dict[str, int]:
+    """Return survivor / drop / trunc / delete_ref counts (no materialize)."""
     total = len(ds)
-    kept = 0
-    # batched map/filter counts via column scan
-    lengths = ds[col]
+    survivors = 0
+    dropped = 0
+    truncated = 0
+    delete_keep = 0
+    lengths = ds[length_col]
+    labels_all = ds[labels_col]
     bar = _tqdm(total=total, unit="rows", desc=desc)
-    if bar is None:
-        for v in lengths:
-            if int(v) <= max_length:
-                kept += 1
+    it = range(total)
+    if bar is not None:
+        bar_ctx = bar
     else:
-        with bar:
-            for v in lengths:
-                if int(v) <= max_length:
-                    kept += 1
-                bar.update(1)
-    return kept, total
+        bar_ctx = None
+
+    def _one(i: int) -> None:
+        nonlocal survivors, dropped, truncated, delete_keep
+        L = int(lengths[i])
+        if L <= max_length:
+            delete_keep += 1
+        cut = struct_right_cut(labels_all[i], max_length)
+        if cut is None:
+            dropped += 1
+        else:
+            survivors += 1
+            if cut < L:
+                truncated += 1
+
+    if bar_ctx is None:
+        for i in it:
+            _one(i)
+    else:
+        with bar_ctx:
+            for i in it:
+                _one(i)
+                bar_ctx.update(1)
+    return {
+        "total": total,
+        "survivors": survivors,
+        "dropped": dropped,
+        "truncated": truncated,
+        "delete_keep": delete_keep,
+    }
 
 
-def _filter_keep(ds, col: str, max_length: int, *, desc: str, num_proc: int):
-    return ds.filter(
-        lambda x: int(x[col]) <= max_length,
+def _apply_struct_and_sample(
+    ds,
+    *,
+    max_length: int,
+    labels_col: str,
+    n_take: int,
+    seed: int,
+    name: str,
+    num_proc: int,
+):
+    """Truncate all rows (struct-right), drop unsavable, then sample n_take."""
+
+    def _map(ex):
+        cut = struct_right_cut(ex[labels_col], max_length)
+        if cut is None:
+            ex = dict(ex)
+            ex["_biv_keep"] = 0
+            return ex
+        out = _truncate_example(ex, cut, labels_col)
+        out["_biv_keep"] = 1
+        return out
+
+    mapped = ds.map(
+        _map,
         num_proc=max(1, num_proc),
-        desc=desc,
+        desc=f"struct-right {name}",
     )
+    kept_ds = mapped.filter(
+        lambda x: int(x["_biv_keep"]) == 1,
+        num_proc=max(1, num_proc),
+        desc=f"keep {name}",
+    )
+    if "_biv_keep" in kept_ds.column_names:
+        kept_ds = kept_ds.remove_columns(["_biv_keep"])
+    n_f = len(kept_ds)
+    if n_take > n_f:
+        raise SystemExit(f"{name}: need {n_take} but only {n_f} survived struct-right")
+    idxs = _sample_indices(n_f, n_take, seed)
+    if n_take < n_f:
+        print(f"  {name}: sample {n_take:,}/{n_f:,}", flush=True)
+        return kept_ds.select(idxs)
+    print(f"  {name}: keep all {n_f:,}", flush=True)
+    return kept_ds
 
 
 def _sample_indices(n_keep: int, n_take: int, seed: int) -> list[int]:
@@ -134,8 +278,8 @@ def _max_fill_targets(kept: dict[str, int]) -> dict[str, int]:
     for k in SOURCE_KEYS:
         if kept[k] <= 0:
             raise SystemExit(
-                f"After max_length clean, {k} has 0 rows — cannot rebalance. "
-                "Raise --max-length or choose option 1 only if any source survives."
+                f"After struct-right, {k} has 0 rows — cannot rebalance. "
+                "Raise --max-length."
             )
     ratios = REBALANCE_RATIOS
     s = min(kept[k] / ratios[k] for k in SOURCE_KEYS)
@@ -163,8 +307,8 @@ def _prompt_choice(preselected: int | None) -> int:
         return preselected
     print("", flush=True)
     print("选择下一步：", flush=True)
-    print("  1 = 不按 1:1 拉平 code/os，清洗后原样开训", flush=True)
-    print("  2 = 在清洗池上按 code:os:anti = 1:1:0.35 再 sample，然后开训", flush=True)
+    print("  1 = 不按 1:1 拉平 code/os，结构右截断后原样开训", flush=True)
+    print("  2 = 在存活池上按 code:os:anti = 1:1:0.35 再 sample，然后开训", flush=True)
     print("  3 = 中断", flush=True)
     while True:
         raw = input("请输入 1 / 2 / 3: ").strip()
@@ -215,15 +359,19 @@ def main() -> None:
     print(f"Manifest:    {manifest_path}", flush=True)
     print(f"Tag:         {tag}", flush=True)
     print(f"Model:       {model}", flush=True)
-    print(f"max_length:  {args.max_length}  (clean = drop length > max_length)", flush=True)
+    print(
+        f"max_length:  {args.max_length}  "
+        "(struct-right: keep prefix ending on complete assistant)",
+        flush=True,
+    )
     print("", flush=True)
-    print("=== retention after max_length clean ===", flush=True)
+    print("=== structure-preserving right trunc @ max_length ===", flush=True)
 
-    source_paths: dict[str, Path] = {}
-    kept_counts: dict[str, int] = {}
-    total_counts: dict[str, int] = {}
     datasets_raw: dict[str, Any] = {}
     length_cols: dict[str, str] = {}
+    labels_cols: dict[str, str] = {}
+    kept_counts: dict[str, int] = {}
+    scan_stats: dict[str, dict[str, int]] = {}
 
     for name in SOURCE_KEYS:
         rel = cached.get(name)
@@ -232,31 +380,41 @@ def main() -> None:
         path = _resolve(rel)
         if not path.exists():
             raise SystemExit(f"Missing cached dataset: {path}")
-        source_paths[name] = path
         ds = _load_dataset(path)
-        col = _length_column(ds)
-        kept, total = _count_kept(ds, col, args.max_length, desc=f"scan {name}")
+        length_col = _length_column(ds)
+        labels_col = _labels_column(ds)
+        st = _scan_struct(
+            ds,
+            max_length=args.max_length,
+            length_col=length_col,
+            labels_col=labels_col,
+            desc=f"scan {name}",
+        )
         datasets_raw[name] = ds
-        length_cols[name] = col
-        kept_counts[name] = kept
-        total_counts[name] = total
-        pct = (100.0 * kept / total) if total else 0.0
+        length_cols[name] = length_col
+        labels_cols[name] = labels_col
+        scan_stats[name] = st
+        kept_counts[name] = st["survivors"]
+        tot = st["total"]
         print(
-            f"  {name:12s}: keep {kept:7,} / {total:,} ({pct:5.1f}%)",
+            f"  {name:12s}: survivors {st['survivors']:7,} / {tot:,} "
+            f"(struct-trunc {st['truncated']:,}, drop {st['dropped']:,}); "
+            f"delete-ref keep {st['delete_keep']:,}",
             flush=True,
         )
 
     total_keep = sum(kept_counts.values())
-    total_all = sum(total_counts.values())
+    total_all = sum(scan_stats[k]["total"] for k in SOURCE_KEYS)
+    print(f"  {'TOTAL':12s}: survivors {total_keep:7,} / {total_all:,}", flush=True)
     print(
-        f"  {'TOTAL':12s}: keep {total_keep:7,} / {total_all:,}",
+        "  note: delete-ref = rows with length<=max (整行丢弃口径，仅对照；"
+        "实际用结构右截断保行)",
         flush=True,
     )
 
     if total_keep == 0:
-        raise SystemExit("No rows survive this max_length. Raise --max-length.")
+        raise SystemExit("No rows survive struct-right at this max_length. Raise --max-length.")
 
-    # Preview option-2 targets (even if user picks 1 later)
     preview2: dict[str, int] | None = None
     if all(kept_counts[k] > 0 for k in SOURCE_KEYS):
         preview2 = _max_fill_targets(kept_counts)
@@ -269,7 +427,7 @@ def main() -> None:
         print(f"  {'TOTAL':12s}: {tsum:7,}", flush=True)
     else:
         print(
-            "\nWARNING: 至少一个源清洗后为 0，选项 2 不可用；只能选 1 或 3。",
+            "\nWARNING: 至少一个源存活为 0，选项 2 不可用；只能选 1 或 3。",
             flush=True,
         )
 
@@ -278,18 +436,18 @@ def main() -> None:
         print("已中断。", flush=True)
         raise SystemExit(3)
     if choice == 2 and preview2 is None:
-        raise SystemExit("选项 2 需要三个源清洗后都 >0。")
+        raise SystemExit("选项 2 需要三个源存活后都 >0。")
 
     if choice == 1:
         targets = dict(kept_counts)
-        mode = "clean_as_is"
+        mode = "struct_right_as_is"
     else:
         targets = preview2  # type: ignore[assignment]
-        mode = "clean_rebalance_1_1_0.35"
+        mode = "struct_right_rebalance_1_1_0.35"
 
     if any(int(targets[k]) <= 0 for k in SOURCE_KEYS):
         raise SystemExit(
-            "At least one source has 0 rows after clean/rebalance. "
+            "At least one source has 0 rows after struct-right/rebalance. "
             "Raise --max-length or adjust choice."
         )
 
@@ -305,7 +463,6 @@ def main() -> None:
     run_root = manifest_path.parent / "train_runs" / run_id
     out_paths: dict[str, Path] = {k: run_root / k for k in SOURCE_KEYS}
 
-    # HF save_to_disk writes state.json under each split dir.
     reuse = (
         not args.force
         and all((out_paths[k] / "state.json").is_file() for k in SOURCE_KEYS)
@@ -316,41 +473,21 @@ def main() -> None:
         print(f"\nReusing prepared run cache: {run_root}", flush=True)
     else:
         if run_root.exists() and args.force:
-            import shutil
-
             shutil.rmtree(run_root)
         run_root.mkdir(parents=True, exist_ok=True)
         print(f"\nBuilding train mix under {run_root} …", flush=True)
         for i, name in enumerate(SOURCE_KEYS):
-            ds = datasets_raw[name]
-            col = length_cols[name]
-            filtered = _filter_keep(
-                ds,
-                col,
-                args.max_length,
-                desc=f"filter {name}",
+            final = _apply_struct_and_sample(
+                datasets_raw[name],
+                max_length=args.max_length,
+                labels_col=labels_cols[name],
+                n_take=targets[name],
+                seed=args.seed + i * 17,
+                name=name,
                 num_proc=args.num_proc,
             )
-            n_f = len(filtered)
-            if n_f != kept_counts[name]:
-                print(
-                    f"WARNING: {name} filter size {n_f} != scanned keep {kept_counts[name]}",
-                    flush=True,
-                )
-            n_take = targets[name]
-            if n_take > n_f:
-                raise SystemExit(f"{name}: need {n_take} but filtered only {n_f}")
-            idxs = _sample_indices(n_f, n_take, seed=args.seed + i * 17)
-            if n_take < n_f:
-                print(f"  {name}: sample {n_take:,}/{n_f:,}", flush=True)
-                final = filtered.select(idxs)
-            else:
-                print(f"  {name}: keep all {n_f:,}", flush=True)
-                final = filtered
             out = out_paths[name]
             if out.exists():
-                import shutil
-
                 shutil.rmtree(out)
             final.save_to_disk(str(out))
             print(f"  wrote {out} ({len(final):,} rows)", flush=True)
@@ -363,11 +500,16 @@ def main() -> None:
             "choice": choice,
             "seed": args.seed,
             "ratios": REBALANCE_RATIOS if choice == 2 else None,
-            "kept_after_clean": kept_counts,
+            "scan": scan_stats,
+            "kept_after_struct_right": kept_counts,
             "targets": targets,
             "cached_train": {k: str(out_paths[k].relative_to(ROOT)) for k in SOURCE_KEYS},
             "truncation_strategy": "delete",
-            "note": "Rows already length-filtered; train uses delete for safety.",
+            "prep_truncation": "struct_right_assistant",
+            "note": (
+                "Rows truncated to end on a complete assistant via labels; "
+                "train uses delete so nothing longer than max_length remains."
+            ),
         }
         (run_root / "run_manifest.json").write_text(
             json.dumps(run_manifest, indent=2), encoding="utf-8"

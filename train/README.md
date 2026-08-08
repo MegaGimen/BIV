@@ -49,12 +49,14 @@ python scripts/tokenize_data.py
 python scripts/stat.py
 
 # 4) Dual ~44GB GPUs — MUST pass --max-length (manual).
-#    Script: clean length>N → show per-source remainders → prompt:
-#      1 = train cleaned as-is (no code/os 1:1)
-#      2 = re-sample cleaned pools at 1:1:0.35 then train
+#    Script: struct-right trunc (end on complete assistant) → show survivors → prompt:
+#      1 = train survivors as-is (no code/os 1:1)
+#      2 = re-sample survivors at 1:1:0.35 then train
 #      3 = abort
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
 # non-interactive:  --choice 2
+#
+# After changing WM chat wrappers in formatting.py, re-run prepare_data + tokenize_data.
 ```
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.

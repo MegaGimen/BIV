@@ -2,8 +2,8 @@
 # Dual-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
 #
 # Requires explicit --max-length. Before training:
-#   1) drop rows with length > max_length on each source cache
-#   2) print retention counts
+#   1) structure-preserving right trunc (keep prefix ending on complete assistant)
+#   2) print survivors (+ delete-ref for comparison)
 #   3) ask: 1=as-is / 2=rebalance 1:1:0.35 / 3=abort
 #
 # Usage:
@@ -29,7 +29,7 @@ usage() {
 Usage:
   bash scripts/train_coder_next.sh --max-length <N> [--choice 1|2|3] [--force-prep]
 
-  --max-length N   required; clean = drop rows with token length > N
+  --max-length N   required; struct-right trunc to complete assistant within N
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
   --force-prep     rebuild filtered run cache even if present
 
