@@ -35,7 +35,8 @@ train/
 
 ```bash
 cd train && source .venv/bin/activate
-pip install 'ms-swift>=3.11' deepspeed bitsandbytes
+pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
+# If load dies with Params4bit … _is_hf_initialized: pip install -U 'bitsandbytes>=0.50'
 
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
