@@ -160,7 +160,12 @@ fi
 export NPROC_PER_NODE
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+# flash_attn often fails (hub kernels empty / package missing). Default to sdpa.
+# Override: ATTN_IMPL=flash_attn bash scripts/train_coder_next.sh ...
+ATTN_IMPL="${ATTN_IMPL:-sdpa}"
+
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
+echo "  attn_impl=$ATTN_IMPL"
 
 # shellcheck disable=SC2086
 exec swift sft \
@@ -185,5 +190,5 @@ exec swift sft \
   --save_total_limit "$SAVE_LIMIT" \
   --output_dir "$OUT_DIR" \
   --deepspeed "$DEEPSPEED" \
-  --attn_impl flash_attn \
+  --attn_impl "$ATTN_IMPL" \
   --dataloader_num_workers 4
