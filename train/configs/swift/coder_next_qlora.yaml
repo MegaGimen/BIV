@@ -55,17 +55,14 @@ train:
     - o_proj
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
-  # QLoRA (bnb 4bit) + DeepSpeed DDP loads the full ~40–45GB weights onto rank0 first
-  # (ZeRO cannot shard during bnb init) → OOM on a single L20/48GB. Default is therefore
-  # single-process device_map model-parallel: split layers across all visible GPUs at load.
-  # parallel: device_map | deepspeed
-  parallel: device_map
+  # parallel: fsdp | device_map | deepspeed
+  # Default fsdp = accelerate FSDP FULL_SHARD + QLoRA (ms-swift fsdp_qlora recipe).
+  # device_map+bnb CPU offload can LOAD but fails at first train step (meta tensor copy).
+  # deepspeed DDP+QLoRA materializes full 4bit on rank0 → OOM on 48GB.
+  parallel: fsdp
   device_map: auto
-  # device_map defaults (via train_coder_next.sh): ~44GiB/GPU + cpu:200GiB and
-  # llm_int8_enable_fp32_cpu_offload (planner still overflows this MoE onto CPU).
-  # max_memory: '{0: "44GiB", 1: "44GiB", "cpu": "200GiB"}'
-  # Only used when parallel: deepspeed (not recommended for this QLoRA+48GB setup).
   deepspeed: zero3
+  fsdp_config: configs/swift/fsdp_qlora.json
   output_dir: outputs/swift_coder_next_wm_mix
   torch_dtype: bfloat16
   warmup_ratio: 0.03

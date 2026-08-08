@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Multi-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
-# Default: single-process device_map (split 4bit weights across visible GPUs at load).
-# DeepSpeed DDP+QLoRA materializes ~40GB+ on rank0 during load → OOM on 48GB cards.
+# Default: accelerate FSDP FULL_SHARD + QLoRA (configs/swift/fsdp_qlora.json).
+# device_map+bnb CPU offload can load then die at step 0 (meta tensor copy).
 #
 # Requires explicit --max-length. Before training:
 #   1) structure-preserving right trunc (keep prefix ending on complete assistant)
@@ -151,34 +151,67 @@ for p in os.environ["CACHED_DATASETS"].split():
 PY
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
-PARALLEL="${PARALLEL:-device_map}"
+PARALLEL="${PARALLEL:-fsdp}"
 DEVICE_MAP="${DEVICE_MAP:-auto}"
 MAX_MEMORY="${MAX_MEMORY:-}"
 DEEPSPEED="${DEEPSPEED:-zero3}"
+FSDP_CONFIG="${FSDP_CONFIG:-configs/swift/fsdp_qlora.json}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-# device_map: plain single-process load (NO torchrun). ms-swift enables torchrun whenever
-# NPROC_PER_NODE is set — even to 1 — which breaks multi-GPU device_map and shows [rank0].
-# deepspeed: one process per GPU via torchrun.
+NGPU="$(python - <<'PY'
+import os
+xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
+print(len(xs) if xs else 1)
+PY
+)"
+
+# fsdp: accelerate FSDP FULL_SHARD + QLoRA (recommended on 2×~48GB; see ms-swift fsdp_qlora).
+# device_map: single-process model-parallel (can load; bnb CPU offload often breaks at step 0).
+# deepspeed: DDP+ZeRO (QLoRA usually OOMs on rank0 during load on 48GB).
 EXTRA_PARALLEL_ARGS=()
-if [[ "$PARALLEL" == "device_map" ]]; then
+LAUNCH=()
+unset BIV_BNB_CPU_OFFLOAD
+
+if [[ "$PARALLEL" == "fsdp" ]]; then
+  unset NPROC_PER_NODE
+  unset NNODES
+  if [[ ! -f "$FSDP_CONFIG" ]]; then
+    echo "ERROR: FSDP config not found: $FSDP_CONFIG"
+    exit 1
+  fi
+  # Rewrite num_processes to match visible GPUs (template defaults to 2).
+  FSDP_RUN_CONFIG="$(mktemp "${TMPDIR:-/tmp}/biv_fsdp_XXXXXX.json")"
+  cleanup_fsdp() { rm -f "$FSDP_RUN_CONFIG"; }
+  trap cleanup_fsdp EXIT
+  python - <<PY
+import json
+from pathlib import Path
+cfg = json.loads(Path("$FSDP_CONFIG").read_text())
+cfg["num_processes"] = int("$NGPU")
+Path("$FSDP_RUN_CONFIG").write_text(json.dumps(cfg, indent=2) + "\n")
+print(f"  wrote FSDP config num_processes={cfg['num_processes']} → $FSDP_RUN_CONFIG")
+PY
+  # FSDP+QLoRA needs quant_storage=bf16 (HF/PEFT). No device_map.
+  EXTRA_PARALLEL_ARGS+=(
+    --bnb_4bit_quant_storage bfloat16
+    --bnb_4bit_compute_dtype bfloat16
+    --gradient_checkpointing_kwargs '{"use_reentrant": false}'
+  )
+  LAUNCH=(accelerate launch --config_file "$FSDP_RUN_CONFIG")
+  NPROC_PER_NODE="(accelerate num_processes=$NGPU)"
+elif [[ "$PARALLEL" == "device_map" ]]; then
+  echo "WARNING: parallel=device_map is legacy; bnb+CPU offload often fails at first train step."
   if [[ -n "${NPROC_PER_NODE:-}" || -n "${NNODES:-}" ]]; then
-    echo "NOTE: parallel=device_map unsets NPROC_PER_NODE/NNODES (was NPROC=${NPROC_PER_NODE:-unset})."
-    echo "  ms-swift uses torchrun if NPROC_PER_NODE is set; that hides multi-GPU device_map."
+    echo "NOTE: unsetting NPROC_PER_NODE/NNODES for device_map."
   fi
   unset NPROC_PER_NODE
   unset NNODES
-
-  # Planner still puts some MoE/custom modules on CPU even with 2×L20 (estimates those
-  # layers near bf16). Default max_memory leaves GPUs nearly full and allows CPU spill;
-  # run_swift_sft.py forces llm_int8_enable_fp32_cpu_offload=True so bnb accepts it.
-  # Override: MAX_MEMORY='...' or BIV_MAX_MEMORY_PER_GPU=44GiB / BIV_CPU_MEMORY=200GiB
+  export BIV_BNB_CPU_OFFLOAD=1
   if [[ -z "$MAX_MEMORY" ]]; then
     _per="${BIV_MAX_MEMORY_PER_GPU:-44GiB}"
     _cpu="${BIV_CPU_MEMORY:-200GiB}"
-    if [[ "$_per" != "none" && "$_per" != "skip" && "$_per" != "0" ]]; then
-      MAX_MEMORY="$(
-        BIV_MAX_MEMORY_PER_GPU="$_per" BIV_CPU_MEMORY="$_cpu" python - <<'PY'
+    MAX_MEMORY="$(
+      BIV_MAX_MEMORY_PER_GPU="$_per" BIV_CPU_MEMORY="$_cpu" python - <<'PY'
 import os
 xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
 n = len(xs) if xs else 1
@@ -188,8 +221,7 @@ parts = [f'{i}: "{per}"' for i in range(n)]
 parts.append(f'"cpu": "{cpu}"')
 print("{" + ", ".join(parts) + "}")
 PY
-      )"
-    fi
+    )"
   fi
   EXTRA_PARALLEL_ARGS+=(--device_map "$DEVICE_MAP")
   if [[ -n "$MAX_MEMORY" ]]; then
@@ -197,18 +229,11 @@ PY
   fi
   NPROC_PER_NODE="(unset — no torchrun)"
 elif [[ "$PARALLEL" == "deepspeed" ]]; then
-  if [[ -z "${NPROC_PER_NODE:-}" ]]; then
-    NPROC_PER_NODE="$(python - <<'PY'
-import os
-xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
-print(len(xs) if xs else 1)
-PY
-)"
-  fi
+  NPROC_PER_NODE="${NPROC_PER_NODE:-$NGPU}"
   export NPROC_PER_NODE
   EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
 else
-  echo "ERROR: unknown PARALLEL=$PARALLEL (use device_map or deepspeed)"
+  echo "ERROR: unknown PARALLEL=$PARALLEL (use fsdp, device_map, or deepspeed)"
   exit 1
 fi
 
@@ -287,11 +312,11 @@ fi
 
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
 echo "  parallel=$PARALLEL attn_impl=$ATTN_IMPL"
-if [[ "$PARALLEL" == "device_map" ]]; then
-  echo "  device_map=$DEVICE_MAP max_memory=${MAX_MEMORY:-"(unset)"}"
-else
-  echo "  deepspeed=$DEEPSPEED"
-fi
+case "$PARALLEL" in
+  fsdp) echo "  fsdp_config=$FSDP_CONFIG (runtime=$FSDP_RUN_CONFIG)" ;;
+  device_map) echo "  device_map=$DEVICE_MAP max_memory=${MAX_MEMORY:-"(unset)"}" ;;
+  deepspeed) echo "  deepspeed=$DEEPSPEED" ;;
+esac
 
 # Visible CUDA devices (catch "CUDA_VISIBLE_DEVICES=0,1" without export)
 python - <<'PY'
@@ -305,14 +330,16 @@ if torch.cuda.device_count() < 1:
     raise SystemExit("ERROR: no CUDA devices visible to torch")
 PY
 
-SWIFT_LAUNCH=(swift sft)
-if [[ "$PARALLEL" == "device_map" ]]; then
-  # Patch bnb cpu-offload (ms-swift CLI has no flag for it).
-  SWIFT_LAUNCH=(python "$ROOT/scripts/run_swift_sft.py")
+# Patched entry (bnb fixes). Under FSDP, accelerate launches this script.
+SFT_ENTRY=(python "$ROOT/scripts/run_swift_sft.py")
+if [[ "$PARALLEL" == "deepspeed" ]]; then
+  SFT_ENTRY=(swift sft)
+elif [[ "$PARALLEL" == "fsdp" ]]; then
+  SFT_ENTRY=("${LAUNCH[@]}" "$ROOT/scripts/run_swift_sft.py")
 fi
 
 # shellcheck disable=SC2086
-exec "${SWIFT_LAUNCH[@]}" \
+exec "${SFT_ENTRY[@]}" \
   --model "$MODEL" \
   --tuner_type lora \
   --quant_method bnb \

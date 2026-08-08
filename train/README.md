@@ -58,11 +58,10 @@ python scripts/tokenize_data.py
 python scripts/stat.py
 
 # 4) Multi-GPU (~48GB/card) — MUST pass --max-length (manual).
-#    Default parallel=device_map (no torchrun): bnb QLoRA + device_map across GPUs,
-#    with CPU offload enabled (2×48GB is below the planner's MoE footprint).
-#    Do NOT use DeepSpeed DDP for this QLoRA+48GB setup — rank0 loads full weights → OOM.
+#    Default parallel=fsdp: accelerate FSDP+QLoRA (ms-swift fsdp_qlora recipe).
+#    Needs host RAM for CPU-efficient load; do not use device_map CPU offload for train.
 #    Script: struct-right trunc → survivors → 1=as-is / 2=1:1:0.35 / 3=abort
-#    Prefer --max-length 8192 first; use `export CUDA_VISIBLE_DEVICES=0,1` (not bare assign).
+#    Prefer --max-length 8192 first; use `export CUDA_VISIBLE_DEVICES=0,1`.
 export CUDA_VISIBLE_DEVICES=0,1
 bash scripts/train_coder_next.sh --max-length 8192 --choice 2
 #

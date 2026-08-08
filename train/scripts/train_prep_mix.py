@@ -619,10 +619,13 @@ def main() -> None:
         "LORA_ALPHA": str(train_cfg.get("lora_alpha", 16)),
         "BS": str(train_cfg.get("per_device_train_batch_size", 1)),
         "GAS": str(train_cfg.get("gradient_accumulation_steps", 8)),
-        "PARALLEL": str(train_cfg.get("parallel", "device_map")),
+        "PARALLEL": str(train_cfg.get("parallel", "fsdp")),
         "DEVICE_MAP": str(train_cfg.get("device_map", "auto")),
         "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),
         "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
+        "FSDP_CONFIG": str(
+            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora.json")
+        ),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),
         "LOG_STEPS": str(train_cfg.get("logging_steps", 10)),
