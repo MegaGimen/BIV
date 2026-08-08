@@ -153,9 +153,9 @@ python scripts/tokenize_data.py
 # 3) Optional length stats / retention tables
 python scripts/stat.py
 
-# 4) Dual-GPU train (tune MAX_LENGTH from VRAM)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# MAX_LENGTH=32768 bash scripts/train_coder_next.sh
+# 4) Multi-GPU QLoRA: device_map split (not DeepSpeed DDP — avoids rank0 load OOM)
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
+# If OOM: --max-length 8192
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).

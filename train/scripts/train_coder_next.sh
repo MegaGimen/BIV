@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Multi-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
-# Default DeepSpeed ZeRO-3 (shards params; required on ~48GB cards for this 80B MoE).
+# Default: single-process device_map (split 4bit weights across visible GPUs at load).
+# DeepSpeed DDP+QLoRA materializes ~40GB+ on rank0 during load → OOM on 48GB cards.
 #
 # Requires explicit --max-length. Before training:
 #   1) structure-preserving right trunc (keep prefix ending on complete assistant)
@@ -150,16 +151,54 @@ for p in os.environ["CACHED_DATASETS"].split():
 PY
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+PARALLEL="${PARALLEL:-device_map}"
+DEVICE_MAP="${DEVICE_MAP:-auto}"
+MAX_MEMORY="${MAX_MEMORY:-}"
+DEEPSPEED="${DEEPSPEED:-zero3}"
+
+# device_map: one process owns all visible GPUs (model-parallel load).
+# deepspeed: one process per GPU (only viable if each card can hold full QLoRA weights).
 if [[ -z "${NPROC_PER_NODE:-}" ]]; then
-  NPROC_PER_NODE="$(python - <<'PY'
+  if [[ "$PARALLEL" == "device_map" ]]; then
+    NPROC_PER_NODE=1
+  else
+    NPROC_PER_NODE="$(python - <<'PY'
 import os
 xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
 print(len(xs) if xs else 1)
 PY
 )"
+  fi
 fi
 export NPROC_PER_NODE
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+EXTRA_PARALLEL_ARGS=()
+if [[ "$PARALLEL" == "device_map" ]]; then
+  if [[ -z "$MAX_MEMORY" ]]; then
+    # Force weight split across all visible GPUs; leave headroom for activations.
+    MAX_MEMORY="$(
+      BIV_MAX_MEMORY_PER_GPU="${BIV_MAX_MEMORY_PER_GPU:-28GiB}" python - <<'PY'
+import json, os
+xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+n = len(xs) if xs else 1
+per = os.environ["BIV_MAX_MEMORY_PER_GPU"]
+print(json.dumps({i: per for i in range(n)}))
+PY
+    )"
+  fi
+  EXTRA_PARALLEL_ARGS+=(--device_map "$DEVICE_MAP")
+  EXTRA_PARALLEL_ARGS+=(--max_memory "$MAX_MEMORY")
+  if [[ "$NPROC_PER_NODE" != "1" ]]; then
+    echo "WARNING: parallel=device_map expects NPROC_PER_NODE=1 (got $NPROC_PER_NODE)."
+    echo "  Each DDP rank would still try to load a full QLoRA copy → GPU0 OOM risk."
+  fi
+elif [[ "$PARALLEL" == "deepspeed" ]]; then
+  EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
+else
+  echo "ERROR: unknown PARALLEL=$PARALLEL (use device_map or deepspeed)"
+  exit 1
+fi
 
 # REQUIRED: FlashAttention only (no sdpa/eager fallback). Long-context memory depends on it.
 # Hub download of kernels-community/flash-attn2 is NOT enough — need Python package flash_attn
@@ -235,7 +274,12 @@ then
 fi
 
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
-echo "  attn_impl=$ATTN_IMPL"
+echo "  parallel=$PARALLEL attn_impl=$ATTN_IMPL"
+if [[ "$PARALLEL" == "device_map" ]]; then
+  echo "  device_map=$DEVICE_MAP max_memory=${MAX_MEMORY:-"(unset)"}"
+else
+  echo "  deepspeed=$DEEPSPEED"
+fi
 
 # shellcheck disable=SC2086
 exec swift sft \
@@ -259,6 +303,6 @@ exec swift sft \
   --save_steps "$SAVE_STEPS" \
   --save_total_limit "$SAVE_LIMIT" \
   --output_dir "$OUT_DIR" \
-  --deepspeed "$DEEPSPEED" \
+  "${EXTRA_PARALLEL_ARGS[@]}" \
   --attn_impl "$ATTN_IMPL" \
   --dataloader_num_workers 4
