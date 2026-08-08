@@ -2,13 +2,15 @@
 """Train-time structure-preserving right trunc + optional 1:1:0.35 rebalance.
 
 ms-swift ``cached_dataset`` keeps ``messages`` + ``lengths`` (not token ``labels``).
-Prep therefore truncates **message lists** so the kept prefix ends on a complete
-``assistant`` turn and recomputed token length ≤ ``--max-length``.
 
-1) Truncate/drop using chat messages + tokenizer length.
-2) Print survivors (+ delete-ref from stored lengths).
-3) Interactive choice: 1=as-is / 2=1:1:0.35 / 3=abort
-4) Write HF datasets + run_manifest; emit shell exports via --write-env.
+Fast path (no per-row chat_template — that was ~hours):
+  - scan: only read stored ``lengths`` + check an assistant exists
+  - build: trim trailing messages with a char-budget heuristic so the prefix
+    ends on a complete ``assistant``; write scalar ``lengths`` ≈ budget
+
+1) Print survivors / delete-ref (seconds).
+2) Interactive choice: 1=as-is / 2=1:1:0.35 / 3=abort
+3) Sample then trim only selected rows; emit shell exports via --write-env.
 """
 
 from __future__ import annotations
@@ -135,41 +137,38 @@ def _as_seq(v: Any) -> list[Any]:
     return list(v)
 
 
-def _load_tokenizer(model: str):
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as e:
-        raise SystemExit(f"transformers required: {e}") from e
-    print(f"Loading tokenizer: {model} …", flush=True)
-    return AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+# Empirically safe-ish for Qwen code/JSON chat (slightly conservative).
+_CHARS_PER_TOKEN = 3.0
+_MSG_OVERHEAD_CHARS = 64
 
 
-def token_len_messages(messages: list[dict], tokenizer) -> int:
-    """Token count after chat template (best-effort)."""
+def _msg_char_cost(m: dict) -> int:
+    n = _MSG_OVERHEAD_CHARS
+    c = m.get("content")
+    if isinstance(c, str):
+        n += len(c)
+    elif c is not None:
+        n += len(json.dumps(c, ensure_ascii=False))
+    tc = m.get("tool_calls")
+    if tc is not None:
+        n += len(json.dumps(tc, ensure_ascii=False))
+    return n
+
+
+def approx_token_len_messages(messages: list) -> int:
     if not messages:
         return 0
-    # Drop non-serializable oddities; keep role/content/tool fields.
-    clean = []
+    chars = 0
     for m in messages:
-        if not isinstance(m, dict):
-            continue
-        item = {k: m[k] for k in m if k in {"role", "content", "tool_calls", "tool_call_id", "name"}}
-        clean.append(item)
-    try:
-        ids = tokenizer.apply_chat_template(
-            clean, tokenize=True, add_generation_prompt=False
-        )
-        return len(ids)
-    except Exception:
-        try:
-            text = tokenizer.apply_chat_template(
-                clean, tokenize=False, add_generation_prompt=False
-            )
-            return len(tokenizer.encode(text, add_special_tokens=False))
-        except Exception:
-            # last resort rough bound
-            blob = json.dumps(clean, ensure_ascii=False)
-            return max(1, len(blob) // 3)
+        if isinstance(m, dict):
+            chars += _msg_char_cost(m)
+    return max(1, int(chars / _CHARS_PER_TOKEN))
+
+
+def _has_assistant(messages: Any) -> bool:
+    if not isinstance(messages, list):
+        return False
+    return any(isinstance(m, dict) and m.get("role") == "assistant" for m in messages)
 
 
 def struct_right_cut_labels(
@@ -198,19 +197,23 @@ def struct_right_cut_labels(
 
 
 def struct_right_cut_messages(
-    messages: Any, max_length: int, tokenizer
+    messages: Any, max_length: int
 ) -> tuple[list[dict] | None, int]:
-    """Keep longest prefix ending on ``assistant`` with token_len ≤ max_length.
+    """Keep longest prefix ending on ``assistant`` under char-budget ≈ max_length.
 
-    Returns (kept_messages_or_None, token_length).
+    No tokenizer calls — fast enough for full-corpus prep.
+    Returns (kept_messages_or_None, approx_token_length).
     """
     if not isinstance(messages, list) or not messages:
         return None, 0
-    ends = [i + 1 for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"]
+    ends = [
+        i + 1
+        for i, m in enumerate(messages)
+        if isinstance(m, dict) and m.get("role") == "assistant"
+    ]
     if not ends:
         return None, 0
 
-    # Fast path: full conversation already short (use binary search still for truth)
     lo, hi = 0, len(ends) - 1
     best_msgs: list[dict] | None = None
     best_len = 0
@@ -218,7 +221,7 @@ def struct_right_cut_messages(
         mid = (lo + hi) // 2
         cut = ends[mid]
         prefix = messages[:cut]
-        n = token_len_messages(prefix, tokenizer)
+        n = approx_token_len_messages(prefix)
         if n <= max_length:
             best_msgs = prefix
             best_len = n
@@ -283,104 +286,95 @@ def _write_env(path: Path, exports: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _scan_and_maybe_build(
+def _scan_fast(
     ds,
     *,
     max_length: int,
     length_col: str,
-    tokenizer,
-    mode: str,
     desc: str,
-    num_proc: int,
-):
-    """mode='scan' → stats only; mode='build' → return filtered truncated dataset."""
+) -> dict[str, int]:
+    """Seconds-scale scan: lengths + has-assistant only (no chat_template)."""
     cols = set(ds.column_names)
     has_messages = "messages" in cols
-    has_labels = "labels" in cols
-    if not has_messages and not has_labels:
-        raise SystemExit(
-            f"{desc}: need 'messages' or 'labels' (got {ds.column_names})"
-        )
+    if not has_messages and "labels" not in cols:
+        raise SystemExit(f"{desc}: need 'messages' or 'labels' (got {ds.column_names})")
 
-    # Fast scan using stored lengths for delete-ref; struct needs tokenize when long.
     total = len(ds)
     survivors = 0
     dropped = 0
-    truncated = 0
+    need_trunc = 0
     delete_keep = 0
     lengths = ds[length_col]
     messages_all = ds["messages"] if has_messages else None
-    labels_all = ds["labels"] if has_labels else None
 
     bar = _tqdm(total=total, unit="rows", desc=desc)
     for i in range(total):
         L = _as_int_length(lengths[i])
         if L is not None and L <= max_length:
             delete_keep += 1
-
-        ok = False
-        if has_messages:
-            msgs = messages_all[i]
-            # Unknown/missing length → always try message struct cut.
-            if L is not None and L <= max_length:
-                if isinstance(msgs, list) and any(
-                    isinstance(m, dict) and m.get("role") == "assistant" for m in msgs
-                ):
-                    ok = True
-            else:
-                kept_msgs, _new_len = struct_right_cut_messages(msgs, max_length, tokenizer)
-                ok = kept_msgs is not None
-                if ok and isinstance(msgs, list) and len(kept_msgs) < len(msgs):
-                    truncated += 1
         else:
-            cut = struct_right_cut_labels(labels_all[i], max_length)
-            ok = cut is not None
-            if ok and L is not None and cut < L:
-                truncated += 1
+            need_trunc += 1
 
+        if has_messages:
+            ok = _has_assistant(messages_all[i])
+        else:
+            # labels path: treat any row as potentially truncatable; drop decided at build
+            ok = True
         if ok:
             survivors += 1
         else:
             dropped += 1
-
         if bar is not None:
             bar.update(1)
-            if i % 64 == 0:
+            if i % 256 == 0:
                 bar.set_postfix(ok=survivors, drop=dropped, refresh=False)
-
     if bar is not None:
         bar.close()
 
-    stats = {
+    return {
         "total": total,
         "survivors": survivors,
         "dropped": dropped,
-        "truncated": truncated,
+        "truncated": need_trunc,  # rows with L>max (will char-trim at build)
         "delete_keep": delete_keep,
-        "backend": "messages" if has_messages else "labels",
+        "backend": "messages+lengths" if has_messages else "labels",
     }
-    if mode == "scan":
-        return stats, None
 
-    # build: map truncate then filter
-    tok = tokenizer
+
+def _build_truncated_sample(
+    ds,
+    *,
+    max_length: int,
+    length_col: str,
+    n_take: int,
+    seed: int,
+    name: str,
+    num_proc: int,
+):
+    """Sample first, then char-budget struct-right trim (fast)."""
+    cols = set(ds.column_names)
+    has_messages = "messages" in cols
+    n_all = len(ds)
+    if n_take > n_all:
+        raise SystemExit(f"{name}: need {n_take} but dataset only has {n_all}")
+    # Oversample a bit so trim drops (no assistant / first turn too long) can be topped up.
+    n_pick = min(n_all, max(n_take, int(n_take * 1.02) + 8))
+    idxs = _sample_indices(n_all, n_pick, seed)
+    subset = ds.select(idxs)
+    print(f"  {name}: selected {len(subset):,} rows → char-budget trim …", flush=True)
 
     def _map(ex):
-        L = _as_int_length(ex[length_col])
         if has_messages:
             msgs = ex["messages"]
-            if (
-                L is not None
-                and L <= max_length
-                and isinstance(msgs, list)
-                and any(isinstance(m, dict) and m.get("role") == "assistant" for m in msgs)
-            ):
+            L = _as_int_length(ex[length_col])
+            if L is not None and L <= max_length and _has_assistant(msgs):
                 out = dict(ex)
-                # normalize length field to scalar for train filtering
                 out[length_col] = int(L)
+                if "lengths" in out:
+                    out["lengths"] = int(L)
                 out["_biv_keep"] = 1
                 return out
-            kept, nlen = struct_right_cut_messages(msgs, max_length, tok)
+            kept, nlen = struct_right_cut_messages(msgs, max_length)
             if kept is None:
                 out = dict(ex)
                 out["_biv_keep"] = 0
@@ -412,12 +406,25 @@ def _scan_and_maybe_build(
         out["_biv_keep"] = 1
         return out
 
-    # Prefer single-process map for tokenizer safety (chat template often not fork-safe).
-    mapped = ds.map(_map, num_proc=1, desc=f"struct-right {desc}")
-    kept_ds = mapped.filter(lambda x: int(x["_biv_keep"]) == 1, num_proc=max(1, num_proc), desc=f"keep {desc}")
+    mapped = subset.map(_map, num_proc=max(1, min(num_proc, 4)), desc=f"trim {name}")
+    kept_ds = mapped.filter(
+        lambda x: int(x["_biv_keep"]) == 1,
+        num_proc=max(1, min(num_proc, 4)),
+        desc=f"keep {name}",
+    )
     if "_biv_keep" in kept_ds.column_names:
         kept_ds = kept_ds.remove_columns(["_biv_keep"])
-    return stats, kept_ds
+    if len(kept_ds) == 0:
+        raise SystemExit(f"{name}: all selected rows failed struct-right trim")
+    if len(kept_ds) > n_take:
+        kept_ds = kept_ds.select(range(n_take))
+    elif len(kept_ds) < n_take:
+        print(
+            f"  WARNING: {name} trim kept {len(kept_ds):,}/{n_take:,} "
+            f"(some rows had no assistant or first turn too long)",
+            flush=True,
+        )
+    return kept_ds
 
 
 def main() -> None:
@@ -444,14 +451,12 @@ def main() -> None:
     model = str(manifest.get("model") or cfg.get("model") or "Qwen/Qwen3-Coder-Next")
     train_cfg = cfg.get("train") or {}
 
-    tokenizer = _load_tokenizer(model)
-
     print(f"Manifest:    {manifest_path}", flush=True)
     print(f"Tag:         {tag}", flush=True)
     print(f"Model:       {model}", flush=True)
     print(
         f"max_length:  {args.max_length}  "
-        "(struct-right on messages → end on complete assistant)",
+        "(fast scan on lengths; build trims messages by char-budget)",
         flush=True,
     )
     print("", flush=True)
@@ -472,14 +477,11 @@ def main() -> None:
         ds = _load_dataset(path)
         length_col = _length_column(ds)
         print(f"  {name}: columns={ds.column_names}", flush=True)
-        st, _ = _scan_and_maybe_build(
+        st = _scan_fast(
             ds,
             max_length=args.max_length,
             length_col=length_col,
-            tokenizer=tokenizer,
-            mode="scan",
             desc=f"scan {name}",
-            num_proc=args.num_proc,
         )
         datasets_raw[name] = ds
         length_cols[name] = length_col
@@ -488,7 +490,7 @@ def main() -> None:
         tot = st["total"]
         print(
             f"  {name:12s}: survivors {st['survivors']:7,} / {tot:,} "
-            f"(struct-trunc {st['truncated']:,}, drop {st['dropped']:,}); "
+            f"(need-trim {st['truncated']:,}, drop {st['dropped']:,}); "
             f"delete-ref keep {st['delete_keep']:,}  [{st['backend']}]",
             flush=True,
         )
@@ -497,8 +499,8 @@ def main() -> None:
     total_all = sum(scan_stats[k]["total"] for k in SOURCE_KEYS)
     print(f"  {'TOTAL':12s}: survivors {total_keep:7,} / {total_all:,}", flush=True)
     print(
-        "  note: delete-ref = rows with lengths≤max（整行丢弃对照）；"
-        "实际按 messages 结构右截断保行",
+        "  note: scan 很快（只看 lengths + 是否有 assistant）；"
+        "选 1/2 后才按轮裁剪 messages（字符预算，不跑 chat_template）",
         flush=True,
     )
 
@@ -561,23 +563,15 @@ def main() -> None:
         run_root.mkdir(parents=True, exist_ok=True)
         print(f"\nBuilding train mix under {run_root} …", flush=True)
         for i, name in enumerate(SOURCE_KEYS):
-            _st, kept_ds = _scan_and_maybe_build(
+            final = _build_truncated_sample(
                 datasets_raw[name],
                 max_length=args.max_length,
                 length_col=length_cols[name],
-                tokenizer=tokenizer,
-                mode="build",
-                desc=name,
+                n_take=targets[name],
+                seed=args.seed + i * 17,
+                name=name,
                 num_proc=args.num_proc,
             )
-            assert kept_ds is not None
-            n_f = len(kept_ds)
-            n_take = targets[name]
-            if n_take > n_f:
-                raise SystemExit(f"{name}: need {n_take} but only {n_f} survived")
-            idxs = _sample_indices(n_f, n_take, seed=args.seed + i * 17)
-            final = kept_ds.select(idxs) if n_take < n_f else kept_ds
-            print(f"  {name}: {'sample' if n_take < n_f else 'keep all'} {len(final):,}/{n_f:,}", flush=True)
             out = out_paths[name]
             if out.exists():
                 shutil.rmtree(out)
@@ -597,10 +591,11 @@ def main() -> None:
             "targets": targets,
             "cached_train": {k: str(out_paths[k].relative_to(ROOT)) for k in SOURCE_KEYS},
             "truncation_strategy": "delete",
-            "prep_truncation": "struct_right_messages_assistant",
+            "prep_truncation": "struct_right_messages_char_budget",
+            "chars_per_token": _CHARS_PER_TOKEN,
             "note": (
-                "messages truncated to end on complete assistant; lengths recomputed; "
-                "train uses delete as safety net."
+                "messages trimmed to end on complete assistant via char budget; "
+                "train uses delete as safety net for tokenizer mismatch."
             ),
         }
         (run_root / "run_manifest.json").write_text(
