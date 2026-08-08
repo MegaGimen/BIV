@@ -48,13 +48,17 @@ python scripts/tokenize_data.py
 # 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py
 
-# 4) Dual ~44GB GPUs — max_length applied at train time (default 16384, truncate right)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh
-# MAX_LENGTH=32768 TRUNCATION_STRATEGY=right bash scripts/train_coder_next.sh
+# 4) Dual ~44GB GPUs — MUST pass --max-length (manual).
+#    Script: clean length>N → show per-source remainders → prompt:
+#      1 = train cleaned as-is (no code/os 1:1)
+#      2 = re-sample cleaned pools at 1:1:0.35 then train
+#      3 = abort
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
+# non-interactive:  --choice 2
 ```
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
-Change train `--max_length` without re-export (ms-swift cached_dataset length field).
+Filtered run mixes: `<tag>/train_runs/ml<N>_…/`. Re-tune max_length without re-export.
 
 ## Pipeline (legacy 9B Unsloth)
 

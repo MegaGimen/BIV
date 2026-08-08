@@ -1,16 +1,88 @@
 #!/usr/bin/env bash
-# Dual-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next on ratio-sampled mix.
-# Expects: python scripts/tokenize_data.py  (+ optional: python scripts/stat.py)
+# Dual-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
 #
-# Env overrides:
-#   MAX_LENGTH=16384 TRUNCATION_STRATEGY=right CUDA_VISIBLE_DEVICES=0,1
-#   CONFIG=configs/swift/coder_next_qlora.yaml
+# Requires explicit --max-length. Before training:
+#   1) drop rows with length > max_length on each source cache
+#   2) print retention counts
+#   3) ask: 1=as-is / 2=rebalance 1:1:0.35 / 3=abort
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
+#   bash scripts/train_coder_next.sh --max-length 32768 --choice 2   # non-interactive
+#
+# Other overrides:
+#   CONFIG=configs/swift/coder_next_qlora.yaml MIX_DIR=data/processed/mix_v1
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export CONFIG="${CONFIG:-configs/swift/coder_next_qlora.yaml}"
 MIX_DIR="${MIX_DIR:-data/processed/mix_v1}"
+
+MAX_LENGTH=""
+CHOICE="${TRAIN_CHOICE:-}"
+FORCE_PREP=0
+EXTRA=()
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash scripts/train_coder_next.sh --max-length <N> [--choice 1|2|3] [--force-prep]
+
+  --max-length N   required; clean = drop rows with token length > N
+  --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
+  --force-prep     rebuild filtered run cache even if present
+
+Env:
+  CUDA_VISIBLE_DEVICES  default 0,1
+  TRAIN_CHOICE          same as --choice
+  CONFIG / MIX_DIR
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --max-length|--max_length|-m)
+      [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
+      MAX_LENGTH="$2"
+      shift 2
+      ;;
+    --choice|-c)
+      [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
+      CHOICE="$2"
+      shift 2
+      ;;
+    --force-prep)
+      FORCE_PREP=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      EXTRA+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#EXTRA[@]} -gt 0 ]]; then
+  echo "Unknown args: ${EXTRA[*]}"
+  usage
+  exit 1
+fi
+
+if [[ -z "$MAX_LENGTH" ]]; then
+  echo "ERROR: --max-length is required (manual startup parameter)."
+  echo ""
+  usage
+  exit 1
+fi
+if ! [[ "$MAX_LENGTH" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --max-length must be a positive integer, got: $MAX_LENGTH"
+  exit 1
+fi
 
 if [[ ! -f "$MIX_DIR/mix_manifest.json" ]]; then
   echo "Missing $MIX_DIR/mix_manifest.json — run prepare first:"
@@ -30,65 +102,46 @@ if ! python scripts/tokenize_data.py --config "$CONFIG" --mix-dir "$MIX_DIR" --c
   exit 1
 fi
 
-eval "$(python - <<'PY'
-import json, os, shlex
-from pathlib import Path
-import yaml
+RUN_ENV="$(mktemp "${TMPDIR:-/tmp}/biv_train_env.XXXXXX")"
+cleanup() { rm -f "$RUN_ENV"; }
+trap cleanup EXIT
 
-ROOT = Path(".").resolve()
-config_path = Path(os.environ.get("CONFIG", "configs/swift/coder_next_qlora.yaml"))
-cfg = yaml.safe_load(config_path.read_text())
-cache_root = Path(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
-if not cache_root.is_absolute():
-    cache_root = ROOT / cache_root
-latest_path = cache_root / "LATEST"
-if not latest_path.is_file():
-    raise SystemExit(f"Missing {latest_path} — run tokenize_data.py")
-latest = latest_path.read_text(encoding="utf-8").strip()
-manifest = cache_root / latest / "tokenize_manifest.json"
-m = json.loads(manifest.read_text(encoding="utf-8"))
-train = cfg.get("train") or {}
-tg = train.get("target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
-cached = []
-for _name, rel in m["cached_train"].items():
-    p = Path(rel)
-    cached.append(str(p if p.is_absolute() else ROOT / p))
-
-def exp(k, v):
-    print(f"export {k}=" + shlex.quote(str(v)))
-
-exp("TAG", latest)
-exp("MANIFEST", manifest)
-exp("MODEL", m.get("model") or cfg.get("model"))
-exp("MAX_LENGTH", os.environ.get("MAX_LENGTH", train.get("max_length", 16384)))
-exp(
-    "TRUNC",
-    os.environ.get("TRUNCATION_STRATEGY", train.get("truncation_strategy", "right")),
+PREP_ARGS=(
+  --config "$CONFIG"
+  --max-length "$MAX_LENGTH"
+  --write-env "$RUN_ENV"
 )
-exp("LR", train.get("learning_rate", 1e-4))
-exp("EPOCHS", train.get("num_epochs", 2))
-exp("OUT_DIR", train.get("output_dir", "outputs/swift_coder_next_wm_mix"))
-exp("LORA_RANK", train.get("lora_rank", 16))
-exp("LORA_ALPHA", train.get("lora_alpha", 16))
-exp("BS", train.get("per_device_train_batch_size", 1))
-exp("GAS", train.get("gradient_accumulation_steps", 8))
-exp("DEEPSPEED", train.get("deepspeed", "zero2"))
-exp("TARGET_MODULES", " ".join(tg))
-exp("CACHED_DATASETS", " ".join(cached))
-exp("DTYPE", train.get("torch_dtype", "bfloat16"))
-exp("WARMUP", train.get("warmup_ratio", 0.03))
-exp("LOG_STEPS", train.get("logging_steps", 10))
-exp("SAVE_STEPS", train.get("save_steps", 200))
-exp("SAVE_LIMIT", train.get("save_total_limit", 3))
-PY
-)"
+if [[ -n "$CHOICE" ]]; then
+  PREP_ARGS+=(--choice "$CHOICE")
+fi
+if [[ "$FORCE_PREP" -eq 1 ]]; then
+  PREP_ARGS+=(--force)
+fi
+
+set +e
+python scripts/train_prep_mix.py "${PREP_ARGS[@]}"
+prep_rc=$?
+set -e
+if [[ "$prep_rc" -eq 3 ]]; then
+  echo "Aborted by user (choice 3)."
+  exit 3
+fi
+if [[ "$prep_rc" -ne 0 ]]; then
+  echo "train_prep_mix.py failed (exit $prep_rc)."
+  exit "$prep_rc"
+fi
+
+# shellcheck disable=SC1090
+source "$RUN_ENV"
 
 echo "=== ms-swift train ==="
-echo "  tag=$TAG"
+echo "  tag=$TAG run_id=$RUN_ID choice=$TRAIN_CHOICE"
 echo "  manifest=$MANIFEST"
 echo "  model=$MODEL"
-echo "  max_length=$MAX_LENGTH truncation=$TRUNC"
+echo "  max_length=$MAX_LENGTH truncation=$TRUNC  (rows pre-cleaned)"
+echo "  output_dir=$OUT_DIR"
 echo "  cached_dataset:"
+# shellcheck disable=SC2086
 python - <<'PY'
 import os
 for p in os.environ["CACHED_DATASETS"].split():
