@@ -45,6 +45,10 @@ python scripts/prepare_data.py --all --out-dir data/processed/mix_v1
 python scripts/tokenize_data.py
 # python scripts/tokenize_data.py --force
 
+# Optional: strip legacy WM user wrappers from JSONL without re-prepare, then re-tokenize
+# python scripts/delta.py --mix-dir data/processed/mix_v1 --apply
+# python scripts/tokenize_data.py --force
+
 # 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py
 
