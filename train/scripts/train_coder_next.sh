@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Dual-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
+# Multi-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
+# Default DeepSpeed ZeRO-3 (shards params; required on ~48GB cards for this 80B MoE).
 #
 # Requires explicit --max-length. Before training:
 #   1) structure-preserving right trunc (keep prefix ending on complete assistant)

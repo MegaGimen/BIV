@@ -52,11 +52,13 @@ python scripts/tokenize_data.py
 # 3) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py
 
-# 4) Dual ~44GB GPUs — MUST pass --max-length (manual).
+# 4) Multi-GPU (~48GB/card) — MUST pass --max-length (manual).
+#    Config defaults to DeepSpeed ZeRO-3 so weights shard across cards (not ZeRO-2 replicas).
 #    Script: struct-right trunc (end on complete assistant) → show survivors → prompt:
 #      1 = train survivors as-is (no code/os 1:1)
 #      2 = re-sample survivors at 1:1:0.35 then train
 #      3 = abort
+#    If OOM at 16k: try --max-length 8192, or set train.deepspeed: zero3_offload
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
 # non-interactive:  --choice 2
 #

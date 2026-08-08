@@ -619,7 +619,7 @@ def main() -> None:
         "LORA_ALPHA": str(train_cfg.get("lora_alpha", 16)),
         "BS": str(train_cfg.get("per_device_train_batch_size", 1)),
         "GAS": str(train_cfg.get("gradient_accumulation_steps", 8)),
-        "DEEPSPEED": str(train_cfg.get("deepspeed", "zero2")),
+        "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),
         "LOG_STEPS": str(train_cfg.get("logging_steps", 10)),
