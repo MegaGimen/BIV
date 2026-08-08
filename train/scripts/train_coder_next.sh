@@ -160,9 +160,28 @@ fi
 export NPROC_PER_NODE
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-# flash_attn often fails (hub kernels empty / package missing). Default to sdpa.
-# Override: ATTN_IMPL=flash_attn bash scripts/train_coder_next.sh ...
-ATTN_IMPL="${ATTN_IMPL:-sdpa}"
+# flash_attn: lower activation memory on long contexts (16k/32k). Needs local package
+# or a successful kernels-community/flash-attn2 hub fetch.
+# Fallback: ATTN_IMPL=sdpa bash scripts/train_coder_next.sh ...
+ATTN_IMPL="${ATTN_IMPL:-flash_attn}"
+
+if [[ "$ATTN_IMPL" == "flash_attn" ]]; then
+  if ! python - <<'PY'
+import importlib.util
+import sys
+ok = importlib.util.find_spec("flash_attn") is not None
+sys.exit(0 if ok else 1)
+PY
+  then
+    echo "WARNING: Python package flash_attn not found."
+    echo "  Install (recommended on GPU box):"
+    echo "    pip install -U 'kernels>=0.14.1,<0.15'"
+    echo "    pip install flash-attn --no-build-isolation"
+    echo "  Or prefetch hub kernel:"
+    echo "    huggingface-cli download kernels-community/flash-attn2"
+    echo "  Temporary workaround: ATTN_IMPL=sdpa $0 ..."
+  fi
+fi
 
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
 echo "  attn_impl=$ATTN_IMPL"
