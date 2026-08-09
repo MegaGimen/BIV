@@ -133,12 +133,12 @@ Small mix of **native agentic coding** trajectories (not the hypothesis channel)
 | [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
 | Nebius OpenHands / Instruct replay | Optional later |
 
-Train mix ratios live in `configs/swift/coder_next_qlora.yaml` → `biv_mix`
+Train mix ratios live in `configs/swift/coder_30b_a3b_qlora.yaml` → `biv_mix`
 (default **code:os:anti = 1:1:0.35** ≈ 42.5%/42.5%/15%). `tokenize_data.py` samples
 then runs `swift export --to_cached_dataset`; `stat.py` reports length distributions;
-train applies `--max_length` (default 16384, truncate right) without re-export.
+train applies `--max_length` (CLI required) without re-export.
 
-### Train Qwen3-Coder-Next (2×~44GB, ms-swift)
+### Train Qwen3-Coder-30B-A3B (primary; ms-swift)
 
 ```bash
 cd train
@@ -150,18 +150,22 @@ python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 # 2) Download base LLM (separate from data / tokenize)
 python scripts/prepare_model.py
 
-# 3) Ratio-sample + cached_dataset export (per source)
+# 3) Ratio-sample + cached_dataset export (per source; model-specific cache)
 python scripts/tokenize_data.py
 
 # 4) Optional length stats / retention tables
 python scripts/stat.py --max-length 8192
 
-# 5) Multi-GPU QLoRA (FSDP default)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192
+# 5) Single-GPU QLoRA (auto PARALLEL=single)
+CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+
+# Optional: Qwen3-Coder-Next (heavier)
+# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh --max-length 8192 --choice 1
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
 Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
+Next config remains at `configs/swift/coder_next_qlora.yaml`.
 
 ### Future TODO (training data)
 
@@ -179,7 +183,7 @@ Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
 
 ### Related literature (reference — not fully reimplemented)
 
-Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-Next Axolotl QLoRA**. Full CPT→RL stacks remain future.
+Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-30B-A3B / Next ms-swift QLoRA**. Full CPT→RL stacks remain future.
 
 | Work | Links | Relevance to our goals |
 |------|-------|------------------------|
@@ -278,6 +282,6 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelin
 - Tool registry: `nanobot/agent/tools/registry.py`
 - Demon / proxies: `cartesian/demon.py`, `cartesian/tool_proxies.py`
 - WM data + metrics: `train/src/biv_wm/`
-- WM configs: `train/configs/default.yaml`, `train/configs/control_shuffled.yaml`
+- WM configs: `train/configs/swift/coder_30b_a3b_qlora.yaml` (primary), `train/configs/swift/coder_next_qlora.yaml`, `train/configs/default.yaml`
 - WebUI proxy: `webui/vite.config.ts`
 - Tests mirror the `nanobot/` package structure.

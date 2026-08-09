@@ -1,0 +1,58 @@
+# Qwen3-Coder-30B-A3B-Instruct QLoRA via ms-swift (primary fast path).
+#
+# Same mix/tokenize/train pipeline as coder_next_qlora.yaml; smaller MoE for
+# single-~96GB hypothesis screens. Next remains available via:
+#   CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh ...
+#
+# Pipeline:
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
+#   2) python scripts/prepare_model.py --config configs/swift/coder_30b_a3b_qlora.yaml
+#   3) python scripts/tokenize_data.py --config configs/swift/coder_30b_a3b_qlora.yaml
+#   4) python scripts/stat.py --config configs/swift/coder_30b_a3b_qlora.yaml --max-length 8192
+#   5) bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#
+# Install (GPU box):
+#   pip install 'ms-swift>=3.11' deepspeed bitsandbytes
+
+model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+model_source: modelscope   # modelscope | huggingface | local
+model_dir: outputs/models/Qwen3-Coder-30B-A3B-Instruct
+
+biv_mix:
+  seed: 42
+  mode: full_wm
+  anti_to_os: 0.35
+
+# Separate from Next caches (tokenizer / chat template lengths differ).
+cache_root: outputs/swift_cache/coder_30b_a3b_mix_v2
+mix_dir: data/processed/mix_v2
+
+dataset_num_proc: 8
+export:
+  max_length: 1048576
+  truncation_strategy: delete
+
+train:
+  num_epochs: 2
+  learning_rate: 1.0e-4
+  lora_rank: 16
+  lora_alpha: 16
+  # attn only — keep expert stacks frozen under QLoRA
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  # Auto: 1 GPU → single; 2+ → fsdp (see train_coder_next.sh)
+  device_map: auto
+  deepspeed: zero3
+  # MoE decoder wrap (not Qwen3-Next). Only used when PARALLEL=fsdp.
+  fsdp_config: configs/swift/fsdp_qlora_qwen3_moe.json
+  output_dir: outputs/swift_coder_30b_a3b_wm_mix
+  torch_dtype: bfloat16
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  save_total_limit: 3
