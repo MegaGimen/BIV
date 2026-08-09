@@ -133,34 +133,23 @@ Small mix of **native agentic coding** trajectories (not the hypothesis channel)
 | [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
 | Nebius OpenHands / Instruct replay | Optional later |
 
-Train mix ratios live in `configs/swift/coder_next_qlora.yaml` → `biv_mix`
-(default **code:os:anti = 1:1:0.35** ≈ 42.5%/42.5%/15%). `tokenize_data.py` samples
+Train mix ratios live in `configs/swift/kimi_dev_72b_qlora.yaml` → `biv_mix`
+(default **code:os:anti = 1:1:0.35**). `tokenize_data.py` samples
 then runs `swift export --to_cached_dataset`; `stat.py` reports length distributions;
-train applies `--max_length` (default 16384, truncate right) without re-export.
+train applies `--max_length` (CLI required) without re-export.
 
-### Train Qwen3-Coder-Next (2×~44GB, ms-swift)
+### Train Kimi-Dev-72B (this branch; ms-swift QLoRA)
 
 ```bash
 cd train
-pip install 'ms-swift>=3.11' deepspeed bitsandbytes
-
-# 1) Full JSONL
-python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
-
-# 2) Download base LLM (separate from data / tokenize)
+# HF download (optional mirror): export HF_ENDPOINT=https://hf-mirror.com
 python scripts/prepare_model.py
-
-# 3) Ratio-sample + cached_dataset export (per source)
 python scripts/tokenize_data.py
-
-# 4) Optional length stats / retention tables
-python scripts/stat.py --max-length 8192
-
-# 5) Multi-GPU QLoRA (FSDP default)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192
+CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1
 ```
 
-Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
+Other bases: checkout `main` (Coder-Next) or `Qwen3-Coder-30B-A3B` / `GLM-4.7-Flash`.
+Legacy Unsloth **Qwen3.5-9B**: `python scripts/train_sft.py --config configs/default.yaml`.
 Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
 
 ### Future TODO (training data)
