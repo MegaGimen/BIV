@@ -5,11 +5,12 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → train_coder_next
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/swift/coder_next_qlora.yaml`` (defaults: Qwen3-Coder-Next, ModelScope).
+``configs/swift/kimi_dev_72b_qlora.yaml`` (default on this branch).
 
 Examples:
   python scripts/prepare_model.py
   python scripts/prepare_model.py --source huggingface
+  # China: export HF_ENDPOINT=https://hf-mirror.com
   python scripts/prepare_model.py --check
   python scripts/prepare_model.py --force
 """
@@ -25,7 +26,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -107,7 +108,7 @@ def main() -> None:
         if free_gb < 80:
             print(
                 f"WARNING: only {free_gb:.1f} GiB free under {dest.parent}. "
-                "Qwen3-Coder-Next needs ~150GB+; prefer a large data disk "
+                "Kimi-Dev-72B needs ~150GB+ for bf16 weights; prefer a large data disk "
                 "(e.g. AutoDL /root/autodl-tmp).",
                 flush=True,
             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
+# QLoRA SFT (ms-swift) for Kimi-Dev-72B (dense Qwen2.5-72B derivative).
 # Auto parallel: 1 visible GPU → single-process QLoRA; 2+ → FSDP.
 #
 # Requires explicit --max-length. Before training:
@@ -8,9 +8,9 @@
 #   3) ask: 1=as-is / 2=rebalance 1:1:0.35 / 3=abort
 #
 # Usage:
-#   export CUDA_VISIBLE_DEVICES=0          # single ~96GB
-#   bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-#   export CUDA_VISIBLE_DEVICES=0,1        # multi ~48GB → FSDP
+#   export CUDA_VISIBLE_DEVICES=0          # single ~96GB (tight at 8k)
+#   bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#   # other bases via CONFIG=...
 #
 # Other overrides:
 #   PARALLEL=single|fsdp  CONFIG=...  MIX_DIR=...
@@ -18,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export CONFIG="${CONFIG:-configs/swift/coder_next_qlora.yaml}"
+export CONFIG="${CONFIG:-configs/swift/kimi_dev_72b_qlora.yaml}"
 MIX_DIR="${MIX_DIR:-data/processed/mix_v2}"
 
 MAX_LENGTH=""

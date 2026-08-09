@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
@@ -351,7 +351,7 @@ def main() -> None:
 
     config_path = args.config if args.config.is_absolute() else (ROOT / args.config)
     cfg = _load_yaml(config_path) if config_path.is_file() else {}
-    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
+    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/kimi_dev_72b_mix_v2"))
     manifest_path = _find_manifest(cache_root, args.tag)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 

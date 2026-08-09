@@ -8,9 +8,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL_ID = "Qwen/Qwen3-Coder-Next"
-DEFAULT_MODEL_SOURCE = "modelscope"
-DEFAULT_MODEL_DIR = "outputs/models/Qwen3-Coder-Next"
+DEFAULT_MODEL_ID = "moonshotai/Kimi-Dev-72B"
+DEFAULT_MODEL_SOURCE = "huggingface"
+DEFAULT_MODEL_DIR = "outputs/models/Kimi-Dev-72B"
 MANIFEST_NAME = "model_manifest.json"
 
 _CONFIG_MARKERS = ("config.json", "configuration.json")

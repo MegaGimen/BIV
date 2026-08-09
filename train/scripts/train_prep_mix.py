@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 REBALANCE_RATIOS = {"wm_code": 1.0, "wm_os": 1.0, "anti_forget": 0.35}
@@ -442,7 +442,7 @@ def main() -> None:
         raise SystemExit("--max-length must be > 0")
 
     cfg = _load_yaml(_resolve(args.config))
-    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v2"))
+    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/kimi_dev_72b_mix_v2"))
     manifest_path = _find_manifest(cache_root, args.tag)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cached = manifest.get("cached_train") or {}
@@ -607,7 +607,7 @@ def main() -> None:
         )
 
     cached_list = " ".join(str(out_paths[k]) for k in SOURCE_KEYS)
-    out_dir = train_cfg.get("output_dir", "outputs/swift_coder_next_wm_mix")
+    out_dir = train_cfg.get("output_dir", "outputs/swift_kimi_dev_72b_wm_mix")
     out_dir = f"{out_dir}_ml{args.max_length}_c{choice}"
 
     exports = {
@@ -633,7 +633,7 @@ def main() -> None:
         "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),
         "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
         "FSDP_CONFIG": str(
-            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora.json")
+            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora_kimi_dev_72b.json")
         ),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),

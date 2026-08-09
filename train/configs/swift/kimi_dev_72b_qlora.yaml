@@ -1,0 +1,59 @@
+# moonshotai/Kimi-Dev-72B QLoRA via ms-swift (dense Qwen2.5-72B derivative).
+#
+# Pipeline (unchanged):
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
+#   2) python scripts/prepare_model.py   # ~150GB+ bf16 weights; CPU OK
+#   3) python scripts/tokenize_data.py
+#   4) python scripts/stat.py --max-length 8192
+#   5) CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#
+# Install (GPU box):
+#   pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
+#   transformers>=4.37 required for model_type=qwen2
+#
+# Arch notes:
+#   - Base: Qwen/Qwen2.5-72B → Qwen2ForCausalLM / Qwen2DecoderLayer
+#   - Chat template: Qwen2.5 ChatML (ms-swift: qwen2_5)
+#   - FSDP wrap: configs/swift/fsdp_qlora_kimi_dev_72b.json → Qwen2DecoderLayer
+#   - Hub: HuggingFace moonshotai/Kimi-Dev-72B (no verified ModelScope mirror)
+#
+# VRAM: dense 72B QLoRA @ 8192 on ~96GB is TIGHT — keep batch=1, attn-only LoRA.
+
+model: moonshotai/Kimi-Dev-72B
+model_source: huggingface   # huggingface | local (modelscope untested for this id)
+model_dir: outputs/models/Kimi-Dev-72B
+
+biv_mix:
+  seed: 42
+  mode: full_wm
+  anti_to_os: 0.35
+
+cache_root: outputs/swift_cache/kimi_dev_72b_mix_v2
+mix_dir: data/processed/mix_v2
+
+dataset_num_proc: 8
+export:
+  max_length: 1048576
+  truncation_strategy: delete
+
+train:
+  num_epochs: 2
+  learning_rate: 1.0e-4
+  lora_rank: 16
+  lora_alpha: 16
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  device_map: auto
+  deepspeed: zero3
+  fsdp_config: configs/swift/fsdp_qlora_kimi_dev_72b.json
+  output_dir: outputs/swift_kimi_dev_72b_wm_mix
+  torch_dtype: bfloat16
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  save_total_limit: 3
