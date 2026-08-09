@@ -59,9 +59,11 @@ python scripts/tokenize_data.py
 python scripts/stat.py
 
 # 5) Train — MUST pass --max-length (manual).
-#    Default parallel=fsdp: accelerate FSDP+QLoRA (load on CPU, then shard).
-export CUDA_VISIBLE_DEVICES=0,1
+#    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.
+#    Single ~96GB (simplest):
+export CUDA_VISIBLE_DEVICES=0
 bash scripts/train_coder_next.sh --max-length 8192 --choice 2
+# Multi ~48GB: export CUDA_VISIBLE_DEVICES=0,1
 ```
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.

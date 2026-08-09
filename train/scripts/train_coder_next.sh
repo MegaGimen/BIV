@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Multi-GPU QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
-# Default: accelerate FSDP FULL_SHARD + QLoRA (configs/swift/fsdp_qlora.json).
-# device_map+bnb CPU offload can load then die at step 0 (meta tensor copy).
+# QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
+# Auto parallel: 1 visible GPU → single-process QLoRA; 2+ → FSDP.
 #
 # Requires explicit --max-length. Before training:
 #   1) structure-preserving right trunc (keep prefix ending on complete assistant)
@@ -9,11 +8,12 @@
 #   3) ask: 1=as-is / 2=rebalance 1:1:0.35 / 3=abort
 #
 # Usage:
-#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 16384
-#   bash scripts/train_coder_next.sh --max-length 32768 --choice 2   # non-interactive
+#   export CUDA_VISIBLE_DEVICES=0          # single ~96GB
+#   bash scripts/train_coder_next.sh --max-length 8192 --choice 2
+#   export CUDA_VISIBLE_DEVICES=0,1        # multi ~48GB → FSDP
 #
 # Other overrides:
-#   CONFIG=configs/swift/coder_next_qlora.yaml MIX_DIR=data/processed/mix_v1
+#   PARALLEL=single|fsdp  CONFIG=...  MIX_DIR=...
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -150,8 +150,10 @@ for p in os.environ["CACHED_DATASETS"].split():
     print(f"    {p}")
 PY
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
-PARALLEL="${PARALLEL:-fsdp}"
+# Default visible devices: single GPU. Multi-GPU users must export CUDA_VISIBLE_DEVICES=0,1,...
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+# PARALLEL from env/config; empty → auto: 1 GPU → single, 2+ → fsdp
+PARALLEL="${PARALLEL:-}"
 DEVICE_MAP="${DEVICE_MAP:-auto}"
 MAX_MEMORY="${MAX_MEMORY:-}"
 DEEPSPEED="${DEEPSPEED:-zero3}"
@@ -165,14 +167,41 @@ print(len(xs) if xs else 1)
 PY
 )"
 
-# fsdp: accelerate FSDP FULL_SHARD + QLoRA (recommended on 2×~48GB; see ms-swift fsdp_qlora).
-# device_map: single-process model-parallel (can load; bnb CPU offload often breaks at step 0).
-# deepspeed: DDP+ZeRO (QLoRA usually OOMs on rank0 during load on 48GB).
+if [[ -z "$PARALLEL" ]]; then
+  if [[ "$NGPU" -le 1 ]]; then
+    PARALLEL=single
+  else
+    PARALLEL=fsdp
+  fi
+  echo "  auto PARALLEL=$PARALLEL (ngpu=$NGPU)"
+elif [[ "$NGPU" -le 1 && "$PARALLEL" == "fsdp" && "${PARALLEL_FORCE:-}" != "1" ]]; then
+  echo "NOTE: ngpu=1 → using PARALLEL=single (set PARALLEL_FORCE=1 to keep fsdp)"
+  PARALLEL=single
+fi
+
+# single: plain 1-process QLoRA on one GPU (best for ~80–96GB cards).
+# fsdp: accelerate FSDP FULL_SHARD + QLoRA (2×~48GB class).
+# device_map: legacy model-parallel (bnb CPU offload often breaks at step 0).
+# deepspeed: DDP+ZeRO (QLoRA often OOMs on rank0 during load on 48GB).
 EXTRA_PARALLEL_ARGS=()
 LAUNCH=()
 unset BIV_BNB_CPU_OFFLOAD
 
-if [[ "$PARALLEL" == "fsdp" ]]; then
+if [[ "$PARALLEL" == "single" ]]; then
+  unset NPROC_PER_NODE
+  unset NNODES
+  unset ACCELERATE_USE_FSDP
+  # Let ms-swift place the model on the only visible CUDA device; no FSDP/DeepSpeed.
+  EXTRA_PARALLEL_ARGS+=(
+    --bnb_4bit_compute_dtype bfloat16
+    --gradient_checkpointing_kwargs '{"use_reentrant": false}'
+  )
+  NPROC_PER_NODE="(single process)"
+  echo "  single-GPU QLoRA (no FSDP/DeepSpeed)"
+elif [[ "$PARALLEL" == "fsdp" ]]; then
+  if [[ "$NGPU" -le 1 ]]; then
+    echo "WARNING: PARALLEL=fsdp with 1 GPU is unnecessary; prefer PARALLEL=single on 96GB."
+  fi
   unset NPROC_PER_NODE
   unset NNODES
   # Critical: ms-swift get_default_device_map() puts the full model on cuda:local_rank
@@ -239,7 +268,7 @@ elif [[ "$PARALLEL" == "deepspeed" ]]; then
   export NPROC_PER_NODE
   EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
 else
-  echo "ERROR: unknown PARALLEL=$PARALLEL (use fsdp, device_map, or deepspeed)"
+  echo "ERROR: unknown PARALLEL=$PARALLEL (use single, fsdp, device_map, or deepspeed)"
   exit 1
 fi
 
@@ -319,6 +348,7 @@ fi
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
 echo "  parallel=$PARALLEL attn_impl=$ATTN_IMPL"
 case "$PARALLEL" in
+  single) echo "  mode=single-GPU QLoRA" ;;
   fsdp) echo "  fsdp_config=$FSDP_CONFIG (runtime=$FSDP_RUN_CONFIG)" ;;
   device_map) echo "  device_map=$DEVICE_MAP max_memory=${MAX_MEMORY:-"(unset)"}" ;;
   deepspeed) echo "  deepspeed=$DEEPSPEED" ;;
@@ -343,6 +373,7 @@ if [[ "$PARALLEL" == "deepspeed" ]]; then
 elif [[ "$PARALLEL" == "fsdp" ]]; then
   SFT_ENTRY=("${LAUNCH[@]}" "$ROOT/scripts/run_swift_sft.py")
 fi
+# single / device_map: plain python run_swift_sft.py (already set)
 
 # shellcheck disable=SC2086
 exec "${SFT_ENTRY[@]}" \
