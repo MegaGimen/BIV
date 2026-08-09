@@ -154,7 +154,7 @@ python scripts/prepare_model.py
 python scripts/tokenize_data.py
 
 # 4) Optional length stats / retention tables
-python scripts/stat.py
+python scripts/stat.py --max-length 8192
 
 # 5) Multi-GPU QLoRA (FSDP default)
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192

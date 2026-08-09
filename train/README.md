@@ -56,7 +56,7 @@ python scripts/tokenize_data.py
 # python scripts/tokenize_data.py --force
 
 # 4) Optional: per-source token length distribution + retention @ 8k/16k/32k
-python scripts/stat.py
+python scripts/stat.py --max-length 8192
 
 # 5) Train — MUST pass --max-length (manual).
 #    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.

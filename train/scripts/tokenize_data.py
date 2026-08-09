@@ -650,7 +650,7 @@ def main() -> None:
     print(f"Wrote {latest} → {tag}", flush=True)
     print(
         "\nDone. Next:\n"
-        "  python scripts/stat.py\n"
+        "  python scripts/stat.py --max-length 8192\n"
         "  CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh\n",
         flush=True,
     )
