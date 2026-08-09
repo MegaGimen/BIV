@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# QLoRA SFT (ms-swift) for Qwen3-Coder (default: 30B-A3B; Next via CONFIG=).
+# QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
 # Auto parallel: 1 visible GPU → single-process QLoRA; 2+ → FSDP.
 #
 # Requires explicit --max-length. Before training:
@@ -9,9 +9,8 @@
 #
 # Usage:
 #   export CUDA_VISIBLE_DEVICES=0          # single ~96GB
-#   bash scripts/train_coder_next.sh --max-length 8192 --choice 1
-#   # optional Next:
-#   CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#   bash scripts/train_coder_next.sh --max-length 8192 --choice 2
+#   export CUDA_VISIBLE_DEVICES=0,1        # multi ~48GB → FSDP
 #
 # Other overrides:
 #   PARALLEL=single|fsdp  CONFIG=...  MIX_DIR=...
@@ -19,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export CONFIG="${CONFIG:-configs/swift/coder_30b_a3b_qlora.yaml}"
+export CONFIG="${CONFIG:-configs/swift/coder_next_qlora.yaml}"
 MIX_DIR="${MIX_DIR:-data/processed/mix_v2}"
 
 MAX_LENGTH=""

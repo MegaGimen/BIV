@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_30b_a3b_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]

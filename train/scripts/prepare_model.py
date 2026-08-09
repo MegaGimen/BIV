@@ -5,8 +5,7 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → train_coder_next
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/swift/coder_30b_a3b_qlora.yaml`` (default). Next:
-  ``--config configs/swift/coder_next_qlora.yaml``.
+``configs/swift/coder_next_qlora.yaml`` (defaults: Qwen3-Coder-Next, ModelScope).
 
 Examples:
   python scripts/prepare_model.py
@@ -26,7 +25,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_30b_a3b_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -105,11 +104,10 @@ def main() -> None:
         import shutil
 
         free_gb = shutil.disk_usage(str(dest.parent)).free / (1024**3)
-        need = 80.0 if "30B" in str(model_id) or "30b" in str(model_id) else 150.0
-        if free_gb < need * 0.55:
+        if free_gb < 80:
             print(
                 f"WARNING: only {free_gb:.1f} GiB free under {dest.parent}. "
-                f"{model_id} often needs ~{need:.0f}GB+ disk; prefer a large data disk "
+                "Qwen3-Coder-Next needs ~150GB+; prefer a large data disk "
                 "(e.g. AutoDL /root/autodl-tmp).",
                 flush=True,
             )

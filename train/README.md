@@ -17,8 +17,7 @@ train/
 ├── configs/
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
-│   ├── swift/coder_30b_a3b_qlora.yaml # Qwen3-Coder-30B-A3B ms-swift (primary)
-│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next (CONFIG= override)
+│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
 │   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
@@ -33,38 +32,42 @@ train/
 └── outputs/
 ```
 
-## Pipeline (Coder-30B-A3B mix — ms-swift; primary)
+## Pipeline (Coder-Next mix — ms-swift)
 
 ```bash
 cd train && source .venv/bin/activate
 pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
 # If load dies with Params4bit … _is_hf_initialized: pip install -U 'bitsandbytes>=0.50'
+# Qwen3-Next / Coder-Next GatedDeltaNet fast path (recommended; else torch fallback):
+#   pip install -U ninja packaging
+#   pip install -U "flash-linear-attention>=0.4.1" --no-build-isolation
+#   # causal-conv1d: match torch.version.cuda toolkit; see requirements.txt notes
 
-# 1) Full JSONL corpora (reuse mix_v2 if already built)
+# 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Download 30B-A3B (CPU OK; ~60–80GB disk typical)
+# 2) Download base LLM (CPU OK; needs ~150GB+ disk — use data disk on AutoDL)
 python scripts/prepare_model.py
 # python scripts/prepare_model.py --source huggingface   # + HF_ENDPOINT=https://hf-mirror.com
 # python scripts/prepare_model.py --check
 
-# 3) Ratio-sample + ms-swift cached_dataset (must re-run for new tokenizer)
+# 3) Ratio-sample + ms-swift cached_dataset (CPU OK; uses local model_dir)
 python scripts/tokenize_data.py
 # python scripts/tokenize_data.py --force
 
-# 4) Optional length / hard-trunc retention @ max_length
+# 4) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py --max-length 8192
 
 # 5) Train — MUST pass --max-length (manual).
+#    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.
+#    Single ~96GB (simplest):
 export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 1
-
-# Optional heavier Next:
-# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+bash scripts/train_coder_next.sh --max-length 8192 --choice 2
+# Multi ~48GB: export CUDA_VISIBLE_DEVICES=0,1
 ```
 
-Caches: `outputs/swift_cache/coder_30b_a3b_mix_v2/<tag>/{wm_code,wm_os,anti_forget}/`
-(Next uses `coder_next_mix_v2/`). Filtered runs: `<tag>/train_runs/ml<N>_…/`.
+Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
+Filtered run mixes: `<tag>/train_runs/ml<N>_…/`. Re-tune max_length without re-export.
 
 ## Pipeline (legacy 9B Unsloth)
 
