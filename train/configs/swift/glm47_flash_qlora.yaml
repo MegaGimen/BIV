@@ -1,0 +1,74 @@
+# GLM-4.7-Flash QLoRA via ms-swift (bnb 4bit).
+#
+# Same mix/tokenize/train pipeline as coder_next_qlora.yaml / coder_30b_a3b_qlora.yaml.
+# 30B-A3B MoE + MLA; separate model_dir / swift_cache / output_dir from Next & Qwen-30B.
+#
+# Branch notes (do not reuse Next venv blindly):
+#   - ms-swift>=4.0 (registers glm4_moe_lite / template glm4_7)
+#   - transformers>=5.0 (glm4_moe_lite); Next's 4.57.6 will NOT load this arch
+#   - ModelScope id: ZhipuAI/GLM-4.7-Flash ; HF twin: zai-org/GLM-4.7-Flash
+#
+# Override if auto template fails at train time:
+#   append --template glm4_7 (optional --model_type glm4_moe_lite)
+#
+# Pipeline:
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
+#   2) python scripts/prepare_model.py
+#   3) python scripts/tokenize_data.py
+#   4) python scripts/stat.py --max-length 8192
+#   5) bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#
+# Install (GPU box; prefer dedicated venv vs Next):
+#   pip install 'ms-swift>=4.0' deepspeed 'bitsandbytes>=0.50'
+#   pip install -U 'transformers>=5.0'
+
+model: ZhipuAI/GLM-4.7-Flash   # HF: zai-org/GLM-4.7-Flash
+model_source: modelscope       # modelscope | huggingface | local
+model_dir: outputs/models/GLM-4.7-Flash
+
+# Passed through train_prep_mix → train_coder_next.sh when set.
+template: glm4_7
+model_type: glm4_moe_lite
+
+biv_mix:
+  seed: 42
+  mode: full_wm
+  anti_to_os: 0.35
+
+# Separate from Next / Qwen3-Coder-30B-A3B caches (tokenizer + chat template differ).
+cache_root: outputs/swift_cache/glm47_flash_mix_v2
+mix_dir: data/processed/mix_v2
+
+dataset_num_proc: 8
+export:
+  max_length: 1048576
+  truncation_strategy: delete
+
+train:
+  num_epochs: 2
+  learning_rate: 1.0e-4
+  lora_rank: 16
+  lora_alpha: 16
+  # MLA attn only — freeze routed experts under QLoRA (no q/k/v_proj on this arch)
+  target_modules:
+    - q_a_proj
+    - q_b_proj
+    - kv_a_proj_with_mqa
+    - kv_b_proj
+    - o_proj
+  # Optional quality bump (shared-expert FFN; still avoids fused routed experts):
+  #   - gate_proj
+  #   - up_proj
+  #   - down_proj
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  # Auto: 1 GPU → single; 2+ → fsdp (see train_coder_next.sh)
+  device_map: auto
+  deepspeed: zero3
+  fsdp_config: configs/swift/fsdp_qlora_glm47_flash.json
+  output_dir: outputs/swift_glm47_flash_wm_mix
+  torch_dtype: bfloat16
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  save_total_limit: 3

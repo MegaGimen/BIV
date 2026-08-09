@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# QLoRA SFT (ms-swift) for Qwen3-Coder-Next.
+# QLoRA SFT (ms-swift) for GLM-4.7-Flash (default on this branch; Next/30B via CONFIG=).
 # Auto parallel: 1 visible GPU → single-process QLoRA; 2+ → FSDP.
 #
 # Requires explicit --max-length. Before training:
@@ -9,8 +9,8 @@
 #
 # Usage:
 #   export CUDA_VISIBLE_DEVICES=0          # single ~96GB
-#   bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-#   export CUDA_VISIBLE_DEVICES=0,1        # multi ~48GB → FSDP
+#   bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+#   # other bases: CONFIG=configs/swift/coder_next_qlora.yaml …
 #
 # Other overrides:
 #   PARALLEL=single|fsdp  CONFIG=...  MIX_DIR=...
@@ -18,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export CONFIG="${CONFIG:-configs/swift/coder_next_qlora.yaml}"
+export CONFIG="${CONFIG:-configs/swift/glm47_flash_qlora.yaml}"
 MIX_DIR="${MIX_DIR:-data/processed/mix_v2}"
 
 MAX_LENGTH=""
@@ -157,7 +157,9 @@ PARALLEL="${PARALLEL:-}"
 DEVICE_MAP="${DEVICE_MAP:-auto}"
 MAX_MEMORY="${MAX_MEMORY:-}"
 DEEPSPEED="${DEEPSPEED:-zero3}"
-FSDP_CONFIG="${FSDP_CONFIG:-configs/swift/fsdp_qlora.json}"
+FSDP_CONFIG="${FSDP_CONFIG:-configs/swift/fsdp_qlora_glm47_flash.json}"
+TEMPLATE="${TEMPLATE:-}"
+MODEL_TYPE="${MODEL_TYPE:-}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 NGPU="$(python - <<'PY'
@@ -375,6 +377,14 @@ elif [[ "$PARALLEL" == "fsdp" ]]; then
 fi
 # single / device_map: plain python run_swift_sft.py (already set)
 
+EXTRA_MODEL_ARGS=()
+if [[ -n "$TEMPLATE" ]]; then
+  EXTRA_MODEL_ARGS+=(--template "$TEMPLATE")
+fi
+if [[ -n "$MODEL_TYPE" ]]; then
+  EXTRA_MODEL_ARGS+=(--model_type "$MODEL_TYPE")
+fi
+
 # shellcheck disable=SC2086
 exec "${SFT_ENTRY[@]}" \
   --model "$MODEL" \
@@ -398,6 +408,7 @@ exec "${SFT_ENTRY[@]}" \
   --save_steps "$SAVE_STEPS" \
   --save_total_limit "$SAVE_LIMIT" \
   --output_dir "$OUT_DIR" \
+  "${EXTRA_MODEL_ARGS[@]}" \
   "${EXTRA_PARALLEL_ARGS[@]}" \
   --attn_impl "$ATTN_IMPL" \
   --dataloader_num_workers 4

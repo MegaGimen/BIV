@@ -5,7 +5,10 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → train_coder_next
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/swift/coder_next_qlora.yaml`` (defaults: Qwen3-Coder-Next, ModelScope).
+``configs/swift/glm47_flash_qlora.yaml`` (default on this branch).
+
+Needs ms-swift>=4.0 and transformers>=5.0 to *train* this arch; download itself
+only needs hub access (ModelScope ``ZhipuAI/GLM-4.7-Flash`` or HF ``zai-org/…``).
 
 Examples:
   python scripts/prepare_model.py
@@ -25,7 +28,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "glm47_flash_qlora.yaml"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -107,8 +110,8 @@ def main() -> None:
         if free_gb < 80:
             print(
                 f"WARNING: only {free_gb:.1f} GiB free under {dest.parent}. "
-                "Qwen3-Coder-Next needs ~150GB+; prefer a large data disk "
-                "(e.g. AutoDL /root/autodl-tmp).",
+                "GLM-4.7-Flash needs ~60GB+ for weights plus cache/ckpt; prefer a "
+                "large data disk (e.g. AutoDL /root/autodl-tmp).",
                 flush=True,
             )
     except OSError:

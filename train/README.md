@@ -17,7 +17,8 @@ train/
 ├── configs/
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
-│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
+│   ├── swift/glm47_flash_qlora.yaml   # GLM-4.7-Flash ms-swift (this branch)
+│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next (other branch / CONFIG=)
 │   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
@@ -32,42 +33,36 @@ train/
 └── outputs/
 ```
 
-## Pipeline (Coder-Next mix — ms-swift)
+## Pipeline (GLM-4.7-Flash mix — ms-swift; this branch)
 
 ```bash
-cd train && source .venv/bin/activate
-pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
-# If load dies with Params4bit … _is_hf_initialized: pip install -U 'bitsandbytes>=0.50'
-# Qwen3-Next / Coder-Next GatedDeltaNet fast path (recommended; else torch fallback):
-#   pip install -U ninja packaging
-#   pip install -U "flash-linear-attention>=0.4.1" --no-build-isolation
-#   # causal-conv1d: match torch.version.cuda toolkit; see requirements.txt notes
+cd train && source .venv/bin/activate   # prefer a dedicated venv vs Next
+pip install 'ms-swift>=4.0' deepspeed 'bitsandbytes>=0.50'
+pip install -U 'transformers>=5.0'      # Next's 4.57.6 will NOT load glm4_moe_lite
+# FlashAttention still required by train_coder_next.sh
 
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Download base LLM (CPU OK; needs ~150GB+ disk — use data disk on AutoDL)
+# 2) Download GLM-4.7-Flash (ModelScope ZhipuAI/…; HF twin zai-org/…)
 python scripts/prepare_model.py
-# python scripts/prepare_model.py --source huggingface   # + HF_ENDPOINT=https://hf-mirror.com
-# python scripts/prepare_model.py --check
+python scripts/prepare_model.py --check
 
-# 3) Ratio-sample + ms-swift cached_dataset (CPU OK; uses local model_dir)
+# 3) Must re-tokenize for this tokenizer (do not reuse Next/30B swift_cache)
 python scripts/tokenize_data.py
-# python scripts/tokenize_data.py --force
 
-# 4) Optional: per-source token length distribution + retention @ 8k/16k/32k
+# 4) Optional length / hard-trunc retention
 python scripts/stat.py --max-length 8192
 
-# 5) Train — MUST pass --max-length (manual).
-#    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.
-#    Single ~96GB (simplest):
+# 5) Train — MLA LoRA targets; template glm4_7 injected from yaml
 export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-# Multi ~48GB: export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/train_coder_next.sh --max-length 8192 --choice 1
 ```
 
-Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
-Filtered run mixes: `<tag>/train_runs/ml<N>_…/`. Re-tune max_length without re-export.
+Caches: `outputs/swift_cache/glm47_flash_mix_v2/<tag>/…`
+Filtered runs: `<tag>/train_runs/ml<N>_…/`.
+
+> **Do not** reuse the Next venv pinned to `transformers==4.57.6`.
 
 ## Pipeline (legacy 9B Unsloth)
 

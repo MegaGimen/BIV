@@ -4,7 +4,7 @@
 Note: named tokenize_data.py (not tokenize.py) so it does not shadow stdlib ``tokenize``
 (breaks pandas/datasets imports when running sibling scripts like ``stat.py``).
 
-Reads ``biv_mix`` from ``configs/swift/coder_next_qlora.yaml``.
+Reads ``biv_mix`` from ``configs/swift/glm47_flash_qlora.yaml`` (this branch).
 Uses local weights from ``prepare_model.py`` when ``model_dir`` is ready.
 
 For each source (wm_code / wm_os / anti_forget):
@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "glm47_flash_qlora.yaml"
 DEFAULT_MIX = ROOT / "data" / "processed" / "mix_v1"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
@@ -445,7 +445,7 @@ def main() -> None:
         if args.mix_dir
         else _resolve_path(cfg.get("mix_dir", DEFAULT_MIX))
     )
-    cache_root = _resolve_path(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v1"))
+    cache_root = _resolve_path(cfg.get("cache_root", "outputs/swift_cache/glm47_flash_mix_v2"))
     from biv_wm.model_store import model_dir_ready, resolve_model_dir, resolve_model_for_train
 
     model = resolve_model_for_train(cfg, root=ROOT)

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "coder_next_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "swift" / "glm47_flash_qlora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 REBALANCE_RATIOS = {"wm_code": 1.0, "wm_os": 1.0, "anti_forget": 0.35}
@@ -442,7 +442,7 @@ def main() -> None:
         raise SystemExit("--max-length must be > 0")
 
     cfg = _load_yaml(_resolve(args.config))
-    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/coder_next_mix_v2"))
+    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/glm47_flash_mix_v2"))
     manifest_path = _find_manifest(cache_root, args.tag)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cached = manifest.get("cached_train") or {}
@@ -607,8 +607,11 @@ def main() -> None:
         )
 
     cached_list = " ".join(str(out_paths[k]) for k in SOURCE_KEYS)
-    out_dir = train_cfg.get("output_dir", "outputs/swift_coder_next_wm_mix")
+    out_dir = train_cfg.get("output_dir", "outputs/swift_glm47_flash_wm_mix")
     out_dir = f"{out_dir}_ml{args.max_length}_c{choice}"
+
+    template = str(cfg.get("template") or train_cfg.get("template") or "").strip()
+    model_type = str(cfg.get("model_type") or train_cfg.get("model_type") or "").strip()
 
     exports = {
         "TAG": tag,
@@ -633,7 +636,7 @@ def main() -> None:
         "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),
         "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
         "FSDP_CONFIG": str(
-            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora.json")
+            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora_glm47_flash.json")
         ),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),
@@ -641,8 +644,17 @@ def main() -> None:
         "SAVE_STEPS": str(train_cfg.get("save_steps", 200)),
         "SAVE_LIMIT": str(train_cfg.get("save_total_limit", 3)),
         "TARGET_MODULES": " ".join(
-            train_cfg.get("target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
+            train_cfg.get("target_modules")
+            or [
+                "q_a_proj",
+                "q_b_proj",
+                "kv_a_proj_with_mqa",
+                "kv_b_proj",
+                "o_proj",
+            ]
         ),
+        "TEMPLATE": template,
+        "MODEL_TYPE": model_type,
     }
     env_path = Path(args.write_env)
     if not env_path.is_absolute():

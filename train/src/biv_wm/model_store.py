@@ -8,9 +8,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL_ID = "Qwen/Qwen3-Coder-Next"
+DEFAULT_MODEL_ID = "ZhipuAI/GLM-4.7-Flash"
 DEFAULT_MODEL_SOURCE = "modelscope"
-DEFAULT_MODEL_DIR = "outputs/models/Qwen3-Coder-Next"
+DEFAULT_MODEL_DIR = "outputs/models/GLM-4.7-Flash"
 MANIFEST_NAME = "model_manifest.json"
 
 _CONFIG_MARKERS = ("config.json", "configuration.json")
