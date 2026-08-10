@@ -269,6 +269,9 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 
 `kernels` (`pip install kernels`) is optional; alone it does **not** satisfy the
 `flash_attn` import check in `train_coder_next.sh`.
+
+Restart training afterward (`--resume` if a checkpoint exists).
+Do not set `FLA_CONV_BACKEND=triton` if causal-conv1d imported successfully
 (default CUDA conv backend is what Scheme B wants).
 
 ### 3) World-model eval
