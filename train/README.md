@@ -38,7 +38,8 @@ train/
 ```bash
 cd train && source .venv/bin/activate   # prefer a dedicated venv vs Next
 pip install 'ms-swift>=4.0' deepspeed 'bitsandbytes>=0.50'
-pip install -U 'transformers>=5.0'      # Next's 4.57.6 will NOT load glm4_moe_lite
+# ms-swift 4.4.x requires transformers<5.13; glm4_moe_lite still needs >=5.0
+pip install 'transformers>=5.0,<5.13'   # e.g. 5.12.x — do NOT float to 5.14+
 # FlashAttention still required by train_coder_next.sh
 
 # 1) Full JSONL corpora

@@ -7,8 +7,9 @@ Workflow:
 Reads ``model`` / ``model_source`` / ``model_dir`` from
 ``configs/swift/glm47_flash_qlora.yaml`` (default on this branch).
 
-Needs ms-swift>=4.0 and transformers>=5.0 to *train* this arch; download itself
-only needs hub access (ModelScope ``ZhipuAI/GLM-4.7-Flash`` or HF ``zai-org/…``).
+Needs ms-swift>=4.0 and transformers>=5.0,<5.13 to *train* this arch
+(ms-swift 4.4.x upper-bounds transformers); download itself only needs hub
+access (ModelScope ``ZhipuAI/GLM-4.7-Flash`` or HF ``zai-org/…``).
 
 Examples:
   python scripts/prepare_model.py
