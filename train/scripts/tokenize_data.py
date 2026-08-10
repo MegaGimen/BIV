@@ -432,7 +432,8 @@ def _export_one(
                 "exhausted while encoding JSONL (ms-swift --to_cached_dataset "
                 "already uses load_model=False; not loading full weights). "
                 "Do not use AutoDL CPU-idle 2GB specs; use a machine with "
-                "tens of GB RAM and `--dataset-num-proc 1`."
+                "tens of GB RAM and `--dataset-num-proc 0` (in-process map; "
+                "`1` still forks a datasets worker)."
             )
         else:
             hint = f"swift export failed with exit code {rc}"
@@ -462,7 +463,10 @@ def main() -> None:
         "--dataset-num-proc",
         type=int,
         default=None,
-        help="Override config dataset_num_proc for swift export",
+        help=(
+            "Override config dataset_num_proc for swift export. "
+            "Use 0 for in-process HF map (no worker pool); 1 still multiprocess."
+        ),
     )
     args = parser.parse_args()
 
