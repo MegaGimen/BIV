@@ -210,9 +210,12 @@ python scripts/cost.py --mix-ratios 0.1,0.05,0.15
 
 See `scripts/upload.py` + `configs/oss.yaml` (Ulanqab internal by default).
 
-### 2b) Qwen3.5 fast kernels (Scheme B: fla + causal-conv1d)
+### 2b) Qwen3.5 / Coder-Next fast kernels (FLA + causal-conv1d) — **required**
 
-Unsloth may print *Falling back to torch implementation* until these are installed.
+`train_sft.py` (9B) and `train_coder_next.sh` (Coder-Next on `main`) **refuse to
+start** without both `fla` and `causal_conv1d`. GLM / Kimi / 30B-A3B branches do
+**not** require this stack.
+
 `requirements.txt` intentionally does **not** `pip`-pin `causal-conv1d`: with
 `torch 2.13+cu130` there is often no wheel, and source builds fail if system
 `nvcc` (e.g. 12.8) ≠ `torch.version.cuda` (13.0).
@@ -245,8 +248,27 @@ CAUSAL_CONV1D_FORCE_BUILD=TRUE pip install -U "causal-conv1d>=1.4.0" --no-build-
 python -c "import fla, causal_conv1d; print('fast path ok')"
 ```
 
-Restart training afterward (`--resume` if a checkpoint exists).
-Do not set `FLA_CONV_BACKEND=triton` if causal-conv1d imported successfully
+### 2c) FlashAttention prebuilt wheels (CN)
+
+Official FA often has no matching wheel for new torch builds. Community wheels:
+
+```bash
+# match: torch2.13 + cu130 + cp312 (change cp312 if needed)
+WHL='flash_attn-2.8.3+cu130torch2.13-cp312-cp312-linux_x86_64.whl'
+TAG=v0.9.47
+REL="https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/${TAG}/${WHL}"
+
+pip install -U packaging ninja einops
+# try CN GitHub proxies first:
+pip install --no-cache-dir "https://ghfast.top/${REL}" \
+  || pip install --no-cache-dir "https://gh-proxy.com/${REL}" \
+  || pip install --no-cache-dir "https://mirror.ghproxy.com/${REL}" \
+  || pip install --no-cache-dir "${REL}"
+python -c "import flash_attn; print(flash_attn.__version__)"
+```
+
+`kernels` (`pip install kernels`) is optional; alone it does **not** satisfy the
+`flash_attn` import check in `train_coder_next.sh`.
 (default CUDA conv backend is what Scheme B wants).
 
 ### 3) World-model eval

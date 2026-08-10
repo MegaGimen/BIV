@@ -80,6 +80,14 @@ def _resolve_model_path(mcfg: dict) -> str:
     return name
 
 
+def _require_fla_stack() -> None:
+    """Qwen3.5-9B Unsloth fast path: refuse torch fallback."""
+    from biv_wm.accel_checks import require_fla_stack
+
+    print("Checking FLA + causal-conv1d (hard requirement for Qwen3.5-9B)…", flush=True)
+    require_fla_stack()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -108,6 +116,7 @@ def main() -> None:
 
     if not args.allow_cpu:
         _require_cuda()
+        _require_fla_stack()
 
     # Import Unsloth only after CUDA check so CPU servers fail fast with a clear message.
     from unsloth import FastLanguageModel

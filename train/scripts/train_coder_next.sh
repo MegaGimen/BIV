@@ -273,8 +273,8 @@ else
 fi
 
 # REQUIRED: FlashAttention only (no sdpa/eager fallback). Long-context memory depends on it.
-# Hub download of kernels-community/flash-attn2 is NOT enough — need Python package flash_attn
-# (transformers checks import flash_attn before / besides hub kernels).
+# Hub download of kernels-community/flash-attn2 is NOT enough — need Python package flash_attn.
+# Qwen3-Coder-Next also hard-requires FLA + causal-conv1d (GatedDeltaNet fast path).
 ATTN_IMPL="${ATTN_IMPL:-flash_attn}"
 if [[ "$ATTN_IMPL" != "flash_attn" && "$ATTN_IMPL" != "flash_attention_2" && "$ATTN_IMPL" != "kernels-community/flash-attn2" ]]; then
   echo "ERROR: Only FlashAttention is allowed (got ATTN_IMPL=$ATTN_IMPL)."
@@ -282,64 +282,12 @@ if [[ "$ATTN_IMPL" != "flash_attn" && "$ATTN_IMPL" != "flash_attention_2" && "$A
   exit 1
 fi
 
-echo "Checking FlashAttention (hard requirement)…"
-if ! python - <<'PY'
-import sys
+echo "Checking FlashAttention + FLA stack (hard requirements for Coder-Next)…"
+if ! PYTHONPATH="${ROOT}/src${PYTHONPATH:+:$PYTHONPATH}" python - <<'PY'
+from biv_wm.accel_checks import require_flash_attn, require_fla_stack
 
-def fail(msg: str) -> None:
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-try:
-    import torch
-except Exception as e:
-    fail(f"torch import failed: {e}")
-
-print(f"  torch={torch.__version__} cuda={torch.version.cuda}")
-
-# Path 1 (what transformers flash_attn path needs): pip package
-fa_ok = False
-try:
-    import flash_attn
-    from flash_attn import flash_attn_func  # noqa: F401
-    fa_ok = True
-    print(f"  flash_attn package OK: {getattr(flash_attn, '__version__', '?')}")
-except Exception as e:
-    print(f"  flash_attn package MISSING/broken: {e}")
-
-# Path 2: hub kernels (optional complement; alone often NOT enough for transformers)
-ker_ok = False
-try:
-    from kernels import get_kernel
-    import kernels
-    print(f"  kernels={getattr(kernels, '__version__', '?')}")
-    k = get_kernel("kernels-community/flash-attn2")
-    if getattr(k, "flash_attn_func", None) is None and getattr(k, "flash_attn_varlen_func", None) is None:
-        print("  hub kernel loaded but missing flash_attn_func")
-    else:
-        ker_ok = True
-        print("  hub kernel kernels-community/flash-attn2 OK")
-except Exception as e:
-    print(f"  hub kernel load failed: {e}")
-
-if not fa_ok:
-    fail(
-        "\nERROR: FlashAttention is REQUIRED and the Python package is not installed.\n"
-        "  `hf download kernels-community/flash-attn2` only fills the HF cache;\n"
-        "  it does NOT register the `flash_attn` module that transformers checks.\n\n"
-        "  Install on this GPU venv:\n"
-        "    pip install -U packaging ninja\n"
-        "    pip install flash-attn --no-build-isolation\n\n"
-        "  Then verify:\n"
-        "    python -c \"import flash_attn; print(flash_attn.__version__)\"\n"
-        "  Refusing to start without FA (no sdpa fallback).\n"
-    )
-if not ker_ok:
-    print(
-        "  note: hub kernel not loadable yet; proceeding with flash_attn package only.",
-        flush=True,
-    )
-print("  FlashAttention check passed.", flush=True)
+require_flash_attn()
+require_fla_stack()
 PY
 then
   exit 1
