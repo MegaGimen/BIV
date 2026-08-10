@@ -418,12 +418,14 @@ def _export_one(
                     else ""
                 )
             )
-        elif rc == 137:
+        elif rc in {137, 247}:
+            # 137 = 128+9; 247 = (-9) mod 256 — both usually SIGKILL / OOM.
             hint = (
-                "swift export exit 137 (128+9 SIGKILL) — typically OOM while "
-                "encoding the JSONL (ms-swift --to_cached_dataset already uses "
-                "load_model=False; it does not load 72B weights). Try "
-                "`--dataset-num-proc 1` and free RAM."
+                f"swift export exit {rc} (SIGKILL/OOM class) — typically RAM "
+                "exhausted while encoding JSONL (ms-swift --to_cached_dataset "
+                "already uses load_model=False; not loading full weights). "
+                "Do not use AutoDL CPU-idle 2GB specs; use a machine with "
+                "tens of GB RAM and `--dataset-num-proc 1`."
             )
         else:
             hint = f"swift export failed with exit code {rc}"
