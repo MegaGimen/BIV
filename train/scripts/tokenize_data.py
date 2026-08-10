@@ -384,7 +384,8 @@ def _export_one(
         "--output_dir",
         str(out_dir),
         "--dataset_num_proc",
-        str(max(1, dataset_num_proc)),
+        # HF datasets: 0 → None → in-process map; 1 still spawns a worker pool.
+        str(max(0, dataset_num_proc)),
         "--split_dataset_ratio",
         "0",
         "--max_length",
@@ -392,6 +393,12 @@ def _export_one(
         "--truncation_strategy",
         export_truncation_strategy,
     ]
+    if dataset_num_proc <= 0:
+        print(
+            "  note: dataset_num_proc=0 → HF datasets in-process map "
+            "(avoids multiprocess worker OOM / FileNotFoundError cleanup noise)",
+            flush=True,
+        )
     print(f"Running: {' '.join(cmd)}", flush=True)
     print(
         f"  export length policy: max_length={export_max_length} "
