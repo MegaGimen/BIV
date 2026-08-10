@@ -401,9 +401,37 @@ def _export_one(
     )
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
+    # Avoid HF tokenizer thread pools + fork explosions under dataset_num_proc>1.
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    env.setdefault("OMP_NUM_THREADS", "1")
     proc = subprocess.run(cmd, check=False, cwd=str(ROOT), env=env)
     if proc.returncode != 0:
-        raise SystemExit(proc.returncode)
+        rc = proc.returncode
+        # Unix: killed by signal → negative returncode (-9 = SIGKILL, often OOM).
+        if rc < 0:
+            sig = -rc
+            hint = (
+                f"swift export killed by signal {sig}"
+                + (
+                    " (SIGKILL — often cgroup/OOM; check `dmesg | grep -i kill`)"
+                    if sig == 9
+                    else ""
+                )
+            )
+        elif rc == 137:
+            hint = (
+                "swift export exit 137 (128+9 SIGKILL) — typically OOM while "
+                "encoding the JSONL (ms-swift --to_cached_dataset already uses "
+                "load_model=False; it does not load 72B weights). Try "
+                "`--dataset-num-proc 1` and free RAM."
+            )
+        else:
+            hint = f"swift export failed with exit code {rc}"
+        raise SystemExit(
+            f"{hint}\n"
+            f"  cmd: {' '.join(cmd)}\n"
+            f"  out: {out_dir}"
+        )
     train = _cache_train_dir(out_dir)
     if not _cache_ready(out_dir):
         raise SystemExit(f"swift export finished but cache empty under {out_dir}")
