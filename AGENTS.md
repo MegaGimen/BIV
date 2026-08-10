@@ -140,7 +140,8 @@ train applies `--max_length` (CLI required) without re-export.
 
 ### Train GLM-4.7-Flash (this branch; ms-swift QLoRA)
 
-Requires **ms-swift≥4.0** and **transformers≥5.0** (do not reuse Next’s `4.57.6` venv).
+Requires **ms-swift≥4.0** and **transformers≥5.0,<5.13** (ms-swift 4.4.x cap;
+do not reuse Next’s `4.57.6` venv; do not float to 5.14+).
 MLA LoRA targets + FSDP wrap `Glm4MoeLiteDecoderLayer`; template `glm4_7`.
 
 ```bash
