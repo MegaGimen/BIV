@@ -5,12 +5,12 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → train_coder_next
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/swift/kimi_dev_72b_qlora.yaml`` (default on this branch).
+``configs/swift/kimi_dev_72b_qlora.yaml`` (default: ModelScope
+``moonshotai/Kimi-Dev-72B``).
 
 Examples:
   python scripts/prepare_model.py
-  python scripts/prepare_model.py --source huggingface
-  # China: export HF_ENDPOINT=https://hf-mirror.com
+  python scripts/prepare_model.py --source huggingface  # HF twin; optional HF_ENDPOINT
   python scripts/prepare_model.py --check
   python scripts/prepare_model.py --force
 """

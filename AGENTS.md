@@ -142,7 +142,7 @@ train applies `--max_length` (CLI required) without re-export.
 
 ```bash
 cd train
-# HF download (optional mirror): export HF_ENDPOINT=https://hf-mirror.com
+# Default: ModelScope moonshotai/Kimi-Dev-72B
 python scripts/prepare_model.py
 python scripts/tokenize_data.py
 CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1

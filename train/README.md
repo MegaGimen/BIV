@@ -44,9 +44,10 @@ pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Download Kimi-Dev-72B (~150GB+; HuggingFace — use mirror if needed)
-export HF_ENDPOINT=https://hf-mirror.com   # optional in China
+# 2) Download Kimi-Dev-72B (~150GB+; ModelScope moonshotai/Kimi-Dev-72B)
 python scripts/prepare_model.py
+# HF fallback: python scripts/prepare_model.py --source huggingface
+#   (+ optional: export HF_ENDPOINT=https://hf-mirror.com)
 python scripts/prepare_model.py --check
 
 # 3) Ratio-sample + ms-swift cached_dataset (re-run for this tokenizer)
