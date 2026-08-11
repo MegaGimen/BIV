@@ -2,7 +2,7 @@
 """Step 2: download base LLM for tokenize + train (CPU OK).
 
 Workflow:
-  prepare_data → prepare_model → tokenize_data → train_coder_next
+  prepare_data → prepare_model → tokenize_data → trainmodel
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
 ``configs/swift/kimi_dev_72b_qlora.yaml`` (default: ModelScope

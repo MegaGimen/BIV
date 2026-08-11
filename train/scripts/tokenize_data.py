@@ -692,7 +692,7 @@ def main() -> None:
     print(
         "\nDone. Next:\n"
         "  python scripts/stat.py --max-length 8192\n"
-        "  CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh\n",
+        "  CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh\n",
         flush=True,
     )
 
