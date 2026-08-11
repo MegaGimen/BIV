@@ -157,10 +157,10 @@ python scripts/tokenize_data.py
 python scripts/stat.py --max-length 8192
 
 # 5) Single-GPU QLoRA (auto PARALLEL=single)
-CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
 
 # Optional: Qwen3-Coder-Next (heavier)
-# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/trainmodel.sh --max-length 8192 --choice 1
 ```
 
 Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
@@ -253,7 +253,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
+- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/trainmodel.sh`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 
