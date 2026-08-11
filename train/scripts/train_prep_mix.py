@@ -630,7 +630,7 @@ def main() -> None:
         "LORA_ALPHA": str(train_cfg.get("lora_alpha", 16)),
         "BS": str(train_cfg.get("per_device_train_batch_size", 1)),
         "GAS": str(train_cfg.get("gradient_accumulation_steps", 8)),
-        # Empty → train_coder_next.sh auto: 1 GPU → single, 2+ → fsdp
+        # Empty → trainmodel.sh auto: 1 GPU → single, 2+ → fsdp
         "PARALLEL": str(train_cfg.get("parallel") or ""),
         "DEVICE_MAP": str(train_cfg.get("device_map", "auto")),
         "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),

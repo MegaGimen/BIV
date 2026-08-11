@@ -26,12 +26,16 @@ train/
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
+│   ├── trainmodel.sh            # step 5: ms-swift multi-GPU SFT
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v2/
 └── outputs/
 ```
+
+## Branch note (msswift)
+
+This branch is . Sister  uses Axolotl QLoRA+FSDP2+CP.
 
 ## Pipeline (GLM-4.7-Flash mix — ms-swift; this branch)
 
@@ -40,7 +44,7 @@ cd train && source .venv/bin/activate   # prefer a dedicated venv vs Next
 pip install 'ms-swift>=4.0' deepspeed 'bitsandbytes>=0.50'
 # ms-swift 4.4.x requires transformers<5.13; glm4_moe_lite still needs >=5.0
 pip install 'transformers>=5.0,<5.13'   # e.g. 5.12.x — do NOT float to 5.14+
-# FlashAttention still required by train_coder_next.sh
+# FlashAttention still required by trainmodel.sh
 
 # 1) Full JSONL corpora
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
@@ -57,7 +61,7 @@ python scripts/stat.py --max-length 8192
 
 # 5) Train — MLA LoRA targets; template glm4_7 injected from yaml
 export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+bash scripts/trainmodel.sh --max-length 8192 --choice 1
 ```
 
 Caches: `outputs/swift_cache/glm47_flash_mix_v2/<tag>/…`
