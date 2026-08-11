@@ -66,6 +66,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 bash scripts/trainmodel.sh --max-length 8192 --choice 1
 ```
 
+### Smoke (32k, 2×96GB, msswift SP)
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Expect: auto PARALLEL=sp, sequence_parallel_size=2
+```
+
 Caches: `outputs/swift_cache/kimi_dev_72b_mix_v2/<tag>/…`
 Filtered runs: `<tag>/train_runs/ml<N>_…/`.
 
