@@ -344,19 +344,16 @@ except Exception as e:
 
 if not fa_ok:
     fail(
-        "
-ERROR: FlashAttention is REQUIRED and the Python package is not installed.
-"
-        "  Install: pip install flash-attn --no-build-isolation
-"
-        "  Refusing to start without FA (no sdpa fallback).
-"
+        "ERROR: FlashAttention is REQUIRED and the Python package is not installed. "
+        "Install: pip install flash-attn --no-build-isolation. "
+        "Refusing to start without FA (no sdpa fallback)."
     )
 print("  FlashAttention check passed.", flush=True)
 PY
 then
   exit 1
 fi
+
 
 
 echo "  GPUs=$CUDA_VISIBLE_DEVICES NPROC_PER_NODE=$NPROC_PER_NODE"
