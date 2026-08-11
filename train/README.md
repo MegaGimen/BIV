@@ -60,8 +60,10 @@ python scripts/stat.py --max-length 8192
 
 # 5) Train — MUST pass --max-length.
 #    Axolotl: FSDP2 + context_parallel_size = visible GPU count (long-context).
+#    (tokenize_data.py is optional on Axolotl branches — trainmodel uses mix JSONL.)
 export CUDA_VISIBLE_DEVICES=0,1
 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+```
 
 ### Smoke (32k, 2×96GB, Axolotl CP)
 
@@ -71,9 +73,7 @@ bash scripts/trainmodel.sh --max-length 32768 --choice 1
 # Expect run yaml: fsdp_version=2, context_parallel_size=2
 ```
 
-
-Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
-Filtered run mixes: `<tag>/train_runs/ml<N>_…/`. Re-tune max_length without re-export.
+Caches / run dirs: `outputs/axolotl_runs/ml<N>_c<choice>/`.
 
 ## Pipeline (legacy 9B Unsloth)
 
