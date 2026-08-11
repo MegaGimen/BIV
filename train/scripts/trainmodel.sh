@@ -139,8 +139,15 @@ if [[ "$prep_rc" -ne 0 ]]; then
   exit "$prep_rc"
 fi
 
+# prep env may blank PARALLEL / FSDP_CONFIG / SEQUENCE_PARALLEL_SIZE — keep caller exports.
+_SAVE_PARALLEL="${PARALLEL-}"
+_SAVE_FSDP_CONFIG="${FSDP_CONFIG-}"
+_SAVE_SEQUENCE_PARALLEL_SIZE="${SEQUENCE_PARALLEL_SIZE-}"
 # shellcheck disable=SC1090
 source "$RUN_ENV"
+if [[ -n "${_SAVE_PARALLEL}" ]]; then PARALLEL="${_SAVE_PARALLEL}"; fi
+if [[ -n "${_SAVE_FSDP_CONFIG}" ]]; then FSDP_CONFIG="${_SAVE_FSDP_CONFIG}"; fi
+if [[ -n "${_SAVE_SEQUENCE_PARALLEL_SIZE}" ]]; then SEQUENCE_PARALLEL_SIZE="${_SAVE_SEQUENCE_PARALLEL_SIZE}"; fi
 
 echo "=== ms-swift train ==="
 echo "  tag=$TAG run_id=$RUN_ID choice=$TRAIN_CHOICE"
