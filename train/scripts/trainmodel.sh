@@ -249,10 +249,11 @@ elif [[ "$PARALLEL" == "fsdp" ]]; then
   fi
   unset NPROC_PER_NODE
   unset NNODES
-  # Load QLoRA weights onto each rank's GPU (ms-swift default: cuda:local_rank), then FSDP
-  # shards. One 96GB card holds ~40GB 4bit 72B; avoid device_map=cpu (dual full CPU copies
-  # blow the ~220GiB cgroup). Do not force everything onto cuda:0.
+  # FSDP2 knobs aligned with Axolotl pure FSDP (see fsdp_qlora_kimi_dev_72b.json).
+  # Load QLoRA onto each rank GPU (no --device_map), then FSDP2 shards. One 96GB card
+  # holds ~40GB 4bit; avoid device_map=cpu. CP/SP intentionally not used here.
   export ACCELERATE_USE_FSDP=true
+  export FSDP_VERSION=2
   if [[ ! -f "$FSDP_CONFIG" ]]; then
     echo "ERROR: FSDP config not found: $FSDP_CONFIG"
     exit 1
@@ -266,18 +267,23 @@ import json
 from pathlib import Path
 cfg = json.loads(Path("$FSDP_CONFIG").read_text())
 cfg["num_processes"] = int("$NGPU")
+# Drop JSON-only comment keys accelerate may not like.
+cfg.pop("_comment", None)
+fc = cfg.get("fsdp_config") or {}
+ver = fc.get("fsdp_version", cfg.get("fsdp_version", 2))
+print(f"  wrote FSDP config num_processes={cfg['num_processes']} fsdp_version={ver} → $FSDP_RUN_CONFIG")
 Path("$FSDP_RUN_CONFIG").write_text(json.dumps(cfg, indent=2) + "\n")
-print(f"  wrote FSDP config num_processes={cfg['num_processes']} → $FSDP_RUN_CONFIG")
 PY
-  # No --device_map: per-rank GPU load, then FSDP. quant_storage=bf16 required for FSDP+QLoRA.
+  # Match Axolotl FSDP2 QLoRA: bf16 quant storage + adamw_torch_8bit (bnb optim breaks FSDP2).
   EXTRA_PARALLEL_ARGS+=(
     --bnb_4bit_quant_storage bfloat16
     --bnb_4bit_compute_dtype bfloat16
+    --optim adamw_torch_8bit
     --gradient_checkpointing_kwargs '{"use_reentrant": false}'
   )
   LAUNCH=(accelerate launch --config_file "$FSDP_RUN_CONFIG")
   NPROC_PER_NODE="(accelerate num_processes=$NGPU)"
-  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP device_map=(default cuda:local_rank → FSDP shard)"
+  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP FSDP_VERSION=$FSDP_VERSION (Axolotl-aligned FSDP2, GPU load, offload=false)"
 elif [[ "$PARALLEL" == "device_map" ]]; then
   echo "WARNING: parallel=device_map is legacy; bnb+CPU offload often fails at first train step."
   if [[ -n "${NPROC_PER_NODE:-}" || -n "${NNODES:-}" ]]; then
