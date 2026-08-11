@@ -17,20 +17,26 @@ train/
 ├── configs/
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
-│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
-│   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
+│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (this branch)
+│   └── axolotl/coder_next_qlora.yaml  # see */Axolotl branches (FSDP2+CP)
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
+│   ├── trainmodel.sh                  # step 5: ms-swift QLoRA (+ SP / FSDP)
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v2/
 └── outputs/
 ```
+
+## Branch note (msswift)
+
+This branch is `Qwen3-Coder-Next/msswift`. Sister branch `Qwen3-Coder-Next/Axolotl`
+uses Axolotl QLoRA + FSDP2 + context parallel. Other models mirror the same
+`{Model}/msswift` and `{Model}/Axolotl` layout.
 
 ## Pipeline (Coder-Next mix — ms-swift)
 
@@ -59,11 +65,25 @@ python scripts/tokenize_data.py
 python scripts/stat.py --max-length 8192
 
 # 5) Train — MUST pass --max-length (manual).
-#    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.
-#    Single ~96GB (simplest):
+#    Auto parallel (msswift): 1 GPU → single-process QLoRA; 2+ → sequence parallel.
+#    SP shards the sequence (Ulysses+Ring) — preferred for 32k on n×96GB.
+#    Optional weight shard: PARALLEL=fsdp …
+#    Single ~96GB:
 export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-# Multi ~48GB: export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 8192 --choice 2
+# Multi-GPU SP (e.g. 32k smoke):
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Force FSDP instead of SP:
+# PARALLEL=fsdp bash scripts/trainmodel.sh --max-length 8192 --choice 1
+```
+
+### Smoke (32k, 2×96GB)
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Expect log lines: auto PARALLEL=sp, sequence_parallel_size=2
 ```
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
@@ -212,7 +232,7 @@ See `scripts/upload.py` + `configs/oss.yaml` (Ulanqab internal by default).
 
 ### 2b) Qwen3.5 / Coder-Next fast kernels (FLA + causal-conv1d) — **required**
 
-`train_sft.py` (9B) and `train_coder_next.sh` (Coder-Next on `main`) **refuse to
+`train_sft.py` (9B) and `trainmodel.sh` (Coder-Next on `main`) **refuse to
 start** without both `fla` and `causal_conv1d`. GLM / Kimi / 30B-A3B branches do
 **not** require this stack.
 
@@ -268,7 +288,7 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 ```
 
 `kernels` (`pip install kernels`) is optional; alone it does **not** satisfy the
-`flash_attn` import check in `train_coder_next.sh`.
+`flash_attn` import check in `trainmodel.sh`.
 
 Restart training afterward (`--resume` if a checkpoint exists).
 Do not set `FLA_CONV_BACKEND=triton` if causal-conv1d imported successfully

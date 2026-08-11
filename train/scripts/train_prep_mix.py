@@ -627,13 +627,17 @@ def main() -> None:
         "LORA_ALPHA": str(train_cfg.get("lora_alpha", 16)),
         "BS": str(train_cfg.get("per_device_train_batch_size", 1)),
         "GAS": str(train_cfg.get("gradient_accumulation_steps", 8)),
-        # Empty → train_coder_next.sh auto: 1 GPU → single, 2+ → fsdp
+        # Empty → trainmodel.sh auto: 1 GPU → single, 2+ → sp (msswift)
         "PARALLEL": str(train_cfg.get("parallel") or ""),
         "DEVICE_MAP": str(train_cfg.get("device_map", "auto")),
         "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),
         "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
         "FSDP_CONFIG": str(
             train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora.json")
+        ),
+        # Optional override; trainmodel.sh defaults SP size to visible GPU count.
+        "SEQUENCE_PARALLEL_SIZE": str(
+            train_cfg.get("sequence_parallel_size") or ""
         ),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),

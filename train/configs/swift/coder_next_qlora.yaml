@@ -5,7 +5,8 @@
 #   2) python scripts/prepare_model.py     # download base LLM (CPU OK; large disk)
 #   3) python scripts/tokenize_data.py     # ratio-sample + swift export cached_dataset
 #   4) python scripts/stat.py             # optional: length stats per source
-#   5) CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192
+#   5) CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh --max-length 8192
+#      (msswift branch: multi-GPU defaults to sequence parallel; PARALLEL=fsdp for weight shard)
 #
 # Install (GPU box):
 #   pip install 'ms-swift>=3.11' deepspeed bitsandbytes
@@ -41,11 +42,11 @@ export:
   # With a huge max_length, delete never fires on real data.
   truncation_strategy: delete
 
-# train defaults (max_length is REQUIRED at startup via train_coder_next.sh --max-length)
-# train_coder_next.sh: structure-preserving right trunc (complete assistant), then
+# train defaults (max_length is REQUIRED at startup via trainmodel.sh --max-length)
+# trainmodel.sh: structure-preserving right trunc (complete assistant), then
 # asks 1=as-is / 2=1:1:0.35 / 3=abort.
 train:
-  # max_length: set only via CLI — bash scripts/train_coder_next.sh --max-length N
+  # max_length: set only via CLI — bash scripts/trainmodel.sh --max-length N
   # After prep, train uses truncation_strategy=delete (rows already <= max_length).
   num_epochs: 2
   learning_rate: 1.0e-4
@@ -59,11 +60,12 @@ train:
     - o_proj
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
-  # parallel: omit/auto | single | fsdp | device_map | deepspeed
-  # Auto (recommended): 1 visible GPU → single; 2+ → fsdp.
-  # single = plain QLoRA on one ~80–96GB card (simplest for Qwen3-Coder-Next).
-  # fsdp = accelerate FSDP+QLoRA for multi ~48GB cards.
-  # parallel: fsdp   # force multi-GPU path
+  # parallel: omit/auto | single | sp | fsdp | device_map | deepspeed
+  # Auto (msswift): 1 visible GPU → single; 2+ → sp (Ulysses+Ring sequence parallel).
+  # single = plain QLoRA on one ~80–96GB card.
+  # sp = QLoRA + --sequence_parallel_size (long-context activation; default multi-GPU).
+  # fsdp = accelerate FSDP+QLoRA weight shard (PARALLEL=fsdp to force).
+  # parallel: sp
   device_map: auto
   deepspeed: zero3
   fsdp_config: configs/swift/fsdp_qlora.json
