@@ -10,7 +10,6 @@ cd train && source .venv/bin/activate
 pip install 'axolotl[ring-flash-attn]' 'bitsandbytes>=0.50'
 
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
-# Download weights with the matching swift yaml on this branch (configs/swift/).
 python scripts/prepare_model.py
 
 export CUDA_VISIBLE_DEVICES=0,1
