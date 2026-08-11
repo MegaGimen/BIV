@@ -242,8 +242,9 @@ elif [[ "$PARALLEL" == "fsdp" ]]; then
   fi
   unset NPROC_PER_NODE
   unset NNODES
-  # Critical: ms-swift get_default_device_map() puts the full model on cuda:local_rank
-  # unless this is set — that fills GPU0 (~44GB) before FSDP shards (GPU1 stays empty).
+  # Load QLoRA weights onto each rank's GPU (ms-swift default: cuda:local_rank), then FSDP
+  # shards. One 96GB card holds ~40GB 4bit 72B; avoid device_map=cpu (dual full CPU copies
+  # blow the ~220GiB cgroup). Do not force everything onto cuda:0.
   export ACCELERATE_USE_FSDP=true
   if [[ ! -f "$FSDP_CONFIG" ]]; then
     echo "ERROR: FSDP config not found: $FSDP_CONFIG"
@@ -261,16 +262,15 @@ cfg["num_processes"] = int("$NGPU")
 Path("$FSDP_RUN_CONFIG").write_text(json.dumps(cfg, indent=2) + "\n")
 print(f"  wrote FSDP config num_processes={cfg['num_processes']} → $FSDP_RUN_CONFIG")
 PY
-  # Load to CPU first, then FSDP shards to GPUs. quant_storage=bf16 required for FSDP+QLoRA.
+  # No --device_map: per-rank GPU load, then FSDP. quant_storage=bf16 required for FSDP+QLoRA.
   EXTRA_PARALLEL_ARGS+=(
-    --device_map cpu
     --bnb_4bit_quant_storage bfloat16
     --bnb_4bit_compute_dtype bfloat16
     --gradient_checkpointing_kwargs '{"use_reentrant": false}'
   )
   LAUNCH=(accelerate launch --config_file "$FSDP_RUN_CONFIG")
   NPROC_PER_NODE="(accelerate num_processes=$NGPU)"
-  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP device_map=cpu (avoid rank0 GPU fill)"
+  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP device_map=(default cuda:local_rank → FSDP shard)"
 elif [[ "$PARALLEL" == "device_map" ]]; then
   echo "WARNING: parallel=device_map is legacy; bnb+CPU offload often fails at first train step."
   if [[ -n "${NPROC_PER_NODE:-}" || -n "${NNODES:-}" ]]; then
