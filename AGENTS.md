@@ -145,7 +145,7 @@ cd train
 # Default: ModelScope moonshotai/Kimi-Dev-72B
 python scripts/prepare_model.py
 python scripts/tokenize_data.py
-CUDA_VISIBLE_DEVICES=0 bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
 ```
 
 Other bases: checkout `main` (Coder-Next) or `Qwen3-Coder-30B-A3B` / `GLM-4.7-Flash`.
@@ -238,7 +238,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
+- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/trainmodel.sh`, `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 
