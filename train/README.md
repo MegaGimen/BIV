@@ -17,19 +17,47 @@ train/
 ├── configs/
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
-│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
-│   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
+│   ├── swift/coder_next_qlora.yaml    # ms-swift template (see */msswift branches)
+│   └── axolotl/coder_next_qlora.yaml  # Axolotl template (see */Axolotl branches)
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
+│   ├── train_coder_next.sh            # legacy name on main; use trainmodel.sh on train branches
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v2/
 └── outputs/
+```
+
+## Training branches (8)
+
+Prefer checking out a model×framework branch (not bare `main`) for large-model QLoRA:
+
+| Branch | Framework | Multi-GPU default |
+|--------|-----------|-------------------|
+| `{Model}/msswift` | ms-swift QLoRA | **sequence parallel** (2+ GPUs); `PARALLEL=fsdp` optional |
+| `{Model}/Axolotl` | Axolotl QLoRA | **FSDP2 + context parallel** |
+
+Models: `Qwen3-Coder-Next`, `Qwen3-Coder-30B-A3B`, `GLM-4.7-Flash`, `Kimi-Dev-72B`.
+Entry on those branches: `bash scripts/trainmodel.sh --max-length N`.
+
+### Smoke (32k, 2×96GB)
+
+```bash
+# msswift SP
+git switch Qwen3-Coder-Next/msswift
+cd train && export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Expect: auto PARALLEL=sp, sequence_parallel_size=2
+
+# Axolotl FSDP2+CP
+git switch Qwen3-Coder-Next/Axolotl
+cd train && export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Expect run yaml: fsdp_version=2, context_parallel_size=2
 ```
 
 ## Pipeline (Coder-Next mix — ms-swift)

@@ -138,30 +138,39 @@ Train mix ratios live in `configs/swift/coder_next_qlora.yaml` → `biv_mix`
 then runs `swift export --to_cached_dataset`; `stat.py` reports length distributions;
 train applies `--max_length` (default 16384, truncate right) without re-export.
 
-### Train Qwen3-Coder-Next (2×~44GB, ms-swift)
+### Dual-framework training branches (8)
+
+Former model branches were renamed to `*/msswift`. Each model also has an `*/Axolotl` sister.
+Entry script on those branches is **`train/scripts/trainmodel.sh`** (not `train_coder_next.sh`).
+
+| Branch | Stack | Multi-GPU default |
+|--------|-------|-------------------|
+| `Qwen3-Coder-Next/msswift` | ms-swift QLoRA | 1→single; 2+→**sequence parallel** (`PARALLEL=fsdp` optional) |
+| `Qwen3-Coder-Next/Axolotl` | Axolotl QLoRA | **FSDP2 + context parallel** |
+| `Qwen3-Coder-30B-A3B/msswift` | ms-swift QLoRA | same as Next/msswift |
+| `Qwen3-Coder-30B-A3B/Axolotl` | Axolotl QLoRA | FSDP2 + CP (`Qwen3MoeDecoderLayer`) |
+| `GLM-4.7-Flash/msswift` | ms-swift QLoRA | same (MLA LoRA targets) |
+| `GLM-4.7-Flash/Axolotl` | Axolotl QLoRA | FSDP2 + CP (`Glm4MoeLiteDecoderLayer`) |
+| `Kimi-Dev-72B/msswift` | ms-swift QLoRA | same |
+| `Kimi-Dev-72B/Axolotl` | Axolotl QLoRA | FSDP2 + CP (`Qwen2DecoderLayer`) |
 
 ```bash
+git switch Qwen3-Coder-Next/msswift   # or …/Axolotl
 cd train
+# msswift:
 pip install 'ms-swift>=3.11' deepspeed bitsandbytes
-
-# 1) Full JSONL
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
-
-# 2) Download base LLM (separate from data / tokenize)
 python scripts/prepare_model.py
-
-# 3) Ratio-sample + cached_dataset export (per source)
 python scripts/tokenize_data.py
+# 32k smoke (SP):
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 
-# 4) Optional length stats / retention tables
-python scripts/stat.py --max-length 8192
-
-# 5) Multi-GPU QLoRA (FSDP default)
-CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_coder_next.sh --max-length 8192
+# Axolotl sister:
+# pip install 'axolotl[ring-flash-attn]' bitsandbytes
+# CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 ```
 
-Legacy Unsloth **Qwen3.5-9B** path: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
-Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
+Legacy Unsloth **Qwen3.5-9B** path on `main`: `python scripts/train_sft.py --config configs/default.yaml` (still supported).
 
 ### Future TODO (training data)
 
@@ -249,7 +258,7 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - **CLI**: `nanobot/cli/commands.py`
 - **Python SDK**: `nanobot/nanobot.py`
 - **BIV start**: `./start-biv.sh`
-- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/train_coder_next.sh`, `train/scripts/train_sft.py`
+- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/trainmodel.sh` (on `*/msswift` and `*/Axolotl`), `train/scripts/train_sft.py`
 
 ## Project-Specific Notes
 
