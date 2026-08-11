@@ -26,12 +26,16 @@ train/
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
+│   ├── trainmodel.sh            # step 5: ms-swift multi-GPU SFT
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v2/
 └── outputs/
 ```
+
+## Branch note (msswift)
+
+This branch is . Sister  uses Axolotl QLoRA+FSDP2+CP.
 
 ## Pipeline (Coder-30B-A3B mix — ms-swift; primary)
 
@@ -57,10 +61,10 @@ python scripts/stat.py --max-length 8192
 
 # 5) Train — MUST pass --max-length (manual).
 export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+bash scripts/trainmodel.sh --max-length 8192 --choice 1
 
 # Optional heavier Next:
-# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/train_coder_next.sh --max-length 8192 --choice 1
+# CONFIG=configs/swift/coder_next_qlora.yaml bash scripts/trainmodel.sh --max-length 8192 --choice 1
 ```
 
 Caches: `outputs/swift_cache/coder_30b_a3b_mix_v2/<tag>/{wm_code,wm_os,anti_forget}/`
