@@ -1,4 +1,4 @@
-# World-model SFT for BIV
+# World-model SFT for BIV (Axolotl branch)
 #
 # Hypothesis (GPT-style):
 #   Fit next real tool observation P(o_t | history, tool_call)
@@ -18,25 +18,25 @@ train/
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
 │   ├── control_shuffled.yaml
 │   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next ms-swift (primary)
-│   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
+│   └── axolotl/coder_next_qlora.yaml  # primary on this branch (FSDP2+CP)
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── train_coder_next.sh            # step 5: ms-swift multi-GPU SFT
+│   ├── trainmodel.sh                  # step 5: Axolotl QLoRA + FSDP2 + CP
 │   ├── train_sft.py                   # Unsloth 9B
 │   └── test_adapters_offline.py
 ├── data/processed/mix_v2/
 └── outputs/
 ```
 
-## Pipeline (Coder-Next mix — ms-swift)
+## Pipeline (Coder-Next mix — Axolotl FSDP2+CP)
 
 ```bash
 cd train && source .venv/bin/activate
-pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
+pip install 'axolotl[ring-flash-attn]' 'bitsandbytes>=0.50'
 # If load dies with Params4bit … _is_hf_initialized: pip install -U 'bitsandbytes>=0.50'
 # Qwen3-Next / Coder-Next GatedDeltaNet fast path (recommended; else torch fallback):
 #   pip install -U ninja packaging
@@ -58,13 +58,19 @@ python scripts/tokenize_data.py
 # 4) Optional: per-source token length distribution + retention @ 8k/16k/32k
 python scripts/stat.py --max-length 8192
 
-# 5) Train — MUST pass --max-length (manual).
-#    Auto parallel: 1 GPU → single-process QLoRA; 2+ → FSDP.
-#    Single ~96GB (simplest):
-export CUDA_VISIBLE_DEVICES=0
-bash scripts/train_coder_next.sh --max-length 8192 --choice 2
-# Multi ~48GB: export CUDA_VISIBLE_DEVICES=0,1
+# 5) Train — MUST pass --max-length.
+#    Axolotl: FSDP2 + context_parallel_size = visible GPU count (long-context).
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 8192 --choice 1
+
+### Smoke (32k, 2×96GB, Axolotl CP)
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+# Expect run yaml: fsdp_version=2, context_parallel_size=2
 ```
+
 
 Caches: `outputs/swift_cache/coder_next_mix_v1/<tag>/{wm_code,wm_os,anti_forget}/`.
 Filtered run mixes: `<tag>/train_runs/ml<N>_…/`. Re-tune max_length without re-export.
@@ -212,7 +218,7 @@ See `scripts/upload.py` + `configs/oss.yaml` (Ulanqab internal by default).
 
 ### 2b) Qwen3.5 / Coder-Next fast kernels (FLA + causal-conv1d) — **required**
 
-`train_sft.py` (9B) and `train_coder_next.sh` (Coder-Next on `main`) **refuse to
+`train_sft.py` (9B) and `trainmodel.sh` (Coder-Next on `main`) **refuse to
 start** without both `fla` and `causal_conv1d`. GLM / Kimi / 30B-A3B branches do
 **not** require this stack.
 
@@ -268,7 +274,7 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 ```
 
 `kernels` (`pip install kernels`) is optional; alone it does **not** satisfy the
-`flash_attn` import check in `train_coder_next.sh`.
+`flash_attn` import check in `trainmodel.sh`.
 
 Restart training afterward (`--resume` if a checkpoint exists).
 Do not set `FLA_CONV_BACKEND=triton` if causal-conv1d imported successfully

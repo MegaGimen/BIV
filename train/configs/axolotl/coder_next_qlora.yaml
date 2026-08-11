@@ -1,31 +1,28 @@
-# LEGACY Axolotl config (superseded by configs/swift/coder_next_qlora.yaml).
-# Prefer: python scripts/tokenize_data.py && bash scripts/train_coder_next.sh (ms-swift).
-# Peak VRAM (attn-only LoRA, no expert targets): ~47 GiB — use 2x44GB with FSDP.
+# Qwen3-Coder-Next QLoRA via Axolotl (QLoRA + FSDP2 + context parallel).
+# Branch: Qwen3-Coder-Next/Axolotl
 #
-# Prerequisites (legacy):
-#   pip install axolotl cut-cross-entropy
-#   uv pip uninstall causal-conv1d && uv pip install flash-linear-attention==0.4.1
+# Install (GPU box):
+#   pip install 'axolotl[ring-flash-attn]'
 #
-# Legacy pipeline used axolotl preprocess (hard drop at sequence_len).
+# Pipeline:
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
+#   2) python scripts/prepare_model.py --config configs/swift/coder_next_qlora.yaml
+#   3) bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#   32k smoke: CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 #
-# Mix ratio (empirical): wm_code : wm_os : anti_forget = 1 : 1 : 0.35
-#   ≈ 42.5% / 42.5% / 15% of the merged train set (max_fill under corpus caps).
+# trainmodel.sh rewrites context_parallel_size / sequence_len / dataset paths at runtime.
 
-base_model: Qwen/Qwen3-Coder-Next
-# Optional ModelScope: set env MS_MODEL=Qwen/Qwen3-Coder-Next and download externally,
-# then point base_model at the local path.
+base_model: outputs/models/Qwen3-Coder-Next
+# Fallback hub id if local dir missing (prepare_model preferred):
+# base_model: Qwen/Qwen3-Coder-Next
 
-# ---------------------------------------------------------------------------
-# BIV mix policy (read by scripts/tokenize_data.py; stripped from *.run.yaml for Axolotl)
-# ---------------------------------------------------------------------------
 biv_mix:
   seed: 42
-  mode: max_fill          # largest N under ratios × available rows; or total_rows
-  # total_rows: 50000     # only when mode: total_rows
+  mode: max_fill
   ratios:
-    wm_code: 1.0          # code:os must stay 1:1
+    wm_code: 1.0
     wm_os: 1.0
-    anti_forget: 0.35     # relative to one WM leg → ~15% of merged set
+    anti_forget: 0.35
 
 load_in_4bit: true
 adapter: qlora
@@ -37,29 +34,23 @@ lora_target_modules:
   - k_proj
   - v_proj
   - o_proj
-  # Do NOT target MoE experts on 44GB cards (~71GiB if enabled)
 
 chat_template: tokenizer_default
-# Coder chat_template from the model repo handles tool_calls / ChatML.
 
-# Source corpora (FULL paths). tokenize.py samples these before preprocess/train.
-# Do not point axolotl train at this file for training — use *.run.yaml.
 datasets:
-  - path: data/processed/mix_v1/wm_code/train.jsonl
+  - path: data/processed/mix_v2/wm_code/train.jsonl
     type: chat_template
     field_messages: messages
-  - path: data/processed/mix_v1/wm_os/train.jsonl
+  - path: data/processed/mix_v2/wm_os/train.jsonl
     type: chat_template
     field_messages: messages
-  - path: data/processed/mix_v1/anti_forget/train.jsonl
+  - path: data/processed/mix_v2/anti_forget/train.jsonl
     type: chat_template
     field_messages: messages
 
 val_set_size: 0.0
-# Use dedicated eval jsonl in prepare if needed; keep train loop simple.
-
-dataset_prepared_path: outputs/axolotl_cache/coder_next_mix_v1
-output_dir: outputs/coder_next_wm_mix
+dataset_prepared_path: outputs/axolotl_cache/coder_next_mix_v2
+output_dir: outputs/axolotl_coder_next_wm_mix
 
 sequence_len: 8192
 sample_packing: false
@@ -80,25 +71,28 @@ gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
 flash_attention: true
+attn_implementation: flash_attention_2
 
 logging_steps: 10
 saves_per_epoch: 2
 save_total_limit: 3
 
-# Dual 44GB GPUs: FSDP shard (required headroom for 8k + QLoRA)
-fsdp:
-  - full_shard
-  - auto_wrap
+# FSDP2 + context parallel (long-context activation shard).
+# trainmodel.sh sets context_parallel_size / dp_shard_size from CUDA_VISIBLE_DEVICES.
+fsdp_version: 2
 fsdp_config:
   fsdp_limit_all_gathers: true
   fsdp_sync_module_states: true
   fsdp_offload_params: false
-  fsdp_use_orig_params: false
+  fsdp_use_orig_params: true
   fsdp_cpu_ram_efficient_loading: true
   fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
   fsdp_transformer_layer_cls_to_wrap: Qwen3NextDecoderLayer
   fsdp_state_dict_type: FULL_STATE_DICT
-  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_reshard_after_forward: true
+
+dp_shard_size: 2
+context_parallel_size: 2
 
 special_tokens:
   pad_token: "<|endoftext|>"
