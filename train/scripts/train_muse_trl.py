@@ -112,7 +112,7 @@ def _normalize_messages(messages: Any) -> list[dict[str, str]]:
 
 
 def _load_concat_datasets(paths: list[Path]):
-    from datasets import Features, Value, concatenate_datasets, load_from_disk
+    from datasets import Dataset, Features, Value, concatenate_datasets, load_from_disk
 
     # Uniform schema so mix sources can concatenate.
     msg_features = Features(
@@ -131,13 +131,12 @@ def _load_concat_datasets(paths: list[Path]):
         if "messages" not in ds.column_names:
             raise SystemExit(f"{p}: need 'messages' column, got {ds.column_names}")
 
-        def _map(ex):
-            return {"messages": _normalize_messages(ex["messages"])}
-
-        ds = ds.map(_map, remove_columns=[c for c in ds.column_names if c != "messages"])
-        ds = ds.cast(msg_features)
-        parts.append(ds)
-        print(f"  loaded {p} ({len(ds):,} rows)", flush=True)
+        # Rebuild with an explicit schema. map()+cast() keeps the old Arrow
+        # struct (incl. tool_calls) and fails on anti_forget rows.
+        rows = [{"messages": _normalize_messages(ex["messages"])} for ex in ds]
+        part = Dataset.from_list(rows, features=msg_features)
+        parts.append(part)
+        print(f"  loaded {p} ({len(part):,} rows)", flush=True)
     if len(parts) == 1:
         return parts[0]
     return concatenate_datasets(parts)
