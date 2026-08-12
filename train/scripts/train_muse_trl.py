@@ -142,6 +142,46 @@ def _load_concat_datasets(paths: list[Path]):
     return concatenate_datasets(parts)
 
 
+def _load_muse_glimmer(model_path: str, load_kwargs: dict[str, Any]):
+    """Load the generative Muse Glimmer head (not the bare MuseGlimmerModel).
+
+    AutoModelForCausalLM does not map muse_glimmer; falling back to AutoModel
+    yields MuseGlimmerModel without prepare_inputs_for_generation / lm_head,
+    which breaks PEFT PeftModelForCausalLM.
+    """
+    errors: list[str] = []
+
+    try:
+        from transformers import MuseGlimmerForConditionalGeneration
+
+        print("[muse] loading MuseGlimmerForConditionalGeneration …", flush=True)
+        return MuseGlimmerForConditionalGeneration.from_pretrained(model_path, **load_kwargs)
+    except Exception as e:
+        errors.append(f"MuseGlimmerForConditionalGeneration: {e}")
+
+    try:
+        from transformers import AutoModelForImageTextToText
+
+        print("[muse] loading AutoModelForImageTextToText …", flush=True)
+        return AutoModelForImageTextToText.from_pretrained(model_path, **load_kwargs)
+    except Exception as e:
+        errors.append(f"AutoModelForImageTextToText: {e}")
+
+    try:
+        from transformers import AutoModelForMultimodalLM
+
+        print("[muse] loading AutoModelForMultimodalLM …", flush=True)
+        return AutoModelForMultimodalLM.from_pretrained(model_path, **load_kwargs)
+    except Exception as e:
+        errors.append(f"AutoModelForMultimodalLM: {e}")
+
+    raise SystemExit(
+        "Failed to load Muse Glimmer generative model. Tried:\n  - "
+        + "\n  - ".join(errors)
+        + "\nNeed transformers with muse_glimmer (vendor editable install)."
+    )
+
+
 def _build_model_and_tokenizer(
     *,
     model_path: str,
@@ -155,7 +195,7 @@ def _build_model_and_tokenizer(
 ):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from transformers import AutoTokenizer, BitsAndBytesConfig
 
     dtype = torch.bfloat16 if str(torch_dtype).lower() in {"bf16", "bfloat16"} else torch.float16
     print(f"[muse] loading tokenizer from {model_path}", flush=True)
@@ -186,14 +226,13 @@ def _build_model_and_tokenizer(
             load_kwargs["device_map"] = "auto"
 
     print(f"[muse] loading model from {model_path}", flush=True)
-    try:
-        model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
-    except Exception as e:
-        # Some multimodal checkpoints register under a different auto class.
-        print(f"[muse] AutoModelForCausalLM failed ({e}); trying AutoModel…", flush=True)
-        from transformers import AutoModel
-
-        model = AutoModel.from_pretrained(model_path, **load_kwargs)
+    model = _load_muse_glimmer(model_path, load_kwargs)
+    print(f"[muse] loaded class={type(model).__name__}", flush=True)
+    if not hasattr(model, "prepare_inputs_for_generation"):
+        raise SystemExit(
+            f"{type(model).__name__} lacks prepare_inputs_for_generation "
+            "(need MuseGlimmerForConditionalGeneration, not MuseGlimmerModel)"
+        )
 
     if qlora:
         model = prepare_model_for_kbit_training(model)
