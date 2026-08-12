@@ -1,0 +1,69 @@
+# meta-models/Muse-Glimmer-30B LoRA/QLoRA via TRL + PEFT + Accelerate (branch: Muse).
+#
+# Pipeline:
+#   1) python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
+#   2) python scripts/prepare_model.py --source huggingface
+#   3) python scripts/tokenize_data.py
+#   4) python scripts/stat.py --max-length 8192   # optional
+#   5) CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#      CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#      QLORA=1 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#      PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
+#
+# Install: pip install -r requirements-muse.txt
+#
+# Arch notes:
+#   - Dense ~29.6B + frozen Perception Encoder (~1.8B ViT)
+#   - Chat template: Muse Glimmer (HF AutoTokenizer)
+#   - Loss: TRL assistant_only_loss on observation turns
+#   - Parallel: auto → 1 GPU single, 2+ DDP; PARALLEL=fsdp2 for long context
+
+model: meta-models/Muse-Glimmer-30B
+model_source: huggingface
+model_dir: outputs/models/Muse-Glimmer-30B
+
+biv_mix:
+  seed: 42
+  mode: full_wm
+  anti_to_os: 0.35
+
+cache_root: outputs/trl_cache/muse_glimmer_mix_v2
+mix_dir: data/processed/mix_v2
+
+dataset_num_proc: 8
+export:
+  # Char-budget length only at tokenize; train applies max_length
+  max_length: 1048576
+  truncation_strategy: delete
+
+train:
+  num_epochs: 2
+  learning_rate: 2.0e-4
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+    - output_gate_proj
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  # auto | single | ddp | fsdp2  (trainmodel.sh may override via PARALLEL)
+  parallel: auto
+  qlora: false
+  freeze_vision: true
+  assistant_only_loss: true
+  packing: false
+  gradient_checkpointing: true
+  output_dir: outputs/muse_glimmer_wm_mix
+  torch_dtype: bfloat16
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  save_total_limit: 3
+  seed: 42

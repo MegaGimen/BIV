@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train-time structure-preserving right trunc + optional 1:1:0.35 rebalance.
 
-ms-swift ``cached_dataset`` keeps ``messages`` + ``lengths`` (not token ``labels``).
+HF / TRL caches keep ``messages`` + ``lengths`` (approx; not token ``labels``).
 
 Fast path (no per-row chat_template — that was ~hours):
   - scan: only read stored ``lengths`` + check an assistant exists
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "trl" / "muse_glimmer_30b_lora.yaml"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
 REBALANCE_RATIOS = {"wm_code": 1.0, "wm_os": 1.0, "anti_forget": 0.35}
@@ -97,7 +97,7 @@ def _length_column(ds) -> str:
             return name
     raise SystemExit(
         f"Dataset missing length column (got {ds.column_names}). "
-        "Re-run tokenize_data.py with ms-swift>=3.11."
+        "Re-run tokenize_data.py."
     )
 
 
@@ -442,7 +442,7 @@ def main() -> None:
         raise SystemExit("--max-length must be > 0")
 
     cfg = _load_yaml(_resolve(args.config))
-    cache_root = _resolve(cfg.get("cache_root", "outputs/swift_cache/kimi_dev_72b_mix_v2"))
+    cache_root = _resolve(cfg.get("cache_root", "outputs/trl_cache/muse_glimmer_mix_v2"))
     manifest_path = _find_manifest(cache_root, args.tag)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cached = manifest.get("cached_train") or {}
@@ -607,7 +607,7 @@ def main() -> None:
         )
 
     cached_list = " ".join(str(out_paths[k]) for k in SOURCE_KEYS)
-    out_dir = train_cfg.get("output_dir", "outputs/swift_kimi_dev_72b_wm_mix")
+    out_dir = train_cfg.get("output_dir", "outputs/muse_glimmer_wm_mix")
     out_dir = f"{out_dir}_ml{args.max_length}_c{choice}"
 
     exports = {
@@ -621,31 +621,32 @@ def main() -> None:
         "CACHED_DATASETS": cached_list,
         "OUT_DIR": str(out_dir),
         "TRAIN_CHOICE": str(choice),
-        "LR": str(train_cfg.get("learning_rate", 1e-4)),
+        "LR": str(train_cfg.get("learning_rate", 2e-4)),
         "EPOCHS": str(train_cfg.get("num_epochs", 2)),
         "LORA_RANK": str(train_cfg.get("lora_rank", 16)),
-        "LORA_ALPHA": str(train_cfg.get("lora_alpha", 16)),
+        "LORA_ALPHA": str(train_cfg.get("lora_alpha", 32)),
         "BS": str(train_cfg.get("per_device_train_batch_size", 1)),
         "GAS": str(train_cfg.get("gradient_accumulation_steps", 8)),
-        # Empty → trainmodel.sh auto: 1 GPU → single, 2+ → sp (msswift)
+        # Empty → trainmodel.sh auto: 1 GPU → single, 2+ → ddp
         "PARALLEL": str(train_cfg.get("parallel") or ""),
-        "DEVICE_MAP": str(train_cfg.get("device_map", "auto")),
-        "MAX_MEMORY": str(train_cfg.get("max_memory") or ""),
-        "DEEPSPEED": str(train_cfg.get("deepspeed", "zero3")),
-        "FSDP_CONFIG": str(
-            train_cfg.get("fsdp_config", "configs/swift/fsdp_qlora_kimi_dev_72b.json")
-        ),
-        "SEQUENCE_PARALLEL_SIZE": str(
-            train_cfg.get("sequence_parallel_size") or ""
-        ),
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),
         "LOG_STEPS": str(train_cfg.get("logging_steps", 10)),
         "SAVE_STEPS": str(train_cfg.get("save_steps", 200)),
         "SAVE_LIMIT": str(train_cfg.get("save_total_limit", 3)),
         "TARGET_MODULES": " ".join(
-            train_cfg.get("target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
+            train_cfg.get("target_modules")
+            or [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]
         ),
+        "QLORA": "1" if train_cfg.get("qlora") else "0",
     }
     env_path = Path(args.write_env)
     if not env_path.is_absolute():

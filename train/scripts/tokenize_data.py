@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""Step 3: ratio-sample mix JSONL, then ms-swift cached_dataset export (CPU OK).
+"""Step 3: ratio-sample mix JSONL → HF datasets with messages + approx lengths (CPU OK).
 
-Note: named tokenize_data.py (not tokenize.py) so it does not shadow stdlib ``tokenize``
-(breaks pandas/datasets imports when running sibling scripts like ``stat.py``).
+Note: named tokenize_data.py (not tokenize.py) so it does not shadow stdlib ``tokenize``.
 
-Reads ``biv_mix`` from ``configs/swift/kimi_dev_72b_qlora.yaml`` (default).
-Uses local weights from ``prepare_model.py`` when ``model_dir`` is ready.
-
-For each source (wm_code / wm_os / anti_forget):
-  1) sample ratio-matched JSONL under ``mix_dir/sampled/<tag>/``
-  2) ``swift export --to_cached_dataset true`` → ``cache_root/<tag>/<source>/``
-
-Length filtering / truncation is NOT applied at export — training sets
-``--max_length`` / ``--truncation_strategy``. Export uses a huge ceiling so
-ms-swift does not delete at the model max (262144).
-Cache stores per-row ``length`` (ms-swift>=3.11) so you can retune train
-max_length on the GPU box without re-exporting (re-export only if you need
-rows that were previously dropped under the model-max delete).
-
-Does **not** need a GPU — forces ``CUDA_VISIBLE_DEVICES=""``.
+Reads ``biv_mix`` from ``configs/trl/muse_glimmer_30b_lora.yaml`` (default).
+Does **not** need ms-swift or a GPU — builds ``datasets`` Arrow caches for
+``train_prep_mix.py`` / TRL. Lengths use a char-budget heuristic (no full
+chat_template pass); train-time ``--max-length`` + struct-right trim apply later.
 
 Examples:
   python scripts/tokenize_data.py
@@ -35,7 +23,6 @@ import json
 import os
 import random
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,10 +31,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
-DEFAULT_MIX = ROOT / "data" / "processed" / "mix_v1"
+
+DEFAULT_CONFIG = ROOT / "configs" / "trl" / "muse_glimmer_30b_lora.yaml"
+DEFAULT_MIX = ROOT / "data" / "processed" / "mix_v2"
 SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
 MANIFEST_NAME = "tokenize_manifest.json"
+_CHARS_PER_TOKEN = 3.0
+_MSG_OVERHEAD_CHARS = 64
 
 
 def _tqdm(**kwargs):
@@ -152,10 +142,7 @@ def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int
         for name, n in cached.items():
             print(f"  available {name}: {n:,} (cached)", flush=True)
         return cached
-    print(
-        "WARNING: prepare counts.json incomplete — scanning JSONL…",
-        flush=True,
-    )
+    print("WARNING: prepare counts.json incomplete — scanning JSONL…", flush=True)
     available: dict[str, int] = {}
     for name, path in sources.items():
         available[name] = _count_lines(path, desc=f"{name}/train.jsonl")
@@ -166,12 +153,11 @@ def _resolve_available(mix_dir: Path, sources: dict[str, Path]) -> dict[str, int
 def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
     raw = cfg.get("biv_mix")
     if not isinstance(raw, dict):
-        raise SystemExit(f"Config missing biv_mix: block")
+        raise SystemExit("Config missing biv_mix: block")
     mode = str(raw.get("mode", "full_wm"))
     if mode not in {"full_wm", "max_fill", "total_rows"}:
         raise SystemExit("biv_mix.mode must be full_wm, max_fill, or total_rows")
 
-    # full_wm: keep all wm_code + wm_os; only cap anti vs |wm_os|
     if mode == "full_wm":
         anti_to_os = raw.get("anti_to_os")
         if anti_to_os is None:
@@ -185,7 +171,6 @@ def _parse_biv_mix(cfg: dict) -> dict[str, Any]:
             "mode": mode,
             "total_rows": None,
             "anti_to_os": anti_to_os,
-            # keep ratios for cache tag / legacy logging
             "ratios": {
                 "wm_code": 1.0,
                 "wm_os": 1.0,
@@ -320,137 +305,119 @@ def _sample_jsonl(
     print(f"  {name}: sampled {n_take:,}/{n_total:,} → {dst}", flush=True)
 
 
-def _find_swift() -> str:
-    exe = shutil.which("swift")
-    if exe:
-        return exe
-    raise SystemExit(
-        "ms-swift `swift` CLI not found. Install:\n"
-        "  pip install 'ms-swift>=3.11'\n"
-    )
+def _msg_char_cost(m: dict) -> int:
+    n = _MSG_OVERHEAD_CHARS
+    c = m.get("content")
+    if isinstance(c, str):
+        n += len(c)
+    elif c is not None:
+        n += len(json.dumps(c, ensure_ascii=False))
+    tc = m.get("tool_calls")
+    if tc is not None:
+        n += len(json.dumps(tc, ensure_ascii=False))
+    return n
 
 
-def _cache_train_dir(source_cache: Path) -> Path:
-    """swift export writes ``<output_dir>/train`` (and optional val)."""
-    train = source_cache / "train"
-    if train.is_dir():
-        return train
-    # older / single-dir layouts
-    if (source_cache / "dataset_info.json").is_file() or any(source_cache.glob("*.arrow")):
-        return source_cache
-    return train
+def approx_token_len_messages(messages: list) -> int:
+    if not messages:
+        return 0
+    chars = 0
+    for m in messages:
+        if isinstance(m, dict):
+            chars += _msg_char_cost(m)
+    return max(1, int(chars / _CHARS_PER_TOKEN))
 
 
 def _cache_ready(source_cache: Path) -> bool:
-    train = _cache_train_dir(source_cache)
-    if not train.is_dir():
-        return False
-    for p in train.rglob("*"):
-        if p.is_file() and (
-            p.suffix in {".arrow", ".parquet"}
-            or p.name in {"dataset_info.json", "state.json"}
-            or p.stat().st_size > 256
-        ):
-            return True
+    train = source_cache / "train"
+    if (train / "state.json").is_file() or (train / "dataset_info.json").is_file():
+        return True
+    if (source_cache / "state.json").is_file() or (
+        source_cache / "dataset_info.json"
+    ).is_file():
+        return True
     return False
 
 
-def _export_one(
-    *,
-    swift: str,
-    model: str,
-    jsonl: Path,
-    out_dir: Path,
-    dataset_num_proc: int,
-    export_max_length: int,
-    export_truncation_strategy: str,
-) -> Path:
-    # ms-swift requires output_dir to NOT exist (it creates the folder itself).
-    if out_dir.exists():
-        print(f"Removing stale export dir: {out_dir}", flush=True)
-        shutil.rmtree(out_dir)
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    # Export must NOT apply train-time length policy:
-    # use a huge max_length so delete never fires and lengths stay full-sequence.
-    cmd = [
-        swift,
-        "export",
-        "--model",
-        model,
-        "--dataset",
-        str(jsonl),
-        "--to_cached_dataset",
-        "true",
-        "--output_dir",
-        str(out_dir),
-        "--dataset_num_proc",
-        # HF datasets: 0 → None → in-process map; 1 still spawns a worker pool.
-        str(max(0, dataset_num_proc)),
-        "--split_dataset_ratio",
-        "0",
-        "--max_length",
-        str(export_max_length),
-        "--truncation_strategy",
-        export_truncation_strategy,
-    ]
-    if dataset_num_proc <= 0:
-        print(
-            "  note: dataset_num_proc=0 → HF datasets in-process map "
-            "(avoids multiprocess worker OOM / FileNotFoundError cleanup noise)",
-            flush=True,
-        )
-    print(f"Running: {' '.join(cmd)}", flush=True)
+def _cache_train_dir(source_cache: Path) -> Path:
+    train = source_cache / "train"
+    if train.is_dir() and (
+        (train / "state.json").is_file() or (train / "dataset_info.json").is_file()
+    ):
+        return train
+    return source_cache
+
+
+def _export_hf_dataset(jsonl: Path, source_cache: Path, name: str, num_proc: int) -> Path:
+    """Build HF Dataset from JSONL messages; write under source_cache/train."""
+    from datasets import Dataset
+
+    out = source_cache / "train"
+    if out.exists():
+        shutil.rmtree(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+    bad = 0
+    size = jsonl.stat().st_size
+    bar = _tqdm(
+        total=size,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=f"hf map {name}",
+    )
+    with jsonl.open("rb") as f:
+        for line in f:
+            if bar is not None:
+                bar.update(len(line))
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                bad += 1
+                continue
+            messages = obj.get("messages")
+            if not isinstance(messages, list) or not messages:
+                bad += 1
+                continue
+            L = approx_token_len_messages(messages)
+            row: dict[str, Any] = {
+                "messages": messages,
+                "lengths": [L],
+                "length": L,
+            }
+            for meta in ("source", "instance_id", "trajectory_id", "n_turns"):
+                if meta in obj:
+                    row[meta] = obj[meta]
+            if "source" not in row:
+                row["source"] = name
+            rows.append(row)
+    if bar is not None:
+        bar.close()
+    if not rows:
+        raise SystemExit(f"{name}: no valid messages rows in {jsonl}")
     print(
-        f"  export length policy: max_length={export_max_length} "
-        f"strategy={export_truncation_strategy} "
-        "(train-time max_length/truncation apply later)",
+        f"  {name}: {len(rows):,} rows (skipped {bad:,}) → HF dataset …",
         flush=True,
     )
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
-    # Avoid HF tokenizer thread pools + fork explosions under dataset_num_proc>1.
-    env.setdefault("TOKENIZERS_PARALLELISM", "false")
-    env.setdefault("OMP_NUM_THREADS", "1")
-    proc = subprocess.run(cmd, check=False, cwd=str(ROOT), env=env)
-    if proc.returncode != 0:
-        rc = proc.returncode
-        # Unix: killed by signal → negative returncode (-9 = SIGKILL, often OOM).
-        if rc < 0:
-            sig = -rc
-            hint = (
-                f"swift export killed by signal {sig}"
-                + (
-                    " (SIGKILL — often cgroup/OOM; check `dmesg | grep -i kill`)"
-                    if sig == 9
-                    else ""
-                )
-            )
-        elif rc in {137, 247}:
-            # 137 = 128+9; 247 = (-9) mod 256 — both usually SIGKILL / OOM.
-            hint = (
-                f"swift export exit {rc} (SIGKILL/OOM class) — typically RAM "
-                "exhausted while encoding JSONL (ms-swift --to_cached_dataset "
-                "already uses load_model=False; not loading full weights). "
-                "Do not use AutoDL CPU-idle 2GB specs; use a machine with "
-                "tens of GB RAM and `--dataset-num-proc 0` (in-process map; "
-                "`1` still forks a datasets worker)."
-            )
-        else:
-            hint = f"swift export failed with exit code {rc}"
-        raise SystemExit(
-            f"{hint}\n"
-            f"  cmd: {' '.join(cmd)}\n"
-            f"  out: {out_dir}"
-        )
-    train = _cache_train_dir(out_dir)
-    if not _cache_ready(out_dir):
-        raise SystemExit(f"swift export finished but cache empty under {out_dir}")
-    return train
+    ds = Dataset.from_list(rows)
+    if num_proc and num_proc > 1:
+        # Touch map to materialize; lengths already set.
+        pass
+    ds.save_to_disk(str(out))
+    print(f"  {name}: wrote {out} ({len(ds):,} rows)", flush=True)
+    return out
 
 
 def main() -> None:
+    # Avoid accidental GPU init during CPU tokenize.
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+
     parser = argparse.ArgumentParser(
-        description="Ratio-sample + ms-swift cached_dataset export (step 2)."
+        description="Ratio-sample + HF dataset cache export (Muse / TRL)."
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--mix-dir", type=Path, default=None)
@@ -463,10 +430,7 @@ def main() -> None:
         "--dataset-num-proc",
         type=int,
         default=None,
-        help=(
-            "Override config dataset_num_proc for swift export. "
-            "Use 0 for in-process HF map (no worker pool); 1 still multiprocess."
-        ),
+        help="Reserved for HF map workers (default from config).",
     )
     args = parser.parse_args()
 
@@ -486,7 +450,9 @@ def main() -> None:
         if args.mix_dir
         else _resolve_path(cfg.get("mix_dir", DEFAULT_MIX))
     )
-    cache_root = _resolve_path(cfg.get("cache_root", "outputs/swift_cache/kimi_dev_72b_mix_v2"))
+    cache_root = _resolve_path(
+        cfg.get("cache_root", "outputs/trl_cache/muse_glimmer_mix_v2")
+    )
     from biv_wm.model_store import model_dir_ready, resolve_model_dir, resolve_model_for_train
 
     model = resolve_model_for_train(cfg, root=ROOT)
@@ -495,9 +461,9 @@ def main() -> None:
         print(f"Using prepared local model: {model}", flush=True)
     else:
         print(
-            "WARNING: prepared model_dir not ready — tokenize will pull tokenizer/weights "
-            f"via hub id {model!r}. Prefer:\n"
-            "  python scripts/prepare_model.py",
+            "NOTE: model_dir not ready yet (OK for char-budget tokenize). Prefer:\n"
+            "  python scripts/prepare_model.py\n"
+            f"  before train. Hub id fallback: {model!r}",
             flush=True,
         )
     dataset_num_proc = int(
@@ -505,22 +471,13 @@ def main() -> None:
         if args.dataset_num_proc is not None
         else cfg.get("dataset_num_proc", 8)
     )
-    export_cfg = cfg.get("export") or {}
-    export_max_length = int(export_cfg.get("max_length", 1_048_576))
-    export_truncation_strategy = str(export_cfg.get("truncation_strategy", "delete"))
-    if export_max_length < 262_144:
-        print(
-            f"WARNING: export.max_length={export_max_length} is low; "
-            "train-length policy should not be applied at export.",
-            flush=True,
-        )
 
     sources = {k: mix_dir / k / "train.jsonl" for k in SOURCE_KEYS}
     for name, p in sources.items():
         if not p.is_file():
             raise SystemExit(
                 f"Missing {p} — run prepare first:\n"
-                f"  python scripts/prepare_data.py --all --out-dir {mix_dir.relative_to(ROOT)}"
+                f"  python scripts/prepare_data.py --all --out-dir {mix_dir}"
             )
 
     available = _resolve_available(mix_dir, sources)
@@ -538,15 +495,7 @@ def main() -> None:
     print(f"Model:      {model}", flush=True)
     print(f"Mix dir:    {mix_dir}", flush=True)
     print(
-        f"Mix mode:   {mix['mode']}  anti_to_os={mix['anti_to_os']:g}"
-        + (
-            ""
-            if mix["mode"] == "full_wm"
-            else (
-                f"  ratios={mix['ratios']['wm_code']:g}:"
-                f"{mix['ratios']['wm_os']:g}:{mix['ratios']['anti_forget']:g}"
-            )
-        ),
+        f"Mix mode:   {mix['mode']}  anti_to_os={mix['anti_to_os']:g}",
         flush=True,
     )
     print(
@@ -572,7 +521,7 @@ def main() -> None:
 
     if args.check:
         print(f"Sample ready: {sample_ok}", flush=True)
-        print(f"Swift caches ready: {caches_ok}", flush=True)
+        print(f"HF caches ready: {caches_ok}", flush=True)
         print(f"Manifest: {manifest_path.is_file()}", flush=True)
         raise SystemExit(0 if (sample_ok and caches_ok and manifest_path.is_file()) else 1)
 
@@ -583,7 +532,6 @@ def main() -> None:
 
     if not sample_ok:
         print("Sampling full JSONL → ratio-matched subsets…", flush=True)
-        src_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="sample sources")
         for i, name in enumerate(SOURCE_KEYS):
             _sample_jsonl(
                 sources[name],
@@ -593,11 +541,6 @@ def main() -> None:
                 seed=mix["seed"] + i * 17,
                 name=name,
             )
-            if src_bar is not None:
-                src_bar.update(1)
-                src_bar.set_postfix_str(name)
-        if src_bar is not None:
-            src_bar.close()
         (sample_root / "sample_manifest.json").write_text(
             json.dumps(
                 {
@@ -620,7 +563,7 @@ def main() -> None:
         print(f"Reusing sampled JSONL under {sample_root}", flush=True)
 
     if args.sample_only:
-        print("--sample-only: skip swift export.", flush=True)
+        print("--sample-only: skip HF dataset export.", flush=True)
         return
 
     if args.force and tag_cache.exists():
@@ -630,69 +573,51 @@ def main() -> None:
 
     train_dirs: dict[str, str] = {}
     if caches_ok and not args.force:
-        print(f"Reusing swift caches under {tag_cache}", flush=True)
+        print(f"Reusing HF caches under {tag_cache}", flush=True)
         for k in SOURCE_KEYS:
             train_dirs[k] = str(_cache_train_dir(source_caches[k]).relative_to(ROOT))
     else:
-        swift = _find_swift()
         print(
-            "Exporting per-source cached_dataset via ms-swift "
-            f"(export ceiling max_length={export_max_length}, "
-            "no train-time truncate/drop)…",
+            "Building per-source HF datasets (char-budget lengths; "
+            f"chars/token≈{_CHARS_PER_TOKEN})…",
             flush=True,
         )
-        exp_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="swift export")
+        tag_cache.mkdir(parents=True, exist_ok=True)
         for name in SOURCE_KEYS:
-            train_path = _export_one(
-                swift=swift,
-                model=model,
-                jsonl=sampled_paths[name],
-                out_dir=source_caches[name],
-                dataset_num_proc=dataset_num_proc,
-                export_max_length=export_max_length,
-                export_truncation_strategy=export_truncation_strategy,
+            train_path = _export_hf_dataset(
+                sampled_paths[name],
+                source_caches[name],
+                name,
+                dataset_num_proc,
             )
             train_dirs[name] = str(train_path.relative_to(ROOT))
-            if exp_bar is not None:
-                exp_bar.update(1)
-                exp_bar.set_postfix_str(name)
-        if exp_bar is not None:
-            exp_bar.close()
 
     manifest = {
-        "framework": "ms-swift",
         "tag": tag,
         "model": model,
         "config": str(config_path.relative_to(ROOT)),
+        "mix_dir": str(mix_dir.relative_to(ROOT)),
         "seed": mix["seed"],
         "mode": mix["mode"],
-        "ratios": mix["ratios"],
+        "anti_to_os": mix["anti_to_os"],
         "targets": targets,
-        "shares": shares,
-        "sampled": {k: str(p.relative_to(ROOT)) for k, p in sampled_paths.items()},
         "cached_train": train_dirs,
-        "cache_root": str(tag_cache.relative_to(ROOT)),
-        "export": {
-            "max_length": export_max_length,
-            "truncation_strategy": export_truncation_strategy,
-            "note": "Export must not apply train max_length; use a huge ceiling only.",
-        },
+        "length_backend": "char_budget",
+        "chars_per_token": _CHARS_PER_TOKEN,
         "note": (
-            "Train with --cached_dataset on each cached_train path; "
-            "set --max_length / --truncation_strategy at train time only."
+            "messages + approx lengths; train_prep_mix does struct-right trim; "
+            "TRL tokenizes with Muse Glimmer chat_template at train time."
         ),
     }
     tag_cache.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    # convenient pointer for train/stat defaults
-    latest = cache_root / "LATEST"
-    latest.write_text(tag + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (cache_root / "LATEST").write_text(tag + "\n", encoding="utf-8")
     print(f"Wrote {manifest_path}", flush=True)
-    print(f"Wrote {latest} → {tag}", flush=True)
+    print(f"LATEST → {tag}", flush=True)
     print(
-        "\nDone. Next:\n"
+        "Next:\n"
         "  python scripts/stat.py --max-length 8192\n"
-        "  CUDA_VISIBLE_DEVICES=0,1 bash scripts/trainmodel.sh\n",
+        "  CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1\n",
         flush=True,
     )
 

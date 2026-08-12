@@ -5,12 +5,12 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → trainmodel
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/swift/kimi_dev_72b_qlora.yaml`` (default: ModelScope
-``moonshotai/Kimi-Dev-72B``).
+``configs/trl/muse_glimmer_30b_lora.yaml`` (default: HuggingFace
+``meta-models/Muse-Glimmer-30B``).
 
 Examples:
   python scripts/prepare_model.py
-  python scripts/prepare_model.py --source huggingface  # HF twin; optional HF_ENDPOINT
+  python scripts/prepare_model.py --source huggingface  # default; optional HF_ENDPOINT
   python scripts/prepare_model.py --check
   python scripts/prepare_model.py --force
 """
@@ -26,7 +26,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEFAULT_CONFIG = ROOT / "configs" / "swift" / "kimi_dev_72b_qlora.yaml"
+DEFAULT_CONFIG = ROOT / "configs" / "trl" / "muse_glimmer_30b_lora.yaml"
 
 
 def _load_yaml(path: Path) -> dict:

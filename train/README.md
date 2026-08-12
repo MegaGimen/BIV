@@ -13,69 +13,91 @@
 ```text
 train/
 ├── README.md
-├── requirements.txt
+├── requirements-muse.txt              # Muse branch (TRL + PEFT)
+├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy/pilot)
-│   ├── control_shuffled.yaml
-│   ├── swift/kimi_dev_72b_qlora.yaml  # Kimi-Dev-72B ms-swift (this branch)
-│   ├── swift/coder_next_qlora.yaml    # Qwen3-Coder-Next (other branch / CONFIG=)
-│   └── axolotl/coder_next_qlora.yaml  # legacy Axolotl
+│   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (this branch)
+│   ├── trl/muse_glimmer_30b_lora_shuffled.yaml  # shuffled control
+│   ├── accelerate/muse_{single,multi_ddp,fsdp2}.yaml
+│   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy)
+│   ├── swift/_legacy/                 # Kimi ms-swift (other branch)
+│   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
-│   ├── tokenize_data.py               # step 3: ratio-sample + ms-swift export
+│   ├── tokenize_data.py               # step 3: ratio-sample + HF cache
+│   ├── train_prep_mix.py              # struct-right trunc + choice
 │   ├── stat.py                        # step 4 (optional): length stats
-│   ├── trainmodel.sh            # step 5: ms-swift multi-GPU SFT
-│   ├── train_sft.py                   # Unsloth 9B
-│   └── test_adapters_offline.py
+│   ├── trainmodel.sh                  # step 5: TRL single/multi-GPU
+│   ├── train_muse_trl.py              # TRL SFTTrainer entry
+│   └── eval_wm.py
 ├── data/processed/mix_v2/
 └── outputs/
 ```
 
-## Branch note (msswift)
+## Branch note (Muse)
 
-This branch is . Sister  uses Axolotl QLoRA+FSDP2+CP.
+This branch fine-tunes **Meta Muse Glimmer-30B** with **TRL + PEFT + Accelerate**.
+Sister branches: `Kimi-Dev-72B/msswift`, `Kimi-Dev-72B/Axolotl`.
 
-## Pipeline (Kimi-Dev-72B mix — ms-swift; this branch)
+Claim protocol unchanged: real-I/O LoRA vs **shuffled** twin + same-scaffold agent metrics.
+
+## Pipeline (Muse Glimmer-30B — TRL; this branch)
 
 ```bash
-cd train && source .venv/bin/activate
-pip install 'ms-swift>=3.11' deepspeed 'bitsandbytes>=0.50'
-# FlashAttention required by trainmodel.sh
-# Dense Qwen2.5-72B: no flash-linear-attention needed
+cd train
+python3 -m venv .venv-muse && source .venv-muse/bin/activate
+pip install -U pip && pip install -r requirements-muse.txt
 
-# 1) Full JSONL corpora
+# 1) Full JSONL corpora (reuse existing mix_v2 if present)
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Download Kimi-Dev-72B (~150GB+; ModelScope moonshotai/Kimi-Dev-72B)
-python scripts/prepare_model.py
-# HF fallback: python scripts/prepare_model.py --source huggingface
-#   (+ optional: export HF_ENDPOINT=https://hf-mirror.com)
+# 2) Download Muse-Glimmer-30B (HF; optional: export HF_ENDPOINT=https://hf-mirror.com)
+python scripts/prepare_model.py --source huggingface
 python scripts/prepare_model.py --check
 
-# 3) Ratio-sample + ms-swift cached_dataset (re-run for this tokenizer)
+# 3) Ratio-sample + HF messages/lengths cache (CPU OK; no ms-swift)
 python scripts/tokenize_data.py
 
 # 4) Optional length / hard-trunc retention
 python scripts/stat.py --max-length 8192
 
-# 5) Train — single ~96GB is TIGHT at 8192; batch=1 attn-only LoRA
+# 5) Train — single GPU LoRA (BF16)
 export CUDA_VISIBLE_DEVICES=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+
+# QLoRA (4-bit)
+QLORA=1 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+# or: bash scripts/trainmodel.sh --max-length 8192 --choice 1 --qlora
 ```
 
-### Smoke (32k, 2×96GB, msswift SP)
+### Multi-GPU
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1
-bash scripts/trainmodel.sh --max-length 32768 --choice 1
-# Expect: auto PARALLEL=sp, sequence_parallel_size=2
+# DDP (default when ≥2 visible GPUs)
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+bash scripts/trainmodel.sh --max-length 8192 --choice 1
+
+# FSDP2 for longer context
+PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 ```
 
-Caches: `outputs/swift_cache/kimi_dev_72b_mix_v2/<tag>/…`
+### Shuffled control
+
+```bash
+# Point at a shuffled mix_dir (prepare with shuffle_observation), then:
+CONFIG=configs/trl/muse_glimmer_30b_lora_shuffled.yaml \
+  MIX_DIR=data/processed/mix_v2_shuffled \
+  bash scripts/trainmodel.sh --max-length 8192 --choice 1
+```
+
+Caches: `outputs/trl_cache/muse_glimmer_mix_v2/<tag>/…`
 Filtered runs: `<tag>/train_runs/ml<N>_…/`.
+Adapters: `outputs/muse_glimmer_wm_mix_ml<N>_c<K>/`.
+
+Vision / Perception Encoder stays **frozen** (text-only WM tool I/O).
 
 ## Pipeline (legacy 9B Unsloth)
 

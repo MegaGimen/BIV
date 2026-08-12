@@ -37,7 +37,7 @@ P(o_t \mid h_{<t}, a_t)
 
 | Item | Choice |
 |------|--------|
-| Checkpoint (current) | `Qwen/Qwen3.5-9B` Instruct (**not** Base). Stronger coding-agent Instructs (e.g. Qwen3-Coder-*) are optional later bases; changing base invalidates prior controls unless re-run. |
+| Checkpoint (current) | **`meta-models/Muse-Glimmer-30B`** on branch `Muse` (TRL LoRA). Prior controls: Kimi-Dev-72B (`Kimi-Dev-72B/msswift`), Unsloth `Qwen/Qwen3.5-9B`. Changing base invalidates prior controls unless re-run. |
 | Primary update | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere): learn env dynamics, not Demon / Matrix Law |
 | Labels | **Real** sandbox / execution-grounded tool outputs only |
 | Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
@@ -133,24 +133,27 @@ Small mix of **native agentic coding** trajectories (not the hypothesis channel)
 | [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
 | Nebius OpenHands / Instruct replay | Optional later |
 
-Train mix ratios live in `configs/swift/kimi_dev_72b_qlora.yaml` → `biv_mix`
-(default **code:os:anti = 1:1:0.35**). `tokenize_data.py` samples
-then runs `swift export --to_cached_dataset`; `stat.py` reports length distributions;
-train applies `--max_length` (CLI required) without re-export.
+Train mix ratios live in `configs/trl/muse_glimmer_30b_lora.yaml` → `biv_mix`
+(default **code:os:anti = 1:1:0.35** via `anti_to_os`). `tokenize_data.py` samples
+then builds HF `messages`+lengths caches; `stat.py` reports length distributions;
+train applies `--max-length` (CLI required) with struct-right prep.
 
-### Train Kimi-Dev-72B (this branch; ms-swift QLoRA)
+### Train Muse Glimmer-30B (branch `Muse`; TRL + PEFT LoRA)
 
 ```bash
 cd train
-# Default: ModelScope moonshotai/Kimi-Dev-72B
-python scripts/prepare_model.py
+pip install -r requirements-muse.txt
+# Default: HuggingFace meta-models/Muse-Glimmer-30B
+python scripts/prepare_model.py --source huggingface
 python scripts/tokenize_data.py
 CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+# Multi-GPU DDP: CUDA_VISIBLE_DEVICES=0,1,2,3 …
+# QLoRA: QLORA=1 … ; long context: PARALLEL=fsdp2 …
 ```
 
-Other bases: checkout `main` (Coder-Next) or `Qwen3-Coder-30B-A3B` / `GLM-4.7-Flash`.
+Other bases: checkout `Kimi-Dev-72B/msswift` (Kimi) or `main` (Coder-Next) /
+`Qwen3-Coder-30B-A3B` / `GLM-4.7-Flash`.
 Legacy Unsloth **Qwen3.5-9B**: `python scripts/train_sft.py --config configs/default.yaml`.
-Legacy Axolotl yaml under `configs/axolotl/` is deprecated for this mix.
 
 ### Future TODO (training data)
 
@@ -267,6 +270,6 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelin
 - Tool registry: `nanobot/agent/tools/registry.py`
 - Demon / proxies: `cartesian/demon.py`, `cartesian/tool_proxies.py`
 - WM data + metrics: `train/src/biv_wm/`
-- WM configs: `train/configs/default.yaml`, `train/configs/control_shuffled.yaml`
+- WM configs: `train/configs/trl/muse_glimmer_30b_lora.yaml` (Muse), `train/configs/default.yaml` / `control_shuffled.yaml` (legacy 9B)
 - WebUI proxy: `webui/vite.config.ts`
 - Tests mirror the `nanobot/` package structure.
