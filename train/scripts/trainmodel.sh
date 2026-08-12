@@ -11,13 +11,15 @@
 # Usage:
 #   export CUDA_VISIBLE_DEVICES=0          # single ~96GB
 #   bash scripts/trainmodel.sh --max-length 8192 --choice 2
-#   export CUDA_VISIBLE_DEVICES=0,1        # multi → SP (long-context activation)
+#   export CUDA_VISIBLE_DEVICES=0,1,2,3    # multi → SP (long-context)
 #   bash scripts/trainmodel.sh --max-length 32768 --choice 1
-#   PARALLEL=fsdp bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#   PARALLEL=fsdp bash scripts/trainmodel.sh --max-length 32768 --choice 1
+#   # experimental FSDP2 + SP (≈ Axolotl CP); prefer 4 GPUs, SP=2:
+#   PARALLEL=sp_fsdp SEQUENCE_PARALLEL_SIZE=2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 #
 # Other overrides:
-#   PARALLEL=single|sp|fsdp|deepspeed|device_map  CONFIG=...  MIX_DIR=...
-#   SEQUENCE_PARALLEL_SIZE=N  (default = visible GPU count when PARALLEL=sp)
+#   PARALLEL=single|sp|fsdp|sp_fsdp|deepspeed|device_map  CONFIG=...  MIX_DIR=...
+#   SEQUENCE_PARALLEL_SIZE=N  (sp: default=NGPU; sp_fsdp: default=2 when NGPU>=4)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -40,9 +42,9 @@ Usage:
   --force-prep     rebuild filtered run cache even if present
 
 Env:
-  CUDA_VISIBLE_DEVICES     default 0
-  PARALLEL                 omit/auto | single | sp | fsdp | deepspeed | device_map
-  SEQUENCE_PARALLEL_SIZE   default = NGPU when PARALLEL=sp
+  CUDA_VISIBLE_DEVICES     default 0 (use 0,1,2,3 for 4-GPU)
+  PARALLEL                 omit/auto | single | sp | fsdp | sp_fsdp | deepspeed | device_map
+  SEQUENCE_PARALLEL_SIZE   sp: default=NGPU; sp_fsdp: default=2 if NGPU>=4
   TRAIN_CHOICE             same as --choice
   CONFIG / MIX_DIR
 EOF
@@ -187,19 +189,52 @@ if [[ -z "$PARALLEL" ]]; then
     PARALLEL=sp
   fi
   echo "  auto PARALLEL=$PARALLEL (ngpu=$NGPU)"
-elif [[ "$NGPU" -le 1 && ( "$PARALLEL" == "fsdp" || "$PARALLEL" == "sp" ) && "${PARALLEL_FORCE:-}" != "1" ]]; then
+elif [[ "$NGPU" -le 1 && ( "$PARALLEL" == "fsdp" || "$PARALLEL" == "sp" || "$PARALLEL" == "sp_fsdp" ) && "${PARALLEL_FORCE:-}" != "1" ]]; then
   echo "NOTE: ngpu=1 → using PARALLEL=single (set PARALLEL_FORCE=1 to keep $PARALLEL)"
   PARALLEL=single
 fi
 
 # single: plain 1-process QLoRA on one GPU (best for ~80–96GB cards).
 # sp: DDP + ms-swift sequence_parallel_size (Ulysses+Ring) — default multi-GPU for long context.
-# fsdp: accelerate FSDP FULL_SHARD + QLoRA (weight shard; optional).
+# fsdp: accelerate FSDP2 + QLoRA (weight shard; no SP).
+# sp_fsdp: EXPERIMENTAL FSDP2 + sequence_parallel (msswift SP ≈ Axolotl CP). Prefer 4 GPUs
+#          with SEQUENCE_PARALLEL_SIZE=2. Not an official ms-swift cookbook combo.
 # device_map: legacy model-parallel (bnb CPU offload often breaks at step 0).
 # deepspeed: DDP+ZeRO (QLoRA often OOMs on rank0 during load on 48GB).
 EXTRA_PARALLEL_ARGS=()
 LAUNCH=()
 unset BIV_BNB_CPU_OFFLOAD
+
+_fsdp_common() {
+  # Shared FSDP2 launch + QLoRA args (GPU load, no device_map).
+  export ACCELERATE_USE_FSDP=true
+  export FSDP_VERSION=2
+  if [[ ! -f "$FSDP_CONFIG" ]]; then
+    echo "ERROR: FSDP config not found: $FSDP_CONFIG"
+    exit 1
+  fi
+  FSDP_RUN_CONFIG="$(mktemp "${TMPDIR:-/tmp}/biv_fsdp_XXXXXX.json")"
+  cleanup_fsdp() { rm -f "$FSDP_RUN_CONFIG"; }
+  trap cleanup_fsdp EXIT
+  python - <<PY
+import json
+from pathlib import Path
+cfg = json.loads(Path("$FSDP_CONFIG").read_text())
+cfg["num_processes"] = int("$NGPU")
+cfg.pop("_comment", None)
+fc = cfg.get("fsdp_config") or {}
+ver = fc.get("fsdp_version", cfg.get("fsdp_version", 2))
+print(f"  wrote FSDP config num_processes={cfg['num_processes']} fsdp_version={ver} → $FSDP_RUN_CONFIG")
+Path("$FSDP_RUN_CONFIG").write_text(json.dumps(cfg, indent=2) + "\n")
+PY
+  EXTRA_PARALLEL_ARGS+=(
+    --bnb_4bit_quant_storage bfloat16
+    --bnb_4bit_compute_dtype bfloat16
+    --optim adamw_torch_8bit
+    --gradient_checkpointing_kwargs '{"use_reentrant": false}'
+  )
+  LAUNCH=(accelerate launch --config_file "$FSDP_RUN_CONFIG")
+}
 
 if [[ "$PARALLEL" == "single" ]]; then
   unset NPROC_PER_NODE
@@ -249,41 +284,43 @@ elif [[ "$PARALLEL" == "fsdp" ]]; then
   fi
   unset NPROC_PER_NODE
   unset NNODES
-  # FSDP2 knobs aligned with Axolotl pure FSDP (see fsdp_qlora_kimi_dev_72b.json).
-  # Load QLoRA onto each rank GPU (no --device_map), then FSDP2 shards. One 96GB card
-  # holds ~40GB 4bit; avoid device_map=cpu. CP/SP intentionally not used here.
-  export ACCELERATE_USE_FSDP=true
-  export FSDP_VERSION=2
-  if [[ ! -f "$FSDP_CONFIG" ]]; then
-    echo "ERROR: FSDP config not found: $FSDP_CONFIG"
+  _fsdp_common
+  NPROC_PER_NODE="(accelerate num_processes=$NGPU)"
+  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP FSDP_VERSION=$FSDP_VERSION (FSDP2 only, GPU load, offload=false)"
+elif [[ "$PARALLEL" == "sp_fsdp" ]]; then
+  if [[ "$NGPU" -lt 2 ]]; then
+    echo "ERROR: PARALLEL=sp_fsdp needs >=2 GPUs (prefer 4 with SEQUENCE_PARALLEL_SIZE=2)"
     exit 1
   fi
-  # Rewrite num_processes to match visible GPUs (template defaults to 2).
-  FSDP_RUN_CONFIG="$(mktemp "${TMPDIR:-/tmp}/biv_fsdp_XXXXXX.json")"
-  cleanup_fsdp() { rm -f "$FSDP_RUN_CONFIG"; }
-  trap cleanup_fsdp EXIT
-  python - <<PY
-import json
-from pathlib import Path
-cfg = json.loads(Path("$FSDP_CONFIG").read_text())
-cfg["num_processes"] = int("$NGPU")
-# Drop JSON-only comment keys accelerate may not like.
-cfg.pop("_comment", None)
-fc = cfg.get("fsdp_config") or {}
-ver = fc.get("fsdp_version", cfg.get("fsdp_version", 2))
-print(f"  wrote FSDP config num_processes={cfg['num_processes']} fsdp_version={ver} → $FSDP_RUN_CONFIG")
-Path("$FSDP_RUN_CONFIG").write_text(json.dumps(cfg, indent=2) + "\n")
-PY
-  # Match Axolotl FSDP2 QLoRA: bf16 quant storage + adamw_torch_8bit (bnb optim breaks FSDP2).
+  unset NPROC_PER_NODE
+  unset NNODES
+  # Prefer SP=2 on 4+ even GPUs (Axolotl-like CP=2); override with SEQUENCE_PARALLEL_SIZE.
+  if [[ -n "${SEQUENCE_PARALLEL_SIZE:-}" ]]; then
+    SP_SIZE="$SEQUENCE_PARALLEL_SIZE"
+  elif [[ "$NGPU" -ge 4 && $((NGPU % 2)) -eq 0 ]]; then
+    SP_SIZE=2
+  else
+    SP_SIZE="$NGPU"
+  fi
+  if ! [[ "$SP_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: SEQUENCE_PARALLEL_SIZE must be a positive integer, got: $SP_SIZE"
+    exit 1
+  fi
+  if [[ "$SP_SIZE" -gt "$NGPU" ]]; then
+    echo "ERROR: SEQUENCE_PARALLEL_SIZE=$SP_SIZE > visible GPUs ($NGPU)"
+    exit 1
+  fi
+  if [[ $((NGPU % SP_SIZE)) -ne 0 ]]; then
+    echo "ERROR: NGPU=$NGPU not divisible by SEQUENCE_PARALLEL_SIZE=$SP_SIZE"
+    exit 1
+  fi
+  _fsdp_common
   EXTRA_PARALLEL_ARGS+=(
-    --bnb_4bit_quant_storage bfloat16
-    --bnb_4bit_compute_dtype bfloat16
-    --optim adamw_torch_8bit
-    --gradient_checkpointing_kwargs '{"use_reentrant": false}'
+    --sequence_parallel_size "$SP_SIZE"
+    --padding_free true
   )
-  LAUNCH=(accelerate launch --config_file "$FSDP_RUN_CONFIG")
-  NPROC_PER_NODE="(accelerate num_processes=$NGPU)"
-  echo "  ACCELERATE_USE_FSDP=$ACCELERATE_USE_FSDP FSDP_VERSION=$FSDP_VERSION (Axolotl-aligned FSDP2, GPU load, offload=false)"
+  NPROC_PER_NODE="(accelerate+sp nproc=$NGPU sp=$SP_SIZE)"
+  echo "  EXPERIMENTAL sp_fsdp: FSDP2 num_processes=$NGPU + sequence_parallel_size=$SP_SIZE (not cookbook-backed)"
 elif [[ "$PARALLEL" == "device_map" ]]; then
   echo "WARNING: parallel=device_map is legacy; bnb+CPU offload often fails at first train step."
   if [[ -n "${NPROC_PER_NODE:-}" || -n "${NNODES:-}" ]]; then
@@ -318,7 +355,7 @@ elif [[ "$PARALLEL" == "deepspeed" ]]; then
   export NPROC_PER_NODE
   EXTRA_PARALLEL_ARGS+=(--deepspeed "$DEEPSPEED")
 else
-  echo "ERROR: unknown PARALLEL=$PARALLEL (use single, sp, fsdp, device_map, or deepspeed)"
+  echo "ERROR: unknown PARALLEL=$PARALLEL (use single, sp, fsdp, sp_fsdp, device_map, or deepspeed)"
   exit 1
 fi
 
