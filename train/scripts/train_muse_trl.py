@@ -142,6 +142,46 @@ def _load_concat_datasets(paths: list[Path]):
     return concatenate_datasets(parts)
 
 
+def _ensure_training_chat_template(tokenizer) -> None:
+    """Wrap Muse assistant turns with TRL ``{% generation %}`` markers in-place.
+
+    Glimmer's shipped Jinja is prefix-preserving and tool-capable, but lacks
+    generation markers. TRL 1.8 ``SFTTrainer`` with ``assistant_only_loss=True``
+    then raises (only known families like GPT-OSS/Qwen get auto-patched).
+    Markers are whitespace-only for rendering; they drive assistant token masks.
+    """
+    import re
+
+    ct = getattr(tokenizer, "chat_template", None)
+    if not isinstance(ct, str) or not ct:
+        raise SystemExit("Tokenizer has no chat_template; cannot enable assistant_only_loss")
+    if re.search(r"\{%-?\s*generation\s*-?%\}", ct):
+        print("[muse] chat_template already has {% generation %} markers", flush=True)
+        return
+
+    start = "{%- elif role == 'assistant' -%}"
+    end_needle = "{%- endfor -%}{%- if add_generation_prompt"
+    if start not in ct or end_needle not in ct:
+        raise SystemExit(
+            "Muse chat_template shape unexpected; cannot inject {% generation %} "
+            "for assistant_only_loss. Update _ensure_training_chat_template or set "
+            "train.assistant_only_loss: false."
+        )
+    idx = ct.find(start) + len(start)
+    endfor_pos = ct.find(end_needle)
+    last_endif = ct.rfind("{%- endif -%}", 0, endfor_pos)
+    if last_endif < idx:
+        raise SystemExit("Failed to locate assistant block end for generation markers")
+    tokenizer.chat_template = (
+        ct[:idx]
+        + "{%- generation %}"
+        + ct[idx:last_endif]
+        + "{%- endgeneration %}"
+        + ct[last_endif:]
+    )
+    print("[muse] injected {% generation %} markers into chat_template", flush=True)
+
+
 def _load_muse_glimmer(model_path: str, load_kwargs: dict[str, Any]):
     """Load the generative Muse Glimmer head (not the bare MuseGlimmerModel).
 
@@ -202,6 +242,7 @@ def _build_model_and_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    _ensure_training_chat_template(tokenizer)
 
     load_kwargs: dict[str, Any] = {
         "trust_remote_code": True,
