@@ -318,6 +318,7 @@ def main() -> None:
     )
 
     from trl import SFTConfig, SFTTrainer
+    import inspect
 
     lr = float(args.learning_rate or train_cfg.get("learning_rate", 2e-4))
     epochs = float(args.num_epochs or train_cfg.get("num_epochs", 2))
@@ -329,10 +330,16 @@ def main() -> None:
     logging_steps = int(args.logging_steps or train_cfg.get("logging_steps", 10))
     save_steps = int(args.save_steps or train_cfg.get("save_steps", 200))
     save_limit = int(args.save_total_limit or train_cfg.get("save_total_limit", 3))
-    warmup = float(args.warmup_ratio or train_cfg.get("warmup_ratio", 0.03))
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
     assistant_only = bool(train_cfg.get("assistant_only_loss", True))
+
+    # Meta docs use TrainingArguments without warmup_*; TRL 1.8 / current
+    # transformers TrainingArguments dropped warmup_ratio — only warmup_steps.
+    warmup_ratio = float(args.warmup_ratio or train_cfg.get("warmup_ratio", 0.03))
+    steps_per_epoch = max(1, len(train_ds) // max(1, bs * gas))
+    total_steps = max(1, int(epochs * steps_per_epoch))
+    warmup_steps = int(train_cfg.get("warmup_steps") or max(1, int(total_steps * warmup_ratio)))
 
     sft_kwargs: dict[str, Any] = dict(
         output_dir=str(out_dir),
@@ -344,28 +351,33 @@ def main() -> None:
         logging_steps=logging_steps,
         save_steps=save_steps,
         save_total_limit=save_limit,
-        warmup_ratio=warmup,
+        warmup_steps=warmup_steps,
         seed=seed,
         max_length=max_length,
         packing=packing,
         gradient_checkpointing=grad_ckpt,
-        dataset_kwargs={"skip_prepare_dataset": False},
         report_to=os.environ.get("REPORT_TO", "none"),
     )
-    # Prefer assistant-only CE when TRL supports it.
     if assistant_only:
         sft_kwargs["assistant_only_loss"] = True
 
-    try:
-        sft_args = SFTConfig(**sft_kwargs)
-    except TypeError:
-        # Older TRL: drop unsupported keys
-        for k in ("assistant_only_loss", "dataset_kwargs", "max_length"):
-            sft_kwargs.pop(k, None)
-        if "max_seq_length" not in sft_kwargs:
-            sft_kwargs["max_seq_length"] = max_length
-        sft_args = SFTConfig(**sft_kwargs)
-        print("[muse] older TRL SFTConfig; assistant_only_loss may be unavailable", flush=True)
+    # Keep only kwargs accepted by this TRL/transformers build (avoids API drift).
+    accepted = set(inspect.signature(SFTConfig.__init__).parameters)
+    accepted.discard("self")
+    dropped = sorted(k for k in sft_kwargs if k not in accepted)
+    sft_kwargs = {k: v for k, v in sft_kwargs.items() if k in accepted}
+    if dropped:
+        print(f"[muse] SFTConfig dropped unsupported kwargs: {dropped}", flush=True)
+    # Older TRL used max_seq_length
+    if "max_length" not in sft_kwargs and "max_seq_length" in accepted:
+        sft_kwargs["max_seq_length"] = max_length
+
+    print(
+        f"[muse] SFTConfig warmup_steps={sft_kwargs.get('warmup_steps')} "
+        f"(from ratio={warmup_ratio:g}, ~{total_steps} steps)",
+        flush=True,
+    )
+    sft_args = SFTConfig(**sft_kwargs)
 
     trainer_kwargs: dict[str, Any] = dict(
         model=model,
