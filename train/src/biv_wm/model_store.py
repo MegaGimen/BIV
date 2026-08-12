@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL_ID = "meta-models/Muse-Glimmer-30B"
-DEFAULT_MODEL_SOURCE = "huggingface"
+DEFAULT_MODEL_SOURCE = "modelscope"
 DEFAULT_MODEL_DIR = "outputs/models/Muse-Glimmer-30B"
 MANIFEST_NAME = "model_manifest.json"
 

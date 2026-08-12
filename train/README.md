@@ -53,8 +53,8 @@ pip install -U pip && pip install -r requirements-muse.txt
 # 1) Full JSONL corpora (reuse existing mix_v2 if present)
 python scripts/prepare_data.py --all --out-dir data/processed/mix_v2
 
-# 2) Download Muse-Glimmer-30B (HF; optional: export HF_ENDPOINT=https://hf-mirror.com)
-python scripts/prepare_model.py --source huggingface
+# 2) Download Muse-Glimmer-30B (ModelScope; HF twin: --source huggingface)
+python scripts/prepare_model.py
 python scripts/prepare_model.py --check
 
 # 3) Ratio-sample + HF messages/lengths cache (CPU OK; no ms-swift)

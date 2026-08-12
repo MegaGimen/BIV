@@ -143,12 +143,13 @@ train applies `--max-length` (CLI required) with struct-right prep.
 ```bash
 cd train
 pip install -r requirements-muse.txt
-# Default: HuggingFace meta-models/Muse-Glimmer-30B
-python scripts/prepare_model.py --source huggingface
+# Default: ModelScope meta-models/Muse-Glimmer-30B
+python scripts/prepare_model.py
 python scripts/tokenize_data.py
 CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
 # Multi-GPU DDP: CUDA_VISIBLE_DEVICES=0,1,2,3 …
 # QLoRA: QLORA=1 … ; long context: PARALLEL=fsdp2 …
+# HF twin if needed: python scripts/prepare_model.py --source huggingface
 ```
 
 Other bases: checkout `Kimi-Dev-72B/msswift` (Kimi) or `main` (Coder-Next) /

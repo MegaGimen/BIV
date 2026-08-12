@@ -5,12 +5,13 @@ Workflow:
   prepare_data → prepare_model → tokenize_data → trainmodel
 
 Reads ``model`` / ``model_source`` / ``model_dir`` from
-``configs/trl/muse_glimmer_30b_lora.yaml`` (default: HuggingFace
+``configs/trl/muse_glimmer_30b_lora.yaml`` (default: ModelScope
 ``meta-models/Muse-Glimmer-30B``).
 
 Examples:
   python scripts/prepare_model.py
-  python scripts/prepare_model.py --source huggingface  # default; optional HF_ENDPOINT
+  python scripts/prepare_model.py --source modelscope  # default
+  python scripts/prepare_model.py --source huggingface  # HF twin; optional HF_ENDPOINT
   python scripts/prepare_model.py --check
   python scripts/prepare_model.py --force
 """
