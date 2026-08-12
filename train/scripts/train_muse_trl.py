@@ -112,7 +112,7 @@ def _normalize_messages(messages: Any) -> list[dict[str, str]]:
 
 
 def _load_concat_datasets(paths: list[Path]):
-    from datasets import Features, Sequence, Value, concatenate_datasets, load_from_disk
+    from datasets import Features, Value, concatenate_datasets, load_from_disk
 
     # Uniform schema so mix sources can concatenate.
     msg_features = Features(
