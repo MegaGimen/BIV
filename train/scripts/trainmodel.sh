@@ -3,8 +3,8 @@
 # Branch: Kimi-Dev-72B/Axolotl
 #
 # Usage:
-#   export CUDA_VISIBLE_DEVICES=0,1
-#   bash scripts/trainmodel.sh --max-length 32768 --choice 1
+#   export CUDA_VISIBLE_DEVICES=0,1,2,3
+#   bash scripts/trainmodel.sh --max-length 32768 --choice 1 --force-prep
 #
 # Install:
 #   pip install 'axolotl[ring-flash-attn]'
@@ -30,9 +30,10 @@ Usage:
   --force-prep     rebuild run yaml / sampled jsonl
 
 Env:
-  CUDA_VISIBLE_DEVICES  default 0
+  CUDA_VISIBLE_DEVICES  default 0 (use 0,1,2,3 for 4-GPU CP×FSDP)
   CONFIG / MIX_DIR
-  CONTEXT_PARALLEL_SIZE override (default = visible GPU count)
+  CONTEXT_PARALLEL_SIZE override (default: 2 when NGPU even and >=2, else 1)
+                            dp_shard_size is always NGPU / CONTEXT_PARALLEL_SIZE
 EOF
 }
 
@@ -115,7 +116,14 @@ xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()
 print(len(xs) if xs else 1)
 PY
 )"
-CP_SIZE="${CONTEXT_PARALLEL_SIZE:-$NGPU}"
+# CP × dp_shard must equal NGPU. Default CP=2 on even multi-GPU (4→2×2 FSDP+CP).
+if [[ -n "${CONTEXT_PARALLEL_SIZE:-}" ]]; then
+  CP_SIZE="$CONTEXT_PARALLEL_SIZE"
+elif [[ "$NGPU" -ge 2 && $((NGPU % 2)) -eq 0 ]]; then
+  CP_SIZE=2
+else
+  CP_SIZE=1
+fi
 if ! [[ "$CP_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: CONTEXT_PARALLEL_SIZE must be positive integer, got: $CP_SIZE"
   exit 1
@@ -124,6 +132,11 @@ if [[ "$CP_SIZE" -gt "$NGPU" ]]; then
   echo "ERROR: CONTEXT_PARALLEL_SIZE=$CP_SIZE > visible GPUs ($NGPU)"
   exit 1
 fi
+if [[ $((NGPU % CP_SIZE)) -ne 0 ]]; then
+  echo "ERROR: NGPU=$NGPU not divisible by CONTEXT_PARALLEL_SIZE=$CP_SIZE"
+  exit 1
+fi
+DP_SHARD_SIZE=$((NGPU / CP_SIZE))
 
 RUN_ROOT="outputs/axolotl_runs/ml${MAX_LENGTH}_c${CHOICE}"
 RUN_YAML="$RUN_ROOT/train.run.yaml"
@@ -132,6 +145,7 @@ mkdir -p "$RUN_ROOT"
 if [[ "$FORCE_PREP" -eq 1 || ! -f "$RUN_YAML" ]]; then
   CONFIG="$CONFIG" MIX_DIR="$MIX_DIR" MAX_LENGTH="$MAX_LENGTH" CHOICE="$CHOICE" \
   RUN_ROOT="$RUN_ROOT" RUN_YAML="$RUN_YAML" NGPU="$NGPU" CP_SIZE="$CP_SIZE" \
+  DP_SHARD_SIZE="$DP_SHARD_SIZE" \
   python - <<'PY'
 from __future__ import annotations
 
@@ -159,6 +173,7 @@ max_length = int(os.environ["MAX_LENGTH"])
 choice = os.environ["CHOICE"]
 ngpu = int(os.environ["NGPU"])
 cp_size = int(os.environ["CP_SIZE"])
+dp_shard_size = int(os.environ["DP_SHARD_SIZE"])
 
 cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
 # Strip BIV-only keys Axolotl does not understand.
@@ -225,7 +240,7 @@ cfg["sequence_len"] = max_length
 cfg["output_dir"] = str(run_root / "checkpoints")
 cfg["dataset_prepared_path"] = str(run_root / "prepared")
 cfg["context_parallel_size"] = cp_size
-cfg["dp_shard_size"] = ngpu
+cfg["dp_shard_size"] = dp_shard_size
 cfg["datasets"] = [
     {
         "path": str(dataset_paths["wm_code"]),
@@ -257,7 +272,7 @@ meta = {
     "choice": choice,
     "ngpu": ngpu,
     "context_parallel_size": cp_size,
-    "dp_shard_size": ngpu,
+    "dp_shard_size": dp_shard_size,
     "config_template": str(config),
     "run_yaml": str(run_yaml),
 }
@@ -272,7 +287,7 @@ fi
 echo "=== Axolotl train ==="
 echo "  config=$RUN_YAML"
 echo "  max_length=$MAX_LENGTH choice=$CHOICE"
-echo "  GPUs=$CUDA_VISIBLE_DEVICES ngpu=$NGPU context_parallel_size=$CP_SIZE dp_shard_size=$NGPU"
+echo "  GPUs=$CUDA_VISIBLE_DEVICES ngpu=$NGPU context_parallel_size=$CP_SIZE dp_shard_size=$DP_SHARD_SIZE (CP×FSDP mesh=$CP_SIZE×$DP_SHARD_SIZE)"
 
 # FlashAttention hard check (Axolotl CP requires FA + ring-flash-attn)
 python - <<'PY'
