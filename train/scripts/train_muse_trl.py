@@ -79,8 +79,49 @@ def _filter_target_modules(model, modules: list[str]) -> list[str]:
     return kept
 
 
+def _normalize_messages(messages: Any) -> list[dict[str, str]]:
+    """Align chat turns across sources (strip tool_calls / non-string content).
+
+    wm_code / anti_forget Arrow schemas may include ``tool_calls`` while wm_os
+    does not — concatenate_datasets then fails feature alignment.
+    """
+    import json
+
+    out: list[dict[str, str]] = []
+    if not isinstance(messages, list):
+        return out
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "user")
+        content = m.get("content")
+        if content is None:
+            content = ""
+        elif not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+        # Fold tool_calls into text if present so schema stays role/content only.
+        tc = m.get("tool_calls")
+        if tc:
+            try:
+                tc_s = json.dumps(tc, ensure_ascii=False)
+            except TypeError:
+                tc_s = str(tc)
+            content = (content + "\n" + tc_s).strip() if content else tc_s
+        out.append({"role": role, "content": content})
+    return out
+
+
 def _load_concat_datasets(paths: list[Path]):
-    from datasets import concatenate_datasets, load_from_disk
+    from datasets import Features, Sequence, Value, concatenate_datasets, load_from_disk
+
+    # Uniform schema so mix sources can concatenate.
+    msg_features = Features(
+        {
+            "messages": [
+                {"role": Value("string"), "content": Value("string")},
+            ]
+        }
+    )
 
     parts = []
     for p in paths:
@@ -89,9 +130,13 @@ def _load_concat_datasets(paths: list[Path]):
         ds = load_from_disk(str(p))
         if "messages" not in ds.column_names:
             raise SystemExit(f"{p}: need 'messages' column, got {ds.column_names}")
-        # Keep only columns TRL needs (+ optional metadata stripped later)
-        keep = [c for c in ("messages",) if c in ds.column_names]
-        parts.append(ds.select_columns(keep))
+
+        def _map(ex):
+            return {"messages": _normalize_messages(ex["messages"])}
+
+        ds = ds.map(_map, remove_columns=[c for c in ds.column_names if c != "messages"])
+        ds = ds.cast(msg_features)
+        parts.append(ds)
         print(f"  loaded {p} ({len(ds):,} rows)", flush=True)
     if len(parts) == 1:
         return parts[0]
