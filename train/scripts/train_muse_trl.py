@@ -82,46 +82,39 @@ def _filter_target_modules(model, modules: list[str]) -> list[str]:
     return kept
 
 
-def _normalize_messages(messages: Any) -> list[dict[str, str]]:
-    """Align chat turns across sources (strip tool_calls / non-string content).
+def _normalize_messages(messages: Any) -> list[dict[str, Any]]:
+    """Uniform train messages: keep Muse tool fields; repair anti_forget."""
+    from biv_wm.adapters.normalize import messages_for_arrow, normalize_train_messages
 
-    wm_code / anti_forget Arrow schemas may include ``tool_calls`` while wm_os
-    does not — concatenate_datasets then fails feature alignment.
-    """
-    import json
-
-    out: list[dict[str, str]] = []
-    if not isinstance(messages, list):
-        return out
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        role = str(m.get("role") or "user")
-        content = m.get("content")
-        if content is None:
-            content = ""
-        elif not isinstance(content, str):
-            content = json.dumps(content, ensure_ascii=False)
-        # Fold tool_calls into text if present so schema stays role/content only.
-        tc = m.get("tool_calls")
-        if tc:
-            try:
-                tc_s = json.dumps(tc, ensure_ascii=False)
-            except TypeError:
-                tc_s = str(tc)
-            content = (content + "\n" + tc_s).strip() if content else tc_s
-        out.append({"role": role, "content": content})
-    return out
+    # Arrow-stable (arguments as JSON strings); chat_template path re-parses to dict.
+    return messages_for_arrow(normalize_train_messages(messages))
 
 
 def _load_concat_datasets(paths: list[Path]):
     from datasets import Dataset, Features, Value, concatenate_datasets, load_from_disk
 
-    # Uniform schema so mix sources can concatenate.
+    # Uniform schema so wm_* (no tools) and anti_forget (tools) can concatenate.
+    # Empty tool_calls / blank name|tool_call_id for WM rows.
+    # tool_calls.function.arguments stored as JSON string; parsed to dict at tokenize.
     msg_features = Features(
         {
             "messages": [
-                {"role": Value("string"), "content": Value("string")},
+                {
+                    "role": Value("string"),
+                    "content": Value("string"),
+                    "name": Value("string"),
+                    "tool_call_id": Value("string"),
+                    "tool_calls": [
+                        {
+                            "id": Value("string"),
+                            "type": Value("string"),
+                            "function": {
+                                "name": Value("string"),
+                                "arguments": Value("string"),
+                            },
+                        }
+                    ],
+                }
             ]
         }
     )
@@ -134,10 +127,13 @@ def _load_concat_datasets(paths: list[Path]):
         if "messages" not in ds.column_names:
             raise SystemExit(f"{p}: need 'messages' column, got {ds.column_names}")
 
-        # Rebuild with an explicit schema. map()+cast() keeps the old Arrow
-        # struct (incl. tool_calls) and fails on anti_forget rows.
         rows = [{"messages": _normalize_messages(ex["messages"])} for ex in ds]
-        part = Dataset.from_list(rows, features=msg_features)
+        try:
+            part = Dataset.from_list(rows, features=msg_features)
+        except Exception as e:
+            # Fallback without Features if Arrow rejects edge shapes.
+            print(f"[muse] WARN features cast failed ({e!r}); from_list without Features", flush=True)
+            part = Dataset.from_list(rows)
         parts.append(part)
         print(f"  loaded {p} ({len(part):,} rows)", flush=True)
     if len(parts) == 1:
@@ -174,8 +170,8 @@ def _tokenized_cache_dir(
     import hashlib
 
     run_root = cached[0].resolve().parent
-    # v3 = offline single-process tokenize (avoids multi-GPU barrier during TRL prepare)
-    parts = [f"v3|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
+    # v4 = openhands tool fields preserved + think-reply repair (anti_forget)
+    parts = [f"v4|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
     for p in cached:
         rp = p.resolve()
         parts.append(str(rp))
@@ -248,13 +244,9 @@ def _tokenize_messages_offline(
     """Mirror TRL SFT prepare (tokenize → labels → truncate) without a distributed barrier."""
 
     def _as_msgs(raw):
-        out = []
-        for m in raw:
-            if isinstance(m, dict):
-                out.append({"role": str(m.get("role") or "user"), "content": m.get("content") or ""})
-            else:
-                out.append({"role": str(m["role"]), "content": m["content"] or ""})
-        return out
+        from biv_wm.adapters.normalize import messages_for_chat_template
+
+        return messages_for_chat_template(raw)
 
     def _map(ex):
         msgs = _as_msgs(ex["messages"])

@@ -209,7 +209,9 @@ def _render_final(
     assistant_only: bool,
     truncation_mode: str,
 ) -> dict[str, Any]:
-    norm = muse_mod._normalize_messages(messages)
+    from biv_wm.adapters.normalize import messages_for_chat_template
+
+    norm = messages_for_chat_template(messages)
     rendered = tokenizer.apply_chat_template(
         norm,
         tokenize=False,
@@ -329,7 +331,7 @@ def _print_final_sample(
     print("", flush=True)
 
     if show_messages:
-        print("--- normalized messages (role/content only; tool_calls folded) ---", flush=True)
+        print("--- normalized messages (Muse-ready; tool_calls kept structured) ---", flush=True)
         _print_messages(info["normalized_messages"], show_tools=False)
         print("", flush=True)
 

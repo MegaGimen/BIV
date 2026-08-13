@@ -154,6 +154,268 @@ def _clip_content(text: Any, max_chars: int) -> tuple[Any, bool, int]:
     )
 
 
+# OpenHands "think" tool replies often lose tool_call_id after HF Arrow unify.
+_THINK_REPLY_EXACT = frozenset(
+    {
+        "your thought has been logged.",
+        "your thought has been logged",
+    }
+)
+_POLICY_SKIP_TOOLS = frozenset({"think", "finish"})
+
+
+def _is_think_tool_reply(content: Any) -> bool:
+    if not isinstance(content, str):
+        return False
+    return content.strip().lower() in _THINK_REPLY_EXACT
+
+
+def _as_str_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except TypeError:
+        return str(content)
+
+
+def _canon_tool_call(tc: Any) -> dict[str, Any] | None:
+    """Normalize one OpenAI-style tool_call for Muse chat_template.
+
+    Muse / Onyx ATEM jinja requires ``function.arguments`` to be a **dict**
+    (JSON strings are rejected in the HF sandbox).
+    """
+    if not isinstance(tc, dict):
+        return None
+    fn = tc.get("function", tc)
+    if not isinstance(fn, dict):
+        return None
+    name = fn.get("name")
+    if not name:
+        return None
+    args = fn.get("arguments", {})
+    if isinstance(args, str):
+        s = args.strip()
+        if not s:
+            args = {}
+        else:
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                parsed = {"_raw": args}
+            args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
+    elif args is None:
+        args = {}
+    elif not isinstance(args, dict):
+        args = {"_raw": args}
+    out: dict[str, Any] = {
+        "id": str(tc.get("id") or ""),
+        "type": str(tc.get("type") or "function"),
+        "function": {"name": str(name), "arguments": args},
+    }
+    return out
+
+
+def messages_for_arrow(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Serialize tool_call arguments to JSON strings for HF Arrow Features."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        row = {
+            "role": m.get("role") or "user",
+            "content": _as_str_content(m.get("content")),
+            "name": str(m.get("name") or ""),
+            "tool_call_id": str(m.get("tool_call_id") or ""),
+            "tool_calls": [],
+        }
+        for tc in m.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            args = fn.get("arguments", {})
+            if isinstance(args, dict):
+                args_s = json.dumps(args, ensure_ascii=False)
+            else:
+                args_s = str(args) if args is not None else "{}"
+            row["tool_calls"].append(
+                {
+                    "id": str(tc.get("id") or ""),
+                    "type": str(tc.get("type") or "function"),
+                    "function": {
+                        "name": str(fn.get("name") or ""),
+                        "arguments": args_s,
+                    },
+                }
+            )
+        out.append(row)
+    return out
+
+
+def messages_for_chat_template(messages: Any) -> list[dict[str, Any]]:
+    """Ensure Muse-ready messages (tool_calls.arguments as dict; drop empty fields)."""
+    normed = normalize_train_messages(messages)
+    out: list[dict[str, Any]] = []
+    for m in normed:
+        row: dict[str, Any] = {"role": m["role"], "content": m["content"]}
+        if m["role"] == "tool":
+            if m.get("name"):
+                row["name"] = m["name"]
+            if m.get("tool_call_id"):
+                row["tool_call_id"] = m["tool_call_id"]
+        if m.get("tool_calls"):
+            # _canon already made arguments dict via normalize_train_messages
+            row["tool_calls"] = m["tool_calls"]
+        out.append(row)
+    return out
+
+
+def normalize_openhands_messages(
+    messages: Any,
+    *,
+    drop_think_tool: bool = True,
+) -> list[dict[str, Any]]:
+    """Repair OpenHands / anti_forget messages for Muse native tool rendering.
+
+    - Drop ``think`` / ``finish`` tool_calls and their replies (incl. orphan
+      ``Your thought has been logged.`` when ids were stripped by Arrow).
+    - Keep structured ``tool_calls`` on assistant (do **not** fold into content).
+    - Re-attach ``name`` / ``tool_call_id`` on ``role=tool`` by sequential pairing
+      with the preceding assistant's tool_calls when metadata was lost.
+    - Emit a uniform per-message key set for HF concatenate.
+    """
+    if not isinstance(messages, list):
+        return []
+
+    skip = _POLICY_SKIP_TOOLS if drop_think_tool else frozenset()
+    skip_ids: set[str] = set()
+    interim: list[dict[str, Any]] = []
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user")
+        content = _as_str_content(msg.get("content"))
+
+        if role == "assistant":
+            raw_calls = msg.get("tool_calls")
+            kept: list[dict[str, Any]] = []
+            if isinstance(raw_calls, list):
+                for tc in raw_calls:
+                    canon = _canon_tool_call(tc)
+                    if canon is None:
+                        continue
+                    name = canon["function"]["name"]
+                    tid = canon["id"]
+                    if name in skip:
+                        if tid:
+                            skip_ids.add(tid)
+                        continue
+                    kept.append(canon)
+            if not kept and not content.strip():
+                continue
+            row: dict[str, Any] = {
+                "role": "assistant",
+                "content": content,
+                "name": "",
+                "tool_call_id": "",
+                "tool_calls": kept,
+            }
+            interim.append(row)
+            continue
+
+        if role == "tool":
+            if drop_think_tool and _is_think_tool_reply(content):
+                continue
+            tid = msg.get("tool_call_id")
+            tid_s = str(tid) if tid is not None and str(tid) else ""
+            if tid_s and tid_s in skip_ids:
+                continue
+            tname = msg.get("name")
+            interim.append(
+                {
+                    "role": "tool",
+                    "content": content,
+                    "name": str(tname) if tname else "",
+                    "tool_call_id": tid_s,
+                    "tool_calls": [],
+                }
+            )
+            continue
+
+        interim.append(
+            {
+                "role": role,
+                "content": content,
+                "name": "",
+                "tool_call_id": "",
+                "tool_calls": [],
+            }
+        )
+
+    # Sequential re-pair: after each assistant with tool_calls, fill following tools.
+    out: list[dict[str, Any]] = []
+    pending: list[tuple[str, str]] = []  # (id, name)
+    for row in interim:
+        if row["role"] == "assistant":
+            pending = [
+                (str(tc.get("id") or ""), str(tc["function"]["name"]))
+                for tc in row["tool_calls"]
+            ]
+            out.append(row)
+            continue
+        if row["role"] == "tool":
+            if pending:
+                tid, tname = pending.pop(0)
+                if not row["tool_call_id"] and tid:
+                    row["tool_call_id"] = tid
+                if not row["name"] and tname:
+                    row["name"] = tname
+            if not row["name"]:
+                row["name"] = "tool"
+            out.append(row)
+            continue
+        pending = []
+        out.append(row)
+    return out
+
+
+def normalize_train_messages(messages: Any) -> list[dict[str, Any]]:
+    """Train-time message normalize for all mix sources.
+
+    WM rows (user/assistant JSON only) pass through with empty tool fields.
+    Anti-forget / OpenHands rows get ``normalize_openhands_messages``.
+    """
+    if not isinstance(messages, list):
+        return []
+    needs_policy = any(
+        isinstance(m, dict)
+        and (
+            m.get("role") == "tool"
+            or m.get("tool_calls")
+            or m.get("tool_call_id")
+            or (m.get("role") == "assistant" and m.get("name"))
+        )
+        for m in messages
+    )
+    if needs_policy:
+        return normalize_openhands_messages(messages, drop_think_tool=True)
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        out.append(
+            {
+                "role": str(m.get("role") or "user"),
+                "content": _as_str_content(m.get("content")),
+                "name": "",
+                "tool_call_id": "",
+                "tool_calls": [],
+            }
+        )
+    return out
+
+
 def policy_row_from_openhands_record(
     record: dict[str, Any],
     *,
@@ -175,7 +437,7 @@ def policy_row_from_openhands_record(
     if not isinstance(traj, list) or not traj:
         return None, empty_stats
 
-    skip = {"think", "finish"} if drop_think_tool else set()
+    skip = _POLICY_SKIP_TOOLS if drop_think_tool else frozenset()
     cleaned: list[dict[str, Any]] = []
     skip_ids: set[str] = set()
     messages_seen = 0
@@ -222,6 +484,8 @@ def policy_row_from_openhands_record(
                 _maybe_clip_field(new_msg)
             cleaned.append(new_msg)
         elif role == "tool":
+            if drop_think_tool and _is_think_tool_reply(msg.get("content")):
+                continue
             tid = msg.get("tool_call_id")
             if tid is not None and str(tid) in skip_ids:
                 continue
@@ -233,6 +497,9 @@ def policy_row_from_openhands_record(
             if isinstance(new_msg.get("content"), str):
                 _maybe_clip_field(new_msg)
             cleaned.append(new_msg)
+
+    # Final repair: pair name/tool_call_id, drop residual think, uniform keys.
+    cleaned = normalize_openhands_messages(cleaned, drop_think_tool=drop_think_tool)
 
     clip_stats = {
         "messages_seen": messages_seen,
