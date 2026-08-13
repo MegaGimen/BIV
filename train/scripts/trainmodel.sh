@@ -173,6 +173,9 @@ PY
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# Multi-GPU safety: default NCCL/store timeout is 30min; tokenize alone can exceed that.
+export NCCL_TIMEOUT="${NCCL_TIMEOUT:-7200}"
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-7200}"
 PARALLEL="${PARALLEL:-}"
 
 NGPU="$(python - <<'PY'
@@ -265,6 +268,19 @@ esac
 
 export BIV_CP_SIZE="$CP_SIZE"
 export BIV_PARALLEL="$PARALLEL"
+
+# Build tokenized cache in a single process BEFORE accelerate launch.
+# Otherwise TRL's main_process_first tokenize holds a distributed barrier for
+# 30+ minutes and NCCL/TCPStore times out (rank1 dies while rank0 still maps).
+echo "=== Ensure tokenized cache (single process) ==="
+# shellcheck disable=SC2086
+CUDA_VISIBLE_DEVICES= python scripts/train_muse_trl.py \
+  --prepare-tokenized-only \
+  --config "$CONFIG" \
+  --max-length "$MAX_LENGTH" \
+  --cached-datasets $CACHED_DATASETS \
+  --model "$MODEL" \
+  --cp-size "$CP_SIZE"
 
 TRAIN_PY=(
   scripts/train_muse_trl.py

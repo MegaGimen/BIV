@@ -171,7 +171,8 @@ def _tokenized_cache_dir(
     import hashlib
 
     run_root = cached[0].resolve().parent
-    parts = [f"v2|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
+    # v3 = offline single-process tokenize (avoids multi-GPU barrier during TRL prepare)
+    parts = [f"v3|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
     for p in cached:
         rp = p.resolve()
         parts.append(str(rp))
@@ -219,6 +220,92 @@ def _save_tokenized_cache(dataset, path: Path) -> None:
         to_save = Dataset.from_list([{k: row[k] for k in keep} for row in to_save])
     to_save.save_to_disk(str(path))
     print(f"[muse] wrote tokenized cache → {path} ({len(to_save):,} rows)", flush=True)
+
+
+def _load_tokenizer_only(model_path: str):
+    from transformers import AutoTokenizer
+
+    print(f"[muse] loading tokenizer from {model_path}", flush=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    _ensure_training_chat_template(tokenizer)
+    return tokenizer
+
+
+def _tokenize_messages_offline(
+    ds,
+    tokenizer,
+    *,
+    max_length: int,
+    truncation_mode: str,
+    assistant_only: bool,
+    num_proc: int,
+):
+    """Mirror TRL SFT prepare (tokenize → labels → truncate) without a distributed barrier."""
+
+    def _as_msgs(raw):
+        out = []
+        for m in raw:
+            if isinstance(m, dict):
+                out.append({"role": str(m.get("role") or "user"), "content": m.get("content") or ""})
+            else:
+                out.append({"role": str(m["role"]), "content": m["content"] or ""})
+        return out
+
+    def _map(ex):
+        msgs = _as_msgs(ex["messages"])
+        kwargs: dict[str, Any] = {
+            "tokenize": True,
+            "return_dict": True,
+            "add_generation_prompt": False,
+        }
+        if assistant_only:
+            kwargs["return_assistant_tokens_mask"] = True
+        out = tokenizer.apply_chat_template(msgs, **kwargs)
+        ids = out["input_ids"]
+        if ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        ids = list(ids)
+        if assistant_only:
+            mask = out.get("assistant_masks")
+            if mask is None:
+                mask = out.get("assistant_mask")
+            if mask is not None and mask and isinstance(mask[0], (list, tuple)):
+                mask = mask[0]
+            if mask is None or len(mask) != len(ids):
+                labels = list(ids)
+            else:
+                labels = [tid if bool(mask[i]) else -100 for i, tid in enumerate(ids)]
+        else:
+            labels = list(ids)
+        if truncation_mode == "keep_end":
+            ids = ids[-max_length:]
+            labels = labels[-max_length:]
+        else:
+            ids = ids[:max_length]
+            labels = labels[:max_length]
+        keep = 1
+        if assistant_only and not any(x != -100 for x in labels):
+            keep = 0
+        return {"input_ids": ids, "labels": labels, "_keep": keep}
+
+    nproc = max(1, int(num_proc))
+    mapped = ds.map(
+        _map,
+        num_proc=nproc if nproc > 1 else None,
+        remove_columns=ds.column_names,
+        desc="Tokenizing train dataset (offline)",
+    )
+    before = len(mapped)
+    mapped = mapped.filter(lambda r: int(r["_keep"]) == 1, num_proc=nproc if nproc > 1 else None)
+    mapped = mapped.remove_columns(["_keep"])
+    print(
+        f"[muse] offline tokenize kept {len(mapped):,}/{before:,} "
+        f"(dropped rows with no assistant labels)",
+        flush=True,
+    )
+    return mapped
 
 
 def _ensure_training_chat_template(tokenizer) -> None:
@@ -385,7 +472,7 @@ def main() -> None:
         required=True,
         help="HF dataset dirs from train_prep_mix (wm_code wm_os anti_forget)",
     )
-    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--model", type=str, default=None, help="Override model path/id")
     p.add_argument("--qlora", action="store_true", help="Force 4-bit QLoRA")
     p.add_argument("--learning-rate", type=float, default=None)
@@ -411,6 +498,12 @@ def main() -> None:
         help="Context-parallel size (Ring Attention). pad_to_multiple_of=cp_size*2. "
         "Also read from BIV_CP_SIZE.",
     )
+    p.add_argument(
+        "--prepare-tokenized-only",
+        action="store_true",
+        help="Single-process: build tokenized disk cache and exit (no model / no train). "
+        "Run this before multi-GPU launch to avoid NCCL barrier timeouts during tokenize.",
+    )
     args = p.parse_args()
 
     cfg = _load_yaml(_resolve(args.config))
@@ -420,10 +513,45 @@ def main() -> None:
     model_path = args.model or resolve_model_for_train(cfg, root=ROOT)
     qlora = bool(args.qlora or train_cfg.get("qlora") or os.environ.get("QLORA") in {"1", "true", "True"})
     max_length = int(args.max_length)
+    cached = [_resolve(x) for x in args.cached_datasets]
+    truncation_mode = str(train_cfg.get("truncation_mode") or "keep_start")
+    assistant_only = bool(train_cfg.get("assistant_only_loss", True))
+    tok_cache = _tokenized_cache_dir(
+        cached,
+        max_length=max_length,
+        assistant_only=assistant_only,
+        truncation_mode=truncation_mode,
+    )
+
+    if args.prepare_tokenized_only:
+        print("=== Muse prepare tokenized cache (single process) ===", flush=True)
+        print(f"  model:      {model_path}", flush=True)
+        print(f"  max_length: {max_length}", flush=True)
+        print(f"  cache:      {tok_cache}", flush=True)
+        if (not args.force_retokenize) and _tokenized_cache_ready(tok_cache):
+            print(f"[muse] tokenized cache already ready → {tok_cache}", flush=True)
+            return
+        msgs_ds = _load_concat_datasets(cached)
+        print(f"  messages rows: {len(msgs_ds):,}", flush=True)
+        tokenizer = _load_tokenizer_only(model_path)
+        num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
+        tok_ds = _tokenize_messages_offline(
+            msgs_ds,
+            tokenizer,
+            max_length=max_length,
+            truncation_mode=truncation_mode,
+            assistant_only=assistant_only,
+            num_proc=num_proc,
+        )
+        _save_tokenized_cache(tok_ds, tok_cache)
+        print("[muse] prepare-tokenized-only done", flush=True)
+        return
+
+    if args.output_dir is None:
+        raise SystemExit("--output-dir is required unless --prepare-tokenized-only")
     out_dir = _resolve(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cached = [_resolve(x) for x in args.cached_datasets]
     print("=== Muse Glimmer TRL SFT ===", flush=True)
     print(f"  config:     {_resolve(args.config)}", flush=True)
     print(f"  model:      {model_path}", flush=True)
@@ -431,26 +559,43 @@ def main() -> None:
     print(f"  qlora:      {qlora}", flush=True)
     print(f"  output:     {out_dir}", flush=True)
 
-    train_ds = _load_concat_datasets(cached)
-    print(f"  train rows: {len(train_ds):,} (messages)", flush=True)
-
-    truncation_mode = str(train_cfg.get("truncation_mode") or "keep_start")
-    tok_cache = _tokenized_cache_dir(
-        cached,
-        max_length=max_length,
-        assistant_only=bool(train_cfg.get("assistant_only_loss", True)),
-        truncation_mode=truncation_mode,
-    )
     use_tok_cache = (not args.force_retokenize) and _tokenized_cache_ready(tok_cache)
+    distributed = (
+        int(os.environ.get("WORLD_SIZE", "1") or "1") > 1
+        or os.environ.get("LOCAL_RANK") is not None
+        or os.environ.get("RANK") is not None
+    )
     if use_tok_cache:
         print(f"[muse] tokenized cache HIT → {tok_cache}", flush=True)
         train_ds = _try_load_tokenized_cache(tok_cache)
         print(f"  train rows: {len(train_ds):,} (input_ids)", flush=True)
     else:
+        if distributed:
+            raise SystemExit(
+                "[muse] tokenized cache MISS under multi-process launch.\n"
+                "TRL prepare would hold a distributed barrier for 30+ min and NCCL times out.\n"
+                "Build the cache first (single process), then re-launch train:\n"
+                "  python scripts/train_muse_trl.py --prepare-tokenized-only "
+                f"--config … --max-length {max_length} --cached-datasets … --model …\n"
+                "Or use: bash scripts/trainmodel.sh …  (it pre-builds automatically)."
+            )
         print(
-            f"[muse] tokenized cache MISS → will write after prepare: {tok_cache}",
+            f"[muse] tokenized cache MISS → offline tokenize then train: {tok_cache}",
             flush=True,
         )
+        msgs_ds = _load_concat_datasets(cached)
+        tokenizer = _load_tokenizer_only(model_path)
+        num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
+        train_ds = _tokenize_messages_offline(
+            msgs_ds,
+            tokenizer,
+            max_length=max_length,
+            truncation_mode=truncation_mode,
+            assistant_only=assistant_only,
+            num_proc=num_proc,
+        )
+        _save_tokenized_cache(train_ds, tok_cache)
+        use_tok_cache = True
 
     target_modules = list(
         train_cfg.get("target_modules")
@@ -482,7 +627,6 @@ def main() -> None:
     save_limit = int(args.save_total_limit or train_cfg.get("save_total_limit", 3))
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
-    assistant_only = bool(train_cfg.get("assistant_only_loss", True))
     cp_size = int(
         args.cp_size
         if args.cp_size is not None
@@ -527,11 +671,12 @@ def main() -> None:
         report_to=os.environ.get("REPORT_TO", "none"),
         truncation_mode=truncation_mode,
     )
-    if assistant_only:
-        sft_kwargs["assistant_only_loss"] = True
     if use_tok_cache:
-        # TRL docs: pretokenized input_ids(+labels) + skip_prepare_dataset
+        # Pretokenized input_ids+labels (assistant already masked with -100).
+        # Do NOT set assistant_only_loss — TRL requires conversational messages for that.
         sft_kwargs["dataset_kwargs"] = {"skip_prepare_dataset": True}
+    elif assistant_only:
+        sft_kwargs["assistant_only_loss"] = True
     if pad_multiple > 1:
         sft_kwargs["pad_to_multiple_of"] = pad_multiple
     if cp_size > 1:
@@ -576,13 +721,6 @@ def main() -> None:
         trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:
         trainer = SFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
-
-    if (not use_tok_cache) and _is_main_process():
-        try:
-            _save_tokenized_cache(trainer.train_dataset, tok_cache)
-        except Exception as e:
-            print(f"[muse] WARNING: failed to save tokenized cache: {e}", flush=True)
-    _barrier()
 
     trainer.train()
     trainer.save_model(str(out_dir))
