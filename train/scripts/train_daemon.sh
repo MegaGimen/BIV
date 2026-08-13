@@ -132,29 +132,35 @@ out = Path(os.environ["OUT_DIR"])
 if not out.is_dir():
     raise SystemExit(0)
 
+# Muse names:
+#   checkpoint-{step}                    → epoch fallback 0
+#   checkpoint-e{epoch}-s{step}          → rolling
+#   checkpoint-epoch{epoch}-end-s{step}  → permanent epoch-end
+# Rank key: (epoch, step, kind) — epoch dominates step.
 pat_roll = re.compile(r"^checkpoint-e(\d+)-s(\d+)$")
 pat_epoch = re.compile(r"^checkpoint-epoch(\d+)-end-s(\d+)$")
 pat_digit = re.compile(r"^checkpoint-(\d+)$")
 
-best = None  # (step, kind_rank, path)
+best = None  # (epoch, step, kind_rank, path)
 for p in out.iterdir():
     if not p.is_dir():
         continue
     name = p.name
-    step = None
+    epoch = step = None
     rank = 0
     m = pat_epoch.match(name)
     if m:
-        step, rank = int(m.group(2)), 2
+        epoch, step, rank = int(m.group(1)), int(m.group(2)), 2
     else:
         m = pat_roll.match(name)
         if m:
-            step, rank = int(m.group(2)), 1
+            epoch, step, rank = int(m.group(1)), int(m.group(2)), 1
         else:
             m = pat_digit.match(name)
             if m:
-                step, rank = int(m.group(1)), 0
-    if step is None:
+                # No epoch in name → epoch 0 (must not beat a higher-epoch ckpt).
+                epoch, step, rank = 0, int(m.group(1)), 0
+    if epoch is None or step is None:
         continue
     if not (p / "trainer_state.json").is_file():
         continue
@@ -164,13 +170,13 @@ for p in out.iterdir():
         or any(p.glob("*.safetensors"))
     ):
         continue
-    key = (step, rank)
-    if best is None or key > (best[0], best[1]):
-        best = (step, rank, p)
+    key = (epoch, step, rank)
+    if best is None or key > (best[0], best[1], best[2]):
+        best = (epoch, step, rank, p)
 
 if best is None:
     raise SystemExit(0)
-print(best[2])
+print(best[3])
 PY
 }
 
