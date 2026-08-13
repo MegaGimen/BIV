@@ -582,8 +582,43 @@ def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
 
 
 def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
-    """Rename HF digit ckpts, rotate rolling only, force epoch-end save (+ eval)."""
+    """Rename HF digit ckpts, rotate rolling only, force epoch-end save (+ eval).
+
+    Also re-apply logging/eval/save step intervals from *current* TrainingArguments
+    after resume (HF loads stale ``state.save_steps`` etc. from trainer_state.json).
+    """
     from transformers import TrainerCallback
+
+    class MuseScheduleOverrideCallback(TrainerCallback):
+        """Make resume honor current args for schedule intervals."""
+
+        def on_train_begin(self, args, state, control, **kwargs):  # noqa: ANN001
+            # DefaultFlowCallback uses state.{logging,eval,save}_steps, not args.*.
+            # Resume replaces state via trainer_state.json *after* compute_steps(args),
+            # so stale intervals (e.g. save_steps=200) would stick without this.
+            synced: list[str] = []
+            for kind in ("logging", "eval", "save"):
+                arg_v = getattr(args, f"{kind}_steps", None)
+                if arg_v is None:
+                    continue
+                # Absolute step counts only (same as our SFTConfig).
+                try:
+                    new_v = int(arg_v)
+                except (TypeError, ValueError):
+                    continue
+                if new_v <= 0:
+                    continue
+                old_v = getattr(state, f"{kind}_steps", None)
+                if old_v != new_v:
+                    setattr(state, f"{kind}_steps", new_v)
+                    synced.append(f"{kind}_steps: {old_v} → {new_v}")
+            if synced and state.is_world_process_zero:
+                print(
+                    "[muse] resume/schedule override from current args: "
+                    + ", ".join(synced),
+                    flush=True,
+                )
+            return control
 
     class MuseCheckpointCallback(TrainerCallback):
         def __init__(self) -> None:
@@ -657,7 +692,8 @@ def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
                 print(f"[muse] rotate: remove {victim.name}", flush=True)
                 shutil.rmtree(victim, ignore_errors=True)
 
-    return [MuseCheckpointCallback()]
+    # Schedule override first so intervals are fixed before any step-end save/log.
+    return [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
 
 
 def main() -> None:
@@ -845,7 +881,7 @@ def main() -> None:
     )
     seed = int(args.seed or train_cfg.get("seed", 42))
     logging_steps = int(args.logging_steps or train_cfg.get("logging_steps", 10))
-    save_steps = int(args.save_steps or train_cfg.get("save_steps", 50))
+    save_steps = int(args.save_steps or train_cfg.get("save_steps", 25))
     save_limit = int(args.save_total_limit or train_cfg.get("save_total_limit", 3))
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
