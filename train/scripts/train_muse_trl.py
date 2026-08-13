@@ -759,25 +759,23 @@ def main() -> None:
     if pad_multiple > 1:
         sft_kwargs["pad_to_multiple_of"] = pad_multiple
     if cp_size > 1:
+        # Belt-and-suspenders: Trainer→Accelerator only constructs ParallelismConfig
+        # when this env is true; otherwise CP flags are ignored and each rank holds
+        # the full sequence → OOM at long max_length.
+        os.environ["ACCELERATE_USE_PARALLELISM_CONFIG"] = "true"
+        os.environ.setdefault("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "1")
+        os.environ.setdefault("PARALLELISM_CONFIG_DP_SHARD_SIZE", "1")
+        os.environ.setdefault("PARALLELISM_CONFIG_TP_SIZE", "1")
+        os.environ["PARALLELISM_CONFIG_CP_SIZE"] = str(cp_size)
+        os.environ.setdefault("PARALLELISM_CONFIG_CP_BACKEND", "torch")
         print(
             f"[muse] CP size={cp_size}: pad_to_multiple_of={pad_multiple}, "
-            f"attn=sdpa (load-time), ~{max_length // cp_size} tokens/GPU if CP hooks",
+            f"attn=sdpa (load-time), env PARALLELISM_CONFIG_CP_SIZE="
+            f"{os.environ.get('PARALLELISM_CONFIG_CP_SIZE')} "
+            f"ACCELERATE_USE_PARALLELISM_CONFIG="
+            f"{os.environ.get('ACCELERATE_USE_PARALLELISM_CONFIG')}",
             flush=True,
         )
-        try:
-            from accelerate import PartialState
-            from accelerate.utils import ParallelismConfig
-
-            st = PartialState()
-            pc = getattr(st, "parallelism_config", None)
-            print(
-                f"[muse] accelerate ParallelismConfig={pc!r} "
-                f"world={st.num_processes} local_rank={st.local_process_index}",
-                flush=True,
-            )
-            _ = ParallelismConfig  # noqa: F841 — imported for type clarity in logs
-        except Exception as e:
-            print(f"[muse] could not inspect ParallelismConfig: {e}", flush=True)
 
     # Keep only kwargs accepted by this TRL/transformers build (avoids API drift).
     accepted = set(inspect.signature(SFTConfig.__init__).parameters)
@@ -807,6 +805,26 @@ def main() -> None:
         trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:
         trainer = SFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
+
+    if cp_size > 1:
+        pc = None
+        try:
+            pc = trainer.accelerator.parallelism_config
+        except Exception:
+            pc = None
+        cp_ok = bool(pc is not None and getattr(pc, "cp_enabled", False))
+        print(
+            f"[muse] after SFTTrainer: parallelism_config={pc!r} cp_enabled={cp_ok}",
+            flush=True,
+        )
+        if not cp_ok:
+            raise SystemExit(
+                "[muse] Context Parallelism is NOT active (parallelism_config missing/"
+                "cp_enabled=False). Long max_length will OOM as if CP_SIZE=1.\n"
+                "Check: accelerate launch must set ACCELERATE_USE_PARALLELISM_CONFIG=true "
+                "and PARALLELISM_CONFIG_CP_SIZE, with --use_fsdp --fsdp_version 2 "
+                "--use_parallelism_config."
+            )
 
     trainer.train()
     trainer.save_model(str(out_dir))

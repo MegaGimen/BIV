@@ -247,11 +247,22 @@ case "$PARALLEL" in
       echo "  accelerate FSDP2+CP Ring Attention"
       echo "    num_processes=$NGPU cp_size=$CP_SIZE (~max_length/$CP_SIZE tokens/GPU)"
       echo "    config=$ACCEL_CFG"
+      # Must export these: Accelerator only builds ParallelismConfig when
+      # ACCELERATE_USE_PARALLELISM_CONFIG=true (otherwise CP is a no-op → OOM).
+      export ACCELERATE_USE_PARALLELISM_CONFIG=true
+      export PARALLELISM_CONFIG_DP_REPLICATE_SIZE=1
+      export PARALLELISM_CONFIG_DP_SHARD_SIZE=1
+      export PARALLELISM_CONFIG_TP_SIZE=1
+      export PARALLELISM_CONFIG_CP_SIZE="$CP_SIZE"
+      export PARALLELISM_CONFIG_CP_BACKEND=torch
       LAUNCH=(
         accelerate launch
         --config_file "$ACCEL_CFG"
         --num_processes "$NGPU"
         --mixed_precision bf16
+        --use_fsdp
+        --fsdp_version 2
+        --use_parallelism_config
         --fsdp_transformer_layer_cls_to_wrap MuseGlimmerTextDecoderLayer
         --fsdp_activation_checkpointing true
         --parallelism_config_dp_replicate_size 1
