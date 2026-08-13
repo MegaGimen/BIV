@@ -121,11 +121,19 @@ def _print_messages(messages: list, *, show_tools: bool) -> None:
         name = m.get("name")
         if name and role == "tool":
             extra_bits.append(f"name={name}")
+        rc = m.get("reasoning_content")
+        if isinstance(rc, str) and rc.strip():
+            extra_bits.append("reasoning_content")
 
         print(
             _fmt_block(role, content, " | ".join(extra_bits) if extra_bits else None),
             flush=True,
         )
+
+        if isinstance(rc, str) and rc.strip():
+            print("- reasoning_content (→ Muse assistant to=self) -", flush=True)
+            print(rc, flush=True)
+            print("", flush=True)
 
         if show_tools and tool_calls:
             print("- tool_calls -", flush=True)
