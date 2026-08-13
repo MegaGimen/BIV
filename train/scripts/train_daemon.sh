@@ -19,6 +19,11 @@
 #   DAEMON_MAX_RESTARTS    0 = unlimited (default 0)
 #   DAEMON_STOP_FILE       default: outputs/.train_daemon_stop
 #   CONFIG / MIX_DIR / …   same as trainmodel.sh
+#   CUDA_VISIBLE_DEVICES   e.g. 0,1 to force 2-GPU (OOM / CP smoke test)
+#
+# OOM smoke (2 GPUs only; same max_length / batch — no fallback):
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
+#     --resume-from outputs/muse_glimmer_wm_mix_ml65536_c1/checkpoint-200
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -277,6 +282,8 @@ while true; do
   fi
 
   echo "[daemon] train exited code=$code → restart in ${DELAY}s (same args, no param fallback)"
+  echo "[daemon] RESTART scheduled: attempt=$((attempt + 1)) out_dir=$OUT_DIR delay=${DELAY}s (no hyperparam fallback)"
   # Give NCCL/CUDA a moment to release after OOM kills.
   sleep "$DELAY"
+  echo "[daemon] RESTART now: relaunching trainmodel with identical args"
 done
