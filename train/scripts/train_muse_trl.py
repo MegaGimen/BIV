@@ -142,6 +142,85 @@ def _load_concat_datasets(paths: list[Path]):
     return concatenate_datasets(parts)
 
 
+def _is_main_process() -> bool:
+    try:
+        from accelerate import PartialState
+
+        return bool(PartialState().is_main_process)
+    except Exception:
+        return int(os.environ.get("LOCAL_RANK", "0") or "0") == 0
+
+
+def _barrier() -> None:
+    try:
+        from accelerate import PartialState
+
+        PartialState().wait_for_everyone()
+    except Exception:
+        return
+
+
+def _tokenized_cache_dir(
+    cached: list[Path],
+    *,
+    max_length: int,
+    assistant_only: bool,
+    truncation_mode: str,
+) -> Path:
+    """Stable path beside prep run: …/train_runs/<run>/tokenized_mlN_…"""
+    import hashlib
+
+    run_root = cached[0].resolve().parent
+    parts = [f"v2|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
+    for p in cached:
+        rp = p.resolve()
+        parts.append(str(rp))
+        for name in ("state.json", "dataset_info.json"):
+            meta = rp / name
+            if meta.is_file():
+                st = meta.stat()
+                parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
+                break
+    digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
+    return run_root / (
+        f"tokenized_ml{max_length}_ao{int(assistant_only)}_{truncation_mode}_{digest}"
+    )
+
+
+def _tokenized_cache_ready(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return (path / "state.json").is_file() or (path / "dataset_info.json").is_file()
+
+
+def _try_load_tokenized_cache(path: Path):
+    from datasets import load_from_disk
+
+    ds = load_from_disk(str(path))
+    if "input_ids" not in ds.column_names:
+        raise SystemExit(f"Tokenized cache missing input_ids: {path} cols={ds.column_names}")
+    if "labels" not in ds.column_names:
+        raise SystemExit(f"Tokenized cache missing labels: {path} cols={ds.column_names}")
+    return ds
+
+
+def _save_tokenized_cache(dataset, path: Path) -> None:
+    from datasets import Dataset
+
+    if path.exists():
+        import shutil
+
+        shutil.rmtree(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keep = [c for c in ("input_ids", "labels", "attention_mask") if c in dataset.column_names]
+    to_save = dataset.select_columns(keep) if keep and hasattr(dataset, "select_columns") else dataset
+    if not isinstance(to_save, Dataset):
+        # Iterable / custom — materialize via from_list if needed
+        to_save = Dataset.from_list([{k: row[k] for k in keep} for row in to_save])
+    to_save.save_to_disk(str(path))
+    print(f"[muse] wrote tokenized cache → {path} ({len(to_save):,} rows)", flush=True)
+
+
 def _ensure_training_chat_template(tokenizer) -> None:
     """Wrap Muse assistant turns with TRL ``{% generation %}`` markers in-place.
 
@@ -320,6 +399,11 @@ def main() -> None:
     p.add_argument("--save-steps", type=int, default=None)
     p.add_argument("--save-total-limit", type=int, default=None)
     p.add_argument("--warmup-ratio", type=float, default=None)
+    p.add_argument(
+        "--force-retokenize",
+        action="store_true",
+        help="Ignore tokenized disk cache and re-run TRL prepare (Tokenizing/labels/trunc).",
+    )
     args = p.parse_args()
 
     cfg = _load_yaml(_resolve(args.config))
@@ -341,7 +425,25 @@ def main() -> None:
     print(f"  output:     {out_dir}", flush=True)
 
     train_ds = _load_concat_datasets(cached)
-    print(f"  train rows: {len(train_ds):,}", flush=True)
+    print(f"  train rows: {len(train_ds):,} (messages)", flush=True)
+
+    truncation_mode = str(train_cfg.get("truncation_mode") or "keep_start")
+    tok_cache = _tokenized_cache_dir(
+        cached,
+        max_length=max_length,
+        assistant_only=bool(train_cfg.get("assistant_only_loss", True)),
+        truncation_mode=truncation_mode,
+    )
+    use_tok_cache = (not args.force_retokenize) and _tokenized_cache_ready(tok_cache)
+    if use_tok_cache:
+        print(f"[muse] tokenized cache HIT → {tok_cache}", flush=True)
+        train_ds = _try_load_tokenized_cache(tok_cache)
+        print(f"  train rows: {len(train_ds):,} (input_ids)", flush=True)
+    else:
+        print(
+            f"[muse] tokenized cache MISS → will write after prepare: {tok_cache}",
+            flush=True,
+        )
 
     target_modules = list(
         train_cfg.get("target_modules")
@@ -398,9 +500,13 @@ def main() -> None:
         packing=packing,
         gradient_checkpointing=grad_ckpt,
         report_to=os.environ.get("REPORT_TO", "none"),
+        truncation_mode=truncation_mode,
     )
     if assistant_only:
         sft_kwargs["assistant_only_loss"] = True
+    if use_tok_cache:
+        # TRL docs: pretokenized input_ids(+labels) + skip_prepare_dataset
+        sft_kwargs["dataset_kwargs"] = {"skip_prepare_dataset": True}
 
     # Keep only kwargs accepted by this TRL/transformers build (avoids API drift).
     accepted = set(inspect.signature(SFTConfig.__init__).parameters)
@@ -430,6 +536,13 @@ def main() -> None:
         trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:
         trainer = SFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
+
+    if (not use_tok_cache) and _is_main_process():
+        try:
+            _save_tokenized_cache(trainer.train_dataset, tok_cache)
+        except Exception as e:
+            print(f"[muse] WARNING: failed to save tokenized cache: {e}", flush=True)
+    _barrier()
 
     trainer.train()
     trainer.save_model(str(out_dir))
