@@ -23,6 +23,8 @@
 #   PARALLEL=single|ddp|fsdp2|fsdp2_cp|auto
 #   CONFIG=...  MIX_DIR=...  QLORA=0|1
 #   RESUME_FROM=/path/to/checkpoint-e0-s50   # manual only; no auto-resume
+#   Watchdog (auto-restart on OOM/CTRL+C, same args, resume latest ckpt):
+#     bash scripts/train_daemon.sh --max-length 65536 --choice 1 --resume-from …
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -42,6 +44,9 @@ usage() {
 Usage:
   bash scripts/trainmodel.sh --max-length <N> [--choice 1|2|3] [--force-prep] [--qlora]
        [--resume-from <checkpoint_dir>]
+
+  Auto-restart wrapper (recommended on the wire for VRAM):
+  bash scripts/train_daemon.sh --max-length <N> [--choice …] [--resume-from …]
 
   --max-length N   required; struct-right trunc to complete assistant within N
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
