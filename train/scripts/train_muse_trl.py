@@ -398,6 +398,7 @@ def _build_model_and_tokenizer(
     lora_rank: int,
     lora_alpha: int,
     lora_dropout: float,
+    attn_implementation: str | None = None,
 ):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -413,7 +414,13 @@ def _build_model_and_tokenizer(
     load_kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
     }
+    if attn_implementation:
+        # Must be set at load time — SFTConfig has no attn_implementation in TRL 1.8.
+        # Muse is composite: text layers read text_config._attn_implementation (for CP/SDPA).
+        load_kwargs["attn_implementation"] = attn_implementation
+        print(f"[muse] attn_implementation={attn_implementation}", flush=True)
     world = int(os.environ.get("WORLD_SIZE", "1") or "1")
     distributed = world > 1 or os.environ.get("LOCAL_RANK") is not None
     if qlora:
@@ -441,12 +448,20 @@ def _build_model_and_tokenizer(
             "(need MuseGlimmerForConditionalGeneration, not MuseGlimmerModel)"
         )
 
+    if attn_implementation:
+        _force_attn_implementation(model, attn_implementation)
+
     if qlora:
         model = prepare_model_for_kbit_training(model)
 
     if freeze_vision:
         frozen = _freeze_vision(model)
         print(f"[muse] froze {frozen} vision/perception params", flush=True)
+        # Text-only WM SFT: park frozen vision on CPU to free VRAM (no pixel batch).
+        if distributed or attn_implementation:
+            moved = _offload_frozen_vision_to_cpu(model)
+            if moved:
+                print(f"[muse] offloaded {moved} frozen vision modules → CPU", flush=True)
 
     targets = _filter_target_modules(model, target_modules)
     lora = LoraConfig(
@@ -460,6 +475,67 @@ def _build_model_and_tokenizer(
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
     return model, tokenizer
+
+
+def _force_attn_implementation(model, impl: str) -> None:
+    """Propagate attn impl into composite Muse configs (root + text_config + submodules)."""
+    configs = []
+    cfg = getattr(model, "config", None)
+    if cfg is not None:
+        configs.append(cfg)
+        tc = getattr(cfg, "text_config", None)
+        if tc is not None:
+            configs.append(tc)
+        vc = getattr(cfg, "vision_config", None)
+        if vc is not None:
+            configs.append(vc)
+    # Peft / nested
+    base = getattr(model, "get_base_model", lambda: None)()
+    if base is not None and hasattr(base, "config"):
+        configs.append(base.config)
+        tc = getattr(base.config, "text_config", None)
+        if tc is not None:
+            configs.append(tc)
+    for c in configs:
+        try:
+            c._attn_implementation = impl
+        except Exception:
+            pass
+    # language_model.config (actual decoder)
+    try:
+        lm = model.get_base_model().model.language_model  # Peft → Muse → text
+        if hasattr(lm, "config"):
+            lm.config._attn_implementation = impl
+    except Exception:
+        try:
+            lm = model.model.language_model
+            if hasattr(lm, "config"):
+                lm.config._attn_implementation = impl
+        except Exception:
+            pass
+    print(f"[muse] forced attn_implementation={impl} on text/root configs", flush=True)
+
+
+def _offload_frozen_vision_to_cpu(model) -> int:
+    n = 0
+    root = model
+    try:
+        root = model.get_base_model()
+    except Exception:
+        pass
+    for attr in ("vision_tower", "vision_adapter", "vision_projection", "perception_emb_norm"):
+        try:
+            mod = getattr(root.model if hasattr(root, "model") else root, attr, None)
+        except Exception:
+            mod = None
+        if mod is None:
+            continue
+        try:
+            mod.to("cpu")
+            n += 1
+        except Exception:
+            pass
+    return n
 
 
 def main() -> None:
@@ -601,6 +677,16 @@ def main() -> None:
         train_cfg.get("target_modules")
         or ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
+    cp_size = int(
+        args.cp_size
+        if args.cp_size is not None
+        else os.environ.get("BIV_CP_SIZE", "1")
+        or "1"
+    )
+    if cp_size < 1:
+        cp_size = 1
+    # Ring Attention CP requires SDPA; set at from_pretrained (SFTConfig lacks this kwarg).
+    attn_impl = "sdpa" if cp_size > 1 else None
     model, tokenizer = _build_model_and_tokenizer(
         model_path=model_path,
         qlora=qlora,
@@ -610,6 +696,7 @@ def main() -> None:
         lora_rank=int(args.lora_rank or train_cfg.get("lora_rank", 16)),
         lora_alpha=int(args.lora_alpha or train_cfg.get("lora_alpha", 32)),
         lora_dropout=float(train_cfg.get("lora_dropout", 0.05)),
+        attn_implementation=attn_impl,
     )
 
     from trl import SFTConfig, SFTTrainer
@@ -627,14 +714,6 @@ def main() -> None:
     save_limit = int(args.save_total_limit or train_cfg.get("save_total_limit", 3))
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
-    cp_size = int(
-        args.cp_size
-        if args.cp_size is not None
-        else os.environ.get("BIV_CP_SIZE", "1")
-        or "1"
-    )
-    if cp_size < 1:
-        cp_size = 1
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
     pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
     # FSDP activation_checkpointing and Trainer gradient_checkpointing conflict.
@@ -680,18 +759,25 @@ def main() -> None:
     if pad_multiple > 1:
         sft_kwargs["pad_to_multiple_of"] = pad_multiple
     if cp_size > 1:
-        # Ring Attention CP currently requires SDPA (not FlashAttn).
-        sft_kwargs["attn_implementation"] = "sdpa"
-        if hasattr(model, "config"):
-            try:
-                model.config._attn_implementation = "sdpa"
-            except Exception:
-                pass
         print(
             f"[muse] CP size={cp_size}: pad_to_multiple_of={pad_multiple}, "
-            f"attn=sdpa, ~{max_length // cp_size} tokens/GPU",
+            f"attn=sdpa (load-time), ~{max_length // cp_size} tokens/GPU if CP hooks",
             flush=True,
         )
+        try:
+            from accelerate import PartialState
+            from accelerate.utils import ParallelismConfig
+
+            st = PartialState()
+            pc = getattr(st, "parallelism_config", None)
+            print(
+                f"[muse] accelerate ParallelismConfig={pc!r} "
+                f"world={st.num_processes} local_rank={st.local_process_index}",
+                flush=True,
+            )
+            _ = ParallelismConfig  # noqa: F841 — imported for type clarity in logs
+        except Exception as e:
+            print(f"[muse] could not inspect ParallelismConfig: {e}", flush=True)
 
     # Keep only kwargs accepted by this TRL/transformers build (avoids API drift).
     accepted = set(inspect.signature(SFTConfig.__init__).parameters)

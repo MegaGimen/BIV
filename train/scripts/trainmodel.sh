@@ -252,6 +252,8 @@ case "$PARALLEL" in
         --config_file "$ACCEL_CFG"
         --num_processes "$NGPU"
         --mixed_precision bf16
+        --fsdp_transformer_layer_cls_to_wrap MuseGlimmerTextDecoderLayer
+        --fsdp_activation_checkpointing true
         --parallelism_config_dp_replicate_size 1
         --parallelism_config_dp_shard_size 1
         --parallelism_config_tp_size 1
