@@ -632,8 +632,10 @@ def main() -> None:
         "DTYPE": str(train_cfg.get("torch_dtype", "bfloat16")),
         "WARMUP": str(train_cfg.get("warmup_ratio", 0.03)),
         "LOG_STEPS": str(train_cfg.get("logging_steps", 10)),
-        "SAVE_STEPS": str(train_cfg.get("save_steps", 200)),
+        "SAVE_STEPS": str(train_cfg.get("save_steps", 50)),
         "SAVE_LIMIT": str(train_cfg.get("save_total_limit", 3)),
+        "EVAL_MAX_SAMPLES": str(train_cfg.get("eval_max_samples", 128)),
+        "EVAL_BS": str(train_cfg.get("per_device_eval_batch_size", 1)),
         "TARGET_MODULES": " ".join(
             train_cfg.get("target_modules")
             or [

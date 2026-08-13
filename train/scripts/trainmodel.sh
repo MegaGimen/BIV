@@ -22,6 +22,7 @@
 # Env:
 #   PARALLEL=single|ddp|fsdp2|fsdp2_cp|auto
 #   CONFIG=...  MIX_DIR=...  QLORA=0|1
+#   RESUME_FROM=/path/to/checkpoint-e0-s50   # manual only; no auto-resume
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -33,23 +34,27 @@ MAX_LENGTH=""
 CHOICE="${TRAIN_CHOICE:-}"
 FORCE_PREP=0
 QLORA_FLAG=0
+RESUME_FROM="${RESUME_FROM:-}"
 EXTRA=()
 
 usage() {
   cat <<'EOF'
 Usage:
   bash scripts/trainmodel.sh --max-length <N> [--choice 1|2|3] [--force-prep] [--qlora]
+       [--resume-from <checkpoint_dir>]
 
   --max-length N   required; struct-right trunc to complete assistant within N
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
   --force-prep     rebuild filtered run cache even if present
   --qlora          4-bit QLoRA (also QLORA=1)
+  --resume-from D  resume from this checkpoint dir (manual only; no auto)
 
 Env:
   CUDA_VISIBLE_DEVICES     default 0
   PARALLEL                 omit/auto | single | ddp | fsdp2 | fsdp2_cp
                            auto: 1 GPU→single; 2+→FSDP2+CP (longer context)
   TRAIN_CHOICE             same as --choice
+  RESUME_FROM              same as --resume-from
   CONFIG / MIX_DIR / QLORA
 EOF
 }
@@ -73,6 +78,15 @@ while [[ $# -gt 0 ]]; do
     --qlora)
       QLORA_FLAG=1
       shift
+      ;;
+    --resume-from|--resume_from)
+      [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
+      RESUME_FROM="$2"
+      shift 2
+      ;;
+    --resume)
+      echo "ERROR: auto --resume is disabled. Pass --resume-from <checkpoint_dir>."
+      exit 1
       ;;
     -h|--help)
       usage
@@ -315,6 +329,13 @@ TRAIN_PY=(
   --cp-size "$CP_SIZE"
   "${QLORA_ARGS[@]}"
 )
+if [[ -n "${EVAL_MAX_SAMPLES:-}" ]]; then
+  TRAIN_PY+=(--eval-max-samples "$EVAL_MAX_SAMPLES")
+fi
+if [[ -n "$RESUME_FROM" ]]; then
+  echo "  resume_from=$RESUME_FROM (manual; no auto)"
+  TRAIN_PY+=(--resume-from "$RESUME_FROM")
+fi
 
 echo "  launch: ${LAUNCH[*]} ${TRAIN_PY[0]} …"
 "${LAUNCH[@]}" "${TRAIN_PY[@]}"

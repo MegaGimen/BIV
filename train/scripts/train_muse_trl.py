@@ -15,7 +15,10 @@ Examples (prefer trainmodel.sh wrapper):
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -538,6 +541,119 @@ def _offload_frozen_vision_to_cpu(model) -> int:
     return n
 
 
+# Rolling mid-run: checkpoint-e{epoch}-s{step}. Epoch-end permanent: checkpoint-epoch{N}-end-s{step}.
+_ROLLING_CKPT_RE = re.compile(r"^checkpoint-e(\d+)-s(\d+)$")
+_HF_DIGIT_CKPT_RE = re.compile(r"^checkpoint-(\d+)$")
+
+
+def _resolve_manual_resume(resume_from: Path | str | None) -> str | None:
+    """Manual resume only — path required; never auto-pick latest under output_dir."""
+    if resume_from is None or str(resume_from).strip() in {"", "null", "None"}:
+        return None
+    path = _resolve(resume_from)
+    if not path.is_dir():
+        raise SystemExit(f"--resume-from must be an existing checkpoint directory: {path}")
+    # Soft check: Trainer needs trainer_state.json for full opt/sched/RNG restore.
+    state = path / "trainer_state.json"
+    if not state.is_file():
+        print(
+            f"[muse] WARNING: {state.name} missing under {path}; "
+            "weights may load but optimizer/LR scheduler/RNG will restart.",
+            flush=True,
+        )
+    return str(path)
+
+
+def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
+    """Deterministic eval panel from train rows (monitor-only; train set unchanged)."""
+    if max_samples is None or max_samples <= 0:
+        return None
+    n = len(train_ds)
+    if n <= 0:
+        return None
+    k = min(int(max_samples), n)
+    return train_ds.shuffle(seed=seed).select(range(k))
+
+
+def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
+    """Rename HF digit ckpts, rotate rolling only, force epoch-end save (+ eval)."""
+    from transformers import TrainerCallback
+
+    class MuseCheckpointCallback(TrainerCallback):
+        def __init__(self) -> None:
+            self._pending_epoch_end = False
+
+        def on_epoch_end(self, args, state, control, **kwargs):  # noqa: ANN001
+            self._pending_epoch_end = True
+            control.should_save = True
+            # eval_strategy=epoch already sets should_evaluate; keep force as belt.
+            if has_eval:
+                control.should_evaluate = True
+            ep = int(round(float(state.epoch or 0)))
+            print(
+                f"[muse] epoch {ep} end: force checkpoint"
+                + (" + evaluate" if has_eval else "")
+                + " (permanent epoch ckpt)",
+                flush=True,
+            )
+            return control
+
+        def on_save(self, args, state, control, **kwargs):  # noqa: ANN001
+            # HF already wrote checkpoint-{global_step}; rename + custom rotate.
+            if not state.is_world_process_zero:
+                return control
+            out = Path(args.output_dir)
+            step = int(state.global_step)
+            src = out / f"checkpoint-{step}"
+            if not src.is_dir():
+                # Already renamed (retry) or unexpected layout.
+                self._rotate_rolling(out, save_total_limit)
+                return control
+
+            if self._pending_epoch_end:
+                epoch_i = int(round(float(state.epoch or 0)))
+                dst = out / f"checkpoint-epoch{epoch_i}-end-s{step}"
+                self._pending_epoch_end = False
+                kind = "epoch-end"
+            else:
+                epoch_i = int(math.floor(float(state.epoch or 0)))
+                dst = out / f"checkpoint-e{epoch_i}-s{step}"
+                kind = "rolling"
+
+            if src.resolve() != dst.resolve():
+                if dst.exists():
+                    shutil.rmtree(dst, ignore_errors=True)
+                src.rename(dst)
+                print(f"[muse] checkpoint ({kind}) → {dst.name}", flush=True)
+
+            self._rotate_rolling(out, save_total_limit)
+            return control
+
+        @staticmethod
+        def _rotate_rolling(out: Path, limit: int) -> None:
+            if limit is None or limit <= 0:
+                return
+            rolling: list[tuple[int, Path]] = []
+            for p in out.iterdir():
+                if not p.is_dir():
+                    continue
+                m = _ROLLING_CKPT_RE.match(p.name)
+                if m:
+                    rolling.append((int(m.group(2)), p))
+                    continue
+                # Leftover HF digit names (rename race / older runs).
+                m2 = _HF_DIGIT_CKPT_RE.match(p.name)
+                if m2:
+                    rolling.append((int(m2.group(1)), p))
+            rolling.sort(key=lambda t: t[0])
+            while len(rolling) > limit:
+                _, victim = rolling.pop(0)
+                print(f"[muse] rotate: remove {victim.name}", flush=True)
+                shutil.rmtree(victim, ignore_errors=True)
+
+    return [MuseCheckpointCallback()]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -562,6 +678,19 @@ def main() -> None:
     p.add_argument("--save-steps", type=int, default=None)
     p.add_argument("--save-total-limit", type=int, default=None)
     p.add_argument("--warmup-ratio", type=float, default=None)
+    p.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Manual resume: path to a checkpoint dir (optimizer/scheduler/RNG restored). "
+        "No auto-resume; omit to start fresh.",
+    )
+    p.add_argument(
+        "--eval-max-samples",
+        type=int,
+        default=None,
+        help="Epoch-end eval panel size (slice of train rows). 0 disables eval.",
+    )
     p.add_argument(
         "--force-retokenize",
         action="store_true",
@@ -710,10 +839,17 @@ def main() -> None:
     )
     seed = int(args.seed or train_cfg.get("seed", 42))
     logging_steps = int(args.logging_steps or train_cfg.get("logging_steps", 10))
-    save_steps = int(args.save_steps or train_cfg.get("save_steps", 200))
+    save_steps = int(args.save_steps or train_cfg.get("save_steps", 50))
     save_limit = int(args.save_total_limit or train_cfg.get("save_total_limit", 3))
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
+    eval_max = args.eval_max_samples
+    if eval_max is None:
+        eval_max = int(train_cfg.get("eval_max_samples", 128))
+    eval_bs = int(train_cfg.get("per_device_eval_batch_size", 1))
+    resume_from = _resolve_manual_resume(
+        args.resume_from if args.resume_from is not None else train_cfg.get("resume_from")
+    )
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
     pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
     # Long-context: materializing logits [B,S,vocab≈202k] ≈ 12GB at S=32k.
@@ -746,6 +882,17 @@ def main() -> None:
     total_steps = max(1, int(epochs * steps_per_epoch))
     warmup_steps = int(train_cfg.get("warmup_steps") or max(1, int(total_steps * warmup_ratio)))
 
+    eval_ds = _make_eval_slice(train_ds, max_samples=int(eval_max), seed=seed + 1)
+    has_eval = eval_ds is not None
+    if has_eval:
+        print(
+            f"[muse] epoch-end eval panel: {len(eval_ds):,} rows "
+            f"(eval_max_samples={eval_max})",
+            flush=True,
+        )
+    else:
+        print("[muse] eval_max_samples<=0 → epoch-end evaluate disabled", flush=True)
+
     sft_kwargs: dict[str, Any] = dict(
         output_dir=str(out_dir),
         num_train_epochs=epochs,
@@ -754,8 +901,12 @@ def main() -> None:
         learning_rate=lr,
         bf16=True,
         logging_steps=logging_steps,
+        save_strategy="steps",
         save_steps=save_steps,
-        save_total_limit=save_limit,
+        # Disable HF rotate: with use_mtime it globs all checkpoint-* and would
+        # delete permanent epoch-end dirs. Rolling limit enforced in callback.
+        save_total_limit=None,
+        save_only_model=False,  # keep optimizer/scheduler/RNG for resume
         warmup_steps=warmup_steps,
         seed=seed,
         max_length=max_length,
@@ -763,6 +914,9 @@ def main() -> None:
         gradient_checkpointing=grad_ckpt,
         report_to=os.environ.get("REPORT_TO", "none"),
         truncation_mode=truncation_mode,
+        # Epoch-end eval via strategy; callback forces permanent epoch save.
+        eval_strategy="epoch" if has_eval else "no",
+        per_device_eval_batch_size=eval_bs,
     )
     if use_liger:
         sft_kwargs["use_liger_kernel"] = True
@@ -807,7 +961,9 @@ def main() -> None:
 
     print(
         f"[muse] SFTConfig warmup_steps={sft_kwargs.get('warmup_steps')} "
-        f"(from ratio={warmup_ratio:g}, ~{total_steps} steps)",
+        f"(from ratio={warmup_ratio:g}, ~{total_steps} steps); "
+        f"save_steps={save_steps} rolling_limit={save_limit} "
+        f"(epoch-end ckpts permanent)",
         flush=True,
     )
     sft_args = SFTConfig(**sft_kwargs)
@@ -816,7 +972,13 @@ def main() -> None:
         model=model,
         args=sft_args,
         train_dataset=train_ds,
+        callbacks=_make_muse_checkpoint_callbacks(
+            save_total_limit=save_limit,
+            has_eval=has_eval,
+        ),
     )
+    if has_eval:
+        trainer_kwargs["eval_dataset"] = eval_ds
     # TRL API drift: processing_class vs tokenizer
     try:
         trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
@@ -843,7 +1005,15 @@ def main() -> None:
                 "--use_parallelism_config."
             )
 
-    trainer.train()
+    if resume_from:
+        print(
+            f"[muse] resume_from={resume_from} "
+            "(restores model + optimizer + LR scheduler + RNG from Trainer ckpt)",
+            flush=True,
+        )
+        trainer.train(resume_from_checkpoint=resume_from)
+    else:
+        trainer.train()
     trainer.save_model(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
     print(f"[muse] saved adapter → {out_dir}", flush=True)
