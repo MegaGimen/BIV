@@ -18,7 +18,7 @@ train/
 ├── configs/
 │   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (this branch)
 │   ├── trl/muse_glimmer_30b_lora_shuffled.yaml  # shuffled control
-│   ├── accelerate/muse_{single,multi_ddp,fsdp2}.yaml
+│   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy)
 │   ├── swift/_legacy/                 # Kimi ms-swift (other branch)
 │   └── axolotl/                       # legacy Axolotl
@@ -75,14 +75,26 @@ QLORA=1 bash scripts/trainmodel.sh --max-length 8192 --choice 1
 
 ### Multi-GPU
 
-```bash
-# DDP (default when ≥2 visible GPUs)
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-bash scripts/trainmodel.sh --max-length 8192 --choice 1
+Auto policy (goal: longer `max_length` via multi-GPU memory):
 
-# FSDP2 for longer context
-PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
+| Visible GPUs | Default `PARALLEL` | What it does |
+|---|---|---|
+| 1 | `single` | one process |
+| 2+ | `fsdp2_cp` | FSDP2 + Context Parallel (Ring Attention); `cp_size=#GPUs` |
+
+```bash
+# 4 GPUs → auto FSDP2+CP (each GPU ~ max_length/4 sequence tokens)
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+bash scripts/trainmodel.sh --max-length 32768 --choice 1
+
+# Throughput-oriented short context (no sequence shard)
+PARALLEL=ddp bash scripts/trainmodel.sh --max-length 8192 --choice 1
+
+# Param shard only (no CP)
+PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 16384 --choice 1
 ```
+
+Requires `accelerate>=1.11` for CP. CP uses SDPA (not FlashAttn).
 
 ### Shuffled control
 

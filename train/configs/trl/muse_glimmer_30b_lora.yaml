@@ -6,9 +6,10 @@
 #   3) python scripts/tokenize_data.py
 #   4) python scripts/stat.py --max-length 8192   # optional
 #   5) CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
-#      CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#      CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/trainmodel.sh --max-length 32768 --choice 1
+#      # auto → FSDP2+CP (cp_size=#GPUs) so longer max_length fits across cards
+#      PARALLEL=ddp bash scripts/trainmodel.sh --max-length 8192 --choice 1
 #      QLORA=1 bash scripts/trainmodel.sh --max-length 8192 --choice 1
-#      PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 #
 # Install: pip install -r requirements-muse.txt
 # Hub: https://www.modelscope.cn/models/meta-models/Muse-Glimmer-30B
@@ -17,7 +18,8 @@
 #   - Dense ~29.6B + frozen Perception Encoder (~1.8B ViT)
 #   - Chat template: Muse Glimmer (transformers AutoTokenizer)
 #   - Loss: TRL assistant_only_loss on observation turns
-#   - Parallel: auto → 1 GPU single, 2+ DDP; PARALLEL=fsdp2 for long context
+#   - Parallel auto: 1 GPU → single; 2+ → FSDP2 + Context Parallel (Ring Attention)
+#     Override: PARALLEL=ddp|fsdp2|fsdp2_cp|single
 
 model: meta-models/Muse-Glimmer-30B
 model_source: modelscope
@@ -54,12 +56,15 @@ train:
     - output_gate_proj
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
-  # auto | single | ddp | fsdp2  (trainmodel.sh may override via PARALLEL)
+  # auto | single | ddp | fsdp2 | fsdp2_cp
+  # trainmodel.sh auto: 1 GPU→single; 2+→fsdp2_cp (longer max_length)
   parallel: auto
   qlora: false
   freeze_vision: true
   assistant_only_loss: true
   packing: false
+  # When PARALLEL=fsdp2_cp, Trainer gradient_checkpointing is forced off
+  # (FSDP activation_checkpointing is used instead).
   gradient_checkpointing: true
   output_dir: outputs/muse_glimmer_wm_mix
   torch_dtype: bfloat16

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Muse Glimmer-30B WM SFT via TRL + PEFT + Accelerate (branch: Muse).
-# Auto parallel: 1 visible GPU → single; 2+ → DDP. FSDP2 via PARALLEL=fsdp2.
+#
+# Auto parallel (goal: use multi-GPU memory for longer max_length):
+#   1 visible GPU  → single
+#   2+ visible GPU → FSDP2 + Context Parallel (Ring Attention, cp_size=ngpu)
+# Overrides: PARALLEL=single|ddp|fsdp2|fsdp2_cp|auto
 #
 # Requires explicit --max-length. Before training:
 #   1) structure-preserving right trunc (keep prefix ending on complete assistant)
@@ -11,12 +15,13 @@
 #   export CUDA_VISIBLE_DEVICES=0
 #   bash scripts/trainmodel.sh --max-length 8192 --choice 1
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
-#   bash scripts/trainmodel.sh --max-length 8192 --choice 1
+#   bash scripts/trainmodel.sh --max-length 32768 --choice 1
+#   PARALLEL=ddp bash scripts/trainmodel.sh --max-length 8192 --choice 1
 #   QLORA=1 bash scripts/trainmodel.sh --max-length 8192 --choice 1
-#   PARALLEL=fsdp2 bash scripts/trainmodel.sh --max-length 32768 --choice 1
 #
 # Env:
-#   PARALLEL=single|ddp|fsdp2|auto   CONFIG=...  MIX_DIR=...  QLORA=0|1
+#   PARALLEL=single|ddp|fsdp2|fsdp2_cp|auto
+#   CONFIG=...  MIX_DIR=...  QLORA=0|1
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -42,7 +47,8 @@ Usage:
 
 Env:
   CUDA_VISIBLE_DEVICES     default 0
-  PARALLEL                 omit/auto | single | ddp | fsdp2
+  PARALLEL                 omit/auto | single | ddp | fsdp2 | fsdp2_cp
+                           auto: 1 GPU→single; 2+→FSDP2+CP (longer context)
   TRAIN_CHOICE             same as --choice
   CONFIG / MIX_DIR / QLORA
 EOF
@@ -176,14 +182,89 @@ print(len(xs) if xs else 1)
 PY
 )"
 
+# Prefer sequence-sharding when multi-GPU so max_length can grow with visible VRAM.
 if [[ -z "$PARALLEL" || "$PARALLEL" == "auto" ]]; then
   if [[ "$NGPU" -le 1 ]]; then
     PARALLEL=single
   else
-    PARALLEL=ddp
+    PARALLEL=fsdp2_cp
   fi
-  echo "  auto PARALLEL=$PARALLEL (ngpu=$NGPU)"
+  echo "  auto PARALLEL=$PARALLEL (ngpu=$NGPU, max_length=$MAX_LENGTH)"
 fi
+
+CP_SIZE=1
+LAUNCH=()
+case "$PARALLEL" in
+  single)
+    echo "  single-GPU LoRA/QLoRA"
+    LAUNCH=(python)
+    ;;
+  ddp|multi|multigpu)
+    if [[ "$NGPU" -le 1 ]]; then
+      echo "NOTE: ngpu=1 → PARALLEL=single"
+      PARALLEL=single
+      LAUNCH=(python)
+    else
+      ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/muse_multi_ddp.yaml}"
+      echo "  accelerate DDP num_processes=$NGPU config=$ACCEL_CFG"
+      echo "  NOTE: DDP does not shard sequence activations; long max_length may still OOM."
+      LAUNCH=(
+        accelerate launch
+        --config_file "$ACCEL_CFG"
+        --num_processes "$NGPU"
+        --mixed_precision bf16
+      )
+    fi
+    ;;
+  fsdp2|fsdp)
+    if [[ "$NGPU" -le 1 ]]; then
+      echo "WARNING: FSDP2 with 1 GPU is unnecessary; using single process."
+      PARALLEL=single
+      LAUNCH=(python)
+    else
+      ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/muse_fsdp2.yaml}"
+      echo "  accelerate FSDP2 (param shard, no CP) num_processes=$NGPU config=$ACCEL_CFG"
+      LAUNCH=(
+        accelerate launch
+        --config_file "$ACCEL_CFG"
+        --num_processes "$NGPU"
+        --mixed_precision bf16
+      )
+    fi
+    ;;
+  fsdp2_cp|cp|fsdp2+cp)
+    if [[ "$NGPU" -le 1 ]]; then
+      echo "WARNING: CP needs ≥2 GPUs; falling back to single."
+      PARALLEL=single
+      LAUNCH=(python)
+      CP_SIZE=1
+    else
+      CP_SIZE="$NGPU"
+      ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/muse_fsdp2_cp.yaml}"
+      echo "  accelerate FSDP2+CP Ring Attention"
+      echo "    num_processes=$NGPU cp_size=$CP_SIZE (~max_length/$CP_SIZE tokens/GPU)"
+      echo "    config=$ACCEL_CFG"
+      LAUNCH=(
+        accelerate launch
+        --config_file "$ACCEL_CFG"
+        --num_processes "$NGPU"
+        --mixed_precision bf16
+        --parallelism_config_dp_replicate_size 1
+        --parallelism_config_dp_shard_size 1
+        --parallelism_config_tp_size 1
+        --parallelism_config_cp_size "$CP_SIZE"
+        --parallelism_config_cp_backend torch
+      )
+    fi
+    ;;
+  *)
+    echo "ERROR: unknown PARALLEL=$PARALLEL (use single|ddp|fsdp2|fsdp2_cp|auto)"
+    exit 1
+    ;;
+esac
+
+export BIV_CP_SIZE="$CP_SIZE"
+export BIV_PARALLEL="$PARALLEL"
 
 TRAIN_PY=(
   scripts/train_muse_trl.py
@@ -202,50 +283,9 @@ TRAIN_PY=(
   --save-steps "$SAVE_STEPS"
   --save-total-limit "$SAVE_LIMIT"
   --warmup-ratio "$WARMUP"
+  --cp-size "$CP_SIZE"
   "${QLORA_ARGS[@]}"
 )
-
-LAUNCH=()
-case "$PARALLEL" in
-  single)
-    echo "  single-GPU LoRA/QLoRA"
-    LAUNCH=(python)
-    ;;
-  ddp|multi|multigpu)
-    if [[ "$NGPU" -le 1 ]]; then
-      echo "NOTE: ngpu=1 → PARALLEL=single"
-      LAUNCH=(python)
-    else
-      ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/muse_multi_ddp.yaml}"
-      echo "  accelerate DDP num_processes=$NGPU config=$ACCEL_CFG"
-      LAUNCH=(
-        accelerate launch
-        --config_file "$ACCEL_CFG"
-        --num_processes "$NGPU"
-        --mixed_precision bf16
-      )
-    fi
-    ;;
-  fsdp2|fsdp)
-    if [[ "$NGPU" -le 1 ]]; then
-      echo "WARNING: FSDP2 with 1 GPU is unnecessary; using single process."
-      LAUNCH=(python)
-    else
-      ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/muse_fsdp2.yaml}"
-      echo "  accelerate FSDP2 num_processes=$NGPU config=$ACCEL_CFG"
-      LAUNCH=(
-        accelerate launch
-        --config_file "$ACCEL_CFG"
-        --num_processes "$NGPU"
-        --mixed_precision bf16
-      )
-    fi
-    ;;
-  *)
-    echo "ERROR: unknown PARALLEL=$PARALLEL (use single|ddp|fsdp2|auto)"
-    exit 1
-    ;;
-esac
 
 echo "  launch: ${LAUNCH[*]} ${TRAIN_PY[0]} …"
 "${LAUNCH[@]}" "${TRAIN_PY[@]}"

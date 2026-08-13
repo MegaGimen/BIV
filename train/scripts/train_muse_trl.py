@@ -404,6 +404,13 @@ def main() -> None:
         action="store_true",
         help="Ignore tokenized disk cache and re-run TRL prepare (Tokenizing/labels/trunc).",
     )
+    p.add_argument(
+        "--cp-size",
+        type=int,
+        default=None,
+        help="Context-parallel size (Ring Attention). pad_to_multiple_of=cp_size*2. "
+        "Also read from BIV_CP_SIZE.",
+    )
     args = p.parse_args()
 
     cfg = _load_yaml(_resolve(args.config))
@@ -476,6 +483,24 @@ def main() -> None:
     packing = bool(train_cfg.get("packing", False))
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
     assistant_only = bool(train_cfg.get("assistant_only_loss", True))
+    cp_size = int(
+        args.cp_size
+        if args.cp_size is not None
+        else os.environ.get("BIV_CP_SIZE", "1")
+        or "1"
+    )
+    if cp_size < 1:
+        cp_size = 1
+    # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
+    pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
+    # FSDP activation_checkpointing and Trainer gradient_checkpointing conflict.
+    if cp_size > 1 and grad_ckpt:
+        print(
+            "[muse] CP enabled: disabling Trainer gradient_checkpointing "
+            "(FSDP activation_checkpointing handles memory)",
+            flush=True,
+        )
+        grad_ckpt = False
 
     # Meta docs use TrainingArguments without warmup_*; TRL 1.8 / current
     # transformers TrainingArguments dropped warmup_ratio — only warmup_steps.
@@ -507,6 +532,21 @@ def main() -> None:
     if use_tok_cache:
         # TRL docs: pretokenized input_ids(+labels) + skip_prepare_dataset
         sft_kwargs["dataset_kwargs"] = {"skip_prepare_dataset": True}
+    if pad_multiple > 1:
+        sft_kwargs["pad_to_multiple_of"] = pad_multiple
+    if cp_size > 1:
+        # Ring Attention CP currently requires SDPA (not FlashAttn).
+        sft_kwargs["attn_implementation"] = "sdpa"
+        if hasattr(model, "config"):
+            try:
+                model.config._attn_implementation = "sdpa"
+            except Exception:
+                pass
+        print(
+            f"[muse] CP size={cp_size}: pad_to_multiple_of={pad_multiple}, "
+            f"attn=sdpa, ~{max_length // cp_size} tokens/GPU",
+            flush=True,
+        )
 
     # Keep only kwargs accepted by this TRL/transformers build (avoids API drift).
     accepted = set(inspect.signature(SFTConfig.__init__).parameters)
