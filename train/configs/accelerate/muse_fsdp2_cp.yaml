@@ -1,19 +1,17 @@
 # Muse Glimmer: FSDP2 + Context Parallelism (Ring Attention).
 # num_processes / cp_size are overridden at launch from CUDA_VISIBLE_DEVICES.
 # Requires accelerate>=1.11; text attn must be SDPA (set at from_pretrained).
-# TRL: pad_to_multiple_of = cp_size * 2; disable Trainer gradient_checkpointing
-# when fsdp_activation_checkpointing is true.
+# Activation memory: Trainer gradient_checkpointing + Liger fused CE.
+# Keep fsdp_activation_checkpointing false (cannot combine with Trainer GC — TRL).
 compute_environment: LOCAL_MACHINE
 debug: false
 distributed_type: FSDP
 downcast_bf16: "no"
 enable_cpu_affinity: false
 fsdp_config:
-  fsdp_activation_checkpointing: true
+  fsdp_activation_checkpointing: false
   fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
-  # Decoder blocks — without this, FSDP2 may NO_WRAP and gather full weights each step.
   fsdp_transformer_layer_cls_to_wrap: MuseGlimmerTextDecoderLayer
-  # true + LoRA has caused full-model VRAM spikes on both ranks (accelerate#3474).
   fsdp_cpu_ram_efficient_loading: false
   fsdp_offload_params: false
   fsdp_reshard_after_forward: true
@@ -25,7 +23,6 @@ machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-# Overridden via --num_processes / --parallelism_config_cp_size
 num_processes: 4
 rdzv_backend: static
 same_network: true
@@ -35,8 +32,6 @@ tpu_use_sudo: false
 use_cpu: false
 parallelism_config:
   parallelism_config_dp_replicate_size: 1
-  # With cp_size=N, keep dp_shard_size=1 so the FSDP mesh is the CP group
-  # (model + sequence both shard across the N visible GPUs).
   parallelism_config_dp_shard_size: 1
   parallelism_config_tp_size: 1
   parallelism_config_cp_size: 4
