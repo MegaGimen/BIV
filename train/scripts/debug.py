@@ -394,6 +394,11 @@ def main() -> None:
     p.add_argument("--path", type=Path, default=None, help="explicit JSONL (raw stage only)")
     p.add_argument("--run-root", type=Path, default=None, help="train_prep_mix run dir")
     p.add_argument("--cache-root", type=Path, default=None, help="search train_runs under here")
+    p.add_argument(
+        "--from-mix",
+        action="store_true",
+        help="final: use mix JSONL only (ignore stale train_runs prep cache)",
+    )
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--model", type=str, default=None, help="tokenizer/model path override")
     p.add_argument("--max-length", type=int, default=None)
@@ -452,7 +457,7 @@ def main() -> None:
         tokenizer = _load_tokenizer(model_path, muse_mod)
 
     run_root = None
-    if stage in {"prep", "final"}:
+    if stage in {"prep", "final"} and not getattr(args, "from_mix", False):
         run_root = _resolve_run_root(
             run_root=args.run_root,
             cache_root=args.cache_root,
@@ -477,7 +482,8 @@ def main() -> None:
                     )
                 except json.JSONDecodeError:
                     pass
-
+    elif getattr(args, "from_mix", False):
+        print("[debug] --from-mix: skipping train_runs prep cache", flush=True)
     mix = _resolve(args.mix_dir) if args.mix_dir else _default_mix()
 
     for source in sources:
