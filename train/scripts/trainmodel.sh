@@ -264,7 +264,7 @@ case "$PARALLEL" in
         --fsdp_version 2
         --use_parallelism_config
         --fsdp_transformer_layer_cls_to_wrap MuseGlimmerTextDecoderLayer
-        --fsdp_activation_checkpointing true
+        --fsdp_activation_checkpointing false
         --parallelism_config_dp_replicate_size 1
         --parallelism_config_dp_shard_size 1
         --parallelism_config_tp_size 1

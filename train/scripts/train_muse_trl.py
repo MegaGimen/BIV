@@ -716,14 +716,28 @@ def main() -> None:
     grad_ckpt = bool(train_cfg.get("gradient_checkpointing", True))
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
     pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
-    # FSDP activation_checkpointing and Trainer gradient_checkpointing conflict.
-    if cp_size > 1 and grad_ckpt:
+    # Long-context: materializing logits [B,S,vocab≈202k] ≈ 12GB at S=32k.
+    # Liger fused CE avoids that allocation; TRL marks it CP-compatible.
+    use_liger = bool(train_cfg.get("use_liger_kernel", cp_size > 1 or max_length >= 16384))
+    if use_liger:
+        try:
+            import liger_kernel  # noqa: F401
+        except ImportError:
+            print(
+                "[muse] WARNING: use_liger_kernel requested but liger-kernel not installed; "
+                "long max_length may OOM on full logits",
+                flush=True,
+            )
+            use_liger = False
+    # Prefer Trainer gradient checkpointing for Muse+PEFT. FSDP activation
+    # checkpointing + PEFT has been flaky; cannot enable both (TRL).
+    if cp_size > 1:
+        grad_ckpt = True
         print(
-            "[muse] CP enabled: disabling Trainer gradient_checkpointing "
-            "(FSDP activation_checkpointing handles memory)",
+            "[muse] CP: Trainer gradient_checkpointing=ON, "
+            "expect FSDP activation_checkpointing=OFF (avoid dual ckpt)",
             flush=True,
         )
-        grad_ckpt = False
 
     # Meta docs use TrainingArguments without warmup_*; TRL 1.8 / current
     # transformers TrainingArguments dropped warmup_ratio — only warmup_steps.
@@ -750,6 +764,9 @@ def main() -> None:
         report_to=os.environ.get("REPORT_TO", "none"),
         truncation_mode=truncation_mode,
     )
+    if use_liger:
+        sft_kwargs["use_liger_kernel"] = True
+        print("[muse] use_liger_kernel=True (fused CE; avoids full [B,S,V] logits)", flush=True)
     if use_tok_cache:
         # Pretokenized input_ids+labels (assistant already masked with -100).
         # Do NOT set assistant_only_loss — TRL requires conversational messages for that.
