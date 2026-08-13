@@ -4,13 +4,15 @@
 #
 # Usage (same flags as trainmodel.sh):
 #   bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
-#     --resume-from outputs/muse_glimmer_wm_mix_ml65536_c1/checkpoint-200
+#     --resume-from auto
 #
 # Behavior:
 #   - Passes all CLI args through to scripts/trainmodel.sh unchanged (no fallback
 #     batch/seq/parallel knobs).
-#   - On restart after a failure, replaces --resume-from with the newest complete
-#     checkpoint under the run output_dir (so progress is not lost).
+#   - --resume-from auto (or omit) → pick newest complete checkpoint under the run
+#     output_dir (epoch, step, kind); same algorithm as train_muse_trl.py.
+#   - On restart after a failure, always re-picks the newest complete checkpoint
+#     under the run output_dir (so progress is not lost).
 #   - CTRL+C (SIGINT) → kill training tree → daemon restarts (for crash tests).
 #   - SIGTERM / SIGQUIT → stop daemon (no restart). Or: touch "$STOP_FILE".
 #
@@ -23,7 +25,7 @@
 #
 # OOM smoke (2 GPUs only; same max_length / batch — no fallback):
 #   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
-#     --resume-from outputs/muse_glimmer_wm_mix_ml65536_c1/checkpoint-200
+#     --resume-from auto
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -40,6 +42,11 @@ if [[ ! -f "$TRAIN_SH" ]]; then
 fi
 
 USER_RESUME="${RESUME_FROM:-}"
+# "auto" means pick latest under out_dir (same as find_latest_ckpt), not a literal path.
+_ur_lc="$(printf '%s' "$USER_RESUME" | tr '[:upper:]' '[:lower:]')"
+if [[ "$_ur_lc" == "auto" ]]; then
+  USER_RESUME=""
+fi
 MAX_LENGTH=""
 CHOICE="${TRAIN_CHOICE:-}"
 PASS_ARGS=()
@@ -57,6 +64,10 @@ while [[ $i -lt $n ]]; do
         exit 1
       fi
       USER_RESUME="${args[$i]}"
+      _ur_lc="$(printf '%s' "$USER_RESUME" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$_ur_lc" == "auto" ]]; then
+        USER_RESUME=""
+      fi
       ;;
     --max-length|--max_length|-m)
       PASS_ARGS+=("$a")

@@ -22,9 +22,9 @@
 # Env:
 #   PARALLEL=single|ddp|fsdp2|fsdp2_cp|auto
 #   CONFIG=...  MIX_DIR=...  QLORA=0|1
-#   RESUME_FROM=/path/to/checkpoint-e0-s50   # manual only; no auto-resume
+#   RESUME_FROM=/path/to/checkpoint-e0-s50 | auto   # auto = latest under out_dir
 #   Watchdog (auto-restart on OOM/CTRL+C, same args, resume latest ckpt):
-#     bash scripts/train_daemon.sh --max-length 65536 --choice 1 --resume-from …
+#     bash scripts/train_daemon.sh --max-length 65536 --choice 1 --resume-from auto
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -43,7 +43,7 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/trainmodel.sh --max-length <N> [--choice 1|2|3] [--force-prep] [--qlora]
-       [--resume-from <checkpoint_dir>]
+       [--resume-from <checkpoint_dir|auto>]
 
   Auto-restart wrapper (recommended on the wire for VRAM):
   bash scripts/train_daemon.sh --max-length <N> [--choice …] [--resume-from …]
@@ -52,14 +52,15 @@ Usage:
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
   --force-prep     rebuild filtered run cache even if present
   --qlora          4-bit QLoRA (also QLORA=1)
-  --resume-from D  resume from this checkpoint dir (manual only; no auto)
+  --resume-from D  checkpoint dir, or "auto" = latest complete under output_dir
+                   (same ranking as train_daemon.sh)
 
 Env:
   CUDA_VISIBLE_DEVICES     default 0
   PARALLEL                 omit/auto | single | ddp | fsdp2 | fsdp2_cp
                            auto: 1 GPU→single; 2+→FSDP2+CP (longer context)
   TRAIN_CHOICE             same as --choice
-  RESUME_FROM              same as --resume-from
+  RESUME_FROM              same as --resume-from (path or auto)
   CONFIG / MIX_DIR / QLORA
 EOF
 }
@@ -90,7 +91,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --resume)
-      echo "ERROR: auto --resume is disabled. Pass --resume-from <checkpoint_dir>."
+      echo "ERROR: use --resume-from <checkpoint_dir|auto> (bare --resume is disabled)."
       exit 1
       ;;
     -h|--help)
@@ -357,7 +358,7 @@ if [[ -n "${EVAL_MAX_SAMPLES:-}" ]]; then
   TRAIN_PY+=(--eval-max-samples "$EVAL_MAX_SAMPLES")
 fi
 if [[ -n "$RESUME_FROM" ]]; then
-  echo "  resume_from=$RESUME_FROM (manual; no auto)"
+  echo "  resume_from=$RESUME_FROM"
   TRAIN_PY+=(--resume-from "$RESUME_FROM")
 fi
 

@@ -549,14 +549,72 @@ def _offload_frozen_vision_to_cpu(model) -> int:
 
 # Rolling mid-run: checkpoint-e{epoch}-s{step}. Epoch-end permanent: checkpoint-epoch{N}-end-s{step}.
 _ROLLING_CKPT_RE = re.compile(r"^checkpoint-e(\d+)-s(\d+)$")
+_EPOCH_END_CKPT_RE = re.compile(r"^checkpoint-epoch(\d+)-end-s(\d+)$")
 _HF_DIGIT_CKPT_RE = re.compile(r"^checkpoint-(\d+)$")
 
 
-def _resolve_manual_resume(resume_from: Path | str | None) -> str | None:
-    """Manual resume only — path required; never auto-pick latest under output_dir."""
+def _find_latest_ckpt(out_dir: Path) -> Path | None:
+    """Pick newest complete ckpt under ``out_dir`` (same key as ``train_daemon.sh``).
+
+    Rank key ``(epoch, step, kind)`` — epoch dominates step:
+      checkpoint-{step}                    → epoch 0, kind 0
+      checkpoint-e{epoch}-s{step}          → kind 1
+      checkpoint-epoch{epoch}-end-s{step}  → kind 2
+    Requires ``trainer_state.json`` plus weights (adapter / FSDP / *.safetensors).
+    """
+    if not out_dir.is_dir():
+        return None
+    best: tuple[int, int, int, Path] | None = None
+    for p in out_dir.iterdir():
+        if not p.is_dir():
+            continue
+        name = p.name
+        epoch = step = None
+        kind = 0
+        m = _EPOCH_END_CKPT_RE.match(name)
+        if m:
+            epoch, step, kind = int(m.group(1)), int(m.group(2)), 2
+        else:
+            m = _ROLLING_CKPT_RE.match(name)
+            if m:
+                epoch, step, kind = int(m.group(1)), int(m.group(2)), 1
+            else:
+                m = _HF_DIGIT_CKPT_RE.match(name)
+                if m:
+                    epoch, step, kind = 0, int(m.group(1)), 0
+        if epoch is None or step is None:
+            continue
+        if not (p / "trainer_state.json").is_file():
+            continue
+        if not (
+            (p / "adapter_model.safetensors").is_file()
+            or (p / "pytorch_model_fsdp.bin").is_file()
+            or any(p.glob("*.safetensors"))
+        ):
+            continue
+        key = (epoch, step, kind)
+        if best is None or key > (best[0], best[1], best[2]):
+            best = (epoch, step, kind, p)
+    return None if best is None else best[3]
+
+
+def _resolve_resume(resume_from: Path | str | None, *, out_dir: Path) -> str | None:
+    """Resolve ``resume_from``: path, or ``auto`` → latest ckpt under ``out_dir``."""
     if resume_from is None or str(resume_from).strip() in {"", "null", "None"}:
         return None
-    path = _resolve(resume_from)
+    raw = str(resume_from).strip()
+    if raw.lower() == "auto":
+        picked = _find_latest_ckpt(out_dir)
+        if picked is None:
+            print(
+                f"[muse] resume_from=auto → no complete checkpoint under {out_dir}; "
+                "starting fresh",
+                flush=True,
+            )
+            return None
+        print(f"[muse] resume_from=auto → {picked}", flush=True)
+        return str(picked)
+    path = _resolve(raw)
     if not path.is_dir():
         raise SystemExit(f"--resume-from must be an existing checkpoint directory: {path}")
     # Soft check: Trainer needs trainer_state.json for full opt/sched/RNG restore.
@@ -567,6 +625,7 @@ def _resolve_manual_resume(resume_from: Path | str | None) -> str | None:
             "weights may load but optimizer/LR scheduler/RNG will restart.",
             flush=True,
         )
+    print(f"[muse] resume_from={path}", flush=True)
     return str(path)
 
 
@@ -579,6 +638,56 @@ def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
         return None
     k = min(int(max_samples), n)
     return train_ds.shuffle(seed=seed).select(range(k))
+
+
+def _make_muse_sft_trainer_cls():
+    """SFTTrainer that still logs mean_token_accuracy for Muse + use_liger_kernel.
+
+    Root cause (TRL ≥0.26 / 1.8 + Muse Glimmer):
+    - With ``use_liger_kernel=True``, ``SFTTrainer.compute_loss`` sets
+      ``return_token_accuracy=True`` and **only** reads ``outputs.token_accuracy``
+      (skips the logits argmax path; see huggingface/trl#4730 / PR#4302).
+    - That field is filled only by Liger's **model-specific** forward patch
+      (e.g. Qwen3 → ``LigerCausalLMOutputWithPast``).
+    - ``muse_glimmer`` is not in Liger's ``MODEL_TYPE_TO_APPLY_LIGER_FN``;
+      Muse always materializes ``logits`` via ``lm_head`` and returns
+      ``MuseGlimmerCausalLMOutputWithPast`` **without** ``token_accuracy``
+      (``accepts_loss_kwargs=False``).
+    - Result: warning *liger-kernel did not return token_accuracy* and the
+      train log loses ``mean_token_accuracy`` — loss/backprop unchanged.
+
+    Fix: during ``compute_loss``, temporarily clear the liger flag so TRL uses
+    the logits-based accuracy/entropy path Muse already provides. Init-time
+    ``apply_liger_kernel`` (no-op for Muse) is unaffected.
+    """
+    from trl import SFTTrainer
+
+    class MuseSFTTrainer(SFTTrainer):
+        _muse_acc_note_printed = False
+
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            liger = bool(getattr(self.args, "use_liger_kernel", False))
+            if liger and not MuseSFTTrainer._muse_acc_note_printed:
+                print(
+                    "[muse] Muse has no Liger FLCE/token_accuracy patch; "
+                    "logging mean_token_accuracy from logits (same as non-liger path)",
+                    flush=True,
+                )
+                MuseSFTTrainer._muse_acc_note_printed = True
+            if liger:
+                self.args.use_liger_kernel = False
+            try:
+                return super().compute_loss(
+                    model,
+                    inputs,
+                    return_outputs=return_outputs,
+                    num_items_in_batch=num_items_in_batch,
+                )
+            finally:
+                if liger:
+                    self.args.use_liger_kernel = True
+
+    return MuseSFTTrainer
 
 
 def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
@@ -724,8 +833,8 @@ def main() -> None:
         "--resume-from",
         type=str,
         default=None,
-        help="Manual resume: path to a checkpoint dir (optimizer/scheduler/RNG restored). "
-        "No auto-resume; omit to start fresh.",
+        help="Checkpoint dir, or 'auto' to pick latest complete ckpt under output_dir "
+        "(same ranking as train_daemon.sh). Omit to start fresh.",
     )
     p.add_argument(
         "--eval-max-samples",
@@ -805,6 +914,10 @@ def main() -> None:
     print(f"  max_length: {max_length}", flush=True)
     print(f"  qlora:      {qlora}", flush=True)
     print(f"  output:     {out_dir}", flush=True)
+    resume_from = _resolve_resume(
+        args.resume_from if args.resume_from is not None else train_cfg.get("resume_from"),
+        out_dir=out_dir,
+    )
 
     use_tok_cache = (not args.force_retokenize) and _tokenized_cache_ready(tok_cache)
     distributed = (
@@ -870,7 +983,9 @@ def main() -> None:
         attn_implementation=attn_impl,
     )
 
-    from trl import SFTConfig, SFTTrainer
+    from trl import SFTConfig
+
+    MuseSFTTrainer = _make_muse_sft_trainer_cls()
     import inspect
 
     lr = float(args.learning_rate or train_cfg.get("learning_rate", 2e-4))
@@ -889,9 +1004,7 @@ def main() -> None:
     if eval_max is None:
         eval_max = int(train_cfg.get("eval_max_samples", 128))
     eval_bs = int(train_cfg.get("per_device_eval_batch_size", 1))
-    resume_from = _resolve_manual_resume(
-        args.resume_from if args.resume_from is not None else train_cfg.get("resume_from")
-    )
+    # resume_from already resolved at banner (supports path | auto).
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
     pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
     # Long-context: materializing logits [B,S,vocab≈202k] ≈ 12GB at S=32k.
@@ -962,7 +1075,14 @@ def main() -> None:
     )
     if use_liger:
         sft_kwargs["use_liger_kernel"] = True
-        print("[muse] use_liger_kernel=True (fused CE; avoids full [B,S,V] logits)", flush=True)
+        # Muse is not in Liger's supported model_type map → apply_liger is a no-op;
+        # fused CE / outputs.token_accuracy are NOT active. Flag kept so TRL/init
+        # paths stay consistent; MuseSFTTrainer restores accuracy from logits.
+        print(
+            "[muse] use_liger_kernel=True (note: muse_glimmer unsupported by Liger → "
+            "no fused CE; mean_token_accuracy logged from logits via MuseSFTTrainer)",
+            flush=True,
+        )
     if use_tok_cache:
         # Pretokenized input_ids+labels (assistant already masked with -100).
         # Do NOT set assistant_only_loss — TRL requires conversational messages for that.
@@ -1023,9 +1143,9 @@ def main() -> None:
         trainer_kwargs["eval_dataset"] = eval_ds
     # TRL API drift: processing_class vs tokenizer
     try:
-        trainer = SFTTrainer(processing_class=tokenizer, **trainer_kwargs)
+        trainer = MuseSFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:
-        trainer = SFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
+        trainer = MuseSFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
 
     if cp_size > 1:
         pc = None
@@ -1035,7 +1155,7 @@ def main() -> None:
             pc = None
         cp_ok = bool(pc is not None and getattr(pc, "cp_enabled", False))
         print(
-            f"[muse] after SFTTrainer: parallelism_config={pc!r} cp_enabled={cp_ok}",
+            f"[muse] after MuseSFTTrainer: parallelism_config={pc!r} cp_enabled={cp_ok}",
             flush=True,
         )
         if not cp_ok:
