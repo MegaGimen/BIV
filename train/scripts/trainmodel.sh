@@ -195,6 +195,25 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 # Multi-GPU safety: default NCCL/store timeout is 30min; tokenize alone can exceed that.
 export NCCL_TIMEOUT="${NCCL_TIMEOUT:-7200}"
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-7200}"
+
+# Triton / TorchInductor autotune caches default to ~/.triton and /tmp — on AutoDL
+# that is the tiny system disk. Prefer data disk (autodl-tmp) or repo outputs/.
+_DATA_ROOT="${BIV_DATA_ROOT:-}"
+if [[ -z "$_DATA_ROOT" ]]; then
+  if [[ -d /root/autodl-tmp ]]; then
+    _DATA_ROOT=/root/autodl-tmp
+  else
+    _DATA_ROOT="$ROOT/outputs"
+  fi
+fi
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$_DATA_ROOT/triton_cache}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$_DATA_ROOT/torchinductor_cache}"
+export TMPDIR="${TMPDIR:-$_DATA_ROOT/tmp}"
+mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$TMPDIR"
+echo "  TRITON_CACHE_DIR=$TRITON_CACHE_DIR"
+echo "  TORCHINDUCTOR_CACHE_DIR=$TORCHINDUCTOR_CACHE_DIR"
+echo "  TMPDIR=$TMPDIR"
+
 PARALLEL="${PARALLEL:-}"
 
 NGPU="$(python - <<'PY'
