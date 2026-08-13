@@ -56,6 +56,24 @@ def _resolve(raw: str | Path) -> Path:
     return p if p.is_absolute() else (ROOT / p)
 
 
+def _filter_target_modules(model, modules: list[str]) -> list[str]:
+    """Drop LoRA targets that do not exist on this checkpoint (leaf-name match).
+
+    Keep leaf matching (same as checkpoint-200) so adapter param names stay
+    compatible on resume. Vision adapters are created then disabled via
+    ``_freeze_vision`` *after* ``get_peft_model``.
+    """
+    names = {n for n, _ in model.named_modules()}
+    leaf = {n.rsplit(".", 1)[-1] for n in names}
+    kept = [m for m in modules if m in leaf]
+    dropped = [m for m in modules if m not in leaf]
+    if dropped:
+        print(f"[muse] skip missing LoRA targets: {dropped}", flush=True)
+    if not kept:
+        raise SystemExit(f"No LoRA target_modules matched model; tried {modules}")
+    return kept
+
+
 def _freeze_vision(model) -> int:
     n = 0
     for name, param in model.named_parameters():
@@ -65,21 +83,6 @@ def _freeze_vision(model) -> int:
                 param.requires_grad = False
                 n += 1
     return n
-
-
-def _filter_target_modules(model, modules: list[str]) -> list[str]:
-    """Drop LoRA targets that do not exist on this checkpoint."""
-    names = {n for n, _ in model.named_modules()}
-    leaf = set()
-    for n in names:
-        leaf.add(n.rsplit(".", 1)[-1])
-    kept = [m for m in modules if m in leaf]
-    dropped = [m for m in modules if m not in leaf]
-    if dropped:
-        print(f"[muse] skip missing LoRA targets: {dropped}", flush=True)
-    if not kept:
-        raise SystemExit(f"No LoRA target_modules matched model; tried {modules}")
-    return kept
 
 
 def _normalize_messages(messages: Any) -> list[dict[str, Any]]:
@@ -104,6 +107,7 @@ def _load_concat_datasets(paths: list[Path]):
                     "content": Value("string"),
                     "name": Value("string"),
                     "tool_call_id": Value("string"),
+                    "reasoning_content": Value("string"),
                     "tool_calls": [
                         {
                             "id": Value("string"),
@@ -170,8 +174,8 @@ def _tokenized_cache_dir(
     import hashlib
 
     run_root = cached[0].resolve().parent
-    # v4 = openhands tool fields preserved + think-reply repair (anti_forget)
-    parts = [f"v4|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
+    # v5 = think→reasoning_content (Muse to=self) + vision LoRA freeze-after-PEFT
+    parts = [f"v5|ml={max_length}|ao={int(assistant_only)}|trunc={truncation_mode}|gen=1"]
     for p in cached:
         rp = p.resolve()
         parts.append(str(rp))
@@ -451,7 +455,7 @@ def _build_model_and_tokenizer(
 
     if freeze_vision:
         frozen = _freeze_vision(model)
-        print(f"[muse] froze {frozen} vision/perception params", flush=True)
+        print(f"[muse] froze {frozen} vision/perception base params (pre-LoRA)", flush=True)
         # Text-only WM SFT: park frozen vision on CPU to free VRAM (no pixel batch).
         if distributed or attn_implementation:
             moved = _offload_frozen_vision_to_cpu(model)
@@ -468,6 +472,16 @@ def _build_model_and_tokenizer(
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora)
+    # Critical for resume: freeze AFTER PEFT so vision LoRA adapters are not
+    # trainable. Previously freeze ran only pre-LoRA → vision *lora_* stayed
+    # requires_grad=True → FSDP optimizer load failed vs older checkpoints.
+    if freeze_vision:
+        frozen_lora = _freeze_vision(model)
+        print(
+            f"[muse] froze {frozen_lora} vision params after LoRA "
+            "(adapters excluded from optimizer)",
+            flush=True,
+        )
     model.print_trainable_parameters()
     return model, tokenizer
 

@@ -161,7 +161,8 @@ _THINK_REPLY_EXACT = frozenset(
         "your thought has been logged",
     }
 )
-_POLICY_SKIP_TOOLS = frozenset({"think", "finish"})
+_POLICY_DROP_TOOLS = frozenset({"finish"})  # never train finish as a tool call
+_THINK_TOOL = "think"
 
 
 def _is_think_tool_reply(content: Any) -> bool:
@@ -179,6 +180,37 @@ def _as_str_content(content: Any) -> str:
         return json.dumps(content, ensure_ascii=False)
     except TypeError:
         return str(content)
+
+
+def _thought_text_from_args(args: Any) -> str:
+    """Extract OpenHands think-tool body (usually ``{\"thought\": \"...\"}``)."""
+    if args is None:
+        return ""
+    if isinstance(args, str):
+        s = args.strip()
+        if not s:
+            return ""
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            return s
+        return _thought_text_from_args(parsed)
+    if isinstance(args, dict):
+        for key in ("thought", "content", "text", "reasoning"):
+            v = args.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # Single-string dict values fallback
+        strs = [v.strip() for v in args.values() if isinstance(v, str) and v.strip()]
+        if len(strs) == 1:
+            return strs[0]
+        if strs:
+            return "\n\n".join(strs)
+        try:
+            return json.dumps(args, ensure_ascii=False)
+        except TypeError:
+            return str(args)
+    return str(args).strip()
 
 
 def _canon_tool_call(tc: Any) -> dict[str, Any] | None:
@@ -227,6 +259,7 @@ def messages_for_arrow(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "content": _as_str_content(m.get("content")),
             "name": str(m.get("name") or ""),
             "tool_call_id": str(m.get("tool_call_id") or ""),
+            "reasoning_content": str(m.get("reasoning_content") or ""),
             "tool_calls": [],
         }
         for tc in m.get("tool_calls") or []:
@@ -258,13 +291,16 @@ def messages_for_chat_template(messages: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in normed:
         row: dict[str, Any] = {"role": m["role"], "content": m["content"]}
+        rc = m.get("reasoning_content") or ""
+        if rc:
+            # Muse template → <|start|>assistant to=self<|message|>…<|eom|>
+            row["reasoning_content"] = rc
         if m["role"] == "tool":
             if m.get("name"):
                 row["name"] = m["name"]
             if m.get("tool_call_id"):
                 row["tool_call_id"] = m["tool_call_id"]
         if m.get("tool_calls"):
-            # _canon already made arguments dict via normalize_train_messages
             row["tool_calls"] = m["tool_calls"]
         out.append(row)
     return out
@@ -273,21 +309,20 @@ def messages_for_chat_template(messages: Any) -> list[dict[str, Any]]:
 def normalize_openhands_messages(
     messages: Any,
     *,
-    drop_think_tool: bool = True,
+    map_think_to_reasoning: bool = True,
 ) -> list[dict[str, Any]]:
-    """Repair OpenHands / anti_forget messages for Muse native tool rendering.
+    """Repair OpenHands / anti_forget messages for Muse native tool + CoT rendering.
 
-    - Drop ``think`` / ``finish`` tool_calls and their replies (incl. orphan
-      ``Your thought has been logged.`` when ids were stripped by Arrow).
-    - Keep structured ``tool_calls`` on assistant (do **not** fold into content).
+    - Map ``think`` tool_calls → ``reasoning_content`` (Muse ``assistant to=self``).
+    - Drop ``finish`` tool_calls and think/finish tool replies.
+    - Keep structured env ``tool_calls`` on assistant (do **not** fold into content).
     - Re-attach ``name`` / ``tool_call_id`` on ``role=tool`` by sequential pairing
-      with the preceding assistant's tool_calls when metadata was lost.
+      when metadata was lost in Arrow.
     - Emit a uniform per-message key set for HF concatenate.
     """
     if not isinstance(messages, list):
         return []
 
-    skip = _POLICY_SKIP_TOOLS if drop_think_tool else frozenset()
     skip_ids: set[str] = set()
     interim: list[dict[str, Any]] = []
 
@@ -296,10 +331,19 @@ def normalize_openhands_messages(
             continue
         role = str(msg.get("role") or "user")
         content = _as_str_content(msg.get("content"))
+        existing_rc = msg.get("reasoning_content")
+        existing_rc_s = (
+            existing_rc.strip()
+            if isinstance(existing_rc, str) and existing_rc.strip()
+            else ""
+        )
 
         if role == "assistant":
             raw_calls = msg.get("tool_calls")
             kept: list[dict[str, Any]] = []
+            thoughts: list[str] = []
+            if existing_rc_s:
+                thoughts.append(existing_rc_s)
             if isinstance(raw_calls, list):
                 for tc in raw_calls:
                     canon = _canon_tool_call(tc)
@@ -307,25 +351,36 @@ def normalize_openhands_messages(
                         continue
                     name = canon["function"]["name"]
                     tid = canon["id"]
-                    if name in skip:
+                    if name == _THINK_TOOL:
+                        if tid:
+                            skip_ids.add(tid)
+                        if map_think_to_reasoning:
+                            thought = _thought_text_from_args(canon["function"]["arguments"])
+                            if thought:
+                                thoughts.append(thought)
+                        continue
+                    if name in _POLICY_DROP_TOOLS:
                         if tid:
                             skip_ids.add(tid)
                         continue
                     kept.append(canon)
-            if not kept and not content.strip():
+            if not kept and not content.strip() and not thoughts:
                 continue
-            row: dict[str, Any] = {
-                "role": "assistant",
-                "content": content,
-                "name": "",
-                "tool_call_id": "",
-                "tool_calls": kept,
-            }
-            interim.append(row)
+            interim.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "name": "",
+                    "tool_call_id": "",
+                    "reasoning_content": "\n\n".join(thoughts),
+                    "tool_calls": kept,
+                }
+            )
             continue
 
         if role == "tool":
-            if drop_think_tool and _is_think_tool_reply(content):
+            # Always drop think/finish ack replies (no training signal).
+            if _is_think_tool_reply(content):
                 continue
             tid = msg.get("tool_call_id")
             tid_s = str(tid) if tid is not None and str(tid) else ""
@@ -338,6 +393,7 @@ def normalize_openhands_messages(
                     "content": content,
                     "name": str(tname) if tname else "",
                     "tool_call_id": tid_s,
+                    "reasoning_content": "",
                     "tool_calls": [],
                 }
             )
@@ -349,6 +405,7 @@ def normalize_openhands_messages(
                 "content": content,
                 "name": "",
                 "tool_call_id": "",
+                "reasoning_content": "",
                 "tool_calls": [],
             }
         )
@@ -394,12 +451,13 @@ def normalize_train_messages(messages: Any) -> list[dict[str, Any]]:
             m.get("role") == "tool"
             or m.get("tool_calls")
             or m.get("tool_call_id")
+            or m.get("reasoning_content")
             or (m.get("role") == "assistant" and m.get("name"))
         )
         for m in messages
     )
     if needs_policy:
-        return normalize_openhands_messages(messages, drop_think_tool=True)
+        return normalize_openhands_messages(messages, map_think_to_reasoning=True)
     out: list[dict[str, Any]] = []
     for m in messages:
         if not isinstance(m, dict):
@@ -410,6 +468,7 @@ def normalize_train_messages(messages: Any) -> list[dict[str, Any]]:
                 "content": _as_str_content(m.get("content")),
                 "name": "",
                 "tool_call_id": "",
+                "reasoning_content": "",
                 "tool_calls": [],
             }
         )
@@ -420,7 +479,7 @@ def policy_row_from_openhands_record(
     record: dict[str, Any],
     *,
     max_tool_chars: int = 8000,
-    drop_think_tool: bool = True,
+    map_think_to_reasoning: bool = True,
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
     """Build anti-forget row.
 
@@ -437,9 +496,9 @@ def policy_row_from_openhands_record(
     if not isinstance(traj, list) or not traj:
         return None, empty_stats
 
-    skip = _POLICY_SKIP_TOOLS if drop_think_tool else frozenset()
+    # Keep raw-ish messages (clip content only); final think→reasoning + pairing
+    # happens in ``normalize_openhands_messages``.
     cleaned: list[dict[str, Any]] = []
-    skip_ids: set[str] = set()
     messages_seen = 0
     messages_clipped = 0
     chars_overflow = 0
@@ -456,50 +515,39 @@ def policy_row_from_openhands_record(
             chars_overflow += overflow
 
     for msg in traj:
-        role = msg.get("role")
-        if role == "assistant" and msg.get("tool_calls"):
-            kept_calls = []
-            for tc in msg["tool_calls"]:
-                fn = tc.get("function", tc) if isinstance(tc, dict) else {}
-                name = fn.get("name") if isinstance(fn, dict) else None
-                tid = tc.get("id") if isinstance(tc, dict) else None
-                if name in skip:
-                    if tid:
-                        skip_ids.add(str(tid))
-                    continue
-                if isinstance(fn, dict) and isinstance(fn.get("arguments"), dict):
-                    tc = dict(tc)
-                    fn = dict(fn)
-                    fn["arguments"] = json.dumps(fn["arguments"], ensure_ascii=False)
-                    tc["function"] = fn
-                kept_calls.append(tc)
-            if not kept_calls and not (msg.get("content") or "").strip():
-                continue
-            new_msg = dict(msg)
-            if kept_calls:
-                new_msg["tool_calls"] = kept_calls
-            else:
-                new_msg.pop("tool_calls", None)
-            if isinstance(new_msg.get("content"), str):
-                _maybe_clip_field(new_msg)
-            cleaned.append(new_msg)
-        elif role == "tool":
-            if drop_think_tool and _is_think_tool_reply(msg.get("content")):
-                continue
-            tid = msg.get("tool_call_id")
-            if tid is not None and str(tid) in skip_ids:
-                continue
-            new_msg = dict(msg)
+        if not isinstance(msg, dict):
+            continue
+        new_msg = dict(msg)
+        if isinstance(new_msg.get("content"), str):
             _maybe_clip_field(new_msg)
-            cleaned.append(new_msg)
-        else:
-            new_msg = dict(msg)
-            if isinstance(new_msg.get("content"), str):
-                _maybe_clip_field(new_msg)
-            cleaned.append(new_msg)
+        # Also clip think arguments (often long CoT) if present as string.
+        tcs = new_msg.get("tool_calls")
+        if isinstance(tcs, list) and max_tool_chars > 0:
+            new_tcs = []
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    new_tcs.append(tc)
+                    continue
+                tc2 = dict(tc)
+                fn = tc2.get("function")
+                if isinstance(fn, dict):
+                    fn = dict(fn)
+                    args = fn.get("arguments")
+                    if isinstance(args, str) and len(args) > max_tool_chars:
+                        messages_seen += 1
+                        clipped_s, was, overflow = _clip_content(args, max_tool_chars)
+                        fn["arguments"] = clipped_s
+                        if was:
+                            messages_clipped += 1
+                            chars_overflow += overflow
+                    tc2["function"] = fn
+                new_tcs.append(tc2)
+            new_msg["tool_calls"] = new_tcs
+        cleaned.append(new_msg)
 
-    # Final repair: pair name/tool_call_id, drop residual think, uniform keys.
-    cleaned = normalize_openhands_messages(cleaned, drop_think_tool=drop_think_tool)
+    cleaned = normalize_openhands_messages(
+        cleaned, map_think_to_reasoning=map_think_to_reasoning
+    )
 
     clip_stats = {
         "messages_seen": messages_seen,
@@ -510,6 +558,13 @@ def policy_row_from_openhands_record(
     if len(cleaned) < 2:
         return None, clip_stats
     has_act = any(m.get("role") == "assistant" and m.get("tool_calls") for m in cleaned)
+    has_rc = any(
+        m.get("role") == "assistant" and (m.get("reasoning_content") or "").strip()
+        for m in cleaned
+    )
+    if not has_act and not has_rc:
+        return None, clip_stats
+    # Prefer trajectories that still have at least one env tool call.
     if not has_act:
         return None, clip_stats
     instance_id, trajectory_id = record_ids(record)
