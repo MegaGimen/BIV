@@ -53,11 +53,34 @@ if [[ -z "$MODEL_PATH" ]]; then
   fi
 fi
 
+if ! command -v vllm >/dev/null 2>&1; then
+  echo "ERROR: vllm not found. In .venv-muse: pip install vllm"
+  exit 1
+fi
+
+# Prefer the same interpreter as the vllm entrypoint (avoid system python3).
+_VLLM_BIN="$(command -v vllm)"
+_PY="$(dirname "$_VLLM_BIN")/python"
+if [[ ! -x "$_PY" ]]; then
+  _PY="python3"
+fi
+
+# Torch 2.13+cu130 needs nvidia-nccl-cu13. Installing vllm can pull
+# nvidia-nccl-cu12 into the same nvidia/nccl/ path and break:
+#   undefined symbol: ncclCommResume
+if ! "$_PY" -c "import torch" 2>/dev/null; then
+  echo "ERROR: torch import failed (often NCCL cu12 overwrote cu13)."
+  echo "  Fix: pip uninstall -y nvidia-nccl-cu12"
+  echo "       pip install --force-reinstall --no-deps 'nvidia-nccl-cu13==2.29.7'"
+  "$_PY" -c "import torch" || true
+  exit 1
+fi
+
 # Resolve CKPT=auto like test.py (epoch, step, kind).
 if [[ -n "$CKPT" && "$(echo "$CKPT" | tr '[:upper:]' '[:lower:]')" == "auto" ]]; then
   SEARCH="${CKPT_SEARCH_DIR:-$ROOT/outputs/muse_glimmer_wm_mix}"
   CKPT="$(
-    SEARCH="$SEARCH" python3 - <<'PY'
+    SEARCH="$SEARCH" "$_PY" - <<'PY'
 import os, re
 from pathlib import Path
 out = Path(os.environ["SEARCH"])
@@ -102,11 +125,6 @@ PY
     exit 1
   fi
   echo "[serve] CKPT=auto → $CKPT"
-fi
-
-if ! command -v vllm >/dev/null 2>&1; then
-  echo "ERROR: vllm not found. In .venv-muse: pip install vllm"
-  exit 1
 fi
 
 echo "=== Muse vLLM serve ==="
