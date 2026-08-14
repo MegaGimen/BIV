@@ -49,13 +49,13 @@ Recon copies under `/tmp/harbor_*` (ephemeral). Formal runs should use Harbor ca
 ## Sandbox note vs Meta
 
 - Meta **TB 2.1**: Terminus 2 + **E2B**.
-- This host: Docker works; E2B needs API key. `test.py` defaults `--env docker` and records the Meta E2B delta in the summary. Pass `--env e2b` when credentials exist.
+- **This host**: Docker OK → `test.py` 默认 `--env docker`。推理不在本机，走 AutoDL 公网 vLLM。
 
-## Model serving (GPU train host)
+## Model serving (AutoDL, not this host)
 
-`test.py` **loads Muse on this machine** (base, or base+`--ckpt`) and starts
-`python -m eval.serve_openai` on `127.0.0.1:8000`. Harbor then calls
-`http://127.0.0.1:8000/v1`. Prefer running under `.venv-muse` (transformers/peft).
+AutoDL: `bash scripts/serve_muse_vllm.sh [--ckpt …]` → `:6006` → 公网 `:8443`。  
+本机 Harbor 默认 `MUSE_BASE_URL` /
+`https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`。
 
 See [README.md](README.md).
 

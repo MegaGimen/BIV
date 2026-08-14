@@ -1,52 +1,54 @@
-# Muse Glimmer external agent eval (Meta three-way alignment)
+# Muse Glimmer agent eval
 
-**Runs on the GPU train server.** `test.py` loads Muse weights itself:
+## 谁跑什么（分清）
 
-| Flag | What loads |
+| 机器 | 干什么 |
 |--|--|
-| (none) | base `Muse-Glimmer-30B` |
-| `--ckpt PATH` / `--ckpt auto` | base + that PEFT LoRA checkpoint |
+| **AutoDL（GPU）** | `serve_muse_vllm.sh` 加载 Muse / LoRA，监听 **6006** → 公网 `:8443` |
+| **本机（这台，有 Docker）** | Harbor `--env docker` 起考题沙箱；`test.py` 把请求打到远程 vLLM |
 
-Then it starts a **local** OpenAI shim on `127.0.0.1:8000`, and Harbor (Terminus-2 / mini-swe-agent) calls that. No remote `--base-url` needed.
+不需要 E2B。AutoDL 套不了 Docker 也不影响——沙箱在本机。
 
-| Suite | Harbor dataset | Agent | Meta score |
-|--|--|--|--|
-| Terminal-Bench 2.1 | `terminal-bench/terminal-bench-2-1` | `terminus-2` | 51.7 |
-| SWE-Bench Verified | `swe-bench/swe-bench-verified` | `mini-swe-agent` | 76.0 |
-| SWE-Bench Pro | `scale-ai/swe-bench-pro` | `mini-swe-agent` | 51.2 |
+```
+本机 Harbor (Docker 沙箱)  ──HTTP──►  AutoDL vLLM (:6006 → 公网 :8443)
+```
 
-## Setup (GPU train host)
+## AutoDL：起推理
+
+```bash
+cd ~/autodl-tmp/BIV/train   # 按你实际路径
+source .venv-muse/bin/activate
+pip install vllm
+
+bash scripts/serve_muse_vllm.sh
+# 或挂 ckpt：
+bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e1-s50
+```
+
+公网默认（实例变了就改）：  
+`https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`
+
+## 本机：跑分
 
 ```bash
 cd train
-# Train stack (loads Muse)
-source .venv-muse/bin/activate
-pip install fastapi uvicorn 'harbor>=0.21.0'   # if missing; harbor needs Python ≥3.12
-
-# Or keep Harbor in .venv-eval — test.py will call .venv-eval/bin/harbor automatically
-# and spawn serve with .venv-muse/bin/python
-```
-
-## Run
-
-```bash
-cd /root/autodl-tmp/BIV/train   # example path on AutoDL
-source .venv-muse/bin/activate
+source .venv-eval/bin/activate   # Harbor ≥3.12
+# 默认已指向上面公网 URL；实例变了再 export：
+# export MUSE_BASE_URL=https://…:8443/v1
 
 python scripts/test.py --dry-run
-
-# Base Muse (Meta reference arm)
-python scripts/test.py
-
-# Real LoRA checkpoint
-python scripts/test.py --ckpt outputs/.../checkpoint-e1-s50
-python scripts/test.py --ckpt auto
+python scripts/test.py                                    # 模型 Muse-Glimmer-30B
+python scripts/test.py --ckpt outputs/.../checkpoint-…    # 模型 muse-lora
 ```
 
-Optional: `--base-url http://127.0.0.1:8000/v1` only if you already started `python -m eval.serve_openai ...` yourself (then `--ckpt` on `test.py` does **not** re-load weights — the running server does).
+`--ckpt` 两边要对上：AutoDL 用同一路径挂 LoRA，本机 `--ckpt` 只用来让 Harbor 请求 **`muse-lora`**。
 
-## Notes
+默认 `--env docker`。可选 `-n` 控制并发。
 
-- Not training JSONL. External Harbor datasets only.
-- Meta TB used E2B; default here is `--env docker`.
-- SWE uses mini-swe-agent ≈ Meta’s bash+file thin scaffold.
+## Suites
+
+| Suite | Dataset | Agent | Meta |
+|--|--|--|--|
+| TB 2.1 | `terminal-bench/terminal-bench-2-1` | terminus-2 | 51.7 |
+| SWE Verified | `swe-bench/swe-bench-verified` | mini-swe-agent | 76.0 |
+| SWE Pro | `scale-ai/swe-bench-pro` | mini-swe-agent | 51.2 |
