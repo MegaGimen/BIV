@@ -26,6 +26,9 @@ MAX_LORA_RANK="${MAX_LORA_RANK:-128}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 DTYPE="${DTYPE:-bfloat16}"
 TP="${TP:-1}"
+# Blackwell (sm_120): FlashInfer JIT arch detect can spuriously fail warmup with
+# "requires GPUs with sm75 or higher". Default off; override with =1 if desired.
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
