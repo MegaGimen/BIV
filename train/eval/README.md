@@ -26,7 +26,7 @@ bash scripts/serve_muse_vllm.sh
 bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e0-s1100
 ```
 
-脚本会加：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`。
+脚本会加：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`；带 `--ckpt` 时再加 LoRA 与 `--limit-mm-per-prompt '{"image":0,"video":0}'`（避免 vision+LoRA 崩溃）。
 
 公网默认（实例变了就改）：  
 `https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`
@@ -49,6 +49,28 @@ python scripts/test.py --ckpt outputs/.../checkpoint-…    # 模型 muse-lora
 `--ckpt` 两边要对上：AutoDL 用同一路径挂 LoRA，本机 `--ckpt` 只用来让 Harbor 请求 **`muse-lora`**。
 
 默认 `--env docker`。可选 `-n` 控制并发。
+
+## 实时看 agent 轨迹
+
+Harbor 会把完整轨迹写到 job 目录（边跑边更新）：
+
+```text
+outputs/agent_eval/<stamp>_<arm>/<arm>_<suite>/<task>__*/agent/
+  trajectory.json   # ATIF：analysis/plan/commands + observation
+  terminus_2.pane   # 终端面板快照
+  recording.cast    # asciinema
+```
+
+当前正在跑的 job，另开一个终端：
+
+```bash
+cd train && source .venv-eval/bin/activate
+python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s1100/checkpoint-e0-s1100_terminal_bench_2_1
+# 或直接跟某个 trial：
+# python -m eval.follow_traj …/write-compressor__kKRDyks/agent/trajectory.json
+```
+
+下次跑分时加 `--follow-traj` 会在同一终端流式打印新 step；`--debug` 打开 Harbor debug；`--raw-traj` 把原始 LLM 回复写进 trajectory。
 
 ## Suites
 

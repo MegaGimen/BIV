@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,8 @@ class HarborRunSpec:
     include_task_names: list[str] = field(default_factory=list)
     n_tasks: int | None = None
     timeout_multiplier: float = 1.0
+    debug: bool = False
+    raw_trajectory: bool = False
 
     def build_cmd(self) -> list[str]:
         cmd = [
@@ -114,6 +117,8 @@ class HarborRunSpec:
             str(self.timeout_multiplier),
             "-y",
         ]
+        if self.debug:
+            cmd.append("--debug")
         for name in self.include_task_names:
             cmd.extend(["-i", name])
         if self.n_tasks is not None:
@@ -137,6 +142,8 @@ class HarborRunSpec:
                     + json.dumps({"top_p": self.top_p, "top_k": self.top_k}),
                 ]
             )
+            if self.raw_trajectory:
+                cmd.extend(["--ak", 'trajectory_config={"raw_content": true}'])
         else:
             cmd.extend(["--ak", f"reasoning_effort={self.reasoning_effort}"])
         return cmd
@@ -156,6 +163,8 @@ def make_spec(
     include_task_names: list[str] | None = None,
     n_tasks: int | None = None,
     sampling: dict[str, Any] | None = None,
+    debug: bool = False,
+    raw_trajectory: bool = False,
 ) -> HarborRunSpec:
     if suite not in SUITES:
         raise SystemExit(f"Unknown suite {suite!r}; choose from {list(SUITES)}")
@@ -181,10 +190,17 @@ def make_spec(
         top_k=int(samp.get("top_k", 64)),
         include_task_names=list(include_task_names or []),
         n_tasks=n_tasks,
+        debug=debug,
+        raw_trajectory=raw_trajectory,
     )
 
 
-def run_spec(spec: HarborRunSpec, *, dry_run: bool = False) -> dict[str, Any]:
+def run_spec(
+    spec: HarborRunSpec,
+    *,
+    dry_run: bool = False,
+    follow_traj: bool = False,
+) -> dict[str, Any]:
     cmd = spec.build_cmd()
     printable = " ".join(shlex.quote(c) for c in cmd)
     result: dict[str, Any] = {
@@ -206,9 +222,27 @@ def run_spec(spec: HarborRunSpec, *, dry_run: bool = False) -> dict[str, Any]:
     env.setdefault("OPENAI_API_KEY", spec.api_key)
 
     spec.jobs_dir.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(cmd, cwd=str(TRAIN_ROOT), env=env, check=False)
-    result["returncode"] = proc.returncode
     job_dir = spec.jobs_dir / spec.job_name
+    print(f"  job_dir: {job_dir}", flush=True)
+    print(
+        f"  live traj (another tty): python -m eval.follow_traj {job_dir}",
+        flush=True,
+    )
+
+    stop = None
+    if follow_traj:
+        from eval.follow_traj import start_follow_thread
+
+        stop, _th = start_follow_thread(job_dir)
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(TRAIN_ROOT), env=env, check=False)
+    finally:
+        if stop is not None:
+            stop.set()
+            time.sleep(0.2)
+
+    result["returncode"] = proc.returncode
     result["job_dir"] = str(job_dir)
     result.update(parse_job_score(job_dir))
     if proc.returncode != 0:

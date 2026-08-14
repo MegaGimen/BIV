@@ -188,7 +188,10 @@ if [[ -n "$CKPT" ]]; then
     echo "ERROR: $CKPT missing adapter_config.json (need PEFT LoRA ckpt)"
     exit 1
   fi
+  # Text-only Harbor/agent path: disable mm so LoRA does not wrap the
+  # vision encoder (otherwise lora_shrink asserts during mm profile).
   CMD+=(
+    --limit-mm-per-prompt '{"image":0,"video":0}'
     --enable-lora
     --max-loras 1
     --max-lora-rank "$MAX_LORA_RANK"

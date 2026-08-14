@@ -123,6 +123,22 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print AutoDL serve_muse_vllm.sh command for this --ckpt and exit.",
     )
+    p.add_argument(
+        "--follow-traj",
+        action="store_true",
+        help="Stream agent trajectory.json steps to stdout while Harbor runs.",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Pass Harbor --debug (more verbose job logs).",
+    )
+    p.add_argument(
+        "--raw-traj",
+        action="store_true",
+        help="Terminus: dump raw LLM responses into trajectory "
+        "(--ak trajectory_config raw_content).",
+    )
     return p.parse_args()
 
 
@@ -290,12 +306,16 @@ def main() -> None:
             include_task_names=args.include_tasks,
             n_tasks=args.n_tasks,
             sampling=meta.get("sampling"),
+            debug=args.debug,
+            raw_trajectory=args.raw_traj,
         )
         print(
             f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",
             flush=True,
         )
-        result = run_spec(spec, dry_run=args.dry_run)
+        result = run_spec(
+            spec, dry_run=args.dry_run, follow_traj=args.follow_traj
+        )
         result["arm"] = arm
         result["ckpt"] = str(ckpt_path) if ckpt_path else None
         result["model_id"] = model_id
