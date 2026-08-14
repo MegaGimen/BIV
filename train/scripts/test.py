@@ -104,6 +104,13 @@ def _parse_args() -> argparse.Namespace:
         default=int(os.environ.get("HARBOR_N_CONCURRENT", "4")),
     )
     p.add_argument("--include-task", action="append", dest="include_tasks", default=None)
+    p.add_argument(
+        "--n-tasks",
+        "-l",
+        type=int,
+        default=None,
+        help="Max tasks from the suite (Harbor -l). Use 1 for smoke.",
+    )
     p.add_argument("--jobs-dir", type=Path, default=None)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -195,7 +202,18 @@ def main() -> None:
 
     ckpt_path: Path | None = None
     if args.ckpt:
-        ckpt_path = resolve_ckpt(args.ckpt, search_dir=_default_ckpt_search_dir(args))
+        # Harbor host often has no adapter files; --ckpt still selects muse-lora.
+        ckpt_path = resolve_ckpt(
+            args.ckpt,
+            search_dir=_default_ckpt_search_dir(args),
+            require_local=False,
+        )
+        if ckpt_path is not None and not ckpt_path.is_dir():
+            print(
+                f"  NOTE: local ckpt path missing ({ckpt_path}); "
+                f"still requesting remote model id '{DEFAULT_LORA_MODEL}'.",
+                flush=True,
+            )
 
     model_id = args.model
     if model_id is None:
@@ -270,6 +288,7 @@ def main() -> None:
             n_attempts=args.n_attempts,
             n_concurrent=args.n_concurrent,
             include_task_names=args.include_tasks,
+            n_tasks=args.n_tasks,
             sampling=meta.get("sampling"),
         )
         print(

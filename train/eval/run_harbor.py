@@ -87,6 +87,7 @@ class HarborRunSpec:
     top_p: float
     top_k: int
     include_task_names: list[str] = field(default_factory=list)
+    n_tasks: int | None = None
     timeout_multiplier: float = 1.0
 
     def build_cmd(self) -> list[str]:
@@ -115,6 +116,8 @@ class HarborRunSpec:
         ]
         for name in self.include_task_names:
             cmd.extend(["-i", name])
+        if self.n_tasks is not None:
+            cmd.extend(["-l", str(self.n_tasks)])
 
         if self.base_url:
             base = self.base_url.rstrip("/")
@@ -151,6 +154,7 @@ def make_spec(
     n_attempts: int | None = None,
     n_concurrent: int = 4,
     include_task_names: list[str] | None = None,
+    n_tasks: int | None = None,
     sampling: dict[str, Any] | None = None,
 ) -> HarborRunSpec:
     if suite not in SUITES:
@@ -176,6 +180,7 @@ def make_spec(
         top_p=float(samp.get("top_p", 0.95)),
         top_k=int(samp.get("top_k", 64)),
         include_task_names=list(include_task_names or []),
+        n_tasks=n_tasks,
     )
 
 

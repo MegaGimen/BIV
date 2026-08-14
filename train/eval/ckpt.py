@@ -58,8 +58,14 @@ def resolve_ckpt(
     ckpt: str | Path | None,
     *,
     search_dir: Path | None = None,
+    require_local: bool = True,
 ) -> Path | None:
-    """Resolve ``--ckpt``: path, or ``auto`` under ``search_dir``."""
+    """Resolve ``--ckpt``: path, or ``auto`` under ``search_dir``.
+
+    When ``require_local`` is False and the path is missing (common on the
+    Harbor host when weights live only on AutoDL), return the Path anyway so
+    callers can still select the remote LoRA model id.
+    """
     if ckpt is None or str(ckpt).strip() in {"", "null", "None"}:
         return None
     raw = str(ckpt).strip()
@@ -75,5 +81,11 @@ def resolve_ckpt(
         # Prefer cwd-relative; callers often pass train-relative paths.
         path = path.resolve()
     if not path.is_dir():
-        raise SystemExit(f"--ckpt must be an existing checkpoint directory: {path}")
+        if require_local:
+            raise SystemExit(
+                f"--ckpt must be an existing checkpoint directory: {path}\n"
+                "On the Harbor host (no local weights), pass --model muse-lora "
+                "instead, or --ckpt with require_local disabled via test.py."
+            )
+        return path
     return path
