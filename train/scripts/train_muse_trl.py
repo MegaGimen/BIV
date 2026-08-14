@@ -683,6 +683,58 @@ def _load_peft_adapter_from_ckpt(model, ckpt: Path | str) -> None:
     print(f"[muse] loaded LoRA adapter weights from {source}", flush=True)
 
 
+def _train_resume_adapter_only(trainer, model, resume_from: str) -> None:
+    """Resume step/epoch/data-skip via Trainer, but skip FSDP weight + optimizer load.
+
+    Avoids torch ``_MeshLayout.axes`` crashes on FSDP2 DTensor copy while still
+    continuing from ``trainer_state.json`` (not progress-bar-from-zero).
+    """
+    import json
+
+    _load_peft_adapter_from_ckpt(model, resume_from)
+    state_path = Path(resume_from) / "trainer_state.json"
+    if state_path.is_file():
+        st = json.loads(state_path.read_text(encoding="utf-8"))
+        print(
+            f"[muse] trainer_state: global_step={st.get('global_step')} "
+            f"epoch={st.get('epoch')} (will skip already-seen data; "
+            f"optimizer/LR cold-start)",
+            flush=True,
+        )
+    else:
+        print(
+            f"[muse] WARNING: {state_path} missing — cannot restore step counter",
+            flush=True,
+        )
+
+    def _skip_model_load(resume_from_checkpoint, model=None):
+        # Trainer still reads trainer_state.json elsewhere when resume path is set;
+        # only avoid FSDP parameter copy (the MeshLayout failure).
+        print(
+            f"[muse] skip FSDP model load from {resume_from_checkpoint} "
+            "(adapter already applied)",
+            flush=True,
+        )
+        return None
+
+    def _skip_opt(checkpoint):
+        print(
+            f"[muse] skip optimizer/scheduler load from {checkpoint} (cold-start)",
+            flush=True,
+        )
+
+    def _skip_rng(checkpoint):
+        print(f"[muse] skip RNG load from {checkpoint}", flush=True)
+
+    trainer._load_from_checkpoint = _skip_model_load  # type: ignore[method-assign]
+    if hasattr(trainer, "_load_optimizer_and_scheduler"):
+        trainer._load_optimizer_and_scheduler = _skip_opt  # type: ignore[method-assign]
+    if hasattr(trainer, "_load_rng_state"):
+        trainer._load_rng_state = _skip_rng  # type: ignore[method-assign]
+
+    trainer.train(resume_from_checkpoint=resume_from)
+
+
 def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
     """Deterministic eval panel from train rows (monitor-only; train set unchanged)."""
     if max_samples is None or max_samples <= 0:
@@ -1250,12 +1302,11 @@ def main() -> None:
         if use_adapter_only:
             print(
                 f"[muse] resume adapter-only from {resume_from} "
-                "(LoRA weights; optimizer/LR/RNG cold-start). "
+                "(LoRA + trainer_state step/data-skip; optimizer/LR cold-start). "
                 "Full FSDP resume: --resume-full",
                 flush=True,
             )
-            _load_peft_adapter_from_ckpt(model, resume_from)
-            trainer.train()
+            _train_resume_adapter_only(trainer, model, resume_from)
         else:
             print(
                 f"[muse] resume_from={resume_from} "
