@@ -629,6 +629,59 @@ def _resolve_resume(resume_from: Path | str | None, *, out_dir: Path) -> str | N
     return str(path)
 
 
+def _load_peft_adapter_from_ckpt(model, ckpt: Path | str) -> None:
+    """Load LoRA tensors from a Trainer/PEFT checkpoint without FSDP state restore."""
+    from peft import set_peft_model_state_dict
+
+    ckpt_p = Path(ckpt)
+    if not ckpt_p.is_dir():
+        raise SystemExit(f"[muse] adapter ckpt not a directory: {ckpt_p}")
+
+    sd = None
+    source = None
+    st_path = ckpt_p / "adapter_model.safetensors"
+    bin_path = ckpt_p / "adapter_model.bin"
+    if st_path.is_file():
+        from safetensors.torch import load_file
+
+        sd = load_file(str(st_path))
+        source = st_path
+    elif bin_path.is_file():
+        sd = torch.load(bin_path, map_location="cpu", weights_only=True)
+        source = bin_path
+    else:
+        for name in ("model.safetensors", "pytorch_model.bin", "pytorch_model_fsdp.bin"):
+            p = ckpt_p / name
+            if not p.is_file():
+                continue
+            if p.suffix == ".safetensors":
+                from safetensors.torch import load_file
+
+                raw = load_file(str(p))
+            else:
+                raw = torch.load(p, map_location="cpu", weights_only=True)
+                if isinstance(raw, dict) and "state_dict" in raw:
+                    raw = raw["state_dict"]
+            if not isinstance(raw, dict):
+                continue
+            filtered = {
+                k: v for k, v in raw.items() if isinstance(k, str) and "lora_" in k
+            }
+            if filtered:
+                sd = filtered
+                source = p
+                break
+
+    if sd is None:
+        raise SystemExit(
+            f"[muse] no LoRA weights found under {ckpt_p} "
+            "(need adapter_model.safetensors / adapter_model.bin / model*.safetensors)"
+        )
+
+    set_peft_model_state_dict(model, sd)
+    print(f"[muse] loaded LoRA adapter weights from {source}", flush=True)
+
+
 def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
     """Deterministic eval panel from train rows (monitor-only; train set unchanged)."""
     if max_samples is None or max_samples <= 0:
@@ -835,6 +888,19 @@ def main() -> None:
         default=None,
         help="Checkpoint dir, or 'auto' to pick latest complete ckpt under output_dir "
         "(same ranking as train_daemon.sh). Omit to start fresh.",
+    )
+    p.add_argument(
+        "--resume-adapter-only",
+        action="store_true",
+        help="Load LoRA weights from checkpoint but skip Trainer FSDP full resume "
+        "(optimizer/LR/RNG cold-start). Use when full resume hits "
+        "'_MeshLayout' object has no attribute 'axes'.",
+    )
+    p.add_argument(
+        "--resume-full",
+        action="store_true",
+        help="Force Trainer.resume_from_checkpoint (FSDP full state). "
+        "Default under FSDP2+CP is adapter-only due to torch MeshLayout bugs.",
     )
     p.add_argument(
         "--eval-max-samples",
@@ -1168,12 +1234,34 @@ def main() -> None:
             )
 
     if resume_from:
-        print(
-            f"[muse] resume_from={resume_from} "
-            "(restores model + optimizer + LR scheduler + RNG from Trainer ckpt)",
-            flush=True,
+        # Torch 2.13 + FSDP2/DTensor full Trainer resume often dies with:
+        #   '_MeshLayout' object has no attribute 'axes'
+        # (shapes match; mesh metadata copy fails). Default under CP: adapter-only.
+        want_full = bool(args.resume_full) or (
+            os.environ.get("BIV_RESUME_FULL", "").lower() in {"1", "true"}
         )
-        trainer.train(resume_from_checkpoint=resume_from)
+        want_adapter = bool(args.resume_adapter_only) or (
+            os.environ.get("BIV_RESUME_ADAPTER_ONLY", "").lower() in {"1", "true"}
+        )
+        if want_full and want_adapter:
+            raise SystemExit("[muse] pass only one of --resume-full / --resume-adapter-only")
+        use_adapter_only = want_adapter or (cp_size > 1 and not want_full)
+        if use_adapter_only:
+            print(
+                f"[muse] resume adapter-only from {resume_from} "
+                "(LoRA weights; optimizer/LR/RNG cold-start). "
+                "Full FSDP resume: --resume-full",
+                flush=True,
+            )
+            _load_peft_adapter_from_ckpt(model, resume_from)
+            trainer.train()
+        else:
+            print(
+                f"[muse] resume_from={resume_from} "
+                "(restores model + optimizer + LR scheduler + RNG from Trainer ckpt)",
+                flush=True,
+            )
+            trainer.train(resume_from_checkpoint=resume_from)
     else:
         trainer.train()
     trainer.save_model(str(out_dir))
