@@ -631,6 +631,7 @@ def _resolve_resume(resume_from: Path | str | None, *, out_dir: Path) -> str | N
 
 def _load_peft_adapter_from_ckpt(model, ckpt: Path | str) -> None:
     """Load LoRA tensors from a Trainer/PEFT checkpoint without FSDP state restore."""
+    import torch
     from peft import set_peft_model_state_dict
 
     ckpt_p = Path(ckpt)
