@@ -684,10 +684,12 @@ def _load_peft_adapter_from_ckpt(model, ckpt: Path | str) -> None:
 
 
 def _train_resume_adapter_only(trainer, model, resume_from: str) -> None:
-    """Resume step/epoch/data-skip via Trainer, but skip FSDP weight + optimizer load.
+    """Resume like full Trainer checkpoint, but skip FSDP *model* weight copy.
 
-    Avoids torch ``_MeshLayout.axes`` crashes on FSDP2 DTensor copy while still
-    continuing from ``trainer_state.json`` (not progress-bar-from-zero).
+    LoRA tensors are loaded via PEFT first. Adam / LR scheduler / RNG / step /
+    data-skip still go through ``trainer.train(resume_from_checkpoint=...)``.
+    Only ``_load_from_checkpoint`` (FSDP DTensor copy → MeshLayout.axes crash)
+    is bypassed.
     """
     import json
 
@@ -697,8 +699,8 @@ def _train_resume_adapter_only(trainer, model, resume_from: str) -> None:
         st = json.loads(state_path.read_text(encoding="utf-8"))
         print(
             f"[muse] trainer_state: global_step={st.get('global_step')} "
-            f"epoch={st.get('epoch')} (will skip already-seen data; "
-            f"optimizer/LR cold-start)",
+            f"epoch={st.get('epoch')} — will restore Adam/scheduler/RNG + "
+            f"skip already-seen data; only FSDP model copy is skipped",
             flush=True,
         )
     else:
@@ -708,30 +710,16 @@ def _train_resume_adapter_only(trainer, model, resume_from: str) -> None:
         )
 
     def _skip_model_load(resume_from_checkpoint, model=None):
-        # Trainer still reads trainer_state.json elsewhere when resume path is set;
-        # only avoid FSDP parameter copy (the MeshLayout failure).
         print(
             f"[muse] skip FSDP model load from {resume_from_checkpoint} "
-            "(adapter already applied)",
+            "(adapter already applied; optimizer/scheduler/RNG still load)",
             flush=True,
         )
         return None
 
-    def _skip_opt(checkpoint):
-        print(
-            f"[muse] skip optimizer/scheduler load from {checkpoint} (cold-start)",
-            flush=True,
-        )
-
-    def _skip_rng(checkpoint):
-        print(f"[muse] skip RNG load from {checkpoint}", flush=True)
-
     trainer._load_from_checkpoint = _skip_model_load  # type: ignore[method-assign]
-    if hasattr(trainer, "_load_optimizer_and_scheduler"):
-        trainer._load_optimizer_and_scheduler = _skip_opt  # type: ignore[method-assign]
-    if hasattr(trainer, "_load_rng_state"):
-        trainer._load_rng_state = _skip_rng  # type: ignore[method-assign]
-
+    # Do NOT patch _load_optimizer_and_scheduler / _load_rng_state — those should
+    # restore from checkpoint exactly as a normal resume.
     trainer.train(resume_from_checkpoint=resume_from)
 
 
