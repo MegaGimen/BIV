@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
-# Start Muse Glimmer with vLLM on AutoDL (default port 6006 for custom service).
+# Start Muse Glimmer with Muse-capable vLLM on AutoDL (port 6006 → public :8443).
 #
-# AutoDL maps container 6006 → public https://<实例>.westd.seetacloud.com:8443
-# Harbor / test.py should use:
-#   export MUSE_BASE_URL=https://<实例>.westd.seetacloud.com:8443/v1
+# Requires Muse day-0 vLLM (NOT stock pip 0.27.1). Prefer:
+#   bash scripts/install_muse_vllm.sh
+#   source .venv-vllm-muse/bin/activate
+#
+# Official Muse flags (Meta / vLLM recipe):
+#   --enable-auto-tool-choice
+#   --tool-call-parser muse_glimmer
+#   --reasoning-parser muse_glimmer
+#   --generation-config auto
 #
 # Usage:
 #   bash scripts/serve_muse_vllm.sh
-#   bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e1-s50
-#   PORT=6006 CKPT=auto bash scripts/serve_muse_vllm.sh
-#
-# --ckpt loads a PEFT LoRA via vLLM --lora-modules (name: muse-lora).
-# test.py --ckpt then calls model id "muse-lora"; without --ckpt uses Muse-Glimmer-30B.
+#   bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e0-s1100
+#   bash scripts/serve_muse_vllm.sh --tp 2
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# Prefer Muse nightly venv over training .venv-muse (which lacks muse parsers).
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  if [[ -x "$ROOT/.venv-vllm-muse/bin/vllm" ]]; then
+    # shellcheck disable=SC1091
+    source "$ROOT/.venv-vllm-muse/bin/activate"
+  elif [[ -x "$ROOT/.venv-muse/bin/vllm" ]]; then
+    # shellcheck disable=SC1091
+    source "$ROOT/.venv-muse/bin/activate"
+  fi
+fi
 
 PORT="${PORT:-6006}"
 HOST="${HOST:-0.0.0.0}"
@@ -26,9 +40,10 @@ MAX_LORA_RANK="${MAX_LORA_RANK:-128}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 DTYPE="${DTYPE:-bfloat16}"
 TP="${TP:-1}"
-# Blackwell (sm_120): FlashInfer JIT arch detect can spuriously fail warmup with
-# "requires GPUs with sm75 or higher". Default off; override with =1 if desired.
+# Blackwell (sm_120): FlashInfer JIT can false-fail; default off.
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+# Meta recipe flags (override with =0 to disable).
+ENABLE_MUSE_PARSERS="${ENABLE_MUSE_PARSERS:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,7 +56,7 @@ while [[ $# -gt 0 ]]; do
     --tp)
       TP="$2"; shift 2 ;;
     -h|--help)
-      sed -n '1,20p' "$0"; exit 0 ;;
+      sed -n '1,25p' "$0"; exit 0 ;;
     *)
       echo "Unknown arg: $1"; exit 1 ;;
   esac
@@ -57,25 +72,28 @@ if [[ -z "$MODEL_PATH" ]]; then
 fi
 
 if ! command -v vllm >/dev/null 2>&1; then
-  echo "ERROR: vllm not found. In .venv-muse: pip install vllm"
+  echo "ERROR: vllm not found. Run: bash scripts/install_muse_vllm.sh"
   exit 1
 fi
 
-# Prefer the same interpreter as the vllm entrypoint (avoid system python3).
 _VLLM_BIN="$(command -v vllm)"
 _PY="$(dirname "$_VLLM_BIN")/python"
 if [[ ! -x "$_PY" ]]; then
   _PY="python3"
 fi
 
-# Torch 2.13+cu130 needs nvidia-nccl-cu13. Installing vllm can pull
-# nvidia-nccl-cu12 into the same nvidia/nccl/ path and break:
-#   undefined symbol: ncclCommResume
 if ! "$_PY" -c "import torch" 2>/dev/null; then
   echo "ERROR: torch import failed (often NCCL cu12 overwrote cu13)."
   echo "  Fix: pip uninstall -y nvidia-nccl-cu12"
   echo "       pip install --force-reinstall --no-deps 'nvidia-nccl-cu13==2.29.7'"
   "$_PY" -c "import torch" || true
+  exit 1
+fi
+
+if ! "$_PY" -c "import pathlib,vllm; p=pathlib.Path(vllm.__file__).parent/'model_executor/models/muse_glimmer.py'; raise SystemExit(0 if p.is_file() else 1)"; then
+  echo "ERROR: this vLLM build has no muse_glimmer (stock PyPI wheel)."
+  echo "  Install Muse nightly: bash scripts/install_muse_vllm.sh"
+  echo "  Then: source .venv-vllm-muse/bin/activate && bash scripts/serve_muse_vllm.sh"
   exit 1
 fi
 
@@ -131,9 +149,11 @@ PY
 fi
 
 echo "=== Muse vLLM serve ==="
+echo "  venv:       ${VIRTUAL_ENV:-"(PATH vllm)"}"
 echo "  model_path: $MODEL_PATH"
 echo "  port:       $PORT  (AutoDL custom service → public :8443)"
 echo "  served:     $SERVED_BASE"
+echo "  muse_parsers: ENABLE_MUSE_PARSERS=$ENABLE_MUSE_PARSERS"
 echo "  flashinfer_sampler: VLLM_USE_FLASHINFER_SAMPLER=$VLLM_USE_FLASHINFER_SAMPLER"
 if [[ -n "$CKPT" ]]; then
   echo "  lora:       $LORA_NAME ← $CKPT"
@@ -150,8 +170,19 @@ CMD=(
   --served-model-name "$SERVED_BASE"
   --dtype "$DTYPE"
   --tensor-parallel-size "$TP"
-  --trust-remote-code
+  --generation-config auto
 )
+# Muse native path does not need trust_remote_code; keep optional for odd exports.
+if [[ "${TRUST_REMOTE_CODE:-0}" == "1" ]]; then
+  CMD+=(--trust-remote-code)
+fi
+if [[ "$ENABLE_MUSE_PARSERS" == "1" ]]; then
+  CMD+=(
+    --enable-auto-tool-choice
+    --tool-call-parser muse_glimmer
+    --reasoning-parser muse_glimmer
+  )
+fi
 if [[ -n "$MAX_MODEL_LEN" ]]; then
   CMD+=(--max-model-len "$MAX_MODEL_LEN")
 fi
