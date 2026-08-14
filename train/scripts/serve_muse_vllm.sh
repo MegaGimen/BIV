@@ -134,6 +134,7 @@ echo "=== Muse vLLM serve ==="
 echo "  model_path: $MODEL_PATH"
 echo "  port:       $PORT  (AutoDL custom service → public :8443)"
 echo "  served:     $SERVED_BASE"
+echo "  flashinfer_sampler: VLLM_USE_FLASHINFER_SAMPLER=$VLLM_USE_FLASHINFER_SAMPLER"
 if [[ -n "$CKPT" ]]; then
   echo "  lora:       $LORA_NAME ← $CKPT"
   echo "  Harbor/--model for this LoRA: $LORA_NAME"
