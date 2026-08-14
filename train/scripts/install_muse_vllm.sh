@@ -1,75 +1,59 @@
 #!/usr/bin/env bash
-# Install Muse-capable vLLM without Docker (AutoDL-friendly).
+# Upgrade .venv-muse to Muse day-0 vLLM without re-downloading torch/CUDA.
 #
-# PyPI vllm==0.27.1 has NO muse_glimmer model/parsers. Muse day-0 lives on
-# vLLM main after PR #51655 (merged 2026-08-14). Until the next PyPI release,
-# install a nightly wheel that includes Muse.
+# Stock PyPI vllm==0.27.1 has NO muse_glimmer. Install a post-merge nightly
+# wheel with --no-deps so existing .venv-muse packages are reused.
 #
-#   cd train
+#   cd train && source .venv-muse/bin/activate
 #   bash scripts/install_muse_vllm.sh
-#   source .venv-vllm-muse/bin/activate
 #   bash scripts/serve_muse_vllm.sh
-#
-# Override wheel:
-#   VLLM_MUSE_WHEEL_URL=https://wheels.vllm.ai/<commit>/vllm-....whl bash scripts/install_muse_vllm.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VENV="${VENV:-$ROOT/.venv-vllm-muse}"
-# Nightly after Muse merge (has muse_glimmer.py + parsers). Update when needed.
+VENV="${VENV:-$ROOT/.venv-muse}"
 DEFAULT_WHEEL='https://wheels.vllm.ai/cdc4824a21eaa986d4d1fee90a7e6465c9f706e6/vllm-0.27.2rc1.dev92%2Bgcdc4824a2-cp38-abi3-manylinux_2_28_x86_64.whl'
 WHEEL_URL="${VLLM_MUSE_WHEEL_URL:-$DEFAULT_WHEEL}"
 
-PY="${PYTHON:-}"
-if [[ -z "$PY" ]]; then
-  if [[ -x /root/miniconda3/bin/python3 ]]; then
-    PY=/root/miniconda3/bin/python3
-  else
-    PY="$(command -v python3)"
-  fi
+if [[ ! -x "$VENV/bin/python" ]]; then
+  echo "ERROR: missing $VENV (expected existing Muse train env)"
+  exit 1
 fi
 
-echo "=== install Muse vLLM (no Docker) ==="
-echo "  python: $PY"
-echo "  venv:   $VENV"
-echo "  wheel:  $WHEEL_URL"
-
-"$PY" -m venv "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-python -m pip install -U pip wheel setuptools
 
-# Match AutoDL CUDA 13 / torch 2.13 when possible.
-python -m pip install --upgrade 'torch==2.13.0' \
-  --index-url https://download.pytorch.org/whl/cu130 \
-  || python -m pip install --upgrade 'torch==2.13.0'
+echo "=== upgrade Muse vLLM in-place (no torch re-download) ==="
+echo "  venv:  $VENV"
+echo "  wheel: $WHEEL_URL"
+python -c "import torch,vllm; print(f'before torch={torch.__version__} vllm={vllm.__version__}')"
 
-python -m pip install "$WHEEL_URL"
+python -m pip install --force-reinstall --no-deps "$WHEEL_URL"
 
-# vLLM deps may pull nvidia-nccl-cu12 over cu13 and break torch+cu130.
-python -m pip uninstall -y nvidia-nccl-cu12 || true
-python -m pip install --force-reinstall --no-deps 'nvidia-nccl-cu13==2.29.7'
+# Nightly may have pulled cu12 NCCL earlier in other installs; keep cu13 for torch+cu130.
+python -m pip uninstall -y nvidia-nccl-cu12 2>/dev/null || true
+if ! python -c "import torch" 2>/dev/null; then
+  python -m pip install --force-reinstall --no-deps 'nvidia-nccl-cu13==2.29.7'
+fi
 
 python - <<'PY'
 import pathlib
 import torch
 import vllm
 
-print(f"torch={torch.__version__} cuda={torch.version.cuda} avail={torch.cuda.is_available()}")
-print(f"vllm={vllm.__version__}")
+print(f"after torch={torch.__version__} cuda={torch.version.cuda} avail={torch.cuda.is_available()}")
+print(f"after vllm={vllm.__version__}")
 root = pathlib.Path(vllm.__file__).parent
 need = [
     root / "model_executor/models/muse_glimmer.py",
     root / "reasoning/muse_glimmer_reasoning_parser.py",
     root / "tool_parsers/muse_glimmer_tool_parser.py",
 ]
-missing = [str(p) for p in need if not p.is_file()]
+missing = [str(p.relative_to(root)) for p in need if not p.is_file()]
 if missing:
-    raise SystemExit("Muse files missing:\n  " + "\n  ".join(missing))
+    raise SystemExit("Muse files missing: " + ", ".join(missing))
 print("muse_glimmer model + parsers: OK")
 PY
 
 echo
-echo "Activate with:  source $VENV/bin/activate"
-echo "Then serve:     bash scripts/serve_muse_vllm.sh"
+echo "Serve with:  source $VENV/bin/activate && bash scripts/serve_muse_vllm.sh"

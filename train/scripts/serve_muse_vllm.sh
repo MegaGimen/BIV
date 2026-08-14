@@ -19,12 +19,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Prefer Muse nightly venv over training .venv-muse (which lacks muse parsers).
+# Prefer Muse train/serve env (.venv-muse). Do not create a second venv.
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-  if [[ -x "$ROOT/.venv-vllm-muse/bin/vllm" ]]; then
-    # shellcheck disable=SC1091
-    source "$ROOT/.venv-vllm-muse/bin/activate"
-  elif [[ -x "$ROOT/.venv-muse/bin/vllm" ]]; then
+  if [[ -x "$ROOT/.venv-muse/bin/vllm" ]]; then
     # shellcheck disable=SC1091
     source "$ROOT/.venv-muse/bin/activate"
   fi

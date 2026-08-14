@@ -15,22 +15,22 @@
 
 ## AutoDL：起推理（无 Docker）
 
-不要用训练 venv 里的 PyPI `vllm==0.27.1`（**没有** Muse day-0）。先装 nightly：
+在已有 **`.venv-muse`** 上覆盖装 Muse day-0 vLLM（`--no-deps`，不重下 torch）：
 
 ```bash
 cd ~/autodl-tmp/BIV/train
-bash scripts/install_muse_vllm.sh
-source .venv-vllm-muse/bin/activate
-
+source .venv-muse/bin/activate
+bash scripts/install_muse_vllm.sh   # 只需一次
 bash scripts/serve_muse_vllm.sh
 # 或挂 ckpt：
 bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e0-s1100
 ```
 
-脚本会加 Meta 要求的：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`。
+脚本会加：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`。
 
 公网默认（实例变了就改）：  
 `https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`
+
 
 
 ## 本机：跑分
