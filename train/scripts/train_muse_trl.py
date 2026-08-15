@@ -1382,13 +1382,11 @@ def main() -> None:
         eval_strategy="steps" if has_eval else "no",
         per_device_eval_batch_size=eval_bs,
     )
-    # AutoDL / custom TB: LOGGING_DIR=/root/tf-logs (HF default is output_dir/runs/…)
+    # AutoDL / custom TB path. TRL SFTConfig.__init__ often omits logging_dir from
+    # its signature even though TrainingArguments still has the attr — apply after build.
     logging_dir = os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS") or train_cfg.get(
         "logging_dir"
     )
-    if logging_dir:
-        sft_kwargs["logging_dir"] = str(logging_dir)
-        print(f"[muse] tensorboard logging_dir={logging_dir}", flush=True)
     if has_eval:
         sft_kwargs["eval_steps"] = int(eval_steps)
     if use_liger:
