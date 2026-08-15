@@ -45,9 +45,10 @@ Usage:
   bash scripts/trainmodel.sh --max-length <N> [--choice 1|2|3] [--force-prep] [--qlora]
        [--resume-from <checkpoint_dir|auto>] [--save-steps N]
 
-  Auto-restart wrapper (recommended on the wire for VRAM):
-  bash scripts/train_daemon.sh --max-length <N> [--choice …] [--resume-from …]
+  Auto-restart wrapper:
+  bash scripts/train_daemon.sh --daemon --max-length <N> [--choice …] [--resume-from …]
        [--save-steps N]
+  (omit --daemon → one-shot; crash exits without restart)
 
   --max-length N   required; struct-right trunc to complete assistant within N
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
