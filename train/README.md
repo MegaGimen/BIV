@@ -116,6 +116,8 @@ During training, `eval_anti_forget_loss` is CE on a fixed subsample of
 after each checkpoint save, Adam state is moved to CPU, then a pure forward
 `trainer.evaluate()` runs and optimizer is restored. Eval cadence is **always
 identical to `save_steps`** (yaml default 25; override with `--save-steps N`).
+Mid-run panel uses **`eval_max_length`** (default 8192), not train `max_length` —
+Muse has no fused CE and full 65k logits+CE needs ~+28GiB on top of FSDP weights.
 Use as an early anti-forgetting signal — not an agent benchmark and not causal
 proof of WM transfer. (`eval_mode: inline` keeps HF evaluate-before-save; can
 OOM at long context.)

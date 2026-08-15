@@ -9,7 +9,8 @@ Mid-run eval uses a fixed subsample of mix_dir/anti_forget/eval.jsonl
 
 Default ``eval_mode=post_save``: after each checkpoint save, offload optimizer
 state to CPU, run pure forward eval, then restore — avoids OOM from mid-step
-Trainer evaluate while Adam + long-seq logits share VRAM.
+Trainer evaluate while Adam + long-seq logits share VRAM. Mid-run panel uses
+``eval_max_length`` (default 8192), not train ``max_length``.
 
 Examples (prefer trainmodel.sh wrapper):
   python scripts/train_muse_trl.py \\
@@ -815,13 +816,14 @@ def _anti_forget_eval_cache_dir(
     *,
     eval_jsonl: Path,
     eval_max_samples: int,
+    eval_max_length: int,
     seed: int,
 ) -> Path:
     """Side cache next to train tokenized dir (does not invalidate train cache)."""
     import hashlib
 
     parts = [
-        f"eval_anti|v1|n={int(eval_max_samples)}|seed={int(seed)}",
+        f"eval_anti|v2|n={int(eval_max_samples)}|L={int(eval_max_length)}|seed={int(seed)}",
         tok_cache.name,
         str(eval_jsonl.resolve()),
     ]
@@ -830,7 +832,7 @@ def _anti_forget_eval_cache_dir(
         parts.append(f"{st.st_mtime_ns}:{st.st_size}")
     digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
     return tok_cache.parent / (
-        f"eval_anti_forget_n{int(eval_max_samples)}_{digest}"
+        f"eval_anti_forget_n{int(eval_max_samples)}_L{int(eval_max_length)}_{digest}"
     )
 
 
@@ -847,7 +849,12 @@ def _prepare_anti_forget_eval(
     seed: int,
     force_retokenize: bool,
 ):
-    """Held-out anti_forget panel for mid-run forgetting monitor (not agent bench)."""
+    """Held-out anti_forget panel for mid-run forgetting monitor (not agent bench).
+
+    ``max_length`` here is the *eval* cap (often shorter than train max_length):
+    Muse materializes full ``[B,S,V]`` logits + CE workspace; at train 65k that
+    needs ~28GiB *extra* on top of FSDP weights and OOMs even after Adam→CPU.
+    """
     if eval_max_samples is None or int(eval_max_samples) <= 0:
         return None
 
@@ -856,6 +863,7 @@ def _prepare_anti_forget_eval(
         tok_cache,
         eval_jsonl=eval_jsonl,
         eval_max_samples=int(eval_max_samples),
+        eval_max_length=int(max_length),
         seed=int(seed),
     )
     if (not force_retokenize) and _tokenized_cache_ready(cache):
@@ -872,7 +880,8 @@ def _prepare_anti_forget_eval(
         return None
     print(
         f"[muse] anti_forget eval panel: {len(panel):,} / {len(msgs):,} rows "
-        f"(eval_max_samples={eval_max_samples}, seed={seed})",
+        f"(eval_max_samples={eval_max_samples}, eval_max_length={max_length}, "
+        f"seed={seed})",
         flush=True,
     )
     tok_ds = _tokenize_messages_offline(
@@ -889,6 +898,47 @@ def _prepare_anti_forget_eval(
     if (not _is_main_process()) and _tokenized_cache_ready(cache):
         tok_ds = _try_load_tokenized_cache(cache)
     return tok_ds
+
+
+def _chunked_causal_lm_loss(
+    logits,
+    labels,
+    *,
+    ignore_index: int = -100,
+    chunk_size: int = 1024,
+):
+    """Token CE without one giant ``(N,V)`` CE workspace (Muse has no fused FLCE)."""
+    import torch
+    import torch.nn.functional as F
+
+    # logits [B,S,V], labels [B,S] — shift for causal LM
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    vocab = shift_logits.size(-1)
+    flat_logits = shift_logits.view(-1, vocab)
+    flat_labels = shift_labels.view(-1).to(dtype=torch.long)
+    total = flat_logits.new_zeros(())
+    n_tok = 0
+    for start in range(0, flat_logits.size(0), int(chunk_size)):
+        end = start + int(chunk_size)
+        chunk_logits = flat_logits[start:end]
+        chunk_labels = flat_labels[start:end]
+        valid = chunk_labels != ignore_index
+        if not bool(valid.any()):
+            continue
+        # Per-token sum; ignore_index rows contribute 0 via mask after CE none-reduce
+        # Use ignore_index in CE so we don't need a second gather buffer.
+        chunk_loss = F.cross_entropy(
+            chunk_logits,
+            chunk_labels,
+            ignore_index=ignore_index,
+            reduction="sum",
+        )
+        total = total + chunk_loss
+        n_tok += int(valid.sum().item())
+    if n_tok == 0:
+        return flat_logits.new_zeros(())
+    return total / n_tok
 
 
 def _make_muse_sft_trainer_cls():
@@ -910,13 +960,34 @@ def _make_muse_sft_trainer_cls():
     Fix: during ``compute_loss``, temporarily clear the liger flag so TRL uses
     the logits-based accuracy/entropy path Muse already provides. Init-time
     ``apply_liger_kernel`` (no-op for Muse) is unaffected.
+
+    Eval: Muse ``forward`` runs full-vocab CE in one shot (~28GiB at S≈65k).
+    We pop labels, forward for logits only, then ``_chunked_causal_lm_loss``.
+    Still need logits to fit — mid-run panel uses shorter ``eval_max_length``.
     """
     from trl import SFTTrainer
 
     class MuseSFTTrainer(SFTTrainer):
         _muse_acc_note_printed = False
+        _muse_eval_ce_note_printed = False
 
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            # Mid-run / Trainer evaluate: avoid Muse's monolithic CE workspace.
+            if (not model.training) and inputs.get("labels") is not None:
+                if not MuseSFTTrainer._muse_eval_ce_note_printed:
+                    print(
+                        "[muse] eval CE: chunked after logits (no Muse fused FLCE); "
+                        "use eval_max_length≪train max_length for post_save VRAM",
+                        flush=True,
+                    )
+                    MuseSFTTrainer._muse_eval_ce_note_printed = True
+                labels = inputs["labels"]
+                model_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+                outputs = model(**model_inputs)
+                logits = outputs.logits
+                loss = _chunked_causal_lm_loss(logits, labels)
+                return (loss, outputs) if return_outputs else loss
+
             liger = bool(getattr(self.args, "use_liger_kernel", False))
             if liger and not MuseSFTTrainer._muse_acc_note_printed:
                 print(
@@ -1267,6 +1338,32 @@ def _make_muse_checkpoint_callbacks(
     return cbs, ckpt_cb
 
 
+def _resolve_eval_max_length(
+    *,
+    train_max_length: int,
+    cli_value: int | None,
+    train_cfg: dict,
+) -> int:
+    """Mid-run eval seq length (independent of train max_length)."""
+    raw = cli_value
+    if raw is None:
+        raw = train_cfg.get("eval_max_length")
+    if raw is None:
+        # Safe default: logits+CE ≈ 2×S×V×2 bytes; 8k fits post-Adam free VRAM.
+        raw = min(8192, int(train_max_length))
+    ev = int(raw)
+    if ev <= 0:
+        raise SystemExit("[muse] eval_max_length must be > 0")
+    if ev > int(train_max_length):
+        print(
+            f"[muse] WARN eval_max_length={ev} > train max_length={train_max_length}; "
+            f"clamping to {train_max_length}",
+            flush=True,
+        )
+        ev = int(train_max_length)
+    return ev
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -1317,6 +1414,14 @@ def main() -> None:
         default=None,
         help="Anti-forget held-out eval panel size (from mix_dir/anti_forget/eval.jsonl). "
         "0 disables eval.",
+    )
+    p.add_argument(
+        "--eval-max-length",
+        type=int,
+        default=None,
+        help="Token length for mid-run anti_forget eval only (default: min(8192, "
+        "train max_length)). Shorter than train length — Muse CE needs ~S×V×2 "
+        "extra VRAM and OOMs at 65k even after Adam→CPU.",
     )
     p.add_argument(
         "--eval-mode",
@@ -1373,6 +1478,11 @@ def main() -> None:
         eval_max_prep = args.eval_max_samples
         if eval_max_prep is None:
             eval_max_prep = int(train_cfg.get("eval_max_samples", 128))
+        eval_len_prep = _resolve_eval_max_length(
+            train_max_length=max_length,
+            cli_value=args.eval_max_length,
+            train_cfg=train_cfg,
+        )
         seed_prep = int(args.seed or train_cfg.get("seed", 42))
         num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
         tokenizer = _load_tokenizer_only(model_path)
@@ -1395,7 +1505,7 @@ def main() -> None:
             mix_dir=mix_dir,
             tokenizer=tokenizer,
             tok_cache=tok_cache,
-            max_length=max_length,
+            max_length=eval_len_prep,
             truncation_mode=truncation_mode,
             assistant_only=assistant_only,
             num_proc=num_proc,
@@ -1519,6 +1629,11 @@ def main() -> None:
     # Eval cadence is locked to save_steps (not independently configurable).
     eval_steps = save_steps
     eval_bs = int(train_cfg.get("per_device_eval_batch_size", 1))
+    eval_max_length = _resolve_eval_max_length(
+        train_max_length=max_length,
+        cli_value=args.eval_max_length,
+        train_cfg=train_cfg,
+    )
     mix_dir = _resolve(cfg.get("mix_dir") or "data/processed/mix_v2")
     # resume_from already resolved at banner (supports path | auto).
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
@@ -1558,7 +1673,7 @@ def main() -> None:
         mix_dir=mix_dir,
         tokenizer=tokenizer,
         tok_cache=tok_cache,
-        max_length=max_length,
+        max_length=eval_max_length,
         truncation_mode=truncation_mode,
         assistant_only=assistant_only,
         num_proc=num_proc,
@@ -1578,7 +1693,8 @@ def main() -> None:
             f"[muse] anti_forget held-out eval: {len(eval_ds):,} rows "
             f"mode={eval_mode} every {eval_steps} steps "
             f"(locked to save_steps={save_steps}); "
-            f"eval_max_samples={eval_max}",
+            f"eval_max_samples={eval_max} eval_max_length={eval_max_length} "
+            f"(train max_length={max_length})",
             flush=True,
         )
     else:
