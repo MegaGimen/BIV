@@ -937,7 +937,12 @@ def _make_muse_sft_trainer_cls():
     return MuseSFTTrainer
 
 
-def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
+def _make_muse_checkpoint_callbacks(
+    *,
+    save_total_limit: int,
+    has_eval: bool,
+    tb_log_dir: Path | None = None,
+):
     """Rename HF digit ckpts, rotate rolling only, force epoch-end save (+ eval).
 
     Also re-apply logging/eval/save step intervals from *current* TrainingArguments
@@ -974,6 +979,44 @@ def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
                     + ", ".join(synced),
                     flush=True,
                 )
+            return control
+
+    class MuseTensorBoardCallback(TrainerCallback):
+        """Write scalars ourselves — HF TensorBoardCallback ignores args.logging_dir."""
+
+        def __init__(self, log_dir: Path) -> None:
+            self.log_dir = Path(log_dir)
+            self._writer = None
+            self._noted = False
+
+        def _ensure(self):
+            if self._writer is not None:
+                return self._writer
+            from torch.utils.tensorboard import SummaryWriter
+
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self._writer = SummaryWriter(log_dir=str(self.log_dir))
+            return self._writer
+
+        def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
+            if not state.is_world_process_zero or not logs:
+                return control
+            w = self._ensure()
+            if not self._noted:
+                print(f"[muse] TensorBoard writing → {self.log_dir}", flush=True)
+                self._noted = True
+            for k, v in logs.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                w.add_scalar(str(k), float(v), int(state.global_step))
+            w.flush()
+            return control
+
+        def on_train_end(self, args, state, control, **kwargs):  # noqa: ANN001
+            if self._writer is not None:
+                self._writer.flush()
+                self._writer.close()
+                self._writer = None
             return control
 
     class MuseCheckpointCallback(TrainerCallback):
@@ -1049,7 +1092,10 @@ def _make_muse_checkpoint_callbacks(*, save_total_limit: int, has_eval: bool):
                 shutil.rmtree(victim, ignore_errors=True)
 
     # Schedule override first so intervals are fixed before any step-end save/log.
-    return [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
+    cbs: list = [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
+    if tb_log_dir is not None:
+        cbs.insert(1, MuseTensorBoardCallback(tb_log_dir))
+    return cbs
 
 
 def main() -> None:
