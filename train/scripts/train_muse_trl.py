@@ -7,6 +7,10 @@ applies Glimmer chat template, trains with assistant_only_loss.
 Mid-run eval uses a fixed subsample of mix_dir/anti_forget/eval.jsonl
 (``eval_anti_forget_loss``) as an anti-forgetting monitor — not an agent bench.
 
+Default ``eval_mode=post_save``: after each checkpoint save, offload optimizer
+state to CPU, run pure forward eval, then restore — avoids OOM from mid-step
+Trainer evaluate while Adam + long-seq logits share VRAM.
+
 Examples (prefer trainmodel.sh wrapper):
   python scripts/train_muse_trl.py \\
     --config configs/trl/muse_glimmer_30b_lora.yaml \\
@@ -977,16 +981,64 @@ def _tb_run_dir_name(log_root: Path, resume_from: str | None) -> str:
     return f"{idx}_muse_e{ep}_s{step}"
 
 
+def _optimizer_state_to_device(optimizer, device) -> int:
+    """Move Adam/etc. state tensors off/on GPU. Returns count of tensors moved."""
+    import torch
+
+    if optimizer is None:
+        return 0
+    n = 0
+    state_dict = getattr(optimizer, "state", None)
+    if not isinstance(state_dict, dict):
+        return 0
+    for st in state_dict.values():
+        if not isinstance(st, dict):
+            continue
+        for k, v in list(st.items()):
+            if not torch.is_tensor(v):
+                continue
+            try:
+                if v.device != device:
+                    st[k] = v.to(device=device, non_blocking=False)
+                    n += 1
+            except Exception as e:  # noqa: BLE001 — DTensor / exotic backends
+                print(
+                    f"[muse] WARN optimizer state[{k!r}] → {device} failed: {e!r}",
+                    flush=True,
+                )
+    return n
+
+
+def _cuda_free_after_offload() -> None:
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+
 def _make_muse_checkpoint_callbacks(
     *,
     save_total_limit: int,
     has_eval: bool,
+    eval_mode: str = "post_save",
+    eval_steps: int = 0,
     tb_log_dir: Path | None = None,
 ):
     """Rename HF digit ckpts, rotate rolling only, force epoch-end save (+ eval).
 
     Also re-apply logging/eval/save step intervals from *current* TrainingArguments
     after resume (HF loads stale ``state.save_steps`` etc. from trainer_state.json).
+
+    ``eval_mode=post_save``: after checkpoint is on disk, CPU-offload optimizer,
+    pure-forward ``trainer.evaluate()``, then restore — not Trainer's inline
+    evaluate-before-save (which OOMs with Adam + long logits).
     """
     from transformers import TrainerCallback
 
@@ -1062,52 +1114,128 @@ def _make_muse_checkpoint_callbacks(
     class MuseCheckpointCallback(TrainerCallback):
         def __init__(self) -> None:
             self._pending_epoch_end = False
+            self.trainer = None  # set after MuseSFTTrainer construction
+            self._in_post_save_eval = False
 
         def on_epoch_end(self, args, state, control, **kwargs):  # noqa: ANN001
             self._pending_epoch_end = True
             control.should_save = True
-            # eval_strategy=epoch already sets should_evaluate; keep force as belt.
-            if has_eval:
+            # inline: Trainer evaluates before save. post_save: eval in on_save.
+            if has_eval and eval_mode == "inline":
                 control.should_evaluate = True
             ep = int(round(float(state.epoch or 0)))
+            extra = ""
+            if has_eval:
+                extra = (
+                    " + post-save evaluate"
+                    if eval_mode == "post_save"
+                    else " + evaluate"
+                )
             print(
-                f"[muse] epoch {ep} end: force checkpoint"
-                + (" + evaluate" if has_eval else "")
-                + " (permanent epoch ckpt)",
+                f"[muse] epoch {ep} end: force checkpoint{extra} "
+                "(permanent epoch ckpt)",
                 flush=True,
             )
             return control
 
         def on_save(self, args, state, control, **kwargs):  # noqa: ANN001
             # HF already wrote checkpoint-{global_step}; rename + custom rotate.
-            if not state.is_world_process_zero:
-                return control
-            out = Path(args.output_dir)
-            step = int(state.global_step)
-            src = out / f"checkpoint-{step}"
-            if not src.is_dir():
-                # Already renamed (retry) or unexpected layout.
-                self._rotate_rolling(out, save_total_limit)
-                return control
+            # Rank0 renames; all ranks may run post_save eval after.
+            if state.is_world_process_zero:
+                out = Path(args.output_dir)
+                step = int(state.global_step)
+                src = out / f"checkpoint-{step}"
+                if not src.is_dir():
+                    # Already renamed (retry) or unexpected layout.
+                    self._rotate_rolling(out, save_total_limit)
+                else:
+                    if self._pending_epoch_end:
+                        epoch_i = int(round(float(state.epoch or 0)))
+                        dst = out / f"checkpoint-epoch{epoch_i}-end-s{step}"
+                        self._pending_epoch_end = False
+                        kind = "epoch-end"
+                    else:
+                        epoch_i = int(math.floor(float(state.epoch or 0)))
+                        dst = out / f"checkpoint-e{epoch_i}-s{step}"
+                        kind = "rolling"
 
-            if self._pending_epoch_end:
-                epoch_i = int(round(float(state.epoch or 0)))
-                dst = out / f"checkpoint-epoch{epoch_i}-end-s{step}"
-                self._pending_epoch_end = False
-                kind = "epoch-end"
-            else:
-                epoch_i = int(math.floor(float(state.epoch or 0)))
-                dst = out / f"checkpoint-e{epoch_i}-s{step}"
-                kind = "rolling"
+                    if src.resolve() != dst.resolve():
+                        if dst.exists():
+                            shutil.rmtree(dst, ignore_errors=True)
+                        src.rename(dst)
+                        print(f"[muse] checkpoint ({kind}) → {dst.name}", flush=True)
 
-            if src.resolve() != dst.resolve():
-                if dst.exists():
-                    shutil.rmtree(dst, ignore_errors=True)
-                src.rename(dst)
-                print(f"[muse] checkpoint ({kind}) → {dst.name}", flush=True)
+                    self._rotate_rolling(out, save_total_limit)
 
-            self._rotate_rolling(out, save_total_limit)
+            if has_eval and eval_mode == "post_save":
+                self._post_save_eval(state, optimizer=kwargs.get("optimizer"))
             return control
+
+        def _post_save_eval(self, state, *, optimizer) -> None:  # noqa: ANN001
+            """Save is durable → free train peak → pure forward → restore Adam."""
+            import torch
+
+            if self._in_post_save_eval:
+                return
+            trainer = self.trainer
+            if trainer is None:
+                if state.is_world_process_zero:
+                    print(
+                        "[muse] WARN post_save eval skipped: callback.trainer unset",
+                        flush=True,
+                    )
+                return
+            step = int(state.global_step)
+            if eval_steps > 0 and step % int(eval_steps) != 0:
+                return
+
+            self._in_post_save_eval = True
+            try:
+                if state.is_world_process_zero:
+                    print(
+                        f"[muse] post-save anti_forget eval @ step {step}: "
+                        "optimizer→CPU, pure forward (prediction_loss_only)",
+                        flush=True,
+                    )
+                model = getattr(trainer, "model", None)
+                if model is not None:
+                    model.zero_grad(set_to_none=True)
+
+                n_off = _optimizer_state_to_device(optimizer, torch.device("cpu"))
+                _cuda_free_after_offload()
+                if state.is_world_process_zero:
+                    print(
+                        f"[muse] offloaded {n_off} optimizer state tensor(s) to CPU",
+                        flush=True,
+                    )
+
+                accel = getattr(trainer, "accelerator", None)
+                if accel is not None:
+                    accel.wait_for_everyone()
+
+                try:
+                    metrics = trainer.evaluate(metric_key_prefix="eval")
+                    if state.is_world_process_zero and metrics:
+                        brief = {
+                            k: (round(float(v), 6) if isinstance(v, float) else v)
+                            for k, v in metrics.items()
+                            if isinstance(v, (int, float))
+                        }
+                        print(f"[muse] post-save eval metrics: {brief}", flush=True)
+                finally:
+                    if torch.cuda.is_available():
+                        dev = torch.device("cuda", torch.cuda.current_device())
+                        n_on = _optimizer_state_to_device(optimizer, dev)
+                        if accel is not None:
+                            accel.wait_for_everyone()
+                        if state.is_world_process_zero:
+                            print(
+                                f"[muse] restored {n_on} optimizer state tensor(s) "
+                                f"→ {dev}",
+                                flush=True,
+                            )
+            finally:
+                self._in_post_save_eval = False
 
         @staticmethod
         def _rotate_rolling(out: Path, limit: int) -> None:
@@ -1132,10 +1260,11 @@ def _make_muse_checkpoint_callbacks(
                 shutil.rmtree(victim, ignore_errors=True)
 
     # Schedule override first so intervals are fixed before any step-end save/log.
-    cbs: list = [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
+    ckpt_cb = MuseCheckpointCallback()
+    cbs: list = [MuseScheduleOverrideCallback(), ckpt_cb]
     if tb_log_dir is not None:
         cbs.insert(1, MuseTensorBoardCallback(tb_log_dir))
-    return cbs
+    return cbs, ckpt_cb
 
 
 def main() -> None:
@@ -1193,7 +1322,17 @@ def main() -> None:
         "--eval-steps",
         type=int,
         default=None,
-        help="Anti-forget held-out eval every N steps. Default: same as save_steps.",
+        help="Anti-forget held-out eval every N steps (post_save: only after saves "
+        "whose step %% eval_steps == 0). Default: same as save_steps.",
+    )
+    p.add_argument(
+        "--eval-mode",
+        type=str,
+        default=None,
+        choices=("post_save", "inline", "off"),
+        help="post_save (default): after ckpt save, offload optimizer→CPU then pure "
+        "forward eval. inline: Trainer evaluate-before-save (may OOM at long ctx). "
+        "off: disable.",
     )
     p.add_argument(
         "--force-retokenize",
@@ -1374,6 +1513,16 @@ def main() -> None:
     eval_max = args.eval_max_samples
     if eval_max is None:
         eval_max = int(train_cfg.get("eval_max_samples", 128))
+    eval_mode = str(
+        args.eval_mode or train_cfg.get("eval_mode") or "post_save"
+    ).strip().lower()
+    if eval_mode not in {"post_save", "inline", "off"}:
+        raise SystemExit(
+            f"[muse] invalid eval_mode={eval_mode!r}; "
+            "use post_save | inline | off"
+        )
+    if eval_mode == "off":
+        eval_max = 0
     eval_steps = args.eval_steps
     if eval_steps is None:
         eval_steps = train_cfg.get("eval_steps")
@@ -1433,15 +1582,23 @@ def main() -> None:
     has_eval = eval_ds is not None
     if has_eval and int(eval_steps) <= 0:
         raise SystemExit("[muse] eval_steps must be > 0 when anti_forget eval is enabled")
+    # post_save: Trainer must NOT evaluate mid-step (Adam still resident → OOM).
+    # Callback runs evaluate after save with optimizer on CPU.
+    use_inline_eval = has_eval and eval_mode == "inline"
+    use_post_save_eval = has_eval and eval_mode == "post_save"
     if has_eval:
         print(
             f"[muse] anti_forget held-out eval: {len(eval_ds):,} rows "
-            f"(every {eval_steps} steps [=save_steps={save_steps} when unset]; "
-            f"eval_max_samples={eval_max})",
+            f"mode={eval_mode} every {eval_steps} steps "
+            f"[=save_steps={save_steps} when unset]; "
+            f"eval_max_samples={eval_max}",
             flush=True,
         )
     else:
-        print("[muse] eval_max_samples<=0 → evaluate disabled", flush=True)
+        print(
+            f"[muse] evaluate disabled (eval_max_samples<=0 or eval_mode=off)",
+            flush=True,
+        )
 
     sft_kwargs: dict[str, Any] = dict(
         output_dir=str(out_dir),
@@ -1464,16 +1621,18 @@ def main() -> None:
         gradient_checkpointing=grad_ckpt,
         report_to=os.environ.get("REPORT_TO", "none"),
         truncation_mode=truncation_mode,
-        # Steps eval on anti_forget held-out; epoch-end callback also forces evaluate.
-        eval_strategy="steps" if has_eval else "no",
+        # inline only: HF evaluate-before-save. post_save uses callback.
+        eval_strategy="steps" if use_inline_eval else "no",
         per_device_eval_batch_size=eval_bs,
+        # Do not materialize full prediction tensors during eval.
+        prediction_loss_only=True,
     )
     # AutoDL / custom TB path. TRL SFTConfig.__init__ often omits logging_dir from
     # its signature even though TrainingArguments still has the attr — apply after build.
     logging_dir = os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS") or train_cfg.get(
         "logging_dir"
     )
-    if has_eval:
+    if use_inline_eval:
         sft_kwargs["eval_steps"] = int(eval_steps)
     if use_liger:
         sft_kwargs["use_liger_kernel"] = True
@@ -1559,15 +1718,18 @@ def main() -> None:
             flush=True,
         )
 
+    muse_cbs, muse_ckpt_cb = _make_muse_checkpoint_callbacks(
+        save_total_limit=save_limit,
+        has_eval=has_eval,
+        eval_mode=eval_mode if has_eval else "off",
+        eval_steps=int(eval_steps) if has_eval else 0,
+        tb_log_dir=tb_live_dir,
+    )
     trainer_kwargs: dict[str, Any] = dict(
         model=model,
         args=sft_args,
         train_dataset=train_ds,
-        callbacks=_make_muse_checkpoint_callbacks(
-            save_total_limit=save_limit,
-            has_eval=has_eval,
-            tb_log_dir=tb_live_dir,
-        ),
+        callbacks=muse_cbs,
     )
     if has_eval:
         trainer_kwargs["eval_dataset"] = {"anti_forget": eval_ds}
@@ -1576,6 +1738,13 @@ def main() -> None:
         trainer = MuseSFTTrainer(processing_class=tokenizer, **trainer_kwargs)
     except TypeError:
         trainer = MuseSFTTrainer(tokenizer=tokenizer, **trainer_kwargs)
+    muse_ckpt_cb.trainer = trainer
+    if use_post_save_eval:
+        print(
+            "[muse] eval_mode=post_save: after each qualifying save → "
+            "optimizer CPU offload → trainer.evaluate() → restore",
+            flush=True,
+        )
 
     if cp_size > 1:
         pc = None
