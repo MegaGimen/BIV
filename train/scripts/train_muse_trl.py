@@ -4,6 +4,9 @@
 Reads structure-right-truncated HF datasets (messages) from train_prep_mix,
 applies Glimmer chat template, trains with assistant_only_loss.
 
+Mid-run eval uses a fixed subsample of mix_dir/anti_forget/eval.jsonl
+(``eval_anti_forget_loss``) as an anti-forgetting monitor — not an agent bench.
+
 Examples (prefer trainmodel.sh wrapper):
   python scripts/train_muse_trl.py \\
     --config configs/trl/muse_glimmer_30b_lora.yaml \\
@@ -15,6 +18,7 @@ Examples (prefer trainmodel.sh wrapper):
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -723,15 +727,164 @@ def _train_resume_adapter_only(trainer, model, resume_from: str) -> None:
     trainer.train(resume_from_checkpoint=resume_from)
 
 
-def _make_eval_slice(train_ds, *, max_samples: int, seed: int):
-    """Deterministic eval panel from train rows (monitor-only; train set unchanged)."""
+def _make_eval_slice(ds, *, max_samples: int, seed: int):
+    """Deterministic subsample (train set unchanged when slicing a copy)."""
     if max_samples is None or max_samples <= 0:
         return None
-    n = len(train_ds)
+    n = len(ds)
     if n <= 0:
         return None
     k = min(int(max_samples), n)
-    return train_ds.shuffle(seed=seed).select(range(k))
+    return ds.shuffle(seed=seed).select(range(k))
+
+
+def _anti_forget_eval_jsonl(mix_dir: Path) -> Path:
+    return mix_dir / "anti_forget" / "eval.jsonl"
+
+
+def _load_anti_forget_eval_messages(mix_dir: Path):
+    """Load prepare_data held-out anti_forget/eval.jsonl as messages Dataset."""
+    from datasets import Dataset, Features, Value
+
+    path = _anti_forget_eval_jsonl(mix_dir)
+    if not path.is_file():
+        raise SystemExit(
+            f"[muse] anti_forget held-out missing: {path}\n"
+            "Run: python scripts/prepare_data.py --anti-forget "
+            f"--out-dir {mix_dir}"
+        )
+
+    msg_features = Features(
+        {
+            "messages": [
+                {
+                    "role": Value("string"),
+                    "content": Value("string"),
+                    "name": Value("string"),
+                    "tool_call_id": Value("string"),
+                    "reasoning_content": Value("string"),
+                    "tool_calls": [
+                        {
+                            "id": Value("string"),
+                            "type": Value("string"),
+                            "function": {
+                                "name": Value("string"),
+                                "arguments": Value("string"),
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            msgs = obj.get("messages")
+            if not msgs:
+                continue
+            rows.append({"messages": _normalize_messages(msgs)})
+
+    if not rows:
+        raise SystemExit(f"[muse] anti_forget held-out empty: {path}")
+
+    try:
+        ds = Dataset.from_list(rows, features=msg_features)
+    except Exception as e:
+        print(
+            f"[muse] WARN anti_forget eval features cast failed ({e!r}); "
+            "from_list without Features",
+            flush=True,
+        )
+        ds = Dataset.from_list(rows)
+    print(f"[muse] loaded anti_forget held-out {path} ({len(ds):,} rows)", flush=True)
+    return ds
+
+
+def _anti_forget_eval_cache_dir(
+    tok_cache: Path,
+    *,
+    eval_jsonl: Path,
+    eval_max_samples: int,
+    seed: int,
+) -> Path:
+    """Side cache next to train tokenized dir (does not invalidate train cache)."""
+    import hashlib
+
+    parts = [
+        f"eval_anti|v1|n={int(eval_max_samples)}|seed={int(seed)}",
+        tok_cache.name,
+        str(eval_jsonl.resolve()),
+    ]
+    if eval_jsonl.is_file():
+        st = eval_jsonl.stat()
+        parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+    digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
+    return tok_cache.parent / (
+        f"eval_anti_forget_n{int(eval_max_samples)}_{digest}"
+    )
+
+
+def _prepare_anti_forget_eval(
+    *,
+    mix_dir: Path,
+    tokenizer,
+    tok_cache: Path,
+    max_length: int,
+    truncation_mode: str,
+    assistant_only: bool,
+    num_proc: int,
+    eval_max_samples: int,
+    seed: int,
+    force_retokenize: bool,
+):
+    """Held-out anti_forget panel for mid-run forgetting monitor (not agent bench)."""
+    if eval_max_samples is None or int(eval_max_samples) <= 0:
+        return None
+
+    eval_jsonl = _anti_forget_eval_jsonl(mix_dir)
+    cache = _anti_forget_eval_cache_dir(
+        tok_cache,
+        eval_jsonl=eval_jsonl,
+        eval_max_samples=int(eval_max_samples),
+        seed=int(seed),
+    )
+    if (not force_retokenize) and _tokenized_cache_ready(cache):
+        ds = _try_load_tokenized_cache(cache)
+        print(
+            f"[muse] anti_forget eval cache HIT → {cache} ({len(ds):,} rows)",
+            flush=True,
+        )
+        return ds
+
+    msgs = _load_anti_forget_eval_messages(mix_dir)
+    panel = _make_eval_slice(msgs, max_samples=int(eval_max_samples), seed=int(seed))
+    if panel is None:
+        return None
+    print(
+        f"[muse] anti_forget eval panel: {len(panel):,} / {len(msgs):,} rows "
+        f"(eval_max_samples={eval_max_samples}, seed={seed})",
+        flush=True,
+    )
+    tok_ds = _tokenize_messages_offline(
+        panel,
+        tokenizer,
+        max_length=max_length,
+        truncation_mode=truncation_mode,
+        assistant_only=assistant_only,
+        num_proc=num_proc,
+    )
+    if _is_main_process():
+        _save_tokenized_cache(tok_ds, cache)
+    _barrier()
+    if (not _is_main_process()) and _tokenized_cache_ready(cache):
+        tok_ds = _try_load_tokenized_cache(cache)
+    return tok_ds
 
 
 def _make_muse_sft_trainer_cls():
@@ -947,7 +1100,14 @@ def main() -> None:
         "--eval-max-samples",
         type=int,
         default=None,
-        help="Epoch-end eval panel size (slice of train rows). 0 disables eval.",
+        help="Anti-forget held-out eval panel size (from mix_dir/anti_forget/eval.jsonl). "
+        "0 disables eval.",
+    )
+    p.add_argument(
+        "--eval-steps",
+        type=int,
+        default=None,
+        help="Anti-forget held-out eval every N steps. Default: same as save_steps.",
     )
     p.add_argument(
         "--force-retokenize",
@@ -991,22 +1151,40 @@ def main() -> None:
         print(f"  model:      {model_path}", flush=True)
         print(f"  max_length: {max_length}", flush=True)
         print(f"  cache:      {tok_cache}", flush=True)
+        mix_dir = _resolve(cfg.get("mix_dir") or "data/processed/mix_v2")
+        eval_max_prep = args.eval_max_samples
+        if eval_max_prep is None:
+            eval_max_prep = int(train_cfg.get("eval_max_samples", 128))
+        seed_prep = int(args.seed or train_cfg.get("seed", 42))
+        num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
+        tokenizer = _load_tokenizer_only(model_path)
         if (not args.force_retokenize) and _tokenized_cache_ready(tok_cache):
             print(f"[muse] tokenized cache already ready → {tok_cache}", flush=True)
-            return
-        msgs_ds = _load_concat_datasets(cached)
-        print(f"  messages rows: {len(msgs_ds):,}", flush=True)
-        tokenizer = _load_tokenizer_only(model_path)
-        num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
-        tok_ds = _tokenize_messages_offline(
-            msgs_ds,
-            tokenizer,
+        else:
+            msgs_ds = _load_concat_datasets(cached)
+            print(f"  messages rows: {len(msgs_ds):,}", flush=True)
+            tok_ds = _tokenize_messages_offline(
+                msgs_ds,
+                tokenizer,
+                max_length=max_length,
+                truncation_mode=truncation_mode,
+                assistant_only=assistant_only,
+                num_proc=num_proc,
+            )
+            _save_tokenized_cache(tok_ds, tok_cache)
+        # Small side cache for mid-run anti_forget monitor (does not touch train cache).
+        _prepare_anti_forget_eval(
+            mix_dir=mix_dir,
+            tokenizer=tokenizer,
+            tok_cache=tok_cache,
             max_length=max_length,
             truncation_mode=truncation_mode,
             assistant_only=assistant_only,
             num_proc=num_proc,
+            eval_max_samples=int(eval_max_prep),
+            seed=seed_prep + 2,
+            force_retokenize=bool(args.force_retokenize),
         )
-        _save_tokenized_cache(tok_ds, tok_cache)
         print("[muse] prepare-tokenized-only done", flush=True)
         return
 
@@ -1110,7 +1288,16 @@ def main() -> None:
     eval_max = args.eval_max_samples
     if eval_max is None:
         eval_max = int(train_cfg.get("eval_max_samples", 128))
+    eval_steps = args.eval_steps
+    if eval_steps is None:
+        eval_steps = train_cfg.get("eval_steps")
+    # Default: same cadence as rolling checkpoints (save_steps).
+    if eval_steps is None:
+        eval_steps = save_steps
+    else:
+        eval_steps = int(eval_steps)
     eval_bs = int(train_cfg.get("per_device_eval_batch_size", 1))
+    mix_dir = _resolve(cfg.get("mix_dir") or "data/processed/mix_v2")
     # resume_from already resolved at banner (supports path | auto).
     # TRL Ring Attention (FSDP2+CP): sequences must be divisible by cp_size*2.
     pad_multiple = cp_size * 2 if cp_size > 1 else int(train_cfg.get("pad_to_multiple_of") or 0)
@@ -1144,16 +1331,30 @@ def main() -> None:
     total_steps = max(1, int(epochs * steps_per_epoch))
     warmup_steps = int(train_cfg.get("warmup_steps") or max(1, int(total_steps * warmup_ratio)))
 
-    eval_ds = _make_eval_slice(train_ds, max_samples=int(eval_max), seed=seed + 1)
+    num_proc = int(cfg.get("dataset_num_proc") or train_cfg.get("dataset_num_proc") or 8)
+    eval_ds = _prepare_anti_forget_eval(
+        mix_dir=mix_dir,
+        tokenizer=tokenizer,
+        tok_cache=tok_cache,
+        max_length=max_length,
+        truncation_mode=truncation_mode,
+        assistant_only=assistant_only,
+        num_proc=num_proc,
+        eval_max_samples=int(eval_max),
+        seed=seed + 2,
+        force_retokenize=bool(args.force_retokenize),
+    )
     has_eval = eval_ds is not None
+    if has_eval and int(eval_steps) <= 0:
+        raise SystemExit("[muse] eval_steps must be > 0 when anti_forget eval is enabled")
     if has_eval:
         print(
-            f"[muse] epoch-end eval panel: {len(eval_ds):,} rows "
-            f"(eval_max_samples={eval_max})",
+            f"[muse] anti_forget held-out eval: {len(eval_ds):,} rows "
+            f"(every {eval_steps} steps; eval_max_samples={eval_max})",
             flush=True,
         )
     else:
-        print("[muse] eval_max_samples<=0 → epoch-end evaluate disabled", flush=True)
+        print("[muse] eval_max_samples<=0 → evaluate disabled", flush=True)
 
     sft_kwargs: dict[str, Any] = dict(
         output_dir=str(out_dir),
@@ -1176,10 +1377,12 @@ def main() -> None:
         gradient_checkpointing=grad_ckpt,
         report_to=os.environ.get("REPORT_TO", "none"),
         truncation_mode=truncation_mode,
-        # Epoch-end eval via strategy; callback forces permanent epoch save.
-        eval_strategy="epoch" if has_eval else "no",
+        # Steps eval on anti_forget held-out; epoch-end callback also forces evaluate.
+        eval_strategy="steps" if has_eval else "no",
         per_device_eval_batch_size=eval_bs,
     )
+    if has_eval:
+        sft_kwargs["eval_steps"] = int(eval_steps)
     if use_liger:
         sft_kwargs["use_liger_kernel"] = True
         # Muse is not in Liger's supported model_type map → apply_liger is a no-op;
@@ -1247,7 +1450,7 @@ def main() -> None:
         ),
     )
     if has_eval:
-        trainer_kwargs["eval_dataset"] = eval_ds
+        trainer_kwargs["eval_dataset"] = {"anti_forget": eval_ds}
     # TRL API drift: processing_class vs tokenizer
     try:
         trainer = MuseSFTTrainer(processing_class=tokenizer, **trainer_kwargs)
@@ -1290,8 +1493,8 @@ def main() -> None:
         if use_adapter_only:
             print(
                 f"[muse] resume adapter-only from {resume_from} "
-                "(LoRA + trainer_state step/data-skip; optimizer/LR cold-start). "
-                "Full FSDP resume: --resume-full",
+                "(LoRA via PEFT; Adam/scheduler/RNG/step via Trainer; "
+                "skip broken FSDP model copy). Full path: --resume-full",
                 flush=True,
             )
             _train_resume_adapter_only(trainer, model, resume_from)

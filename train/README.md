@@ -111,6 +111,10 @@ Adapters: `outputs/muse_glimmer_wm_mix_ml<N>_c<K>/`.
 
 Vision / Perception Encoder stays **frozen** (text-only WM tool I/O).
 
+During training, `eval_anti_forget_loss` is CE on a fixed subsample of
+`mix_dir/anti_forget/eval.jsonl` (held-out; default every `save_steps`). Use it as an
+early anti-forgetting monitor — not an agent benchmark and not causal proof of WM transfer.
+
 ## Pipeline (legacy 9B Unsloth)
 
 | Item | Choice |
