@@ -119,11 +119,14 @@ TensorBoard (optional):
 
 ```bash
 export REPORT_TO=tensorboard
-export LOGGING_DIR=/root/tf-logs   # AutoDL panel; omit → output_dir/runs/
-bash scripts/trainmodel.sh --max-length 8192 --choice 1
+export LOGGING_DIR=/root/tf-logs   # sets TENSORBOARD_LOGGING_DIR=…/muse_live
+bash scripts/train_daemon.sh --max-length 8192 --choice 1
 ```
 
-Train scalars (`loss`, …) and `eval_anti_forget_loss` both go to TensorBoard when `REPORT_TO=tensorboard`.
+Newer HuggingFace ignores `TrainingArguments.logging_dir` for TB and only honors
+`TENSORBOARD_LOGGING_DIR` (else writes under `output_dir/`). Our launcher sets that
+env when `LOGGING_DIR` / `TF_LOGS` is present. Live scalars land in
+`/root/tf-logs/muse_live/`; use `python scripts/tmplog.py …` for historical backfill.
 
 ## Pipeline (legacy 9B Unsloth)
 

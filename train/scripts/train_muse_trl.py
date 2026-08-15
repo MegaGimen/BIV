@@ -1446,17 +1446,23 @@ def main() -> None:
     )
     sft_args = SFTConfig(**sft_kwargs)
     if logging_dir:
+        # Newer transformers TensorBoardCallback IGNORES args.logging_dir and uses
+        # TENSORBOARD_LOGGING_DIR, else output_dir/<default_logdir()>. Set both.
         log_path = Path(str(logging_dir))
-        log_path.mkdir(parents=True, exist_ok=True)
-        sft_args.logging_dir = str(log_path)
+        live_dir = log_path / "muse_live"
+        live_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["TENSORBOARD_LOGGING_DIR"] = str(live_dir)
+        sft_args.logging_dir = str(live_dir)
         print(
-            f"[muse] tensorboard logging_dir={sft_args.logging_dir} "
-            f"(report_to={getattr(sft_args, 'report_to', None)})",
+            f"[muse] tensorboard → {live_dir} "
+            f"(TENSORBOARD_LOGGING_DIR + args.logging_dir; "
+            f"report_to={getattr(sft_args, 'report_to', None)})",
             flush=True,
         )
     else:
         print(
             f"[muse] tensorboard logging_dir={getattr(sft_args, 'logging_dir', None)} "
+            f"TENSORBOARD_LOGGING_DIR={os.environ.get('TENSORBOARD_LOGGING_DIR')!r} "
             f"(report_to={getattr(sft_args, 'report_to', None)}; "
             "set LOGGING_DIR=/root/tf-logs to override)",
             flush=True,
