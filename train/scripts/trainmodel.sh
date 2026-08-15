@@ -62,8 +62,9 @@ Env:
   TRAIN_CHOICE             same as --choice
   RESUME_FROM              same as --resume-from (path or auto)
   CONFIG / MIX_DIR / QLORA
-EOF
-}
+  SAVE_STEPS / EVAL_STEPS / EVAL_MODE / EVAL_MAX_SAMPLES
+                           override yaml for one-shot smoke tests
+                           (e.g. SAVE_STEPS=2 → save+post_save eval every 2)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -165,9 +166,16 @@ if [[ "$prep_rc" -ne 0 ]]; then
 fi
 
 _SAVE_PARALLEL="${PARALLEL-}"
+_SAVE_STEPS_OVERRIDE="${SAVE_STEPS-}"
+_EVAL_STEPS_OVERRIDE="${EVAL_STEPS-}"
+_EVAL_MODE_OVERRIDE="${EVAL_MODE-}"
 # shellcheck disable=SC1090
 source "$RUN_ENV"
 if [[ -n "${_SAVE_PARALLEL}" ]]; then PARALLEL="${_SAVE_PARALLEL}"; fi
+# Allow one-shot overrides without editing yaml (e.g. SAVE_STEPS=2 速测 post_save eval).
+if [[ -n "${_SAVE_STEPS_OVERRIDE}" ]]; then SAVE_STEPS="${_SAVE_STEPS_OVERRIDE}"; fi
+if [[ -n "${_EVAL_STEPS_OVERRIDE}" ]]; then EVAL_STEPS="${_EVAL_STEPS_OVERRIDE}"; fi
+if [[ -n "${_EVAL_MODE_OVERRIDE}" ]]; then EVAL_MODE="${_EVAL_MODE_OVERRIDE}"; fi
 
 if [[ "$QLORA_FLAG" -eq 1 ]] || [[ "${QLORA:-0}" == "1" ]] || [[ "${QLORA:-}" == "true" ]]; then
   export QLORA=1
@@ -357,11 +365,18 @@ TRAIN_PY=(
 if [[ -n "${EVAL_MAX_SAMPLES:-}" ]]; then
   TRAIN_PY+=(--eval-max-samples "$EVAL_MAX_SAMPLES")
 fi
+if [[ -n "${EVAL_STEPS:-}" ]]; then
+  TRAIN_PY+=(--eval-steps "$EVAL_STEPS")
+fi
+if [[ -n "${EVAL_MODE:-}" ]]; then
+  TRAIN_PY+=(--eval-mode "$EVAL_MODE")
+fi
 if [[ -n "$RESUME_FROM" ]]; then
   echo "  resume_from=$RESUME_FROM"
   TRAIN_PY+=(--resume-from "$RESUME_FROM")
 fi
 
+echo "  save_steps=$SAVE_STEPS eval_steps=${EVAL_STEPS:-$SAVE_STEPS} eval_mode=${EVAL_MODE:-post_save}"
 echo "  launch: ${LAUNCH[*]} ${TRAIN_PY[0]} …"
 "${LAUNCH[@]}" "${TRAIN_PY[@]}"
 echo "Done. Adapters → $OUT_DIR"
