@@ -1491,17 +1491,19 @@ def main() -> None:
         flush=True,
     )
     sft_args = SFTConfig(**sft_kwargs)
+    tb_live_dir: Path | None = None
     if logging_dir:
         # Newer transformers TensorBoardCallback IGNORES args.logging_dir and uses
-        # TENSORBOARD_LOGGING_DIR, else output_dir/<default_logdir()>. Set both.
+        # TENSORBOARD_LOGGING_DIR, else output_dir/<default_logdir()>. Set both +
+        # our own MuseTensorBoardCallback (does not rely on HF integration).
         log_path = Path(str(logging_dir))
-        live_dir = log_path / "muse_live"
-        live_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["TENSORBOARD_LOGGING_DIR"] = str(live_dir)
-        sft_args.logging_dir = str(live_dir)
+        tb_live_dir = log_path / "muse_live"
+        tb_live_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["TENSORBOARD_LOGGING_DIR"] = str(tb_live_dir)
+        sft_args.logging_dir = str(tb_live_dir)
         print(
-            f"[muse] tensorboard → {live_dir} "
-            f"(TENSORBOARD_LOGGING_DIR + args.logging_dir; "
+            f"[muse] tensorboard → {tb_live_dir} "
+            f"(MuseTB callback + TENSORBOARD_LOGGING_DIR; "
             f"report_to={getattr(sft_args, 'report_to', None)})",
             flush=True,
         )
@@ -1521,6 +1523,7 @@ def main() -> None:
         callbacks=_make_muse_checkpoint_callbacks(
             save_total_limit=save_limit,
             has_eval=has_eval,
+            tb_log_dir=tb_live_dir,
         ),
     )
     if has_eval:
