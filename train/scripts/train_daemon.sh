@@ -5,6 +5,8 @@
 # Usage (same flags as trainmodel.sh):
 #   bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
 #     --resume-from auto
+#   bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
+#     --resume-from auto --save-steps 2   # smoke: save+eval every 2 (yaml default 25)
 #
 # Behavior:
 #   - Passes all CLI args through to scripts/trainmodel.sh unchanged (no fallback
@@ -88,6 +90,15 @@ while [[ $i -lt $n ]]; do
       fi
       CHOICE="${args[$i]}"
       PASS_ARGS+=("$CHOICE")
+      ;;
+    --save-steps|--save_steps)
+      PASS_ARGS+=("$a")
+      i=$((i + 1))
+      if [[ $i -ge $n ]]; then
+        echo "ERROR: $a needs a value"
+        exit 1
+      fi
+      PASS_ARGS+=("${args[$i]}")
       ;;
     *)
       PASS_ARGS+=("$a")

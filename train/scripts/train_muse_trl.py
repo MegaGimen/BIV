@@ -1319,20 +1319,13 @@ def main() -> None:
         "0 disables eval.",
     )
     p.add_argument(
-        "--eval-steps",
-        type=int,
-        default=None,
-        help="Anti-forget held-out eval every N steps (post_save: only after saves "
-        "whose step %% eval_steps == 0). Default: same as save_steps.",
-    )
-    p.add_argument(
         "--eval-mode",
         type=str,
         default=None,
         choices=("post_save", "inline", "off"),
         help="post_save (default): after ckpt save, offload optimizer→CPU then pure "
         "forward eval. inline: Trainer evaluate-before-save (may OOM at long ctx). "
-        "off: disable.",
+        "off: disable. Eval cadence is always identical to --save-steps.",
     )
     p.add_argument(
         "--force-retokenize",
@@ -1523,14 +1516,8 @@ def main() -> None:
         )
     if eval_mode == "off":
         eval_max = 0
-    eval_steps = args.eval_steps
-    if eval_steps is None:
-        eval_steps = train_cfg.get("eval_steps")
-    # Default: same cadence as rolling checkpoints (save_steps).
-    if eval_steps is None:
-        eval_steps = save_steps
-    else:
-        eval_steps = int(eval_steps)
+    # Eval cadence is locked to save_steps (not independently configurable).
+    eval_steps = save_steps
     eval_bs = int(train_cfg.get("per_device_eval_batch_size", 1))
     mix_dir = _resolve(cfg.get("mix_dir") or "data/processed/mix_v2")
     # resume_from already resolved at banner (supports path | auto).
@@ -1590,7 +1577,7 @@ def main() -> None:
         print(
             f"[muse] anti_forget held-out eval: {len(eval_ds):,} rows "
             f"mode={eval_mode} every {eval_steps} steps "
-            f"[=save_steps={save_steps} when unset]; "
+            f"(locked to save_steps={save_steps}); "
             f"eval_max_samples={eval_max}",
             flush=True,
         )

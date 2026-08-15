@@ -43,10 +43,11 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/trainmodel.sh --max-length <N> [--choice 1|2|3] [--force-prep] [--qlora]
-       [--resume-from <checkpoint_dir|auto>]
+       [--resume-from <checkpoint_dir|auto>] [--save-steps N]
 
   Auto-restart wrapper (recommended on the wire for VRAM):
   bash scripts/train_daemon.sh --max-length <N> [--choice …] [--resume-from …]
+       [--save-steps N]
 
   --max-length N   required; struct-right trunc to complete assistant within N
   --choice K       skip interactive prompt (1=as-is, 2=1:1:0.35, 3=abort)
@@ -54,6 +55,8 @@ Usage:
   --qlora          4-bit QLoRA (also QLORA=1)
   --resume-from D  checkpoint dir, or "auto" = latest complete under output_dir
                    (same ranking as train_daemon.sh)
+  --save-steps N   override yaml save_steps (default 25). post_save eval always
+                   matches save_steps (not independently configurable).
 
 Env:
   CUDA_VISIBLE_DEVICES     default 0
@@ -62,10 +65,10 @@ Env:
   TRAIN_CHOICE             same as --choice
   RESUME_FROM              same as --resume-from (path or auto)
   CONFIG / MIX_DIR / QLORA
-  SAVE_STEPS / EVAL_STEPS / EVAL_MODE / EVAL_MAX_SAMPLES
-                           override yaml for one-shot smoke tests
-                           (e.g. SAVE_STEPS=2 → save+post_save eval every 2)
+EOF
+}
 
+SAVE_STEPS_CLI=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-length|--max_length|-m)
@@ -91,6 +94,11 @@ while [[ $# -gt 0 ]]; do
       RESUME_FROM="$2"
       shift 2
       ;;
+    --save-steps|--save_steps)
+      [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
+      SAVE_STEPS_CLI="$2"
+      shift 2
+      ;;
     --resume)
       echo "ERROR: use --resume-from <checkpoint_dir|auto> (bare --resume is disabled)."
       exit 1
@@ -110,6 +118,13 @@ if [[ ${#EXTRA[@]} -gt 0 ]]; then
   echo "Unknown args: ${EXTRA[*]}"
   usage
   exit 1
+fi
+
+if [[ -n "$SAVE_STEPS_CLI" ]]; then
+  if ! [[ "$SAVE_STEPS_CLI" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: --save-steps must be a positive integer, got: $SAVE_STEPS_CLI"
+    exit 1
+  fi
 fi
 
 if [[ -z "$MAX_LENGTH" ]]; then
@@ -166,16 +181,13 @@ if [[ "$prep_rc" -ne 0 ]]; then
 fi
 
 _SAVE_PARALLEL="${PARALLEL-}"
-_SAVE_STEPS_OVERRIDE="${SAVE_STEPS-}"
-_EVAL_STEPS_OVERRIDE="${EVAL_STEPS-}"
-_EVAL_MODE_OVERRIDE="${EVAL_MODE-}"
 # shellcheck disable=SC1090
 source "$RUN_ENV"
 if [[ -n "${_SAVE_PARALLEL}" ]]; then PARALLEL="${_SAVE_PARALLEL}"; fi
-# Allow one-shot overrides without editing yaml (e.g. SAVE_STEPS=2 速测 post_save eval).
-if [[ -n "${_SAVE_STEPS_OVERRIDE}" ]]; then SAVE_STEPS="${_SAVE_STEPS_OVERRIDE}"; fi
-if [[ -n "${_EVAL_STEPS_OVERRIDE}" ]]; then EVAL_STEPS="${_EVAL_STEPS_OVERRIDE}"; fi
-if [[ -n "${_EVAL_MODE_OVERRIDE}" ]]; then EVAL_MODE="${_EVAL_MODE_OVERRIDE}"; fi
+# CLI --save-steps overrides yaml (default remains yaml save_steps, usually 25).
+if [[ -n "$SAVE_STEPS_CLI" ]]; then
+  SAVE_STEPS="$SAVE_STEPS_CLI"
+fi
 
 if [[ "$QLORA_FLAG" -eq 1 ]] || [[ "${QLORA:-0}" == "1" ]] || [[ "${QLORA:-}" == "true" ]]; then
   export QLORA=1
@@ -365,9 +377,6 @@ TRAIN_PY=(
 if [[ -n "${EVAL_MAX_SAMPLES:-}" ]]; then
   TRAIN_PY+=(--eval-max-samples "$EVAL_MAX_SAMPLES")
 fi
-if [[ -n "${EVAL_STEPS:-}" ]]; then
-  TRAIN_PY+=(--eval-steps "$EVAL_STEPS")
-fi
 if [[ -n "${EVAL_MODE:-}" ]]; then
   TRAIN_PY+=(--eval-mode "$EVAL_MODE")
 fi
@@ -376,7 +385,7 @@ if [[ -n "$RESUME_FROM" ]]; then
   TRAIN_PY+=(--resume-from "$RESUME_FROM")
 fi
 
-echo "  save_steps=$SAVE_STEPS eval_steps=${EVAL_STEPS:-$SAVE_STEPS} eval_mode=${EVAL_MODE:-post_save}"
+echo "  save_steps=$SAVE_STEPS (eval locked to save_steps; mode=${EVAL_MODE:-post_save})"
 echo "  launch: ${LAUNCH[*]} ${TRAIN_PY[0]} …"
 "${LAUNCH[@]}" "${TRAIN_PY[@]}"
 echo "Done. Adapters → $OUT_DIR"
