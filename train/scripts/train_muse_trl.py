@@ -937,6 +937,32 @@ def _make_muse_sft_trainer_cls():
     return MuseSFTTrainer
 
 
+def _tb_start_epoch_step(resume_from: str | None) -> tuple[int, int]:
+    """Epoch/step at process start (for TB run dir name). Fresh start → (0, 0)."""
+    if not resume_from:
+        return 0, 0
+    p = Path(resume_from)
+    state_path = p / "trainer_state.json"
+    if state_path.is_file():
+        try:
+            st = json.loads(state_path.read_text(encoding="utf-8"))
+            step = int(st.get("global_step") or 0)
+            epoch = int(math.floor(float(st.get("epoch") or 0.0)))
+            return epoch, step
+        except Exception:
+            pass
+    m = _EPOCH_END_CKPT_RE.match(p.name)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = _ROLLING_CKPT_RE.match(p.name)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = _HF_DIGIT_CKPT_RE.match(p.name)
+    if m:
+        return 0, int(m.group(1))
+    return 0, 0
+
+
 def _make_muse_checkpoint_callbacks(
     *,
     save_total_limit: int,
@@ -982,12 +1008,17 @@ def _make_muse_checkpoint_callbacks(
             return control
 
     class MuseTensorBoardCallback(TrainerCallback):
-        """Write scalars ourselves — HF TensorBoardCallback ignores args.logging_dir."""
+        """Write scalars ourselves — HF TensorBoardCallback ignores args.logging_dir.
+
+        Also forces ``should_log`` on the first optimizer step of *this* process
+        (resume-friendly; HF ``logging_first_step`` only covers global_step==1).
+        """
 
         def __init__(self, log_dir: Path) -> None:
             self.log_dir = Path(log_dir)
             self._writer = None
             self._noted = False
+            self._force_first_log = True
 
         def _ensure(self):
             if self._writer is not None:
@@ -998,9 +1029,16 @@ def _make_muse_checkpoint_callbacks(
             self._writer = SummaryWriter(log_dir=str(self.log_dir))
             return self._writer
 
+        def on_step_end(self, args, state, control, **kwargs):  # noqa: ANN001
+            if self._force_first_log:
+                control.should_log = True
+            return control
+
         def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
             if not state.is_world_process_zero or not logs:
                 return control
+            if self._force_first_log:
+                self._force_first_log = False
             w = self._ensure()
             if not self._noted:
                 print(f"[muse] TensorBoard writing → {self.log_dir}", flush=True)
@@ -1017,6 +1055,22 @@ def _make_muse_checkpoint_callbacks(
                 self._writer.flush()
                 self._writer.close()
                 self._writer = None
+            return control
+
+    class MuseFirstStepLogCallback(TrainerCallback):
+        """When TB is off, still force console log on the first step of this run."""
+
+        def __init__(self) -> None:
+            self._force = True
+
+        def on_step_end(self, args, state, control, **kwargs):  # noqa: ANN001
+            if self._force:
+                control.should_log = True
+            return control
+
+        def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
+            if self._force and logs:
+                self._force = False
             return control
 
     class MuseCheckpointCallback(TrainerCallback):
@@ -1092,9 +1146,12 @@ def _make_muse_checkpoint_callbacks(
                 shutil.rmtree(victim, ignore_errors=True)
 
     # Schedule override first so intervals are fixed before any step-end save/log.
-    cbs: list = [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
+    cbs: list = [MuseScheduleOverrideCallback()]
     if tb_log_dir is not None:
-        cbs.insert(1, MuseTensorBoardCallback(tb_log_dir))
+        cbs.append(MuseTensorBoardCallback(tb_log_dir))
+    else:
+        cbs.append(MuseFirstStepLogCallback())
+    cbs.append(MuseCheckpointCallback())
     return cbs
 
 
@@ -1497,13 +1554,14 @@ def main() -> None:
         # TENSORBOARD_LOGGING_DIR, else output_dir/<default_logdir()>. Set both +
         # our own MuseTensorBoardCallback (does not rely on HF integration).
         log_path = Path(str(logging_dir))
-        tb_live_dir = log_path / "muse_live"
+        start_ep, start_step = _tb_start_epoch_step(resume_from)
+        tb_live_dir = log_path / f"muse_e{start_ep}_s{start_step}"
         tb_live_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TENSORBOARD_LOGGING_DIR"] = str(tb_live_dir)
         sft_args.logging_dir = str(tb_live_dir)
         print(
             f"[muse] tensorboard → {tb_live_dir} "
-            f"(MuseTB callback + TENSORBOARD_LOGGING_DIR; "
+            f"(start e{start_ep}/s{start_step}; MuseTB + first-step log; "
             f"report_to={getattr(sft_args, 'report_to', None)})",
             flush=True,
         )

@@ -126,7 +126,9 @@ bash scripts/train_daemon.sh --max-length 8192 --choice 1
 Newer HuggingFace ignores `TrainingArguments.logging_dir` for TB and only honors
 `TENSORBOARD_LOGGING_DIR` (else writes under `output_dir/`). Our launcher sets that
 env when `LOGGING_DIR` / `TF_LOGS` is present. Live scalars land in
-`/root/tf-logs/muse_live/`; use `python scripts/tmplog.py …` for historical backfill.
+`/root/tf-logs/muse_e{epoch}_s{step}/` (named from resume/start checkpoint); use
+`python scripts/tmplog.py …` for historical backfill. The first optimizer step of
+each launch always logs (resume-friendly).
 
 ## Pipeline (legacy 9B Unsloth)
 
