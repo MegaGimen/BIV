@@ -1350,7 +1350,8 @@ def main() -> None:
     if has_eval:
         print(
             f"[muse] anti_forget held-out eval: {len(eval_ds):,} rows "
-            f"(every {eval_steps} steps; eval_max_samples={eval_max})",
+            f"(every {eval_steps} steps [=save_steps={save_steps} when unset]; "
+            f"eval_max_samples={eval_max})",
             flush=True,
         )
     else:
@@ -1381,6 +1382,13 @@ def main() -> None:
         eval_strategy="steps" if has_eval else "no",
         per_device_eval_batch_size=eval_bs,
     )
+    # AutoDL / custom TB: LOGGING_DIR=/root/tf-logs (HF default is output_dir/runs/…)
+    logging_dir = os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS") or train_cfg.get(
+        "logging_dir"
+    )
+    if logging_dir:
+        sft_kwargs["logging_dir"] = str(logging_dir)
+        print(f"[muse] tensorboard logging_dir={logging_dir}", flush=True)
     if has_eval:
         sft_kwargs["eval_steps"] = int(eval_steps)
     if use_liger:

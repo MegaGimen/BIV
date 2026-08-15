@@ -115,6 +115,16 @@ During training, `eval_anti_forget_loss` is CE on a fixed subsample of
 `mix_dir/anti_forget/eval.jsonl` (held-out; default every `save_steps`). Use it as an
 early anti-forgetting monitor — not an agent benchmark and not causal proof of WM transfer.
 
+TensorBoard (optional):
+
+```bash
+export REPORT_TO=tensorboard
+export LOGGING_DIR=/root/tf-logs   # AutoDL panel; omit → output_dir/runs/
+bash scripts/trainmodel.sh --max-length 8192 --choice 1
+```
+
+Train scalars (`loss`, …) and `eval_anti_forget_loss` both go to TensorBoard when `REPORT_TO=tensorboard`.
+
 ## Pipeline (legacy 9B Unsloth)
 
 | Item | Choice |
