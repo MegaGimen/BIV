@@ -963,6 +963,20 @@ def _tb_start_epoch_step(resume_from: str | None) -> tuple[int, int]:
     return 0, 0
 
 
+def _tb_next_run_index(log_root: Path) -> int:
+    """1-based index = (# existing run subdirs under log_root) + 1."""
+    if not log_root.is_dir():
+        return 1
+    n = sum(1 for p in log_root.iterdir() if p.is_dir())
+    return n + 1
+
+
+def _tb_run_dir_name(log_root: Path, resume_from: str | None) -> str:
+    idx = _tb_next_run_index(log_root)
+    ep, step = _tb_start_epoch_step(resume_from)
+    return f"{idx}_muse_e{ep}_s{step}"
+
+
 def _make_muse_checkpoint_callbacks(
     *,
     save_total_limit: int,
@@ -1523,8 +1537,10 @@ def main() -> None:
         # TENSORBOARD_LOGGING_DIR, else output_dir/<default_logdir()>. Set both +
         # our own MuseTensorBoardCallback (does not rely on HF integration).
         log_path = Path(str(logging_dir))
+        log_path.mkdir(parents=True, exist_ok=True)
+        run_name = _tb_run_dir_name(log_path, resume_from)
         start_ep, start_step = _tb_start_epoch_step(resume_from)
-        tb_live_dir = log_path / f"muse_e{start_ep}_s{start_step}"
+        tb_live_dir = log_path / run_name
         tb_live_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TENSORBOARD_LOGGING_DIR"] = str(tb_live_dir)
         sft_args.logging_dir = str(tb_live_dir)
