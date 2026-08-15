@@ -1,33 +1,36 @@
 #!/usr/bin/env bash
-# Muse training watchdog: relaunch trainmodel.sh with the *same* args on any
-# abnormal exit (OOM / SIGKILL / CTRL+C / crash). Never shrinks hyperparams.
+# Muse training launcher (+ optional watchdog).
 #
 # Usage (same flags as trainmodel.sh):
-#   bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
-#     --resume-from auto
-#   bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
-#     --resume-from auto --save-steps 2   # smoke: save+eval every 2 (yaml default 25)
+#   bash scripts/train_daemon.sh --max-length 65536 --choice 1 --resume-from auto
+#   bash scripts/train_daemon.sh --daemon --max-length 65536 --choice 1 --resume-from auto
+#   bash scripts/train_daemon.sh --max-length 65536 --choice 1 --resume-from auto --save-steps 2
+#
+# --daemon:
+#   Without it: run trainmodel once; on crash/OOM/CTRL+C exit with that code (no restart).
+#   With it: watchdog relaunches on abnormal exit (OOM / SIGKILL / CTRL+C / crash).
+#   Never shrinks hyperparams.
 #
 # Behavior:
 #   - Passes all CLI args through to scripts/trainmodel.sh unchanged (no fallback
-#     batch/seq/parallel knobs).
+#     batch/seq/parallel knobs). --daemon is consumed here and not forwarded.
 #   - --resume-from auto (or omit) → pick newest complete checkpoint under the run
 #     output_dir (epoch, step, kind); same algorithm as train_muse_trl.py.
-#   - On restart after a failure, always re-picks the newest complete checkpoint
-#     under the run output_dir (so progress is not lost).
-#   - CTRL+C (SIGINT) → kill training tree → daemon restarts (for crash tests).
-#   - SIGTERM / SIGQUIT → stop daemon (no restart). Or: touch "$STOP_FILE".
+#   - With --daemon, on restart after a failure, always re-picks the newest complete
+#     checkpoint under the run output_dir (so progress is not lost).
+#   - With --daemon: CTRL+C (SIGINT) → kill training tree → restart after delay.
+#   - SIGTERM / SIGQUIT → stop (no restart). Or: touch "$STOP_FILE".
 #
 # Env:
-#   DAEMON_RESTART_DELAY   seconds between restarts (default 30)
-#   DAEMON_MAX_RESTARTS    0 = unlimited (default 0)
+#   DAEMON_RESTART_DELAY   seconds between restarts (default 30; --daemon only)
+#   DAEMON_MAX_RESTARTS    0 = unlimited (default 0; --daemon only)
 #   DAEMON_STOP_FILE       default: outputs/.train_daemon_stop
 #   CONFIG / MIX_DIR / …   same as trainmodel.sh
 #   CUDA_VISIBLE_DEVICES   e.g. 0,1 to force 2-GPU (OOM / CP smoke test)
 #
 # OOM smoke (2 GPUs only; same max_length / batch — no fallback):
-#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_daemon.sh --max-length 65536 --choice 1 \
-#     --resume-from auto
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_daemon.sh --daemon \
+#     --max-length 65536 --choice 1 --resume-from auto
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -51,6 +54,7 @@ if [[ "$_ur_lc" == "auto" ]]; then
 fi
 MAX_LENGTH=""
 CHOICE="${TRAIN_CHOICE:-}"
+DAEMON_MODE=0
 PASS_ARGS=()
 
 args=("$@")
@@ -59,6 +63,9 @@ n=${#args[@]}
 while [[ $i -lt $n ]]; do
   a="${args[$i]}"
   case "$a" in
+    --daemon)
+      DAEMON_MODE=1
+      ;;
     --resume-from|--resume_from)
       i=$((i + 1))
       if [[ $i -ge $n ]]; then
@@ -222,19 +229,28 @@ on_term() {
   kill_train_tree TERM
 }
 on_int() {
-  echo "[daemon] SIGINT → kill training tree, will restart after delay"
+  if [[ "$DAEMON_MODE" -eq 1 ]]; then
+    echo "[daemon] SIGINT → kill training tree, will restart after delay"
+  else
+    echo "[daemon] SIGINT → kill training tree and exit (no --daemon)"
+    STOP_DAEMON=1
+  fi
   kill_train_tree INT
 }
 
 trap on_term TERM QUIT
 trap on_int INT
 
-echo "=== Muse train daemon ==="
+if [[ "$DAEMON_MODE" -eq 1 ]]; then
+  echo "=== Muse train daemon (watchdog ON) ==="
+  echo "  delay:        ${DELAY}s"
+  echo "  max_restarts: ${MAX_RESTARTS} (0=unlimited)"
+  echo "  stop file:    $STOP_FILE  (or SIGTERM)"
+else
+  echo "=== Muse train launcher (one-shot; pass --daemon to auto-restart) ==="
+fi
 echo "  train:        $TRAIN_SH"
 echo "  out_dir:      $OUT_DIR"
-echo "  delay:        ${DELAY}s"
-echo "  max_restarts: ${MAX_RESTARTS} (0=unlimited)"
-echo "  stop file:    $STOP_FILE  (or SIGTERM)"
 echo "  user_resume:  ${USER_RESUME:-<none>}"
 echo "  passthrough:  ${PASS_ARGS[*]}"
 echo
@@ -250,7 +266,7 @@ while true; do
   fi
 
   attempt=$((attempt + 1))
-  if [[ "$MAX_RESTARTS" -gt 0 && "$attempt" -gt "$MAX_RESTARTS" ]]; then
+  if [[ "$DAEMON_MODE" -eq 1 && "$MAX_RESTARTS" -gt 0 && "$attempt" -gt "$MAX_RESTARTS" ]]; then
     echo "[daemon] reached DAEMON_MAX_RESTARTS=$MAX_RESTARTS → exit"
     exit 1
   fi
@@ -301,12 +317,17 @@ while true; do
   fi
 
   if [[ "$code" -eq 0 ]]; then
-    echo "[daemon] training finished successfully (exit 0) → daemon exits"
+    echo "[daemon] training finished successfully (exit 0) → exit"
     exit 0
   fi
   if [[ "$code" -eq 3 ]]; then
-    echo "[daemon] train aborted (exit 3) → daemon exits (no restart)"
+    echo "[daemon] train aborted (exit 3) → exit (no restart)"
     exit 3
+  fi
+
+  if [[ "$DAEMON_MODE" -ne 1 ]]; then
+    echo "[daemon] train exited code=$code → exit (no --daemon; will not restart)"
+    exit "$code"
   fi
 
   echo "[daemon] train exited code=$code → restart in ${DELAY}s (same args, no param fallback)"
