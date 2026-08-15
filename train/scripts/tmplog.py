@@ -163,15 +163,13 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    log_root = args.log_dir
-    if log_root is None:
-        env = os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS")
-        log_root = Path(env) if env else Path("/root/tf-logs")
-    log_root = _resolve(log_root) if not Path(str(log_root)).is_absolute() else Path(str(log_root))
-    # Absolute preferred for AutoDL; keep as given if absolute.
-    if not str(args.log_dir or os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS") or "/root/tf-logs").startswith(
-        ("/",)
-    ):
+    raw_log = (
+        str(args.log_dir)
+        if args.log_dir is not None
+        else (os.environ.get("LOGGING_DIR") or os.environ.get("TF_LOGS") or "/root/tf-logs")
+    )
+    log_root = Path(raw_log)
+    if not log_root.is_absolute():
         log_root = _resolve(log_root)
 
     if args.ckpt is not None:

@@ -1445,6 +1445,22 @@ def main() -> None:
         flush=True,
     )
     sft_args = SFTConfig(**sft_kwargs)
+    if logging_dir:
+        log_path = Path(str(logging_dir))
+        log_path.mkdir(parents=True, exist_ok=True)
+        sft_args.logging_dir = str(log_path)
+        print(
+            f"[muse] tensorboard logging_dir={sft_args.logging_dir} "
+            f"(report_to={getattr(sft_args, 'report_to', None)})",
+            flush=True,
+        )
+    else:
+        print(
+            f"[muse] tensorboard logging_dir={getattr(sft_args, 'logging_dir', None)} "
+            f"(report_to={getattr(sft_args, 'report_to', None)}; "
+            "set LOGGING_DIR=/root/tf-logs to override)",
+            flush=True,
+        )
 
     trainer_kwargs: dict[str, Any] = dict(
         model=model,
