@@ -1008,17 +1008,12 @@ def _make_muse_checkpoint_callbacks(
             return control
 
     class MuseTensorBoardCallback(TrainerCallback):
-        """Write scalars ourselves — HF TensorBoardCallback ignores args.logging_dir.
-
-        Also forces ``should_log`` on the first optimizer step of *this* process
-        (resume-friendly; HF ``logging_first_step`` only covers global_step==1).
-        """
+        """Write scalars ourselves — HF TensorBoardCallback ignores args.logging_dir."""
 
         def __init__(self, log_dir: Path) -> None:
             self.log_dir = Path(log_dir)
             self._writer = None
             self._noted = False
-            self._force_first_log = True
 
         def _ensure(self):
             if self._writer is not None:
@@ -1029,17 +1024,7 @@ def _make_muse_checkpoint_callbacks(
             self._writer = SummaryWriter(log_dir=str(self.log_dir))
             return self._writer
 
-        def on_step_end(self, args, state, control, **kwargs):  # noqa: ANN001
-            if self._force_first_log:
-                control.should_log = True
-            return control
-
         def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
-            # Clear on ALL ranks. If only rank0 clears, other ranks keep forcing
-            # should_log every step → desync in Trainer._maybe_log_save_evaluate
-            # (nested_gather) vs training_step → NCCL ALLGATHER timeout.
-            if self._force_first_log:
-                self._force_first_log = False
             if not state.is_world_process_zero or not logs:
                 return control
             w = self._ensure()
@@ -1058,23 +1043,6 @@ def _make_muse_checkpoint_callbacks(
                 self._writer.flush()
                 self._writer.close()
                 self._writer = None
-            return control
-
-    class MuseFirstStepLogCallback(TrainerCallback):
-        """When TB is off, still force console log on the first step of this run."""
-
-        def __init__(self) -> None:
-            self._force = True
-
-        def on_step_end(self, args, state, control, **kwargs):  # noqa: ANN001
-            if self._force:
-                control.should_log = True
-            return control
-
-        def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
-            # Must clear on every rank (same as MuseTensorBoardCallback).
-            if self._force:
-                self._force = False
             return control
 
     class MuseCheckpointCallback(TrainerCallback):
@@ -1150,12 +1118,9 @@ def _make_muse_checkpoint_callbacks(
                 shutil.rmtree(victim, ignore_errors=True)
 
     # Schedule override first so intervals are fixed before any step-end save/log.
-    cbs: list = [MuseScheduleOverrideCallback()]
+    cbs: list = [MuseScheduleOverrideCallback(), MuseCheckpointCallback()]
     if tb_log_dir is not None:
-        cbs.append(MuseTensorBoardCallback(tb_log_dir))
-    else:
-        cbs.append(MuseFirstStepLogCallback())
-    cbs.append(MuseCheckpointCallback())
+        cbs.insert(1, MuseTensorBoardCallback(tb_log_dir))
     return cbs
 
 
@@ -1565,7 +1530,7 @@ def main() -> None:
         sft_args.logging_dir = str(tb_live_dir)
         print(
             f"[muse] tensorboard → {tb_live_dir} "
-            f"(start e{start_ep}/s{start_step}; MuseTB + first-step log; "
+            f"(start e{start_ep}/s{start_step}; MuseTB callback; "
             f"report_to={getattr(sft_args, 'report_to', None)})",
             flush=True,
         )
