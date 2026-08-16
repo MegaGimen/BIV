@@ -63,6 +63,11 @@ python scripts/tokenize_data.py
 # 4) Optional length / hard-trunc retention
 python scripts/stat.py --max-length 8192
 
+# 4b) Export all TB / trainer log steps → one table (long or --wide)
+python scripts/export.py --log-dir /root/tf-logs --out /tmp/muse_metrics.csv
+python scripts/export.py --log-dir /root/tf-logs --wide --out /tmp/muse_wide.csv \
+  --max-length 65536 --choice 1
+
 # 5) Train — single GPU LoRA (BF16)
 export CUDA_VISIBLE_DEVICES=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
