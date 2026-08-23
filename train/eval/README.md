@@ -84,10 +84,24 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 | SWE Verified | `swe-bench/swe-bench-verified` | mini-swe-agent | 76.0 |
 | SWE Pro | `scale-ai/swe-bench-pro` | mini-swe-agent | 51.2 |
 
-## 检查点 / 落盘（不是训练 ckpt resume）
+## 检查点 / resume
 
-- **训练 LoRA 检查点**在 AutoDL `outputs/.../checkpoint-e*-s*`；`serve_muse_vllm.sh` 默认挂最新完整 ckpt。
-- **Harbor 跑分**没有训练那种 `--resume`：CLI 无 resume 开关。过程中会把每个 trial 写到 `outputs/agent_eval/<stamp>_<arm>/<arm>_<suite>/…/trial_result.json`（边跑边落盘），中断后需重跑 job；轨迹可用 `follow_traj` 跟。
+Harbor 每个 suite 的 job 目录里有 `config.json` + 已完成的 `trial_result.json`。中断后**不要**再开一轮默认 `test.py`（会新建时间戳目录），用：
+
+```bash
+# 续跑整个 stamp 下所有未完成 suite
+python scripts/test.py --resume outputs/agent_eval/20260814T170504Z_checkpoint-e0-s2150
+
+# 只续某一个 suite job
+python scripts/test.py --resume outputs/agent_eval/.../checkpoint-e0-s2150_terminal_bench_2_1
+
+# stamp 根下只续指定 suite
+python scripts/test.py --resume outputs/agent_eval/<stamp>_… --suite terminal_bench_2_1
+```
+
+底层是 `harbor job resume -p <job_dir>`：已完成 trial 保留；Harbor 默认会清掉 `CancelledError` 的 trial 再重跑它们。自定义：`--filter-error-type SomeError`（可重复）。
+
+训练 LoRA 检查点仍在 AutoDL `checkpoint-e*-s*`，与这里无关。
 
 ## TensorBoard
 
@@ -101,9 +115,11 @@ python scripts/test.py
 # → /root/tf-logs/{n}_eval_agent_…_s2150/
 ```
 
+**实时进度怎么写：** Harbor 边跑边落盘 `**/trial_result.json`；`test.py` 开后台线程约每 15s `glob` 这些文件，算出当前 pass% / `n_trials`，有变化就 `SummaryWriter.flush()` 到 TB。不是 Harbor 推事件，是我们轮询磁盘。
+
 | 标签 | 何时写 | x 轴 |
 |--|--|--|
-| `eval_agent_live/<suite>/score_percent` | **跑分过程中**（约每 15s，有新 trial 就 flush） | 已完成 `n_trials` |
+| `eval_agent_live/<suite>/score_percent` | **跑分过程中**（新 trial 落盘后） | 已完成 `n_trials` |
 | `eval_agent/<suite>/score_percent` 等 | 每个 suite **结束时** + session 收尾 | 训练 ckpt step（跨 arm 对比） |
 
 自定义根目录：`--log-dir /path/to/tf-logs`。

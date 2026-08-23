@@ -225,36 +225,105 @@ def start_score_poll_thread(
     return stop, th
 
 
-def run_spec(
-    spec: HarborRunSpec,
+def infer_suite_from_job_dir(job_dir: Path) -> str | None:
+    """Map a Harbor job dir name / config to our suite id."""
+    name = job_dir.name
+    for suite in sorted(SUITES.keys(), key=len, reverse=True):
+        if name == suite or name.endswith(f"_{suite}"):
+            return suite
+    cfg_path = job_dir / "config.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    datasets: list[str] = []
+    for d in cfg.get("datasets") or []:
+        if isinstance(d, dict):
+            path = d.get("path") or d.get("name")
+            if isinstance(path, str):
+                datasets.append(path)
+    for suite, meta in SUITES.items():
+        if meta["dataset"] in datasets:
+            return suite
+    return None
+
+
+def resolve_resume_job_dirs(
+    path: Path,
     *,
+    suites: list[str] | None = None,
+) -> list[Path]:
+    """Accept one Harbor job dir (has ``config.json``) or an agent_eval root."""
+    p = path if path.is_absolute() else (TRAIN_ROOT / path)
+    p = p.resolve()
+    if not p.exists():
+        raise SystemExit(f"--resume path does not exist: {p}")
+    if (p / "config.json").is_file():
+        suite = infer_suite_from_job_dir(p)
+        if suites and suite is not None and suite not in suites:
+            raise SystemExit(
+                f"--resume job {p.name} is suite={suite}, not in --suite {suites}"
+            )
+        return [p]
+    kids = sorted(
+        d for d in p.iterdir() if d.is_dir() and (d / "config.json").is_file()
+    )
+    if not kids:
+        raise SystemExit(
+            f"--resume: no Harbor job dirs (with config.json) under {p}\n"
+            "Pass a suite job dir or the agent_eval stamp root."
+        )
+    if suites:
+        picked: list[Path] = []
+        for d in kids:
+            s = infer_suite_from_job_dir(d)
+            if s in suites:
+                picked.append(d)
+        if not picked:
+            raise SystemExit(
+                f"--resume: no job dirs matching --suite {suites} under {p}"
+            )
+        return picked
+    return kids
+
+
+def _harbor_subprocess_env(
+    *,
+    base_url: str | None,
+    api_key: str | None,
+) -> dict[str, str]:
+    env = os.environ.copy()
+    if base_url:
+        env["OPENAI_BASE_URL"] = base_url.rstrip("/")
+        env["OPENAI_API_BASE"] = base_url.rstrip("/")
+    if api_key:
+        env.setdefault("OPENAI_API_KEY", api_key)
+    else:
+        env.setdefault("OPENAI_API_KEY", "EMPTY")
+    return env
+
+
+def _execute_harbor(
+    cmd: list[str],
+    *,
+    job_dir: Path,
+    env: dict[str, str],
+    result: dict[str, Any],
     dry_run: bool = False,
     follow_traj: bool = False,
     on_score_update: Callable[[dict[str, Any]], None] | None = None,
     score_poll_interval_s: float = 15.0,
 ) -> dict[str, Any]:
-    cmd = spec.build_cmd()
     printable = " ".join(shlex.quote(c) for c in cmd)
-    result: dict[str, Any] = {
-        "suite": spec.suite,
-        "dataset": spec.dataset,
-        "agent": spec.agent,
-        "model": spec.model,
-        "cmd": cmd,
-        "cmd_str": printable,
-        "dry_run": dry_run,
-    }
+    result["cmd"] = cmd
+    result["cmd_str"] = printable
+    result["dry_run"] = dry_run
+    result["job_dir"] = str(job_dir)
     if dry_run:
         return result
 
-    env = os.environ.copy()
-    if spec.base_url:
-        env["OPENAI_BASE_URL"] = spec.base_url.rstrip("/")
-        env["OPENAI_API_BASE"] = spec.base_url.rstrip("/")
-    env.setdefault("OPENAI_API_KEY", spec.api_key)
-
-    spec.jobs_dir.mkdir(parents=True, exist_ok=True)
-    job_dir = spec.jobs_dir / spec.job_name
     print(f"  job_dir: {job_dir}", flush=True)
     print(
         f"  live traj (another tty): python -m eval.follow_traj {job_dir}",
@@ -268,6 +337,11 @@ def run_spec(
         stop, _th = start_follow_thread(job_dir)
         stops.append(stop)
     if on_score_update is not None:
+        # Push current partial score immediately (useful on resume).
+        try:
+            on_score_update(parse_job_score(job_dir))
+        except Exception as e:  # noqa: BLE001
+            print(f"[harbor] initial score callback failed: {e!r}", flush=True)
         stop, _th = start_score_poll_thread(
             job_dir,
             on_score_update,
@@ -284,7 +358,6 @@ def run_spec(
             time.sleep(0.2)
 
     result["returncode"] = proc.returncode
-    result["job_dir"] = str(job_dir)
     result.update(parse_job_score(job_dir))
     if on_score_update is not None:
         try:
@@ -300,6 +373,98 @@ def run_spec(
     if proc.returncode != 0:
         result["error"] = f"harbor exited {proc.returncode}"
     return result
+
+
+def run_spec(
+    spec: HarborRunSpec,
+    *,
+    dry_run: bool = False,
+    follow_traj: bool = False,
+    on_score_update: Callable[[dict[str, Any]], None] | None = None,
+    score_poll_interval_s: float = 15.0,
+) -> dict[str, Any]:
+    cmd = spec.build_cmd()
+    result: dict[str, Any] = {
+        "suite": spec.suite,
+        "dataset": spec.dataset,
+        "agent": spec.agent,
+        "model": spec.model,
+        "resumed": False,
+    }
+    if dry_run:
+        result["cmd"] = cmd
+        result["cmd_str"] = " ".join(shlex.quote(c) for c in cmd)
+        result["dry_run"] = True
+        result["job_dir"] = str(spec.jobs_dir / spec.job_name)
+        return result
+
+    spec.jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_dir = spec.jobs_dir / spec.job_name
+    return _execute_harbor(
+        cmd,
+        job_dir=job_dir,
+        env=_harbor_subprocess_env(base_url=spec.base_url, api_key=spec.api_key),
+        result=result,
+        dry_run=False,
+        follow_traj=follow_traj,
+        on_score_update=on_score_update,
+        score_poll_interval_s=score_poll_interval_s,
+    )
+
+
+def resume_job(
+    job_dir: Path,
+    *,
+    dry_run: bool = False,
+    follow_traj: bool = False,
+    on_score_update: Callable[[dict[str, Any]], None] | None = None,
+    score_poll_interval_s: float = 15.0,
+    filter_error_types: list[str] | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Continue an interrupted Harbor job via ``harbor job resume -p``."""
+    job_dir = job_dir if job_dir.is_absolute() else (TRAIN_ROOT / job_dir)
+    job_dir = job_dir.resolve()
+    cfg = job_dir / "config.json"
+    if not cfg.is_file():
+        raise SystemExit(f"resume: missing config.json in {job_dir}")
+
+    suite = infer_suite_from_job_dir(job_dir) or "unknown"
+    meta = SUITES.get(suite) or {}
+    cmd = [harbor_bin(), "job", "resume", "-p", str(job_dir)]
+    # Harbor default is CancelledError; only pass -f when caller overrides.
+    if filter_error_types is not None:
+        for err in filter_error_types:
+            cmd.extend(["-f", err])
+
+    result: dict[str, Any] = {
+        "suite": suite,
+        "dataset": meta.get("dataset"),
+        "agent": meta.get("agent"),
+        "model": None,
+        "resumed": True,
+        "filter_error_types": filter_error_types,
+    }
+    try:
+        raw = json.loads(cfg.read_text(encoding="utf-8"))
+        agents = raw.get("agents") or []
+        if agents and isinstance(agents[0], dict):
+            result["model"] = agents[0].get("model_name") or agents[0].get("model")
+            result["agent"] = result["agent"] or agents[0].get("name")
+    except json.JSONDecodeError:
+        pass
+
+    return _execute_harbor(
+        cmd,
+        job_dir=job_dir,
+        env=_harbor_subprocess_env(base_url=base_url, api_key=api_key),
+        result=result,
+        dry_run=dry_run,
+        follow_traj=follow_traj,
+        on_score_update=on_score_update,
+        score_poll_interval_s=score_poll_interval_s,
+    )
 
 
 def parse_job_score(job_dir: Path) -> dict[str, Any]:

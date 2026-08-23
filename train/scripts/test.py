@@ -14,6 +14,11 @@ TB arm/step (optional): copy from AutoDL serve banner, or::
 
   export MUSE_EVAL_ARM=checkpoint-e0-s2150
   export MUSE_EVAL_STEP=2150
+
+Resume an interrupted Harbor run (skips finished trials)::
+
+  python scripts/test.py --resume outputs/agent_eval/<stamp>_<arm>
+  python scripts/test.py --resume outputs/agent_eval/.../<arm>_terminal_bench_2_1
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ from eval.run_harbor import (  # noqa: E402
     SUITES,
     load_meta_reference,
     make_spec,
+    resolve_resume_job_dirs,
+    resume_job,
     run_spec,
 )
 
@@ -121,6 +128,23 @@ def _parse_args() -> argparse.Namespace:
         help="Max tasks from the suite (Harbor -l). Use 1 for smoke.",
     )
     p.add_argument("--jobs-dir", type=Path, default=None)
+    p.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Resume interrupted Harbor job(s): path to one suite job dir "
+        "(has config.json), or an agent_eval stamp root containing them. "
+        "Skips finished trials; default Harbor filter drops CancelledError.",
+    )
+    p.add_argument(
+        "--filter-error-type",
+        "-f",
+        action="append",
+        dest="filter_error_types",
+        default=None,
+        help="On --resume: remove trials with this exception type before "
+        "continuing (repeatable). Omit to keep Harbor default (CancelledError).",
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--print-serve-cmd",
@@ -183,7 +207,7 @@ def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> No
     print("-" * len(hdr), flush=True)
     for r in rows:
         suite = r["suite"]
-        meta_key = SUITES[suite]["meta_key"]
+        meta_key = (SUITES.get(suite) or {}).get("meta_key") or suite
         mscore = (ref.get(meta_key) or {}).get("score")
         ours = r.get("score_percent")
         delta = None
@@ -226,9 +250,24 @@ def main() -> None:
             except ValueError:
                 step = None
 
+    resume_jobs: list[Path] | None = None
+    if args.resume is not None:
+        # With --suite, only resume matching jobs under a stamp root.
+        resume_jobs = resolve_resume_job_dirs(
+            args.resume,
+            suites=list(args.suites) if args.suites else None,
+        )
+
     print("=== Muse Glimmer agent eval (Harbor@this-host + remote vLLM) ===", flush=True)
     print(f"  dry_run:   {args.dry_run}", flush=True)
-    print(f"  suites:    {suites}", flush=True)
+    if resume_jobs is not None:
+        print(f"  resume:    {[str(p) for p in resume_jobs]}", flush=True)
+        print(
+            f"  filter_err:{args.filter_error_types or '(harbor default: CancelledError)'}",
+            flush=True,
+        )
+    else:
+        print(f"  suites:    {suites}", flush=True)
     print(f"  base_url:  {base_url}", flush=True)
     print(f"  harbor_env:{args.env}", flush=True)
     print(f"  model_id:  {model_id}", flush=True)
@@ -260,14 +299,17 @@ def main() -> None:
             flush=True,
         )
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_root = args.jobs_dir
-    if out_root is None:
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in arm)[:80]
-        out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{safe}"
-    elif not out_root.is_absolute():
-        out_root = ROOT / out_root
-    out_root.mkdir(parents=True, exist_ok=True)
+    if resume_jobs is not None:
+        out_root = resume_jobs[0].parent
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_root = args.jobs_dir
+        if out_root is None:
+            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in arm)[:80]
+            out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{safe}"
+        elif not out_root.is_absolute():
+            out_root = ROOT / out_root
+        out_root.mkdir(parents=True, exist_ok=True)
 
     tb_sess = None
     log_root: Path | None = None
@@ -292,56 +334,97 @@ def main() -> None:
             tb_sess = None
 
     rows: list[dict[str, Any]] = []
-    for suite in suites:
-        spec = make_spec(
-            suite,
-            model=model_id,
-            base_url=base_url,
-            api_key=args.api_key,
-            env=args.env,
-            jobs_dir=out_root,
-            job_name=f"{arm}_{suite}",
-            n_attempts=args.n_attempts,
-            n_concurrent=args.n_concurrent,
-            include_task_names=args.include_tasks,
-            n_tasks=args.n_tasks,
-            sampling=meta.get("sampling"),
-            debug=args.debug,
-            raw_trajectory=args.raw_traj,
-        )
-        print(
-            f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",
-            flush=True,
-        )
+    if resume_jobs is not None:
+        for job_dir in resume_jobs:
+            suite = job_dir.name  # overwritten from result
+            print(f"\n--- resume {job_dir} ---", flush=True)
 
-        def _on_score(scores: dict[str, Any], _suite: str = suite) -> None:
+            def _on_score(scores: dict[str, Any], _job: Path = job_dir) -> None:
+                if tb_sess is None:
+                    return
+                from eval.run_harbor import infer_suite_from_job_dir
+
+                s = infer_suite_from_job_dir(_job) or _job.name
+                tb_sess.log_live(s, scores)
+
+            result = resume_job(
+                job_dir,
+                dry_run=args.dry_run,
+                follow_traj=args.follow_traj,
+                on_score_update=_on_score if tb_sess is not None else None,
+                filter_error_types=args.filter_error_types,
+                base_url=base_url,
+                api_key=args.api_key,
+            )
+            suite = str(result.get("suite") or job_dir.name)
+            result["arm"] = arm
+            result["step"] = step
+            result["model_id"] = result.get("model") or model_id
+            result["env"] = args.env
+            rows.append(result)
             if tb_sess is not None:
-                tb_sess.log_live(_suite, scores)
-
-        result = run_spec(
-            spec,
-            dry_run=args.dry_run,
-            follow_traj=args.follow_traj,
-            on_score_update=_on_score if tb_sess is not None else None,
-        )
-        result["arm"] = arm
-        result["step"] = step
-        result["model_id"] = model_id
-        result["n_attempts"] = spec.n_attempts
-        result["env"] = args.env
-        rows.append(result)
-        if tb_sess is not None:
-            try:
-                tb_sess.log_suite_final(result)
-            except Exception as e:  # noqa: BLE001
-                print(f"[test] WARN TB suite final failed: {e!r}", flush=True)
-        print(f"  cmd: {result['cmd_str']}", flush=True)
-        if not args.dry_run:
+                try:
+                    tb_sess.log_suite_final(result)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[test] WARN TB suite final failed: {e!r}", flush=True)
+            print(f"  cmd: {result['cmd_str']}", flush=True)
+            if not args.dry_run:
+                print(
+                    f"  score%={result.get('score_percent')} "
+                    f"n_trials={result.get('n_trials')} rc={result.get('returncode')}",
+                    flush=True,
+                )
+    else:
+        for suite in suites:
+            spec = make_spec(
+                suite,
+                model=model_id,
+                base_url=base_url,
+                api_key=args.api_key,
+                env=args.env,
+                jobs_dir=out_root,
+                job_name=f"{arm}_{suite}",
+                n_attempts=args.n_attempts,
+                n_concurrent=args.n_concurrent,
+                include_task_names=args.include_tasks,
+                n_tasks=args.n_tasks,
+                sampling=meta.get("sampling"),
+                debug=args.debug,
+                raw_trajectory=args.raw_traj,
+            )
             print(
-                f"  score%={result.get('score_percent')} "
-                f"n_trials={result.get('n_trials')} rc={result.get('returncode')}",
+                f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",
                 flush=True,
             )
+
+            def _on_score(scores: dict[str, Any], _suite: str = suite) -> None:
+                if tb_sess is not None:
+                    tb_sess.log_live(_suite, scores)
+
+            result = run_spec(
+                spec,
+                dry_run=args.dry_run,
+                follow_traj=args.follow_traj,
+                on_score_update=_on_score if tb_sess is not None else None,
+            )
+            result["arm"] = arm
+            result["step"] = step
+            result["model_id"] = model_id
+            result["n_attempts"] = spec.n_attempts
+            result["env"] = args.env
+            rows.append(result)
+            if tb_sess is not None:
+                try:
+                    tb_sess.log_suite_final(result)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[test] WARN TB suite final failed: {e!r}", flush=True)
+            print(f"  cmd: {result['cmd_str']}", flush=True)
+            if not args.dry_run:
+                print(
+                    f"  score%={result.get('score_percent')} "
+                    f"n_trials={result.get('n_trials')} rc={result.get('returncode')}",
+                    flush=True,
+                )
 
     summary = {
         "arm": arm,
@@ -350,6 +433,8 @@ def main() -> None:
         "base_url": base_url,
         "env": args.env,
         "dry_run": args.dry_run,
+        "resumed": resume_jobs is not None,
+        "resume_paths": [str(p) for p in resume_jobs] if resume_jobs else None,
         "serve_hint": _serve_hint(base=use_base),
         "meta_reference": meta.get("muse_glimmer_30b_high_reasoning"),
         "rows": rows,
