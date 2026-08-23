@@ -37,7 +37,9 @@ if str(ROOT) not in sys.path:
 
 from eval.env_check import check_environment, format_report  # noqa: E402
 from eval.run_harbor import (  # noqa: E402
+    DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
     DEFAULT_SUITES,
+    DEFAULT_TERMINUS_MAX_TURNS,
     SUITES,
     load_meta_reference,
     make_spec,
@@ -168,6 +170,27 @@ def _parse_args() -> argparse.Namespace:
         "(--ak trajectory_config raw_content).",
     )
     p.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Terminus-2 LLM round limit (--ak max_turns). "
+        "Default 300 (not set by TB task.toml; Harbor alone defaults to ~1e6). "
+        "Pass 0 to leave Harbor unlimited.",
+    )
+    p.add_argument(
+        "--agent-timeout-multiplier",
+        type=float,
+        default=None,
+        help="Harbor --agent-timeout-multiplier (default 100 so 900s tasks "
+        "become ~25h wall-clock and max_turns is the real stop).",
+    )
+    p.add_argument(
+        "--timeout-multiplier",
+        type=float,
+        default=1.0,
+        help="Harbor --timeout-multiplier for non-agent phases (default 1.0).",
+    )
+    p.add_argument(
         "--log-dir",
         type=Path,
         default=None,
@@ -258,6 +281,19 @@ def main() -> None:
             suites=list(args.suites) if args.suites else None,
         )
 
+    # max_turns: None CLI → default 300; 0 → unlimited (omit --ak max_turns)
+    if args.max_turns is None:
+        max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS
+    elif int(args.max_turns) <= 0:
+        max_turns = None
+    else:
+        max_turns = int(args.max_turns)
+    agent_timeout_mult = (
+        DEFAULT_AGENT_TIMEOUT_MULTIPLIER
+        if args.agent_timeout_multiplier is None
+        else float(args.agent_timeout_multiplier)
+    )
+
     print("=== Muse Glimmer agent eval (Harbor@this-host + remote vLLM) ===", flush=True)
     print(f"  dry_run:   {args.dry_run}", flush=True)
     if resume_jobs is not None:
@@ -273,6 +309,16 @@ def main() -> None:
     print(f"  model_id:  {model_id}", flush=True)
     print(f"  arm:       {arm}", flush=True)
     print(f"  tb_step:   {step if step is not None else '(from arm name or 0)'}", flush=True)
+    print(
+        f"  max_turns: {max_turns if max_turns is not None else '(unlimited)'} "
+        f"(terminus only; not from task.toml)",
+        flush=True,
+    )
+    print(
+        f"  agent_timeout_mult: {agent_timeout_mult} "
+        f"(task agent timeout_sec × this)",
+        flush=True,
+    )
     print(
         "  NOTE: no local --ckpt; AutoDL picks latest LoRA by default:\n"
         f"    {_serve_hint(base=use_base)}",
@@ -391,6 +437,9 @@ def main() -> None:
                 sampling=meta.get("sampling"),
                 debug=args.debug,
                 raw_trajectory=args.raw_traj,
+                timeout_multiplier=float(args.timeout_multiplier),
+                agent_timeout_multiplier=agent_timeout_mult,
+                max_turns=max_turns,
             )
             print(
                 f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",

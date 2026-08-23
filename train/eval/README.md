@@ -54,6 +54,15 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 
 默认 `--env docker`。可选 `-n` 控制并发。
 
+**Terminus 停止条件（默认已改）：**
+
+| 项 | 默认 | 说明 |
+|--|--|--|
+| `--max-turns` | **300** | Terminus LLM 回合上限（`--ak max_turns`）。**题目 `task.toml` 不写这个**；Harbor 原生默认 ~1e6。常见取值：Harbor 文档示例 100；AgentCompass TB2.1 默认 300。`--max-turns 0` = 不限制。 |
+| `--agent-timeout-multiplier` | **100** | 题集里的 `agent.timeout_sec`（多数 900s）×100，避免慢远端推理先撞墙钟。 |
+
+题目只给定 **墙钟** `timeout_sec`（89 题里约一半是 900s，其余 600～12000 不等），**没有**给定 max_turns。
+
 ## 实时看 agent 轨迹
 
 Harbor 会把完整轨迹写到 job 目录（边跑边更新）：

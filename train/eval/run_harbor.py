@@ -45,6 +45,13 @@ SUITES: dict[str, dict[str, Any]] = {
 
 DEFAULT_SUITES = tuple(SUITES.keys())
 
+# Terminus-2: task.toml only sets wall-clock agent timeout_sec (often 900), NOT max_turns.
+# Harbor default max_turns is ~1e6 (effectively unlimited). Common when people do set a
+# limit: Harbor docs example=100; AgentCompass TB2.1 harness default=300.
+DEFAULT_TERMINUS_MAX_TURNS = 300
+# Stretch task timeouts so slow remote vLLM is not killed by 900s wall-clock first.
+DEFAULT_AGENT_TIMEOUT_MULTIPLIER = 100.0
+
 
 def load_meta_reference() -> dict[str, Any]:
     return json.loads(META_REF_PATH.read_text(encoding="utf-8"))
@@ -92,6 +99,8 @@ class HarborRunSpec:
     include_task_names: list[str] = field(default_factory=list)
     n_tasks: int | None = None
     timeout_multiplier: float = 1.0
+    agent_timeout_multiplier: float | None = DEFAULT_AGENT_TIMEOUT_MULTIPLIER
+    max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS
     debug: bool = False
     raw_trajectory: bool = False
 
@@ -119,6 +128,10 @@ class HarborRunSpec:
             str(self.timeout_multiplier),
             "-y",
         ]
+        if self.agent_timeout_multiplier is not None:
+            cmd.extend(
+                ["--agent-timeout-multiplier", str(self.agent_timeout_multiplier)]
+            )
         if self.debug:
             cmd.append("--debug")
         for name in self.include_task_names:
@@ -144,6 +157,8 @@ class HarborRunSpec:
                     + json.dumps({"top_p": self.top_p, "top_k": self.top_k}),
                 ]
             )
+            if self.max_turns is not None:
+                cmd.extend(["--ak", f"max_turns={int(self.max_turns)}"])
             if self.raw_trajectory:
                 cmd.extend(["--ak", 'trajectory_config={"raw_content": true}'])
         else:
@@ -167,6 +182,9 @@ def make_spec(
     sampling: dict[str, Any] | None = None,
     debug: bool = False,
     raw_trajectory: bool = False,
+    timeout_multiplier: float = 1.0,
+    agent_timeout_multiplier: float | None = DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
+    max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS,
 ) -> HarborRunSpec:
     if suite not in SUITES:
         raise SystemExit(f"Unknown suite {suite!r}; choose from {list(SUITES)}")
@@ -192,6 +210,9 @@ def make_spec(
         top_k=int(samp.get("top_k", 64)),
         include_task_names=list(include_task_names or []),
         n_tasks=n_tasks,
+        timeout_multiplier=float(timeout_multiplier),
+        agent_timeout_multiplier=agent_timeout_multiplier,
+        max_turns=max_turns,
         debug=debug,
         raw_trajectory=raw_trajectory,
     )
