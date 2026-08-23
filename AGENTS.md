@@ -9,6 +9,16 @@ This repository is **BIV** (Brain In a Vat / 缸中之脑): a Cartesian-demon ex
 
 Upstream nanobot remains a lightweight Python agent framework (channels → bus → agent loop → LLM → tools → memory) with a React/TypeScript WebUI. Prefer changing `cartesian/` and `train/` for BIV-specific behavior; touch `nanobot/` only when necessary for forks or bugs.
 
+## How to talk to the user (always)
+
+The user asked for this explicitly. Do not write telegram-style or paper-abstract answers.
+
+- **Language:** 简体中文 unless the user writes in another language.
+- **Length:** Prefer a short direct answer first, then **enough detail** that someone who did not read the papers/code can follow. If the topic is a comparison, a mechanism, or a decision, write **several paragraphs or a worked example**, not three bullets with jargon.
+- **Words:** Use everyday words. If you must use \(P(o\mid h,a)\), Terminus, SFT, LoRA, **immediately say in one sentence what that means in this project**. Do not stack paper titles as if they were an explanation.
+- **Structure for “有没有类似研究 / 这是不是 X”:** (1) 先说结论；(2) 用一个具体类比或本仓库里的例子；(3) 再分条讲别人怎么训、怎么测、和我们差在哪；(4) 最后说这对我们下一步意味着什么。
+- **Forbidden:** 只丢 arXiv 号和表格就结束；把用户没说过的词（如「末尾贴补」）套到他们正在做的流程上；把「可发论文的故事」讲成和用户目标相反的路线。
+
 ## BIV Runtime (Cartesian layer)
 
 | Role | Location | Job |
