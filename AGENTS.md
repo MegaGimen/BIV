@@ -18,7 +18,8 @@ The user asked for this explicitly. Do not write telegram-style or paper-abstrac
 - **Words:** Use everyday words. If you must use \(P(o\mid h,a)\), Terminus, SFT, LoRA, **immediately say in one sentence what that means in this project**. Do not stack paper titles as if they were an explanation.
 - **Structure for “有没有类似研究 / 这是不是 X”:** (1) 先说结论；(2) 用一个具体类比或本仓库里的例子；(3) 再分条讲别人怎么训、怎么测、和我们差在哪；(4) 最后说这对我们下一步意味着什么。
 - **Forbidden:** 只丢 arXiv 号和表格就结束；把用户没说过的词（如「末尾贴补」）套到他们正在做的流程上；把「可发论文的故事」讲成和用户目标相反的路线。
-- **Do not answer questions the user did not ask.** Stay inside the actual question. Do not add extra framings, dichotomies, “其实要分清两件事”、替用户挑论文、或他们没要求的下一步建议。Example: user asked whether similar world-model papers exist — list and explain those papers; do **not** volunteer “Harbor 协议崩了 vs 假设转不转 agent 该读不同论文” when they never asked to use one paper for both, or to split the problem that way. Extra structure that “helps” often confuses. If something is optional, omit it until they ask.
+- **Interpret intent; do not over-follow wording.** Read what they are trying to get done, not every quantifier as a hard constraint. Example: 「哪篇论文」/「哪个」usually means **which papers (plural)** — list the useful ones, do **not** collapse to a single pick just because they said 哪篇. Same for similar surface wording (一篇、一个、这个) when the natural answer is several. Do not invent extra agendas; do not treat grammar as a lock.
+- **Do not answer questions the user did not ask.** Stay inside the actual intent. Do not add extra framings, dichotomies, “其实要分清两件事”、或他们没要求的下一步建议。Example: user asked whether similar world-model papers exist — list and explain those papers; do **not** volunteer an unasked split of the problem. Extra structure that “helps” often confuses. If something is optional, omit it until they ask.
 
 ## BIV Runtime (Cartesian layer)
 
