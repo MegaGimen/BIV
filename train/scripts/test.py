@@ -139,6 +139,19 @@ def _parse_args() -> argparse.Namespace:
         help="Terminus: dump raw LLM responses into trajectory "
         "(--ak trajectory_config raw_content).",
     )
+    p.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        help="TensorBoard root for bench scores "
+        "(default: $LOGGING_DIR / $TF_LOGS / /root/tf-logs). "
+        "Pass --no-tensorboard to skip.",
+    )
+    p.add_argument(
+        "--no-tensorboard",
+        action="store_true",
+        help="Do not write Harbor scores to TensorBoard.",
+    )
     return p.parse_args()
 
 
@@ -346,6 +359,31 @@ def main() -> None:
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"\nWrote {path}", flush=True)
     _print_summary_table(rows, meta)
+
+    if (not args.dry_run) and (not args.no_tensorboard):
+        try:
+            from eval.tb_log import default_log_root, write_agent_eval_tb
+
+            log_root = args.log_dir
+            if log_root is None:
+                log_root = default_log_root()
+            elif not log_root.is_absolute():
+                log_root = ROOT / log_root
+            tb_dir = write_agent_eval_tb(
+                rows,
+                meta=meta,
+                arm=arm,
+                ckpt=ckpt_path,
+                log_root=log_root,
+                suites_meta=SUITES,
+            )
+            summary["tensorboard_run"] = str(tb_dir)
+            path.write_text(
+                json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print(f"[test] TensorBoard: tensorboard --logdir {log_root}", flush=True)
+        except Exception as e:  # noqa: BLE001 — bench must still succeed if TB fails
+            print(f"[test] WARN TensorBoard write failed: {e!r}", flush=True)
 
 
 if __name__ == "__main__":

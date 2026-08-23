@@ -79,3 +79,17 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 | TB 2.1 | `terminal-bench/terminal-bench-2-1` | terminus-2 | 51.7 |
 | SWE Verified | `swe-bench/swe-bench-verified` | mini-swe-agent | 76.0 |
 | SWE Pro | `scale-ai/swe-bench-pro` | mini-swe-agent | 51.2 |
+
+## TensorBoard
+
+Harbor 跑分结束后默认把 suite 分数写入 TensorBoard（与训练共用 `LOGGING_DIR`，默认 `/root/tf-logs`）：
+
+```bash
+export LOGGING_DIR=/root/tf-logs   # 建议与训练一致
+python scripts/test.py --ckpt outputs/.../checkpoint-e0-s2150
+# → /root/tf-logs/{n}_eval_agent_checkpoint-e0-s2150_s2150/
+# scalars: eval_agent/<suite>/score_percent, delta_vs_meta, …
+# x-axis step = ckpt 步数（便于和 train loss 对齐）
+```
+
+关闭：`--no-tensorboard`。自定义根目录：`--log-dir /path/to/tf-logs`。
