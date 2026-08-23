@@ -7,7 +7,9 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -195,11 +197,41 @@ def make_spec(
     )
 
 
+def start_score_poll_thread(
+    job_dir: Path,
+    on_update: Callable[[dict[str, Any]], None],
+    *,
+    interval_s: float = 15.0,
+) -> tuple[threading.Event, threading.Thread]:
+    """Poll ``trial_result.json`` / ``result.json`` while Harbor runs."""
+    stop = threading.Event()
+
+    def _loop() -> None:
+        last_n = -1
+        while not stop.wait(interval_s):
+            scores = parse_job_score(job_dir)
+            n = scores.get("n_trials")
+            if isinstance(n, int) and n > 0 and n != last_n:
+                last_n = n
+                try:
+                    on_update(scores)
+                except Exception as e:  # noqa: BLE001 — never kill Harbor for TB
+                    print(f"[harbor] score poll callback failed: {e!r}", flush=True)
+
+    th = threading.Thread(
+        target=_loop, name=f"harbor-score-{job_dir.name}", daemon=True
+    )
+    th.start()
+    return stop, th
+
+
 def run_spec(
     spec: HarborRunSpec,
     *,
     dry_run: bool = False,
     follow_traj: bool = False,
+    on_score_update: Callable[[dict[str, Any]], None] | None = None,
+    score_poll_interval_s: float = 15.0,
 ) -> dict[str, Any]:
     cmd = spec.build_cmd()
     printable = " ".join(shlex.quote(c) for c in cmd)
@@ -229,22 +261,42 @@ def run_spec(
         flush=True,
     )
 
-    stop = None
+    stops: list[threading.Event] = []
     if follow_traj:
         from eval.follow_traj import start_follow_thread
 
         stop, _th = start_follow_thread(job_dir)
+        stops.append(stop)
+    if on_score_update is not None:
+        stop, _th = start_score_poll_thread(
+            job_dir,
+            on_score_update,
+            interval_s=score_poll_interval_s,
+        )
+        stops.append(stop)
 
     try:
         proc = subprocess.run(cmd, cwd=str(TRAIN_ROOT), env=env, check=False)
     finally:
-        if stop is not None:
+        for stop in stops:
             stop.set()
+        if stops:
             time.sleep(0.2)
 
     result["returncode"] = proc.returncode
     result["job_dir"] = str(job_dir)
     result.update(parse_job_score(job_dir))
+    if on_score_update is not None:
+        try:
+            on_score_update(
+                {
+                    "score_percent": result.get("score_percent"),
+                    "n_trials": result.get("n_trials"),
+                    "pass_at_1": result.get("pass_at_1"),
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[harbor] final score callback failed: {e!r}", flush=True)
     if proc.returncode != 0:
         result["error"] = f"harbor exited {proc.returncode}"
     return result

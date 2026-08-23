@@ -53,7 +53,8 @@ Recon copies under `/tmp/harbor_*` (ephemeral). Formal runs should use Harbor ca
 
 ## Model serving (AutoDL, not this host)
 
-AutoDL: `bash scripts/serve_muse_vllm.sh [--ckpt …]` → `:6006` → 公网 `:8443`。  
+AutoDL: `bash scripts/serve_muse_vllm.sh`（默认最新 LoRA；`--base` 无 adapter）→ `:6006` → 公网 `:8443`。  
+本机 Harbor 只请求 model id（`muse-lora` / `Muse-Glimmer-30B`），**不需要本地 ckpt**。
 本机 Harbor 默认 `MUSE_BASE_URL` /
 `https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`。
 

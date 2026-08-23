@@ -269,6 +269,28 @@ def main() -> None:
         out_root = ROOT / out_root
     out_root.mkdir(parents=True, exist_ok=True)
 
+    tb_sess = None
+    log_root: Path | None = None
+    if (not args.dry_run) and (not args.no_tensorboard):
+        try:
+            from eval.tb_log import AgentEvalTbSession, default_log_root
+
+            log_root = args.log_dir
+            if log_root is None:
+                log_root = default_log_root()
+            elif not log_root.is_absolute():
+                log_root = ROOT / log_root
+            tb_sess = AgentEvalTbSession(
+                meta=meta,
+                arm=arm,
+                step=step,
+                log_root=log_root,
+                suites_meta=SUITES,
+            )
+        except Exception as e:  # noqa: BLE001 — bench continues without TB
+            print(f"[test] WARN TensorBoard session open failed: {e!r}", flush=True)
+            tb_sess = None
+
     rows: list[dict[str, Any]] = []
     for suite in suites:
         spec = make_spec(
@@ -291,8 +313,16 @@ def main() -> None:
             f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",
             flush=True,
         )
+
+        def _on_score(scores: dict[str, Any], _suite: str = suite) -> None:
+            if tb_sess is not None:
+                tb_sess.log_live(_suite, scores)
+
         result = run_spec(
-            spec, dry_run=args.dry_run, follow_traj=args.follow_traj
+            spec,
+            dry_run=args.dry_run,
+            follow_traj=args.follow_traj,
+            on_score_update=_on_score if tb_sess is not None else None,
         )
         result["arm"] = arm
         result["step"] = step
@@ -300,6 +330,11 @@ def main() -> None:
         result["n_attempts"] = spec.n_attempts
         result["env"] = args.env
         rows.append(result)
+        if tb_sess is not None:
+            try:
+                tb_sess.log_suite_final(result)
+            except Exception as e:  # noqa: BLE001
+                print(f"[test] WARN TB suite final failed: {e!r}", flush=True)
         print(f"  cmd: {result['cmd_str']}", flush=True)
         if not args.dry_run:
             print(
@@ -325,30 +360,16 @@ def main() -> None:
     print(f"\nWrote {path}", flush=True)
     _print_summary_table(rows, meta)
 
-    if (not args.dry_run) and (not args.no_tensorboard):
+    if tb_sess is not None:
         try:
-            from eval.tb_log import default_log_root, write_agent_eval_tb
-
-            log_root = args.log_dir
-            if log_root is None:
-                log_root = default_log_root()
-            elif not log_root.is_absolute():
-                log_root = ROOT / log_root
-            tb_dir = write_agent_eval_tb(
-                rows,
-                meta=meta,
-                arm=arm,
-                step=step,
-                log_root=log_root,
-                suites_meta=SUITES,
-            )
+            tb_dir = tb_sess.finalize()
             summary["tensorboard_run"] = str(tb_dir)
             path.write_text(
                 json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )
             print(f"[test] TensorBoard: tensorboard --logdir {log_root}", flush=True)
         except Exception as e:  # noqa: BLE001 — bench must still succeed if TB fails
-            print(f"[test] WARN TensorBoard write failed: {e!r}", flush=True)
+            print(f"[test] WARN TensorBoard finalize failed: {e!r}", flush=True)
 
 
 if __name__ == "__main__":

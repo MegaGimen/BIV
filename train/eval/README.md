@@ -84,9 +84,14 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 | SWE Verified | `swe-bench/swe-bench-verified` | mini-swe-agent | 76.0 |
 | SWE Pro | `scale-ai/swe-bench-pro` | mini-swe-agent | 51.2 |
 
+## 检查点 / 落盘（不是训练 ckpt resume）
+
+- **训练 LoRA 检查点**在 AutoDL `outputs/.../checkpoint-e*-s*`；`serve_muse_vllm.sh` 默认挂最新完整 ckpt。
+- **Harbor 跑分**没有训练那种 `--resume`：CLI 无 resume 开关。过程中会把每个 trial 写到 `outputs/agent_eval/<stamp>_<arm>/<arm>_<suite>/…/trial_result.json`（边跑边落盘），中断后需重跑 job；轨迹可用 `follow_traj` 跟。
+
 ## TensorBoard
 
-Harbor 跑分结束后默认把 suite 分数写入 TensorBoard（与训练共用 `LOGGING_DIR`，默认 `/root/tf-logs`）：
+默认开着（`--no-tensorboard` 关）。与训练共用 `LOGGING_DIR`（默认 `/root/tf-logs`）：
 
 ```bash
 export LOGGING_DIR=/root/tf-logs
@@ -94,7 +99,11 @@ export MUSE_EVAL_ARM=checkpoint-e0-s2150
 export MUSE_EVAL_STEP=2150
 python scripts/test.py
 # → /root/tf-logs/{n}_eval_agent_…_s2150/
-# scalars: eval_agent/<suite>/score_percent, delta_vs_meta, …
 ```
 
-关闭：`--no-tensorboard`。自定义根目录：`--log-dir /path/to/tf-logs`。
+| 标签 | 何时写 | x 轴 |
+|--|--|--|
+| `eval_agent_live/<suite>/score_percent` | **跑分过程中**（约每 15s，有新 trial 就 flush） | 已完成 `n_trials` |
+| `eval_agent/<suite>/score_percent` 等 | 每个 suite **结束时** + session 收尾 | 训练 ckpt step（跨 arm 对比） |
+
+自定义根目录：`--log-dir /path/to/tf-logs`。
