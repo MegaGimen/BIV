@@ -17,8 +17,10 @@ def default_log_root() -> Path:
     return p if p.is_absolute() else (Path.cwd() / p)
 
 
-def step_from_arm(arm: str, ckpt: Path | None = None) -> int:
-    """Use checkpoint step as TB x-axis so eval aligns with training curves."""
+def step_from_arm(arm: str, ckpt: Path | None = None, step: int | None = None) -> int:
+    """Use explicit step, else parse from arm/ckpt name for TB x-axis."""
+    if step is not None:
+        return int(step)
     name = ckpt.name if ckpt is not None else arm
     m = _STEP_RE.search(name)
     if m:
@@ -43,7 +45,8 @@ def write_agent_eval_tb(
     *,
     meta: dict[str, Any],
     arm: str,
-    ckpt: Path | None,
+    ckpt: Path | None = None,
+    step: int | None = None,
     log_root: Path | None = None,
     run_name: str | None = None,
     suites_meta: dict[str, dict[str, Any]] | None = None,
@@ -52,9 +55,9 @@ def write_agent_eval_tb(
     from torch.utils.tensorboard import SummaryWriter
 
     root = log_root or default_log_root()
-    step = step_from_arm(arm, ckpt)
+    step_i = step_from_arm(arm, ckpt, step)
     safe_arm = re.sub(r"[^\w.\-]+", "_", arm)[:80]
-    prefix = run_name or f"eval_agent_{safe_arm}_s{step}"
+    prefix = run_name or f"eval_agent_{safe_arm}_s{step_i}"
     run_dir = next_run_dir(root, prefix=prefix)
 
     writer = SummaryWriter(log_dir=str(run_dir))
@@ -68,23 +71,23 @@ def write_agent_eval_tb(
             continue
         score = r.get("score_percent")
         if isinstance(score, (int, float)):
-            writer.add_scalar(f"eval_agent/{suite}/score_percent", float(score), step)
+            writer.add_scalar(f"eval_agent/{suite}/score_percent", float(score), step_i)
             n += 1
         n_trials = r.get("n_trials")
         if isinstance(n_trials, (int, float)):
-            writer.add_scalar(f"eval_agent/{suite}/n_trials", float(n_trials), step)
+            writer.add_scalar(f"eval_agent/{suite}/n_trials", float(n_trials), step_i)
             n += 1
         rc = r.get("returncode")
         if isinstance(rc, (int, float)):
-            writer.add_scalar(f"eval_agent/{suite}/returncode", float(rc), step)
+            writer.add_scalar(f"eval_agent/{suite}/returncode", float(rc), step_i)
             n += 1
 
         meta_key = (suites_meta.get(suite) or {}).get("meta_key") or suite
         mscore = (ref.get(meta_key) or {}).get("score")
         if isinstance(score, (int, float)) and isinstance(mscore, (int, float)):
             delta = float(score) - float(mscore)
-            writer.add_scalar(f"eval_agent/{suite}/delta_vs_meta", delta, step)
-            writer.add_scalar(f"eval_agent/{suite}/meta_score", float(mscore), step)
+            writer.add_scalar(f"eval_agent/{suite}/delta_vs_meta", delta, step_i)
+            writer.add_scalar(f"eval_agent/{suite}/meta_score", float(mscore), step_i)
             n += 2
 
     # One scalar that TB can chart across arms at the same step.
@@ -94,13 +97,13 @@ def write_agent_eval_tb(
         if isinstance(r.get("score_percent"), (int, float))
     ]
     if scores:
-        writer.add_scalar("eval_agent/mean_score_percent", sum(scores) / len(scores), step)
+        writer.add_scalar("eval_agent/mean_score_percent", sum(scores) / len(scores), step_i)
         n += 1
 
     writer.flush()
     writer.close()
     print(
-        f"[eval-tb] wrote {n} scalars → {run_dir} (step={step})",
+        f"[eval-tb] wrote {n} scalars → {run_dir} (step={step_i})",
         flush=True,
     )
     return run_dir

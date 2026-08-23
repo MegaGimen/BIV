@@ -2,12 +2,18 @@
 """Muse Glimmer agent eval: Harbor (this host, Docker) → remote AutoDL vLLM.
 
 Split of roles (do not confuse):
-  • AutoDL GPU: bash scripts/serve_muse_vllm.sh [--ckpt …]  # :6006 → 公网 :8443
-  • This machine: Harbor --env docker + python scripts/test.py
-    calls the remote OpenAI-compatible API (default public URL below).
+  • AutoDL GPU: ``bash scripts/serve_muse_vllm.sh``
+      (default: **latest** LoRA ckpt; ``--base`` for no adapter)
+  • This machine: Harbor ``--env docker`` + ``python scripts/test.py``
+      No local checkpoint path — only picks remote model id.
 
---ckpt on test.py only selects Harbor model id `muse-lora` (must match the
-LoRA registered by serve_muse_vllm.sh on AutoDL). It does not load weights here.
+Default Harbor model id is ``muse-lora`` (matches serve LoRA name).
+Use ``--base`` to hit ``Muse-Glimmer-30B`` when AutoDL served without LoRA.
+
+TB arm/step (optional): copy from AutoDL serve banner, or::
+
+  export MUSE_EVAL_ARM=checkpoint-e0-s2150
+  export MUSE_EVAL_STEP=2150
 """
 
 from __future__ import annotations
@@ -24,9 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval.ckpt import resolve_ckpt  # noqa: E402
 from eval.env_check import check_environment, format_report  # noqa: E402
-from eval.load_muse import resolve_model_path  # noqa: E402
 from eval.run_harbor import (  # noqa: E402
     DEFAULT_SUITES,
     SUITES,
@@ -50,25 +54,30 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "--ckpt",
-        type=str,
-        default=None,
-        help="Same ckpt as AutoDL serve_muse_vllm.sh. Sets Harbor model id to "
-        f"'{DEFAULT_LORA_MODEL}'. Omit → base '{DEFAULT_BASE_MODEL}'.",
-    )
-    p.add_argument(
-        "--ckpt-search-dir",
-        type=Path,
-        default=None,
-        help="For --ckpt auto (train output_dir). Only used to resolve/print "
-        "the path; weights still load on AutoDL.",
+        "--base",
+        action="store_true",
+        help=f"Request base model id '{DEFAULT_BASE_MODEL}' "
+        "(AutoDL must have been started with serve_muse_vllm.sh --base).",
     )
     p.add_argument(
         "--model",
         type=str,
         default=None,
-        help=f"Override model id (default: {DEFAULT_BASE_MODEL} or "
-        f"{DEFAULT_LORA_MODEL} when --ckpt is set).",
+        help=f"Override model id (default: '{DEFAULT_LORA_MODEL}', "
+        f"or '{DEFAULT_BASE_MODEL}' with --base).",
+    )
+    p.add_argument(
+        "--arm",
+        type=str,
+        default=None,
+        help="Label for jobs/TB (default: $MUSE_EVAL_ARM or muse-lora/base). "
+        "Prefer the ckpt folder name from AutoDL serve banner.",
+    )
+    p.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        help="TensorBoard x-axis step (default: $MUSE_EVAL_STEP, else parse --arm, else 0).",
     )
     p.add_argument(
         "--base-url",
@@ -114,14 +123,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--jobs-dir", type=Path, default=None)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
-        "--config",
-        type=Path,
-        default=ROOT / "configs" / "trl" / "muse_glimmer_30b_lora.yaml",
-    )
-    p.add_argument(
         "--print-serve-cmd",
         action="store_true",
-        help="Print AutoDL serve_muse_vllm.sh command for this --ckpt and exit.",
+        help="Print AutoDL serve_muse_vllm.sh hint and exit.",
     )
     p.add_argument(
         "--follow-traj",
@@ -155,29 +159,6 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _default_ckpt_search_dir(args: argparse.Namespace) -> Path:
-    if args.ckpt_search_dir is not None:
-        p = args.ckpt_search_dir
-        return p if p.is_absolute() else (ROOT / p)
-    cfg_path = args.config if args.config.is_absolute() else (ROOT / args.config)
-    if cfg_path.is_file():
-        try:
-            import yaml
-
-            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            od = (data.get("train") or {}).get("output_dir")
-            if od:
-                p = Path(str(od))
-                return p if p.is_absolute() else (ROOT / p)
-        except Exception:
-            pass
-    return ROOT / "outputs" / "muse_glimmer_wm_mix"
-
-
-def _arm_label(ckpt: Path | None) -> str:
-    return "base" if ckpt is None else ckpt.name
-
-
 def _normalize_base_url(url: str) -> str:
     u = url.rstrip("/")
     if not u.endswith("/v1"):
@@ -185,13 +166,10 @@ def _normalize_base_url(url: str) -> str:
     return u
 
 
-def _serve_cmd(model_path: Path | None, ckpt: Path | None) -> str:
-    parts = ["bash scripts/serve_muse_vllm.sh"]
-    if model_path is not None:
-        parts.append(f"--model-path {model_path}")
-    if ckpt is not None:
-        parts.append(f"--ckpt {ckpt}")
-    return " ".join(parts)
+def _serve_hint(*, base: bool) -> str:
+    if base:
+        return "bash scripts/serve_muse_vllm.sh --base"
+    return "bash scripts/serve_muse_vllm.sh   # default: latest LoRA ckpt"
 
 
 def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> None:
@@ -229,30 +207,24 @@ def main() -> None:
     suites = list(args.suites) if args.suites else list(DEFAULT_SUITES)
     base_url = _normalize_base_url(args.base_url)
 
-    ckpt_path: Path | None = None
-    if args.ckpt:
-        # Harbor host often has no adapter files; --ckpt still selects muse-lora.
-        ckpt_path = resolve_ckpt(
-            args.ckpt,
-            search_dir=_default_ckpt_search_dir(args),
-            require_local=False,
-        )
-        if ckpt_path is not None and not ckpt_path.is_dir():
-            print(
-                f"  NOTE: local ckpt path missing ({ckpt_path}); "
-                f"still requesting remote model id '{DEFAULT_LORA_MODEL}'.",
-                flush=True,
-            )
-
+    use_base = bool(args.base)
     model_id = args.model
     if model_id is None:
-        model_id = DEFAULT_LORA_MODEL if ckpt_path is not None else DEFAULT_BASE_MODEL
+        model_id = DEFAULT_BASE_MODEL if use_base else DEFAULT_LORA_MODEL
 
-    model_path = None
-    try:
-        model_path = resolve_model_path(None, train_root=ROOT)
-    except SystemExit:
-        pass
+    arm = (
+        args.arm
+        or os.environ.get("MUSE_EVAL_ARM")
+        or ("base" if use_base else DEFAULT_LORA_MODEL)
+    )
+    step: int | None = args.step
+    if step is None:
+        env_step = os.environ.get("MUSE_EVAL_STEP")
+        if env_step is not None and str(env_step).strip() != "":
+            try:
+                step = int(env_step)
+            except ValueError:
+                step = None
 
     print("=== Muse Glimmer agent eval (Harbor@this-host + remote vLLM) ===", flush=True)
     print(f"  dry_run:   {args.dry_run}", flush=True)
@@ -260,23 +232,16 @@ def main() -> None:
     print(f"  base_url:  {base_url}", flush=True)
     print(f"  harbor_env:{args.env}", flush=True)
     print(f"  model_id:  {model_id}", flush=True)
-    if ckpt_path is None:
-        print(
-            "  ckpt:      <none> → AutoDL vLLM should serve base "
-            f"(model id {DEFAULT_BASE_MODEL})",
-            flush=True,
-        )
-    else:
-        print(f"  ckpt:      {ckpt_path}", flush=True)
-        print(
-            f"  NOTE: on AutoDL start vLLM with the SAME ckpt "
-            f"(LoRA id '{DEFAULT_LORA_MODEL}'):",
-            flush=True,
-        )
-        print(f"    {_serve_cmd(model_path, ckpt_path)}", flush=True)
+    print(f"  arm:       {arm}", flush=True)
+    print(f"  tb_step:   {step if step is not None else '(from arm name or 0)'}", flush=True)
+    print(
+        "  NOTE: no local --ckpt; AutoDL picks latest LoRA by default:\n"
+        f"    {_serve_hint(base=use_base)}",
+        flush=True,
+    )
 
     if args.print_serve_cmd:
-        print(_serve_cmd(model_path, ckpt_path), flush=True)
+        print(_serve_hint(base=use_base), flush=True)
         return
 
     env_report = check_environment()
@@ -295,11 +260,11 @@ def main() -> None:
             flush=True,
         )
 
-    arm = _arm_label(ckpt_path)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_root = args.jobs_dir
     if out_root is None:
-        out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{arm}"
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in arm)[:80]
+        out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{safe}"
     elif not out_root.is_absolute():
         out_root = ROOT / out_root
     out_root.mkdir(parents=True, exist_ok=True)
@@ -330,7 +295,7 @@ def main() -> None:
             spec, dry_run=args.dry_run, follow_traj=args.follow_traj
         )
         result["arm"] = arm
-        result["ckpt"] = str(ckpt_path) if ckpt_path else None
+        result["step"] = step
         result["model_id"] = model_id
         result["n_attempts"] = spec.n_attempts
         result["env"] = args.env
@@ -345,12 +310,12 @@ def main() -> None:
 
     summary = {
         "arm": arm,
-        "ckpt": str(ckpt_path) if ckpt_path else None,
+        "step": step,
         "model_id": model_id,
         "base_url": base_url,
         "env": args.env,
         "dry_run": args.dry_run,
-        "serve_hint": _serve_cmd(model_path, ckpt_path),
+        "serve_hint": _serve_hint(base=use_base),
         "meta_reference": meta.get("muse_glimmer_30b_high_reasoning"),
         "rows": rows,
         "env_check": env_report,
@@ -373,7 +338,7 @@ def main() -> None:
                 rows,
                 meta=meta,
                 arm=arm,
-                ckpt=ckpt_path,
+                step=step,
                 log_root=log_root,
                 suites_meta=SUITES,
             )

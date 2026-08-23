@@ -4,8 +4,8 @@
 
 | 机器 | 干什么 |
 |--|--|
-| **AutoDL（GPU）** | `serve_muse_vllm.sh` 加载 Muse / LoRA，监听 **6006** → 公网 `:8443` |
-| **本机（这台，有 Docker）** | Harbor `--env docker` 起考题沙箱；`test.py` 把请求打到远程 vLLM |
+| **AutoDL（GPU）** | `serve_muse_vllm.sh` 加载 Muse + **默认最新 LoRA ckpt**，监听 **6006** → 公网 `:8443` |
+| **本机（这台，有 Docker）** | Harbor `--env docker` 起考题沙箱；`test.py` 只选远程 model id（**无本地 ckpt**） |
 
 不需要 E2B。AutoDL 套不了 Docker 也不影响——沙箱在本机。
 
@@ -21,17 +21,19 @@
 cd ~/autodl-tmp/BIV/train
 source .venv-muse/bin/activate
 bash scripts/install_muse_vllm.sh   # 只需一次
-bash scripts/serve_muse_vllm.sh
-# 或挂 ckpt：
-bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e0-s1100
+
+# 默认：自动选 train out_dir 下最新完整 LoRA ckpt
+MAX_LENGTH=65536 CHOICE=1 bash scripts/serve_muse_vllm.sh
+# 或显式路径 / 只跑 base：
+# bash scripts/serve_muse_vllm.sh --ckpt outputs/.../checkpoint-e0-s2150
+# bash scripts/serve_muse_vllm.sh --base
 ```
 
-脚本会加：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`；带 `--ckpt` 时再加 LoRA 与 `--limit-mm-per-prompt '{"image":0,"video":0}'`（避免 vision+LoRA 崩溃）。
+脚本会加：`--reasoning-parser muse_glimmer`、`--tool-call-parser muse_glimmer`、`--generation-config auto`；挂 LoRA 时再加 `--limit-mm-per-prompt '{"image":0,"video":0}'`。  
+元数据写到 `outputs/.muse_vllm_serve.json`；banner 会打印建议的 `MUSE_EVAL_ARM` / `MUSE_EVAL_STEP`（本机 TB 对齐用）。
 
 公网默认（实例变了就改）：  
 `https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`
-
-
 
 ## 本机：跑分
 
@@ -41,12 +43,14 @@ source .venv-eval/bin/activate   # Harbor ≥3.12
 # 默认已指向上面公网 URL；实例变了再 export：
 # export MUSE_BASE_URL=https://…:8443/v1
 
-python scripts/test.py --dry-run
-python scripts/test.py                                    # 模型 Muse-Glimmer-30B
-python scripts/test.py --ckpt outputs/.../checkpoint-…    # 模型 muse-lora
-```
+# 可选：与 AutoDL serve 的 ckpt 步数对齐（看 serve banner）
+# export MUSE_EVAL_ARM=checkpoint-e0-s2150
+# export MUSE_EVAL_STEP=2150
 
-`--ckpt` 两边要对上：AutoDL 用同一路径挂 LoRA，本机 `--ckpt` 只用来让 Harbor 请求 **`muse-lora`**。
+python scripts/test.py --dry-run
+python scripts/test.py              # 请求 muse-lora（AutoDL 应已挂最新 LoRA）
+python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --base）
+```
 
 默认 `--env docker`。可选 `-n` 控制并发。
 
@@ -85,11 +89,12 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 Harbor 跑分结束后默认把 suite 分数写入 TensorBoard（与训练共用 `LOGGING_DIR`，默认 `/root/tf-logs`）：
 
 ```bash
-export LOGGING_DIR=/root/tf-logs   # 建议与训练一致
-python scripts/test.py --ckpt outputs/.../checkpoint-e0-s2150
-# → /root/tf-logs/{n}_eval_agent_checkpoint-e0-s2150_s2150/
+export LOGGING_DIR=/root/tf-logs
+export MUSE_EVAL_ARM=checkpoint-e0-s2150
+export MUSE_EVAL_STEP=2150
+python scripts/test.py
+# → /root/tf-logs/{n}_eval_agent_…_s2150/
 # scalars: eval_agent/<suite>/score_percent, delta_vs_meta, …
-# x-axis step = ckpt 步数（便于和 train loss 对齐）
 ```
 
 关闭：`--no-tensorboard`。自定义根目录：`--log-dir /path/to/tf-logs`。
