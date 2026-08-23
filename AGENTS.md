@@ -13,6 +13,7 @@ Upstream nanobot remains a lightweight Python agent framework (channels → bus 
 
 The user asked for this explicitly. Do not write telegram-style or paper-abstract answers.
 
+- **North star when discussing train/eval/papers:** 靠提升世界理解来提升 agent。手段不限（共训、后续 agent 阶段、RL、当模拟器、改 mix 都可），配方不神圣。不要把「必须纯观察 SFT」讲成比这个目的更硬的约束；也不要把「只把政策训狠、不再谈世界」说成同一条假设。
 - **Language:** 简体中文 unless the user writes in another language.
 - **Length:** Prefer a short direct answer first, then **enough detail** that someone who did not read the papers/code can follow. If the topic is a comparison, a mechanism, or a decision, write **several paragraphs or a worked example**, not three bullets with jargon.
 - **Words:** Use everyday words. If you must use \(P(o\mid h,a)\), Terminus, SFT, LoRA, **immediately say in one sentence what that means in this project**. Do not stack paper titles as if they were an explanation.
@@ -37,11 +38,13 @@ The user asked for this explicitly. Do not write telegram-style or paper-abstrac
 
 ### Research goals (optimize methods around these)
 
-1. **Primary — world understanding → indirect agent gain:** improve the model’s **general understanding of the world**, including **OS** and **code/repo environments**, by fitting real environment transitions; test whether that capacity **transfers** to better console / coding **tool-use agent** performance (same scaffold vs base).
-2. **Constraint — anti-forgetting:** avoid catastrophic forgetting into a model that **only** emits / completes tool **observations** (env-simulator shell) and loses agentic coding / tool-*selection* skill. Anti-forgetting is a **regularizer**, not a second equal training objective or a substitute claim channel.
+**North star (user, non-negotiable):** raise **agent** ability **by raising world understanding**. Every method, mix, paper, and eval exists to serve that. Do **not** treat a training recipe as sacred (pure observation-SFT, a particular anti-forget ratio, “must not look like policy SFT”). If co-training, a later agent stage, RL, using the world model as a simulator, or a different loss mix makes the agent stronger **because** it understands OS/code worlds better, it is in play. “By any means” applies to **methods**; the **claim** stays world-understanding → agent, not “we trained the policy harder and stopped talking about the world.”
+
+1. **Primary — world understanding → agent gain:** improve the model’s **general understanding of the world**, including **OS** and **code/repo environments**, by fitting real environment transitions; test whether that capacity **transfers** to better console / coding **tool-use agent** performance (same scaffold vs base). Agent metrics going up is the only success that counts.
+2. **Constraint — anti-forgetting:** avoid catastrophic forgetting into a model that **only** emits / completes tool **observations** (env-simulator shell) and loses agentic coding / tool-*selection* skill. Anti-forgetting is a **tool** so the agent can still act (and thus the hypothesis can be tested), not a second paper story and not a reason to drop world-understanding as the cause.
 
 **Analogy (GPT):** next-token prediction on text → emergent skills.  
-**Here:** next-observation prediction on real multi-domain tool I/O → hoped-for **transfer** to agent benchmarks (not “train the policy hard and call it world modeling”).
+**Here:** next-observation / world-dynamics learning on real multi-domain tool I/O → hoped-for **transfer** to agent benchmarks. Do not refuse a method because it is not “observation tokens only”; do not substitute a pure-policy run and still call it this hypothesis.
 
 \[
 P(o_t \mid h_{<t}, a_t)
@@ -53,7 +56,7 @@ P(o_t \mid h_{<t}, a_t)
 | Primary update | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere): learn env dynamics, not Demon / Matrix Law |
 | Labels | **Real** sandbox / execution-grounded tool outputs only |
 | Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
-| Not the claim | Matrix Law / `data/global_demon_prompt.txt`; heavy policy SFT that could alone explain agent uplift |
+| Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL **with no world-understanding cause** (shuffled / no-dynamics twin still required) |
 | Control | shuffled-observation twin — identical setup on **shuffled** \(o_t\) |
 
 **Claim only if all hold:** (a) world-model / env-consistency metrics improve; (b) same-scaffold agent metrics (console + coding tools) improve vs base; (c) shuffled control does **not** explain the agent gain; (d) agent capability does **not** collapse vs base (anti-forgetting check).
@@ -189,9 +192,9 @@ Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qw
 | Work | Links | Relevance to our goals |
 |------|-------|------------------------|
 | Qwen-AgentWorld | [GitHub](https://github.com/QwenLM/Qwen-AgentWorld), [arXiv:2606.24597](https://arxiv.org/abs/2606.24597) | Native multi-domain LWM (Terminal/SWE/OS/…); CPT→SFT next-state→RL; LWM warm-up transfers to agent benches — closest framing to goal 1 |
-| PaW | [arXiv:2606.02388](https://arxiv.org/abs/2606.02388) | Policy + world-model co-training / loss balancing — borrow for goal 2 (we keep WM primary, policy auxiliary) |
+| PaW | [arXiv:2606.02388](https://arxiv.org/abs/2606.02388) | Policy + world-model co-training / loss balancing — in play if it keeps the model able to act while learning the world |
 | RWML | [arXiv:2602.05842](https://arxiv.org/abs/2602.05842) | Warns pure WM-token SFT can hurt retention; motivates anti-forget checks |
-| DyMo + SVS | [arXiv:2506.02918](https://arxiv.org/abs/2506.02918) | Joint tool-call + next-state; optional later |
+| DyMo + SVS | [arXiv:2506.02918](https://arxiv.org/abs/2506.02918) | Joint tool-call + next-state — in play; not “optional later” just because it is not obs-only SFT |
 | RAP | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.507/), [arXiv:2305.14992](https://arxiv.org/abs/2305.14992) | Same LM as agent + WM; planning over predicted states |
 | Word2World | [GitHub](https://github.com/X1AOX1A/Word2World) | WM fidelity vs agent utility |
 | WorldCoder | [GitHub](https://github.com/haotang1995/WorldCoder), [arXiv:2402.12275](https://arxiv.org/abs/2402.12275) | Code as explicit transition law |
@@ -199,7 +202,7 @@ Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qw
 | SWE-Zero → SWE-Hero | [arXiv:2604.01496](https://arxiv.org/abs/2604.01496) | Hero = current code-env WM corpus; Zero = candidate anti-forget OpenHands mix (not Hero replay) |
 | Survey / index | [awesome-world-model-evolution](https://github.com/OpenRaiser/awesome-world-model-evolution) | Broader WM taxonomy |
 
-**Design stance:** first-class object = **environment / world consistency** across OS + code tool turns; agent console/coding uplift = **transfer** metric; anti-forget mix = **capability anchor**. Runtime Matrix Law ≠ SFT labels (labels stay real I/O). Screen with **pilot (sample rows, keep 8k)**; full-scale only if justified.
+**Design stance:** first-class object = **environment / world consistency** across OS + code tool turns so the **agent** gets better; agent console/coding uplift = **the** success metric; methods (mix, co-train, extra stage, RL, simulator) are interchangeable if they serve that causal story. Anti-forget mix = keep the model able to **act**, not a rival objective. Runtime Matrix Law ≠ SFT labels (labels stay real I/O). Screen with **pilot (sample rows, keep 8k)**; full-scale only if justified.
 
 ## Development Commands (upstream nanobot)
 
