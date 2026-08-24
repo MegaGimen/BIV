@@ -51,20 +51,50 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _path_is_muse(path: Path) -> bool:
+    muse = (ROOT / "train" / ".venv-muse").resolve()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved == muse or muse in resolved.parents or str(muse) in str(resolved)
+
+
+def refuse_muse_venv() -> None:
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if _path_is_muse(Path(sys.prefix)) or _path_is_muse(Path(sys.executable)) or (
+        venv and _path_is_muse(Path(venv))
+    ):
+        raise SystemExit(
+            "eval.py cannot run inside train/.venv-muse (Muse-patched vLLM).\n"
+            "  bash merge/install_env.sh\n"
+            "  source train/.venv/bin/activate\n"
+            "  python merge/eval.py --max-model-len 65536"
+        )
+
+
 def find_vllm() -> list[str]:
-    """Use PATH ``vllm`` unless it is the Muse venv; else this interpreter."""
+    """Prefer train/.venv (or repo .venv). Never launch Muse-patched vLLM."""
+    refuse_muse_venv()
+    for venv in (ROOT / "train" / ".venv", ROOT / ".venv"):
+        vllm_bin = venv / "bin" / "vllm"
+        if vllm_bin.is_file() and os.access(vllm_bin, os.X_OK):
+            log(f"using {vllm_bin}")
+            return [str(vllm_bin)]
     muse_hint = str((ROOT / "train" / ".venv-muse").resolve())
     which = shutil.which("vllm")
     if which:
         resolved = str(Path(which).resolve())
         if muse_hint in resolved:
-            log(
-                f"Ignoring Muse vLLM at {which}. "
-                "Run eval.py inside a stock Qwen3.5 env, or pass --vllm-bin."
+            raise SystemExit(
+                f"PATH vllm is Muse ({which}). Install stock vLLM:\n"
+                "  bash merge/install_env.sh"
             )
-        else:
-            return [which]
-    return [sys.executable, "-m", "vllm.entrypoints.cli.main"]
+        return [which]
+    raise SystemExit(
+        "vLLM not found. Create train/.venv first:\n"
+        "  bash merge/install_env.sh"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -205,6 +235,7 @@ def harbor_hint(served: str) -> str:
 
 def main() -> None:
     args = parse_args()
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     cmd, model, served = build_cmd(args)
 
     if args.source in {"modelscope", "ms"} and not Path(model).exists():
