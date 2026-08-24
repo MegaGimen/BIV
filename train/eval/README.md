@@ -63,6 +63,8 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 
 题目只给定 **墙钟** `timeout_sec`（89 题里约一半是 900s，其余 600～12000 不等），**没有**给定 max_turns。
 
+**`qemu-alpine-ssh` + 本机 tmux：** 不是「Harbor 套在宿主机 tmux 里」导致的。该题镜像是 Debian bullseye，自带 **tmux 3.1c**；Terminus 用 `tmux new-session -e`（需要 ≥3.2）注入 `--ae` 的 `OPENAI_*`，于是 agent 还没上场就 `Failed to start tmux session`。`test.py` / `run_harbor.py` 会把 `eval/harbor_runtime` 加进 Harbor 的 `PYTHONPATH`，改成在 pane 里 `export` 而不是 `-e`。resume 已失败的 trial 需要 `-f RuntimeError`。
+
 ## 实时看 agent 轨迹
 
 Harbor 会把完整轨迹写到 job 目录（边跑边更新）：

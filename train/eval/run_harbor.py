@@ -404,12 +404,22 @@ def resolve_resume_job_dirs(
     return kids
 
 
+# Prepended to Harbor's PYTHONPATH so sitecustomize.py can patch Terminus.
+# qemu-alpine-ssh ships tmux 3.1c, which rejects ``new-session -e`` (tmux ≥3.2).
+_HARBOR_RUNTIME_DIR = EVAL_ROOT / "harbor_runtime"
+
+
 def _harbor_subprocess_env(
     *,
     base_url: str | None,
     api_key: str | None,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    runtime = str(_HARBOR_RUNTIME_DIR)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        runtime if not existing else f"{runtime}{os.pathsep}{existing}"
+    )
     if base_url:
         env["OPENAI_BASE_URL"] = base_url.rstrip("/")
         env["OPENAI_API_BASE"] = base_url.rstrip("/")
