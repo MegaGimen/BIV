@@ -233,7 +233,7 @@ def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> No
     print("\n=== Summary (our % vs Meta Muse Glimmer-30B) ===", flush=True)
     hdr = (
         f"{'suite':<22} {'ours%':>8} {'meta%':>8} {'delta':>8} "
-        f"{'scaffold':<16} {'k':>3} {'n':>6}"
+        f"{'scaffold':<16} {'k':>3} {'n':>6} {'infra':>6}"
     )
     print(hdr, flush=True)
     print("-" * len(hdr), flush=True)
@@ -252,7 +252,8 @@ def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> No
             f"{'-' if delta is None else f'{delta:+.2f}':>8} "
             f"{str(r.get('agent', '')):<16} "
             f"{r.get('n_attempts', '-'):>3} "
-            f"{r.get('n_trials') or '-':>6}",
+            f"{r.get('n_trials') or '-':>6} "
+            f"{r.get('n_infra_excluded') or 0:>6}",
             flush=True,
         )
 

@@ -138,7 +138,6 @@ def apply_model_info_to_job_config(job_dir: Path, max_model_len: int) -> None:
             )
             n_files += 1
 
-    info = terminus_model_info(max_model_len)
     print(
         f"[harbor] set model_info {info} in {n_files} file(s) "
         f"under {job_dir} (trial configs={n_trials})",
@@ -605,16 +604,112 @@ def resume_job(
     )
 
 
+def _trial_result_paths(job_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for child in job_dir.iterdir():
+        if not child.is_dir():
+            continue
+        for name in ("result.json", "trial_result.json"):
+            p = child / name
+            if p.is_file():
+                paths.append(p)
+                break
+    return paths
+
+
+def trial_had_agent_llm(trial: dict[str, Any], trial_dir: Path) -> bool:
+    """True if the model was actually invoked (at least one LLM request).
+
+    Setup failures (e.g. tmux never started) leave ``agent_result`` /
+    ``agent_execution`` empty and have no trajectory — those are infra, not
+    the model.
+    """
+    ar = trial.get("agent_result")
+    if isinstance(ar, dict):
+        if int(ar.get("n_input_tokens") or 0) > 0:
+            return True
+        if int(ar.get("n_output_tokens") or 0) > 0:
+            return True
+        meta = ar.get("metadata") or {}
+        if isinstance(meta, dict) and int(meta.get("n_episodes") or 0) > 0:
+            return True
+    if trial.get("agent_execution"):
+        return True
+    traj = trial_dir / "agent" / "trajectory.json"
+    if traj.is_file() and traj.stat().st_size > 2:
+        return True
+    return False
+
+
+def _trial_reward(trial: dict[str, Any]) -> float | None:
+    vr = trial.get("verifier_result") or {}
+    if not isinstance(vr, dict):
+        return None
+    rew = vr.get("rewards")
+    if not isinstance(rew, dict) or not rew:
+        return None
+    val = rew.get("reward")
+    if val is None:
+        val = next(iter(rew.values()))
+    if isinstance(val, (int, float)):
+        return float(val)
+    return None
+
+
 def parse_job_score(job_dir: Path) -> dict[str, Any]:
-    """Extract mean pass rate (%) from a Harbor job directory."""
-    out: dict[str, Any] = {"score_percent": None, "n_trials": None, "pass_at_1": None}
+    """Mean pass rate over trials where the agent actually ran.
+
+    Harbor's own ``result.json`` Mean still counts setup RuntimeErrors as 0.
+    We drop those so qemu-alpine-ssh tmux failures do not punish the model.
+    """
+    out: dict[str, Any] = {
+        "score_percent": None,
+        "n_trials": None,
+        "pass_at_1": None,
+        "n_infra_excluded": 0,
+    }
     if not job_dir.is_dir():
         return out
 
+    rewards: list[float] = []
+    n_excl = 0
+    for path in _trial_result_paths(job_dir):
+        try:
+            trial = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(trial, dict):
+            continue
+        if not trial_had_agent_llm(trial, path.parent):
+            if trial.get("exception_info") or trial.get("finished_at"):
+                n_excl += 1
+            continue
+        rew = _trial_reward(trial)
+        if rew is None:
+            if trial.get("exception_info"):
+                rew = 0.0
+            else:
+                continue
+        rewards.append(rew)
+
+    out["n_infra_excluded"] = n_excl
+    if rewards:
+        mean = sum(1.0 for r in rewards if r >= 1.0 - 1e-9) / len(rewards)
+        out["score_percent"] = round(100.0 * mean, 2)
+        out["n_trials"] = len(rewards)
+        out["pass_at_1"] = mean
+        return out
+
+    # No per-trial files yet (job just created): fall back to Harbor job stats.
+    return _parse_job_score_from_harbor_result(job_dir, out)
+
+
+def _parse_job_score_from_harbor_result(
+    job_dir: Path, out: dict[str, Any]
+) -> dict[str, Any]:
     candidates = [
         job_dir / "result.json",
         job_dir / "job_result.json",
-        *sorted(job_dir.glob("**/result.json")),
     ]
     data = None
     used = None
@@ -626,27 +721,7 @@ def parse_job_score(job_dir: Path) -> dict[str, Any]:
                 break
             except json.JSONDecodeError:
                 continue
-
     if data is None:
-        rewards: list[float] = []
-        for tr in job_dir.glob("**/trial_result.json"):
-            try:
-                t = json.loads(tr.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            vr = (t.get("verifier_result") or {}) if isinstance(t, dict) else {}
-            rew = vr.get("rewards") if isinstance(vr, dict) else None
-            if isinstance(rew, dict):
-                val = rew.get("reward")
-                if val is None and rew:
-                    val = next(iter(rew.values()))
-                if isinstance(val, (int, float)):
-                    rewards.append(float(val))
-        if rewards:
-            mean = sum(1.0 for r in rewards if r >= 1.0 - 1e-9) / len(rewards)
-            out["score_percent"] = round(100.0 * mean, 2)
-            out["n_trials"] = len(rewards)
-            out["pass_at_1"] = mean
         return out
 
     out["result_json"] = str(used)

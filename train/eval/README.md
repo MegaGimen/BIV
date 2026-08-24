@@ -128,6 +128,8 @@ python scripts/test.py
 # → /root/tf-logs/{n}_eval_agent_…_s2150/
 ```
 
+**记分：** Harbor 自己的 Mean 会把 setup 失败（模型从未被调用，如 `qemu-alpine-ssh` tmux 起不来）算成 0。`test.py` / `parse_job_score` **不把这类 trial 计入 ours%**（`n_infra_excluded`）。Harbor 的 `result.json` 原文不动。
+
 **实时进度怎么写：** Harbor 边跑边落盘 `**/trial_result.json`；`test.py` 开后台线程约每 15s `glob` 这些文件，算出当前 pass% / `n_trials`，有变化就 `SummaryWriter.flush()` 到 TB。不是 Harbor 推事件，是我们轮询磁盘。
 
 | 标签 | 何时写 | x 轴 |
