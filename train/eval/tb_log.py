@@ -60,7 +60,14 @@ class AgentEvalTbSession:
         run_name: str | None = None,
         suites_meta: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        from torch.utils.tensorboard import SummaryWriter
+        try:
+            from tensorboardX import SummaryWriter
+        except ImportError as e:
+            raise ValueError(
+                "tensorboardX is required for eval TensorBoard on this CPU host "
+                "(torch.utils.tensorboard pulls CUDA libs / libcublasLt). "
+                "Install it in the same Python as test.py, or pass --no-tensorboard."
+            ) from e
 
         self.meta = meta if isinstance(meta, dict) else {}
         self.suites_meta = suites_meta or {}

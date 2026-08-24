@@ -65,33 +65,75 @@ def terminus_model_info(max_model_len: int) -> dict[str, int]:
     }
 
 
+def _inject_model_info(container: dict[str, Any], info: dict[str, int]) -> bool:
+    kwargs = container.get("kwargs")
+    if not isinstance(kwargs, dict):
+        kwargs = {}
+        container["kwargs"] = kwargs
+    if kwargs.get("model_info") == info:
+        return False
+    kwargs["model_info"] = info
+    return True
+
+
 def apply_model_info_to_job_config(job_dir: Path, max_model_len: int) -> None:
     """Patch a saved Harbor job so resume picks up the real vLLM window.
 
     ``harbor job resume`` does not accept ``--ak``; it rereads ``config.json``.
+    Planned vs existing ``TrialConfig`` must stay equal, so the same
+    ``model_info`` is written into the job config, every trial config, and
+    ``lock.json``.
     """
+    info = terminus_model_info(max_model_len)
+    n_files = 0
+
     cfg_path = job_dir / "config.json"
     raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-    info = terminus_model_info(max_model_len)
     changed = False
     for agent in raw.get("agents") or []:
-        if not isinstance(agent, dict):
-            continue
-        kwargs = agent.setdefault("kwargs", {})
-        if not isinstance(kwargs, dict):
-            continue
-        if kwargs.get("model_info") != info:
-            kwargs["model_info"] = info
+        if isinstance(agent, dict) and _inject_model_info(agent, info):
             changed = True
     if changed:
         cfg_path.write_text(
             json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        print(
-            f"[harbor] set model_info max_input_tokens={max_model_len} in {cfg_path}",
-            flush=True,
-        )
+        n_files += 1
+
+    n_trials = 0
+    for trial_cfg in job_dir.glob("*/config.json"):
+        trial = json.loads(trial_cfg.read_text(encoding="utf-8"))
+        agent = trial.get("agent")
+        if isinstance(agent, dict) and _inject_model_info(agent, info):
+            trial_cfg.write_text(
+                json.dumps(trial, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_trials += 1
+            n_files += 1
+
+    lock_path = job_dir / "lock.json"
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock_changed = False
+        for trial in lock.get("trials") or []:
+            if not isinstance(trial, dict):
+                continue
+            agent = trial.get("agent")
+            if isinstance(agent, dict) and _inject_model_info(agent, info):
+                lock_changed = True
+        if lock_changed:
+            lock_path.write_text(
+                json.dumps(lock, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_files += 1
+
+    print(
+        f"[harbor] set model_info max_input_tokens={max_model_len} "
+        f"in {n_files} file(s) under {job_dir} (trial configs={n_trials})",
+        flush=True,
+    )
 
 
 def load_meta_reference() -> dict[str, Any]:
