@@ -138,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.90")),
     )
+    p.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=int(os.environ.get("VLLM_MAX_NUM_SEQS", "256")),
+        help="Concurrent sequences. Qwen3.5 GDN/Mamba needs this below KV/Mamba blocks.",
+    )
     p.add_argument("--vllm-bin", default=None, help="Path to vllm executable")
     p.add_argument(
         "--source",
@@ -213,6 +219,8 @@ def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
         args.dtype,
         "--gpu-memory-utilization",
         str(args.gpu_memory_utilization),
+        "--max-num-seqs",
+        str(args.max_num_seqs),
         "--language-model-only",
         "--reasoning-parser",
         "qwen3",
