@@ -15,6 +15,7 @@ the default hub ids reuses that cache and does not hit the network again.
 GPU / disk host::
 
     python merge/download.py
+    python merge/download.py --force
     python merge/download.py --no-base
     python merge/download.py --source huggingface
 """
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -73,15 +75,21 @@ def resolve_model(
     source: str,
     cache_dir: Path,
     role: str,
+    force: bool = False,
 ) -> Path:
     """Return a local dir with config.json; download into cache_dir if needed."""
     p = Path(spec).expanduser()
     if has_config(p):
+        if force:
+            log(f"[{role}] --force ignored for local path {p.resolve()}")
         log(f"[{role}] local checkpoint: {p.resolve()}")
         return p.resolve()
 
     dest = cache_dir / sanitize(spec)
-    if has_config(dest):
+    if force and dest.exists():
+        log(f"[{role}] --force: removing {dest}")
+        shutil.rmtree(dest)
+    elif has_config(dest):
         log(f"[{role}] reusing cache: {dest}")
         return dest.resolve()
 
@@ -146,6 +154,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
     p.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete cached copies under --cache-dir and download again",
+    )
+    p.add_argument(
         "--source",
         choices=["modelscope", "huggingface"],
         default=DEFAULT_SOURCE,
@@ -164,10 +177,16 @@ def main() -> None:
     if not args.no_base:
         jobs.append(("base", args.base_model))
 
-    log(f"source={args.source}  cache={cache_dir}")
+    log(f"source={args.source}  cache={cache_dir}  force={args.force}")
     paths: dict[str, Path] = {}
     for role, spec in jobs:
-        paths[role] = resolve_model(spec, source=args.source, cache_dir=cache_dir, role=role)
+        paths[role] = resolve_model(
+            spec,
+            source=args.source,
+            cache_dir=cache_dir,
+            role=role,
+            force=args.force,
+        )
 
     log("done:")
     for role, path in paths.items():
