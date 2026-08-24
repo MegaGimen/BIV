@@ -33,7 +33,7 @@ MAX_LENGTH=65536 CHOICE=1 bash scripts/serve_muse_vllm.sh
 元数据写到 `outputs/.muse_vllm_serve.json`；banner 会打印建议的 `MUSE_EVAL_ARM` / `MUSE_EVAL_STEP`（本机 TB 对齐用）。
 
 公网默认（实例变了就改）：  
-`https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1`
+`https://u741253-ltqs-498e6237.westd.seetacloud.com:8443/v1`
 
 ## 本机：跑分
 

@@ -53,7 +53,7 @@ DEFAULT_BASE_MODEL = "Muse-Glimmer-30B"
 DEFAULT_LORA_MODEL = "muse-lora"
 # AutoDL custom-service forward (override with $MUSE_BASE_URL if the instance changes).
 DEFAULT_REMOTE_URL = (
-    "https://u741253-d2n6-518972c0.westd.seetacloud.com:8443/v1"
+    "https://u741253-ltqs-498e6237.westd.seetacloud.com:8443/v1"
 )
 
 
