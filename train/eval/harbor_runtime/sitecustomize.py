@@ -59,4 +59,38 @@ def _patch_terminus_tmux() -> None:
     TmuxSession._biv_tmux_e_compat = True
 
 
+def _patch_litellm_max_tokens_clamp() -> None:
+    """Never send max_tokens >= the vLLM window; that 400s even a tiny prompt."""
+    try:
+        from harbor.llms.lite_llm import LiteLLM
+    except ImportError:
+        return
+    if getattr(LiteLLM, "_biv_max_tokens_clamp", False):
+        return
+
+    _orig_call = LiteLLM.call
+
+    async def call(self, *args, **kwargs):
+        info = getattr(self, "_model_info", None) or {}
+        window = info.get("max_input_tokens") or info.get("max_tokens")
+        output_cap = info.get("max_output_tokens")
+        requested = kwargs.get("max_tokens")
+        if (
+            isinstance(requested, int)
+            and isinstance(window, int)
+            and window > 0
+            and requested >= window
+        ):
+            kwargs["max_tokens"] = (
+                int(output_cap)
+                if isinstance(output_cap, int) and 0 < output_cap < window
+                else max(1, window // 4)
+            )
+        return await _orig_call(self, *args, **kwargs)
+
+    LiteLLM.call = call  # type: ignore[method-assign]
+    LiteLLM._biv_max_tokens_clamp = True
+
+
 _patch_terminus_tmux()
+_patch_litellm_max_tokens_clamp()

@@ -65,6 +65,8 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 
 **`qemu-alpine-ssh` + 本机 tmux：** 不是「Harbor 套在宿主机 tmux 里」导致的。该题镜像是 Debian bullseye，自带 **tmux 3.1c**；Terminus 用 `tmux new-session -e`（需要 ≥3.2）注入 `--ae` 的 `OPENAI_*`，于是 agent 还没上场就 `Failed to start tmux session`。`test.py` / `run_harbor.py` 会把 `eval/harbor_runtime` 加进 Harbor 的 `PYTHONPATH`，改成在 pane 里 `export` 而不是 `-e`。resume 已失败的 trial 需要 `-f RuntimeError`。
 
+**vLLM HTTP 400：** `--max-model-len 65536` 是服务器上限，超了就 **400**，不会自动截断。把 `max_output_tokens` 也设成 65536 等于请求「再生成一整窗」，连 `hi` 都会 400。LiteLLM 对 `openai/qwen-merge` 的 token 计数不是 Qwen tokenizer、也不含 chat template，Harbor 以为还有余量时 vLLM 已经爆窗。`terminus_model_info` 现在把 input 留出 output+margin，output 默认 16384。job.log 里的 `hit max_tokens limit` 多数是 **200 + finish_reason=length**（推理把输出额度吃完），不是 400。
+
 ## 实时看 agent 轨迹
 
 Harbor 会把完整轨迹写到 job 目录（边跑边更新）：

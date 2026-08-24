@@ -196,6 +196,7 @@ def _parse_args() -> argparse.Namespace:
         default=int(os.environ.get("HARBOR_MAX_MODEL_LEN", "65536")),
         help="Tell Terminus/LiteLLM the vLLM context window (default 65536). "
         "Unmapped openai/<name> otherwise falls back to 1e6 and vLLM returns 400. "
+        "Output cap is smaller than this window (prompt+max_tokens must fit). "
         "On --resume this is written into the job config.json (resume has no --ak).",
     )
     p.add_argument(

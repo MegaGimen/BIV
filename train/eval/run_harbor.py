@@ -54,13 +54,22 @@ DEFAULT_AGENT_TIMEOUT_MULTIPLIER = 100.0
 # Terminus/LiteLLM fallback is 1e6 if the model is unmapped; that makes vLLM
 # reject long chat.completions with HTTP 400. Match serve max-model-len.
 DEFAULT_MAX_MODEL_LEN = 65536
+# Completion budget must be < window. vLLM 400s ``max_tokens=65536`` even on
+# a "hi" prompt (prompt_tokens + max_tokens > max_model_len). Also leave
+# headroom: LiteLLM token_counter(openai/qwen-merge) is not the Qwen
+# tokenizer and ignores the chat template, so Harbor's "free tokens" is high.
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
+DEFAULT_TOKEN_COUNT_MARGIN = 4096
 
 
 def terminus_model_info(max_model_len: int) -> dict[str, int]:
     n = int(max_model_len)
+    output = min(DEFAULT_MAX_OUTPUT_TOKENS, max(1024, n // 4))
+    margin = min(DEFAULT_TOKEN_COUNT_MARGIN, max(0, n // 16))
+    inp = max(output + 1024, n - output - margin)
     return {
-        "max_input_tokens": n,
-        "max_output_tokens": n,
+        "max_input_tokens": inp,
+        "max_output_tokens": output,
         "max_tokens": n,
     }
 
@@ -129,9 +138,10 @@ def apply_model_info_to_job_config(job_dir: Path, max_model_len: int) -> None:
             )
             n_files += 1
 
+    info = terminus_model_info(max_model_len)
     print(
-        f"[harbor] set model_info max_input_tokens={max_model_len} "
-        f"in {n_files} file(s) under {job_dir} (trial configs={n_trials})",
+        f"[harbor] set model_info {info} in {n_files} file(s) "
+        f"under {job_dir} (trial configs={n_trials})",
         flush=True,
     )
 
