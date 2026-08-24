@@ -18,7 +18,7 @@ TB arm/step (optional): copy from AutoDL serve banner, or::
 Resume an interrupted Harbor run (skips finished trials)::
 
   python scripts/test.py --resume outputs/agent_eval/<stamp>_<arm>
-  python scripts/test.py --resume outputs/agent_eval/.../<arm>_terminal_bench_2_1
+  python scripts/test.py --resume outputs/agent_eval/.../<arm>_terminal_bench_2_1 --max-model-len 65536
 """
 
 from __future__ import annotations
@@ -191,6 +191,14 @@ def _parse_args() -> argparse.Namespace:
         help="Harbor --timeout-multiplier for non-agent phases (default 1.0).",
     )
     p.add_argument(
+        "--max-model-len",
+        type=int,
+        default=int(os.environ.get("HARBOR_MAX_MODEL_LEN", "65536")),
+        help="Tell Terminus/LiteLLM the vLLM context window (default 65536). "
+        "Unmapped openai/<name> otherwise falls back to 1e6 and vLLM returns 400. "
+        "On --resume this is written into the job config.json (resume has no --ak).",
+    )
+    p.add_argument(
         "--log-dir",
         type=Path,
         default=None,
@@ -314,6 +322,7 @@ def main() -> None:
         f"(terminus only; not from task.toml)",
         flush=True,
     )
+    print(f"  max_model_len: {args.max_model_len}", flush=True)
     print(
         f"  agent_timeout_mult: {agent_timeout_mult} "
         f"(task agent timeout_sec × this)",
@@ -401,6 +410,7 @@ def main() -> None:
                 filter_error_types=args.filter_error_types,
                 base_url=base_url,
                 api_key=args.api_key,
+                max_model_len=args.max_model_len,
             )
             suite = str(result.get("suite") or job_dir.name)
             result["arm"] = arm
@@ -440,6 +450,7 @@ def main() -> None:
                 timeout_multiplier=float(args.timeout_multiplier),
                 agent_timeout_multiplier=agent_timeout_mult,
                 max_turns=max_turns,
+                max_model_len=args.max_model_len,
             )
             print(
                 f"\n--- suite={suite} agent={spec.agent} dataset={spec.dataset} ---",

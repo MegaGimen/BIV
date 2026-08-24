@@ -51,6 +51,47 @@ DEFAULT_SUITES = tuple(SUITES.keys())
 DEFAULT_TERMINUS_MAX_TURNS = 300
 # Stretch task timeouts so slow remote vLLM is not killed by 900s wall-clock first.
 DEFAULT_AGENT_TIMEOUT_MULTIPLIER = 100.0
+# Terminus/LiteLLM fallback is 1e6 if the model is unmapped; that makes vLLM
+# reject long chat.completions with HTTP 400. Match serve max-model-len.
+DEFAULT_MAX_MODEL_LEN = 65536
+
+
+def terminus_model_info(max_model_len: int) -> dict[str, int]:
+    n = int(max_model_len)
+    return {
+        "max_input_tokens": n,
+        "max_output_tokens": n,
+        "max_tokens": n,
+    }
+
+
+def apply_model_info_to_job_config(job_dir: Path, max_model_len: int) -> None:
+    """Patch a saved Harbor job so resume picks up the real vLLM window.
+
+    ``harbor job resume`` does not accept ``--ak``; it rereads ``config.json``.
+    """
+    cfg_path = job_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    info = terminus_model_info(max_model_len)
+    changed = False
+    for agent in raw.get("agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        kwargs = agent.setdefault("kwargs", {})
+        if not isinstance(kwargs, dict):
+            continue
+        if kwargs.get("model_info") != info:
+            kwargs["model_info"] = info
+            changed = True
+    if changed:
+        cfg_path.write_text(
+            json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            f"[harbor] set model_info max_input_tokens={max_model_len} in {cfg_path}",
+            flush=True,
+        )
 
 
 def load_meta_reference() -> dict[str, Any]:
@@ -101,6 +142,7 @@ class HarborRunSpec:
     timeout_multiplier: float = 1.0
     agent_timeout_multiplier: float | None = DEFAULT_AGENT_TIMEOUT_MULTIPLIER
     max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS
+    max_model_len: int | None = DEFAULT_MAX_MODEL_LEN
     debug: bool = False
     raw_trajectory: bool = False
 
@@ -159,6 +201,14 @@ class HarborRunSpec:
             )
             if self.max_turns is not None:
                 cmd.extend(["--ak", f"max_turns={int(self.max_turns)}"])
+            if self.max_model_len is not None:
+                cmd.extend(
+                    [
+                        "--ak",
+                        "model_info="
+                        + json.dumps(terminus_model_info(self.max_model_len)),
+                    ]
+                )
             if self.raw_trajectory:
                 cmd.extend(["--ak", 'trajectory_config={"raw_content": true}'])
         else:
@@ -185,6 +235,7 @@ def make_spec(
     timeout_multiplier: float = 1.0,
     agent_timeout_multiplier: float | None = DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
     max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS,
+    max_model_len: int | None = DEFAULT_MAX_MODEL_LEN,
 ) -> HarborRunSpec:
     if suite not in SUITES:
         raise SystemExit(f"Unknown suite {suite!r}; choose from {list(SUITES)}")
@@ -213,6 +264,7 @@ def make_spec(
         timeout_multiplier=float(timeout_multiplier),
         agent_timeout_multiplier=agent_timeout_multiplier,
         max_turns=max_turns,
+        max_model_len=max_model_len,
         debug=debug,
         raw_trajectory=raw_trajectory,
     )
@@ -443,6 +495,7 @@ def resume_job(
     filter_error_types: list[str] | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    max_model_len: int | None = DEFAULT_MAX_MODEL_LEN,
 ) -> dict[str, Any]:
     """Continue an interrupted Harbor job via ``harbor job resume -p``."""
     job_dir = job_dir if job_dir.is_absolute() else (TRAIN_ROOT / job_dir)
@@ -450,6 +503,8 @@ def resume_job(
     cfg = job_dir / "config.json"
     if not cfg.is_file():
         raise SystemExit(f"resume: missing config.json in {job_dir}")
+    if max_model_len is not None and not dry_run:
+        apply_model_info_to_job_config(job_dir, max_model_len)
 
     suite = infer_suite_from_job_dir(job_dir) or "unknown"
     meta = SUITES.get(suite) or {}

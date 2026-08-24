@@ -98,8 +98,8 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 Harbor 每个 suite 的 job 目录里有 `config.json` + 已完成的 `trial_result.json`。中断后**不要**再开一轮默认 `test.py`（会新建时间戳目录），用：
 
 ```bash
-# 续跑整个 stamp 下所有未完成 suite
-python scripts/test.py --resume outputs/agent_eval/20260814T170504Z_checkpoint-e0-s2150
+# 续跑整个 stamp 下所有未完成 suite（默认写入 65536 上下文，避免 LiteLLM 1e6 fallback）
+python scripts/test.py --resume outputs/agent_eval/20260814T170504Z_checkpoint-e0-s2150 --max-model-len 65536
 
 # 只续某一个 suite job
 python scripts/test.py --resume outputs/agent_eval/.../checkpoint-e0-s2150_terminal_bench_2_1
