@@ -13,6 +13,7 @@ generation_config come from Instruct so Harbor Terminus tool format matches.
 
 GPU (AutoDL)::
 
+    python merge/download.py
     python merge/merge.py
     python merge/merge.py --lambda 0.7 --dare-density 0.5
 """
@@ -27,13 +28,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT = ROOT / "merge" / "output" / "chatvector"
-DEFAULT_CACHE = ROOT / "merge" / "output" / "cache"
+_MERGE_DIR = Path(__file__).resolve().parent
+if str(_MERGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_MERGE_DIR))
 
-DEFAULT_WORLD = "Qwen/Qwen-AgentWorld-35B-A3B"
-DEFAULT_AGENT = "Qwen/Qwen3.5-35B-A3B"
-DEFAULT_BASE = "Qwen/Qwen3.5-35B-A3B-Base"
+from download import (  # noqa: E402
+    DEFAULT_AGENT,
+    DEFAULT_BASE,
+    DEFAULT_CACHE,
+    DEFAULT_WORLD,
+    ROOT,
+    resolve_model,
+)
+
+DEFAULT_OUT = ROOT / "merge" / "output" / "chatvector"
 
 _VISUAL_PARTS = {
     "visual",
@@ -71,75 +79,6 @@ def log(msg: str) -> None:
 
 def is_visual_key(name: str) -> bool:
     return any(part in _VISUAL_PARTS for part in name.split("."))
-
-
-def has_config(path: Path) -> bool:
-    return path.is_dir() and any(
-        (path / n).is_file() for n in ("config.json", "configuration.json")
-    )
-
-
-def sanitize(model_id: str) -> str:
-    return model_id.strip().replace("/", "--").replace(" ", "_")
-
-
-def resolve_model(
-    spec: str,
-    *,
-    source: str,
-    cache_dir: Path,
-    role: str,
-) -> Path:
-    p = Path(spec).expanduser()
-    if has_config(p):
-        log(f"[{role}] local checkpoint: {p.resolve()}")
-        return p.resolve()
-
-    dest = cache_dir / sanitize(spec)
-    if has_config(dest):
-        log(f"[{role}] reusing cache: {dest}")
-        return dest.resolve()
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    src = source.strip().lower()
-    log(f"[{role}] downloading {spec} via {src} → {dest}")
-
-    if src in {"modelscope", "ms"}:
-        try:
-            from modelscope import snapshot_download
-        except ImportError as e:
-            raise SystemExit(
-                "modelscope is required: pip install modelscope\n"
-                f"({e})"
-            ) from e
-        try:
-            local = snapshot_download(spec, local_dir=str(dest))
-        except TypeError:
-            local = snapshot_download(spec)
-        out = Path(local)
-        if not has_config(out) and has_config(dest):
-            out = dest
-        if not has_config(out):
-            raise SystemExit(f"[{role}] download finished but no config.json under {out}")
-        return out.resolve()
-
-    if src in {"huggingface", "hf"}:
-        try:
-            from huggingface_hub import snapshot_download as hf_snapshot_download
-        except ImportError as e:
-            raise SystemExit(
-                "huggingface_hub is required: pip install huggingface_hub\n"
-                f"({e})"
-            ) from e
-        if not os.environ.get("HF_ENDPOINT"):
-            log("Tip (CN): export HF_ENDPOINT=https://hf-mirror.com")
-        local = hf_snapshot_download(repo_id=spec, local_dir=str(dest))
-        out = Path(local)
-        if not has_config(out):
-            raise SystemExit(f"[{role}] download finished but no config.json under {out}")
-        return out.resolve()
-
-    raise SystemExit(f"Unknown --source {source!r} (modelscope | huggingface)")
 
 
 def load_weight_map(model_dir: Path) -> dict[str, str]:

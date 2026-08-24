@@ -7,7 +7,12 @@ Default: merged AgentWorld+Instruct at merge/output/chatvector, served as
 Does not reuse .venv-muse (Muse-patched vLLM). Needs a recent vLLM that
 loads Qwen3.5-35B-A3B.
 
-This host (Harbor) is unchanged. After this process is up on AutoDL:6006::
+This host (Harbor) is unchanged. Download weights first, merge, then serve::
+
+    python merge/download.py
+    python merge/merge.py
+    python merge/eval.py
+    python merge/eval.py --base
 
     cd train && source .venv-eval/bin/activate
     python scripts/test.py --model qwen-merge --suite terminal-bench-2.1
@@ -24,9 +29,19 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+_MERGE_DIR = Path(__file__).resolve().parent
+if str(_MERGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_MERGE_DIR))
+
+from download import (  # noqa: E402
+    DEFAULT_AGENT,
+    DEFAULT_CACHE,
+    ROOT,
+    existing_or_spec,
+    has_config,
+)
+
 DEFAULT_MERGED = ROOT / "merge" / "output" / "chatvector"
-DEFAULT_AGENT = "Qwen/Qwen3.5-35B-A3B"
 DEFAULT_PORT = 6006
 MERGE_NAME = "qwen-merge"
 BASE_NAME = "Qwen3.5-35B-A3B"
@@ -34,10 +49,6 @@ BASE_NAME = "Qwen3.5-35B-A3B"
 
 def log(msg: str) -> None:
     print(msg, flush=True)
-
-
-def has_config(path: Path) -> bool:
-    return path.is_dir() and (path / "config.json").is_file()
 
 
 def find_vllm() -> list[str]:
@@ -118,8 +129,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
+    cache_dir = DEFAULT_CACHE if DEFAULT_CACHE.is_absolute() else (ROOT / DEFAULT_CACHE)
     if args.base:
-        model = args.model or DEFAULT_AGENT
+        model = existing_or_spec(args.model or DEFAULT_AGENT, cache_dir)
         served = args.served_model_name or BASE_NAME
     else:
         model = args.model or str(DEFAULT_MERGED)
