@@ -45,6 +45,12 @@ DEFAULT_MERGED = ROOT / "merge" / "output" / "chatvector"
 DEFAULT_PORT = 6006
 MERGE_NAME = "qwen-merge"
 BASE_NAME = "Qwen3.5-35B-A3B"
+# Qwen3.5 GDN/Mamba: each decode sequence needs one Mamba cache block.
+# vLLM / AutoDL stock max_num_seqs is 1024; at 64K + 0.90 util that is more
+# blocks than fit (~700–800), so CUDA graph capture aborts. Harbor TB only
+# runs 4 concurrent trials.
+GDN_SAFE_MAX_NUM_SEQS = 64
+VLLM_STOCK_MAX_NUM_SEQS = 1024
 
 
 def log(msg: str) -> None:
@@ -141,8 +147,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-num-seqs",
         type=int,
-        default=int(os.environ.get("VLLM_MAX_NUM_SEQS", "256")),
-        help="Concurrent sequences. Qwen3.5 GDN/Mamba needs this below KV/Mamba blocks.",
+        default=None,
+        help="Concurrent sequences (default: 64). Qwen3.5 GDN/Mamba cannot use "
+        "vLLM's stock 1024 — that exceeds Mamba cache blocks at 64K. "
+        "Harbor TB only needs ~4.",
     )
     p.add_argument("--vllm-bin", default=None, help="Path to vllm executable")
     p.add_argument(
@@ -162,6 +170,40 @@ def parse_args() -> argparse.Namespace:
         help="Extra args after -- forwarded to vLLM",
     )
     return p.parse_args()
+
+
+def resolve_max_num_seqs(cli: int | None) -> int:
+    """Keep GDN CUDA-graph capture below available Mamba cache blocks.
+
+    AutoDL images and stock vLLM set ``VLLM_MAX_NUM_SEQS=1024``. Merge may
+    have been started with an explicit 256; a later ``--base`` launch then
+    inherits 1024 and dies at capture.
+    """
+    source = "default"
+    if cli is not None:
+        n = int(cli)
+        source = "cli"
+    else:
+        raw = os.environ.get("VLLM_MAX_NUM_SEQS")
+        if raw:
+            n = int(raw)
+            source = "env"
+        else:
+            n = GDN_SAFE_MAX_NUM_SEQS
+    if n >= VLLM_STOCK_MAX_NUM_SEQS:
+        log(
+            f"max_num_seqs={n} ({source}) is vLLM/AutoDL stock; Qwen3.5 GDN "
+            f"cannot CUDA-graph that many sequences at 64K. "
+            f"Using {GDN_SAFE_MAX_NUM_SEQS}."
+        )
+        return GDN_SAFE_MAX_NUM_SEQS
+    if n > 256:
+        log(
+            f"max_num_seqs={n} ({source}) is high for Qwen3.5 GDN Mamba cache; "
+            f"clamping to {GDN_SAFE_MAX_NUM_SEQS}."
+        )
+        return GDN_SAFE_MAX_NUM_SEQS
+    return n
 
 
 def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
@@ -200,6 +242,8 @@ def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
     extra = list(args.passthrough)
     if extra and extra[0] == "--":
         extra = extra[1:]
+
+    args.max_num_seqs = resolve_max_num_seqs(args.max_num_seqs)
 
     cmd = [
         *launcher,
@@ -253,7 +297,10 @@ def main() -> None:
     log(f"  model:  {model}")
     log(f"  served: {served}")
     log(f"  bind:   {args.host}:{args.port}")
-    log(f"  tp={args.tp}  max_model_len={args.max_model_len}  dtype={args.dtype}")
+    log(
+        f"  tp={args.tp}  max_model_len={args.max_model_len}  "
+        f"max_num_seqs={args.max_num_seqs}  dtype={args.dtype}"
+    )
     log("  cmd:    " + " ".join(cmd))
     log(harbor_hint(served))
 

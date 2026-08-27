@@ -50,5 +50,7 @@ PY
 
 echo
 echo "Activate: source $VENV/bin/activate"
-echo "Serve:    python merge/eval.py --max-model-len 65536"
+echo "Serve merge:  python merge/eval.py --max-model-len 65536"
+echo "Serve Instruct: python merge/eval.py --base --max-model-len 65536"
+echo "Do not pass vLLM stock --max-num-seqs 1024 (Qwen3.5 GDN Mamba cache)."
 echo "If FlashInfer errors: VLLM_ATTENTION_BACKEND=FLASH_ATTN python merge/eval.py --max-model-len 65536"
