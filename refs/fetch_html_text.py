@@ -206,6 +206,29 @@ PAPERS: list[tuple[str, str]] = [
     ("2505.17761", "slices-structured-linear-cdes"),
     ("2603.14360", "m2rnn-matrix-valued-states"),
     ("2607.07386", "sparse-delta-memory"),
+    # U. objective mismatch: observation CE is provably the wrong loss for control
+    ("2204.01464", "vagram-value-gradient-model-learning"),
+    ("1806.00541", "iterative-vaml"),
+    ("2106.14080", "model-advantage-value-aware"),
+    ("2011.03506", "value-equivalence-principle"),
+    ("2206.02072", "deciding-what-to-model-rate-distortion"),
+    ("1911.11868", "error-bounds-imitating-environments"),
+    ("2406.16249", "optimal-tightness-simulation-lemma"),
+    ("2505.22772", "calibrated-value-aware-model-learning"),
+    ("2106.03273", "control-oriented-mbrl-implicit-diff"),
+    ("2605.29032", "policy-aware-simulator-learning"),
+    ("2409.12799", "central-role-of-loss-function-rl"),
+    # W. execution-aware pretraining: the closest empirical precedent (code domain)
+    ("2306.07487", "traced-execution-aware-pretraining"),
+    ("2406.01006", "semcoder-monologue-reasoning"),
+    ("2503.05703", "execution-tuning-dynamic-scratchpad"),
+    ("2605.11922", "stepcodereasoner"),
+    ("2604.03253", "self-execution-simulation"),
+    ("2404.14662", "next-reason-about-execution"),
+    ("2305.05383", "codeexecutor"),
+    ("2304.12743", "tracefixer"),
+    # note: "Towards Effectively Leveraging Execution Traces for Program Repair"
+    # has no usable arXiv HTML; see ACL DOI 10.18653/v1/2025.knowledgenlp-1.17
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"

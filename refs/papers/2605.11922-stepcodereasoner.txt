@@ -1,0 +1,1335 @@
+source: https://arxiv.org/html/2605.11922
+arxiv: https://arxiv.org/abs/2605.11922
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. 2.1 Code Reasoning
+     2. 2.2 Reinforcement Learning in LLMs for Reasoning
+ 4. 3 Method
+     1. 3.1 Problem Definition
+         1. The Final-Answer–Only Approach
+         2. The StepCodeReasoner Approach
+     2. 3.2 Execution-Trace Augmentation and Task Decoupling
+     3. 3.3 Bi-Level GRPO Optimization
+         1. Execution-Level Rewards.
+         2. Group-Relative Stepwise Advantage.
+         3. Intra-Trajectory Shaping Advantage.
+         4. Bi-Level Stepwise Advantage.
+         5. Optimization Objective.
+ 5. 4 Experiments
+     1. 4.1 Benchmarks
+     2. 4.2 Dataset Construction
+     3. 4.3 Implementation Details
+     4. 4.4 Baselines
+     5. 4.5 Main Results
+         1. 4.5.1 Baseline Results
+         2. 4.5.2 Performance on Reval
+         3. 4.5.3 Performance on Code Generation
+         4. 4.5.4 Ablation Study
+         5. 4.5.5 Intermediate Step Accuracy
+         6. 4.5.6 Generalization Without Instrumentation
+         7. 4.5.7 Scaling to Larger Models
+ 6. 5 Limitations
+ 7. 6 Conclusion
+ 8. References
+ 9. A System Prompts for Code Reasoning
+     1. Goal
+     2. Crucial Rules
+     3. Output
+10. B Benchmark Processing Details
+     1. B.1 CRUXEval and LiveCodeBench
+     2. B.2 REval Fine-grained Adaptation
+         1. B.2.1 Task Re-mapping
+         2. B.2.2 Line Number Alignment
+11. C Example of Instrumented Code and Trace
+12. D Complete Step-by-step Case Analysis
+13. E Learning Dynamics
+14. F Robustness to Instrumentation Quality
+     1. F.1 Random Anchor Dropout
+     2. F.2 Replacing the Teacher with a Smaller Open-Source Model
+15. G PRM Baseline Comparison
+16. H Training Data Scaling Analysis
+17. I Computational Overhead Analysis
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2605.11922v1 [cs.SE] 12 May 2026
+
+StepCodeReasoner: Aligning Code Reasoning with Stepwise Execution Traces via Reinforcement Learning
+
+Hao Wang Affiliation: Beihang University, Beijing, China    Rui Li Affiliation: Peking University,
+Beijing, China    Lei Sha Affiliation: Beihang University, Beijing, China Affiliation: Zhongguancun
+Laboratory, Beijing, China    Jie M. Zhang Affiliation: King’s College London, United Kingdom 
+Correspondence to: jie.zhang@kcl.ac.uk
+
+Abstract
+
+Existing code reasoning methods primarily supervise final code outputs, ignoring intermediate
+states, often leading to reward hacking where correct answers are obtained through inconsistent
+reasoning. We propose StepCodeReasoner, a framework that introduces explicit intermediate
+execution-state supervision. By automatically inserting structured print-based execution-trace
+anchors into code, the model is trained to predict runtime states at each step, transforming code
+reasoning into a verifiable, stepwise execution modeling problem. Building on this execution-aware
+method, we introduce Bi-Level GRPO, a reinforcement learning algorithm for structured credit
+assignment at two levels: inter-trajectory, comparing alternative execution paths, and
+intra-trajectory, rewarding intermediate accuracy based on its impact on downstream correctness.
+Extensive experiments demonstrate that StepCodeReasoner achieves SOTA performance in code
+reasoning. In particular, our 7B model achieves 91.1% on CRUXEval and 86.5% on LiveCodeBench,
+outperforming the CodeReasoner-7B baseline (86.0% and 77.7%) and GPT-4o (85.6% and 75.1%).
+Furthermore, on the execution-trace benchmark REval, our model scores 82.9%, outperforming baseline
+CodeReasoner-7B (72.3%), its 14B counterpart (81.1%), and GPT-4o (77.3%). Additionally, our
+approach also improves code generation performance, demonstrating that explicit execution modeling
+enhances both code reasoning and code generation.
+
+Keywords: 
+
+Machine Learning, ICML
+
+1 Introduction
+
+Reasoning about code—predicting how a program evolves during execution—lies at the core of advanced
+Large Language Model (LLM) intelligence. Unlike surface-level pattern recognition, code reasoning
+requires models to faithfully simulate program semantics, including variable updates, control flow
+transitions, and long-range dependencies induced by loops and conditionals. This capability is
+essential for a wide range of software engineering tasks, such as automated debugging (Zhong et
+al., 2024), program repair (Ni et al., 2024; Ye et al., 2022), and algorithmic code generation.
+
+Despite recent progress, most existing training paradigms still formulate code reasoning as a
+terminal prediction problem. Both supervised fine-tuning (SFT) and reinforcement learning (RL)
+approaches—including execution-centric methods such as CodeReasoner (Tang et al., 2025)—primarily
+optimize models based on the correctness of the final output. Intermediate reasoning steps, even
+when explicitly generated, are not verified against true program execution. As a result, models are
+free to arrive at correct answers through logically inconsistent or partially incorrect execution
+paths, a phenomenon often referred to as reward hacking. Because intermediate states are never
+observed or penalized, training signals fail to distinguish genuine execution understanding from
+lucky guesses.
+
+To address this challenge, we propose StepCodeReasoner, a framework that transforms code reasoning
+from a black-box prediction task into an explicit execution modeling problem with dense, structured
+supervision (as illustrated in Figure 1).
+
+Refer to caption
+Figure 1: Overview of the StepCodeReasoner framework. The top-left illustrates Execution-Trace
+Augmentation, where the original Swapcase code is modified by inserting structured print statements
+to create observable execution anchors. The top-right shows the resulting Model Inference Process
+for the input "y7s6", where the model generates interleaved blocks of <reasoning> for logical
+deduction and <print> for state prediction (e.g., Anchor[1] for the intermediate variable state and
+Anchor[2] for the returned string). The lower section details the Bi-Level GRPO training paradigm,
+where the current policy πθ\pi_{\theta} generates a group of trajectories for a single input,
+represented as a matrix of states si,js_{i,j} and final values viv_{i}. Notably, although s32s_{32}
+and s22s_{22} both represent correct intermediate steps, s32s_{32} exhibits a higher advantage
+(s32>s22>s12s_{32}>s_{22}>s_{12}) because it belongs to a trajectory with higher subsequent
+rewards. The learning signal is refined through two distinct components: the Group-relative
+Advantage (AG​r​o​u​pA_{Group}) which contrasts the quality of different trajectories within the
+group to filter out noise, and the Intra-trajectory Shaping Advantage (AI​n​t​r​aA_{Intra}) which
+propagates rewards through sequential anchors within a single path. This dual-level advantage
+mechanism allows for precise credit assignment at each reasoning step, ultimately optimizing the
+model’s ability to predict both intermediate execution states and final outputs correctly.
+
+The framework begins by making program execution states observable through the automatic insertion
+of execution-trace anchors. By implementing structured print statements at critical junctures—such
+as variable updates, loop exits, and return points—we convert abstract program logic into a series
+of concrete, verifiable targets. Building on these anchors, we decouple code reasoning into two
+distinct tasks: output prediction and input prediction. Unlike traditional methods that treat these
+as simple assertion completion, we employ specialized, execution-aligned prompts for each task.
+This unified yet decoupled format requires the model to interleave logical reasoning with state
+prediction, ensuring its deductions are grounded in program semantics.
+
+To provide rigorous supervision for these reasoning chains, we introduce a novel reinforcement
+learning algorithm, Bi-Level GRPO, which provides fine-grained supervision over both intermediate
+execution steps and final outcomes. Unlike standard RL methods that assign a single sparse reward
+at the end of a trajectory, our approach computes stepwise rewards at each execution anchor and
+performs group-relative normalization across sampled trajectories. Crucially, Bi-Level GRPO further
+incorporates an intra-trajectory shaping signal that modulates step-level credit based on how well
+a correct intermediate prediction facilitates subsequent correct execution. This bi-level design
+enables precise credit assignment that is both execution-consistent and trajectory-aware,
+effectively resolving the ambiguity inherent in long-horizon code reasoning.
+
+Extensive experiments demonstrate that StepCodeReasoner achieves a new state-of-the-art in code
+reasoning. Compared to the leading open-source baseline CodeReasoner-7B (81.8%81.8\% average), our
+7B model delivers an average score of 87.8%87.8\% across prediction tasks and scores 82.9%82.9\% on
+the fine-grained REval benchmark, surpassing the baseline’s 72.3%72.3\%. Notably, our model
+outperforms the proprietary GPT-4o (80.3%80.3\% average), demonstrating superior performance on the
+input prediction tasks of LiveCodeBench and CRUXEval. These results suggest that learning to
+explicitly execute code provides a far more robust foundation for reasoning than merely predicting
+final outputs.
+
+In summary, this work makes the following contributions:
+
+  • •
+   
+    We propose StepCodeReasoner, a framework that introduces execution anchors to expose
+    intermediate program states and designs distinct, execution-aligned prompting schemes for input
+    prediction and output prediction in code reasoning.
+
+  • •
+   
+    We develop Bi-Level GRPO, a reinforcement learning algorithm that performs structured credit
+    assignment at two complementary levels: across trajectory groups via relative comparison, and
+    within individual trajectories to model long-range execution dependencies.
+
+  • •
+   
+    We demonstrate that StepCodeReasoner allows our 7B model to surpass GPT-4o on multiple code
+    reasoning benchmarks (CRUXEval, REval) and significantly improves performance on algorithmic
+    code generation tasks like LiveCodeBench, showing that learning to execute code improves the
+    ability to write code.
+
+2 Related Work
+
+2.1 Code Reasoning
+
+Code reasoning is commonly evaluated through execution-oriented benchmarks that require models to
+infer program behavior from code, such as predicting inputs or outputs under partial execution
+settings (Gu et al., 2024; Jain et al., 2024). Follow-up work extends this paradigm by
+incorporating natural language specifications (Chen et al., 2024), supporting multiple programming
+languages (Xu et al., 2024), or constructing reasoning tasks from real-world software projects (Roy
+et al., 2025), enabling broader analysis of model generalization across settings.
+
+Beyond evaluation, recent work has explored training strategies to improve models’ code reasoning
+abilities. CodeExecutor and TRACED incorporate execution supervision or traces during pre-training
+to capture dynamic program behavior (Liu et al., 2023; Ding et al., 2024b), while SemCoder further
+reasons over comprehensive execution semantics using natural language monologue reasoning (Ding et
+al., 2024a). Other approaches use code reasoning tasks to enhance general reasoning ability,
+including CODEI/O through input–output prediction with natural language rationales (Li et al.,
+2025a) and Absolute Zero via self-play reinforcement learning on executable tasks (Zhao et al.,
+2025). In contrast, CodeReasoner directly optimizes code reasoning performance through
+execution-focused data construction, supervised fine-tuning, and reinforcement learning (Tang et
+al., 2025). However, most existing methods primarily supervise final outcomes, whereas our approach
+(StepCodeReasoner) further introduces explicit supervision over intermediate reasoning processes.
+
+2.2 Reinforcement Learning in LLMs for Reasoning
+
+Recent advances in reinforcement learning have substantially improved the reasoning capabilities of
+large language models. Group Relative Policy Optimization (GRPO) (Shao et al., 2024) has become a
+widely adopted foundation, with subsequent work focusing on reducing variance and improving
+training stability. DAPO (Yu et al., 2025) and ASPO (Wang et al., 2025) mitigate optimization bias
+and instability through dynamic sampling strategies and asymmetric importance weighting,
+respectively. From an optimization perspective, GSPO (Zheng et al., 2025) argues that token-level
+importance ratios introduce unnecessary variance, and instead performs policy optimization using
+sequence-level likelihood ratios and advantages. Complementary to this coarse-grained view,
+Step-GRPO (R1-VL) (Zhang et al., 2025) refines GRPO with step-wise relative advantage estimation,
+decomposing long-chain reasoning into intermediate steps and assigning fine-grained credit using
+rule-based rewards derived from ground-truth reasoning paths. Beyond flat rollouts, TreePO (Li et
+al., 2025b) further restructures exploration into a tree search, exploiting hierarchical relative
+advantages among sibling nodes to improve both exploration efficiency and policy learning.
+
+Reinforcement learning has also been widely applied in software engineering tasks that require
+structured decision-making over long horizons. In code generation and completion, RL is used to
+optimize retrieval-augmented pipelines for selecting relevant repository context (Wang et al., 2024
+) and to train critic models that evaluate partial code during generation (Li et al., 2024). For
+automated program repair, RL agents explore the patch search space while balancing functional
+correctness and similarity to reference implementations (Wei et al., 2025). RL has also shown
+strong performance in software testing, where it guides fuzzers toward inputs that maximize
+coverage and vulnerability discovery (Li et al., 2022; Eom et al., 2024). Collectively, these works
+highlight RL as a unifying framework for advancing code reasoning across generation, repair, and
+verification.
+
+3 Method
+
+3.1 Problem Definition
+
+Before detailing our specific framework, we first formalize the code reasoning tasks and contrast
+the traditional terminal supervision paradigm with our proposed stepwise objective. Code reasoning
+tasks can be categorized into two types: output prediction, where the model predicts the result YY
+given a program PP and input II; and input prediction, where the model identifies the required
+input II to produce a target output YY. For clarity, we use CC to represent the known condition and
+VV to represent the missing target value to be predicted.
+
+The Final-Answer–Only Approach
+
+Under the traditional terminal supervision paradigm, code reasoning is formulated as a single-step
+prediction problem. Given the program PP and the condition CC, the model is trained to directly
+produce the target value VV. Although the model may generate an intermediate reasoning trace, the
+training process only supervises the final answer. Formally, the optimization objective is defined
+as:
+
+ ℒterminal​(θ)=−log⁡pθ​(V∗∣P,C)\mathcal{L}_{\text{terminal}}(\theta)=-\log p_{\theta}(V^{*}\    (1)
+ mid P,C)
+
+This objective treats the execution process as an unobserved process. Consequently, any reasoning
+path that leads to the correct answer V∗V^{*} is rewarded equally, even if the intermediate steps
+are logically inconsistent with the actual program behavior. This often leads to "right answer,
+wrong logic," where the model relies on superficial patterns rather than true simulation.
+
+The StepCodeReasoner Approach
+
+In contrast, our StepCodeReasoner framework reformulates code reasoning as a stepwise execution
+modeling task. We make the internal execution visible by inserting a sequence of anchors into PP,
+which act as checkpoints for the program’s state. The model is now required to predict the complete
+execution trajectory S∗={s1∗,s2∗,…,sn∗}S^{*}=\{s_{1}^{*},s_{2}^{*},\dots,s_{n}^{*}\}, where each
+si∗s_{i}^{*} represents the true values of variables at the ii-th anchor, followed by the final
+value V∗V^{*}. The optimization objective is thus defined as:
+
+ ℒStepCodeReasoner(θ)=−∑i=1n+1logpθ(zi∗∣P,C,z<i∗),\mathcal{L}_{\text{StepCodeReasoner}}(\       (2)
+ theta)=-\sum_{i=1}^{n+1}\log p_{\theta}\!\left(z_{i}^{*}\mid P,C,z_{<i}^{*}\right),
+
+where
+
+ zi={si,i≤n,V,i=n+1.z_{i}=\begin{cases}s_{i},&i\leq n,\\ V,&i=n+1.\end{cases}  (3)
+
+In this formulation, every intermediate state si∗s_{i}^{*} is explicitly supervised and verified
+against the ground truth from a code interpreter. Importantly, all ground-truth supervision—both
+intermediate states and final outputs—is generated by a deterministic Python interpreter, not by
+the LLM itself. The model’s role is to learn to predict interpreter output, thereby internalizing
+execution semantics as a reasoning capability that can be deployed without a sandbox at inference
+time. By assigning rewards to each step, StepCodeReasoner ensures that the model’s reasoning is
+strictly aligned with the program’s actual execution logic, effectively eliminating the possibility
+of achieving the correct answer through flawed reasoning.
+
+3.2 Execution-Trace Augmentation and Task Decoupling
+
+Having established the stepwise supervision objective, we now describe the data construction
+pipeline required to instantiate this process, specifically how we generate and structure the
+execution traces to make internal logic visible. The effectiveness of StepCodeReasoner relies on
+the quality and density of the execution-trace anchors. To transform a raw program PP into an
+instrumented version P′P^{\prime} that surfaces its internal states, we employ a teacher LLM to
+automatically insert print() statements. This process is governed by a set of heuristic rules
+designed to maximize logical transparency while maintaining a manageable sequence length. We define
+a transformation function 𝒯\mathcal{T} that performs this mapping:
+
+ P′=𝒯⁡(P)P^{\prime}=\mathcal{T}(P)   (4)
+
+Unlike naive instrumentation that might trace every line, we implement a selective strategy to
+avoid trace explosion. Specifically, we prohibit the insertion of anchors inside for or while
+loops, as repetitive state logging can lead to excessively long sequences that exceed the model’s
+context window. Instead, the state of variables affected by a loop is logged immediately after the
+loop terminates. Furthermore, we mandate anchors after significant variable assignments and
+immediately before a function’s return statement. To ensure the states are easily parsable, all
+anchors follow a strict format: print(f’VAR_NAME: {VAR_NAME}’). This instrumentation process is
+non-destructive; the teacher model is permitted to unroll complex one-liners into multi-line blocks
+only when necessary to insert a checkpoint. When P′P^{\prime} is executed by a deterministic
+interpreter ℰ\mathcal{E} with input II, it yields a sequence of ground-truth intermediate states
+S∗S^{*}:
+
+ S∗={s1∗,s2∗,…,sn∗}=ℰ⁡(P′,I)S^{*}=\{s_{1}^{*},s_{2}^{*},\dots,s_{n}^{*}\}=\mathcal{E}(P^{\      (5)
+ prime},I)
+
+To bridge the gap between code execution and natural language reasoning, we define structured
+templates that decouple the reasoning process into verifiable segments. For the standard output
+prediction task, the model is required to follow an iterative Reason-then-Print cycle. For every
+anchor in the augmented code P′P^{\prime}, the model must first generate a <reasoning> block rir_
+{i} to simulate the state transition, followed by a <print> block sis_{i} containing the predicted
+value. After all anchors are predicted, a final deduction leads to the answer VV. We represent the
+model’s generated sequence 𝐲output\mathbf{y}_{\text{output}} as follows:
+
+ 𝐲output=(r1,s1)⊕(r2,s2)⊕⋯⊕(rn,sn)⊕(rV,V)\mathbf{y}_{\text{output}}=(r_{1},s_{1})\oplus(r_      (6)
+ {2},s_{2})\oplus\dots\oplus(r_{n},s_{n})\oplus(r_{V},V)
+
+where ⊕\oplus denotes string concatenation. This structure ensures that the final answer is a
+direct consequence of the step-by-step simulation.
+
+For the more complex input prediction task, we introduce an additional input inference module at
+the beginning of the sequence. Before starting the execution simulation, the model must first use a
+<reasoning> block to analyze the code’s requirements and determine the unknown input II. This input
+is then provided in an <input> tag, acting as a "commitment" for the rest of the trace. Only after
+this input is fixed does the model proceed with the standard Reason-then-Print cycle to verify the
+execution flow. The sequence 𝐲input\mathbf{y}_{\text{input}} is defined as:
+
+ 𝐲input=(rI,I)⏟Input Inference⊕(r1,s1)⊕⋯⊕(rn,sn)⏟Trace Verification⊕(rV,V)⏟Final Deduction\
+ mathbf{y}_{\text{input}}=\underbrace{(r_{I},I)}_{\text{Input Inference}}\oplus\underbrace{(r_  (7)
+ {1},s_{1})\oplus\dots\oplus(r_{n},s_{n})}_{\text{Trace Verification}}\oplus\underbrace{(r_
+ {V},V)}_{\text{Final Deduction}}
+
+By forcing the model to explicitly predict II, sis_{i}, and VV in separate, labeled blocks, we
+transform code reasoning from a monolithic black-box prediction into a transparent chain of
+verifiable claims. This structured format provides a clear scratchpad for the model to perform
+mental simulation and creates a sequence of specific tokens that can be directly evaluated by the
+stepwise reward function in the reinforcement learning phase.
+
+3.3 Bi-Level GRPO Optimization
+
+To exploit dense execution-level supervision while explicitly modeling structured dependencies
+within each sampled execution trajectory, we propose Bi-Level GRPO, a group-relative policy
+optimization algorithm with intra-trajectory credit modulation. Unlike step-wise methods such as
+Step-GRPO, which estimate advantages solely via cross-trajectory comparisons at the same execution
+anchor, Bi-Level GRPO augments group-relative optimization with a trajectory-aware shaping signal
+that reflects how individual steps facilitate subsequent correct execution.
+
+For a given problem context xx, we sample a group of GG trajectories {𝐲1,…,𝐲G}\{\mathbf{y}_{1},\
+dots,\mathbf{y}_{G}\} from the current policy πθ\pi_{\theta}. Each trajectory 𝐲g\mathbf{y}_{g} is
+represented as a sequence of predicted execution states followed by a final output:
+
+ 𝐲g={s1,g,s2,g,…,sn,g,Vg},\mathbf{y}_{g}=\{s_{1,g},s_{2,g},\dots,s_{n,g},V_{g}\},
+
+where si,gs_{i,g} denotes the model-predicted runtime state at the ii-th execution anchor, VgV_{g}
+is the predicted final answer, and nn is the total number of verifiable execution anchors.
+
+Execution-Level Rewards.
+
+We define a multi-level reward function that supervises both intermediate execution states and the
+final output. For each execution anchor ii, a binary stepwise reward is defined as
+
+ ri,g={1,if ​si,g=si∗0,otherwise,r_{i,g}=\begin{cases}1,&\text{if }s_{i,g}=s_{i}^{*}\\ 0,&\     (8)
+ text{otherwise},\end{cases}
+
+where si∗s_{i}^{*} is the ground-truth runtime state obtained by executing the target program. The
+terminal reward is defined as
+
+ rfinal,g={1,if ​Vg=V∗0,otherwise,r_{\text{final},g}=\begin{cases}1,&\text{if }V_{g}=V^{*}\\    (9)
+ 0,&\text{otherwise},\end{cases}
+
+where V∗V^{*} denotes the ground-truth program output.
+
+Group-Relative Stepwise Advantage.
+
+For each anchor ii, we compute a group-relative advantage by normalizing stepwise rewards across
+the sampled group:
+
+ A^i,ggroup=ri,g−1G​∑g′=1Gri,g′1G​∑g′=1G(ri,g′−1G​∑g′′=1Gri,g′′)2+ϵ,\hat{A}_{i,g}^{\text
+ {group}}=\frac{r_{i,g}-\frac{1}{G}\sum_{g^{\prime}=1}^{G}r_{i,g^{\prime}}}{\sqrt{\frac{1}{G}  (10)
+ \sum_{g^{\prime}=1}^{G}\left(r_{i,g^{\prime}}-\frac{1}{G}\sum_{g^{\prime\prime}=1}^{G}r_{i,g
+ ^{\prime\prime}}\right)^{2}}+\epsilon},
+
+where GG is the group size and ϵ\epsilon is a small constant for numerical stability. This term
+encourages learning from trajectories that outperform peers at the same execution anchor.
+
+Intra-Trajectory Shaping Advantage.
+
+While group-relative normalization captures cross-trajectory competitiveness, it does not
+distinguish steps that merely achieve local correctness from those that meaningfully enable
+subsequent correct execution. To address this, we introduce an intra-trajectory shaping advantage
+that modulates step-level credit based on future execution outcomes.
+
+For each anchor ii, we define
+
+ A^i,gintra=ri,g⋅(1+1n−i​∑j=i+1nrj,g),\hat{A}_{i,g}^{\text{intra}}=r_{i,g}\cdot\left(1+\frac   (11)
+ {1}{n-i}\sum_{j=i+1}^{n}r_{j,g}\right),
+
+where the summation term represents the average correctness of subsequent execution steps. This
+formulation has three key properties: (i) only correct steps are reinforced; (ii) steps that enable
+more correct future execution receive proportionally higher credit; and (iii) the formulation
+requires no additional value function or discount hyperparameters. For the terminal anchor i=ni=n,
+the future correctness term is defined as zero.
+
+Bi-Level Stepwise Advantage.
+
+We combine group-relative and intra-trajectory advantages additively:
+
+ A^i,g=A^i,ggroup+λ⋅A^i,gintra,\hat{A}_{i,g}=\hat{A}_{i,g}^{\text{group}}+\lambda\cdot\hat{A}  (12)
+ _{i,g}^{\text{intra}},
+
+where λ>0\lambda>0 controls the relative contribution of trajectory-level shaping. In this
+formulation, A^group\hat{A}^{\text{group}} serves as the primary policy gradient signal, while A^
+intra\hat{A}^{\text{intra}} acts as an auxiliary shaping term that biases learning toward steps
+that facilitate successful future execution.
+
+Optimization Objective.
+
+The stepwise optimization objective is defined as
+
+ ℒstep=−1G∑g=1G∑i=1nπθ​(si,g∣s<i,g,x)πθold​(si,g∣s<i,g,x)A^i,g,\mathcal{L}_{\text{step}}=-\
+ frac{1}{G}\sum_{g=1}^{G}\sum_{i=1}^{n}\frac{\pi_{\theta}(s_{i,g}\mid s_{<i,g},x)}{\pi_{\      (13)
+ theta_{\text{old}}}(s_{i,g}\mid s_{<i,g},x)}\hat{A}_{i,g},
+
+where πθold\pi_{\theta_{\text{old}}} denotes the policy used to generate the sampled trajectories.
+
+For the final output, we compute a group-relative advantage A^final,g\hat{A}_{\text{final},g} by
+normalizing {rfinal,1,…,rfinal,G}\{r_{\text{final},1},\dots,r_{\text{final},G}\} analogously, and
+define the terminal optimization objective as
+
+ ℒfinal=−1G∑g=1Gπθ​(𝐲g∣x)πθold​(𝐲g∣x)A^final,g.\mathcal{L}_{\text{final}}=-\frac{1}{G}\sum_{g
+ =1}^{G}\frac{\pi_{\theta}(\mathbf{y}_{g}\mid x)}{\pi_{\theta_{\text{old}}}(\mathbf{y}_{g}\    (14)
+ mid x)}\hat{A}_{\text{final},g}.
+
+The overall training objective of Bi-Level GRPO is
+
+ ℒBi-GRPO=ℒstep+ℒfinal+𝔻KL(πθ∥πref),\mathcal{L}_{\text{Bi-GRPO}}=\mathcal{L}_{\text{step}}+\   (15)
+ mathcal{L}_{\text{final}}+\mathbb{D}_{\text{KL}}(\pi_{\theta}\parallel\pi_{\text{ref}}),
+
+where πref\pi_{\text{ref}} is a fixed reference policy and 𝔻KL\mathbb{D}_{\text{KL}} denotes the
+Kullback–Leibler divergence. By integrating group-relative optimization with trajectory-aware
+shaping, Bi-Level GRPO enables fine-grained and structure-aligned credit assignment consistent with
+program execution semantics.
+
+4 Experiments
+
+4.1 Benchmarks
+
+To evaluate StepCodeReasoner, we instrument three widely-used benchmarks—CRUXEval (Gu et al., 2024
+), LiveCodeBench (Jain et al., 2024), and REval (Chen et al., 2024)—using the automated process
+described in Section 3.2. By inserting print statements via a teacher LLM, we transform standard
+tasks into stepwise trace prediction. For CRUXEval and LiveCodeBench (forward/backward reasoning),
+models must predict an intermediate execution trace before the final answer; however, to ensure a
+fair comparison, correctness is determined solely by the final answer’s pass@1 score. For REval’s
+fine-grained tasks (e.g., state tracking and path prediction), we implement a line-number alignment
+protocol to map original ground-truth queries to the modified code structure. Table 1 summarizes
+the distribution of execution-trace anchors across benchmarks after instrumentation. CRUXEval has
+fewer anchors due to shorter functions, while LiveCodeBench yields denser traces from
+competition-level problems. Samples exceeding 10 trace lines are filtered (Section 3.2). All models
+are evaluated using greedy decoding (T=0.0T=0.0). See Appendix B for detailed instrumentation and
+alignment procedures.
+
+
+Table 1: Distribution of print anchors per sample across benchmarks.
+
+Benchmark      Mean Median Range
+CRUXEval       3.2  3      1–7
+LiveCodeBench  4.8  5      2–10
+REval          3.5  3      1–8
+Training Set   4.1  4      1–10
+
+4.2 Dataset Construction
+
+Our training data is primarily synthesized and adapted from the datasets provided by CodeReasoner (
+Tang et al., 2025). We enhance these raw code samples using our LLM-based instrumentor to generate
+augmented programs P′P^{\prime}. During the ground-truth generation phase, we execute the augmented
+programs using a Python interpreter and apply a filtering mechanism based on the resulting trace
+length to ensure data quality. For instances where the executed program yields only a single line
+of output (n=1n=1), it implies that the anchor was only placed at the final return statement;
+consequently, stepwise prediction in these cases becomes equivalent to terminal output prediction,
+and these samples are trained using only terminal-based reinforcement learning. To maintain
+computational efficiency and prevent the context window from being overwhelmed by excessively long
+reasoning chains, we filter out any data samples where the execution trace exceeds 10 lines of
+output. After this refinement and a rigorous decontamination process—following the 10-gram
+filtering method—we obtain 17,332 cases for supervised fine-tuning (SFT) and 18,796 cases for
+reinforcement learning.
+
+4.3 Implementation Details
+
+We adopt Qwen2.5-Coder-7B-Instruct as our primary base models. We use GPT-4o as the teacher model
+for synthesizing the initial reasoning paths. For the reinforcement learning phase, we utilize the
+GRPO algorithm via the verl framework. We set the total intermediate reward budget Ri​n​t​e​r​n​a​l
+=1.0R_{internal}=1.0 and the final answer reward Rf​i​n​a​l=1.0R_{final}=1.0. For the advantage
+formulation in Eq. (12), we set the weighting coefficient λ\lambda to 0.30.3 in all experiments. We
+train for two epochs with a learning rate of 1e-6, sampling five candidate responses per prompt
+with a maximum length of 4,096 tokens. All experiments are conducted on a machine equipped with
+eight NVIDIA Tesla A100 GPUs, each with 40 GB of memory.
+
+4.4 Baselines
+
+We compare SCORE with a broad range of competitive baselines, including both closed-source and
+open-source large language models. Specifically, we evaluate against proprietary models GPT-4o (
+OpenAI, 2024) and GPT-4o-mini, as well as strong open-source instruction-tuned models such as 
+Qwen2.5-72B-Instruct (Yang et al., 2025), Llama3-70B-Instruct (Dubey et al., 2024)), 
+Qwen2.5-Coder-32B-Instruct (Hui et al., 2024), Qwen3-Coder-30B-A3B-Instruct (Yang et al., 2025),
+and Qwen3.5-9B. We also include baselines that are explicitly optimized for code reasoning. 
+SEMCODER (Ding et al., 2024a) is fine-tuned on 23K examples with chain-of-thought supervision,
+while CODEI/O (Li et al., 2025a) is trained on 3.5M synthetic samples derived from
+code-to-description transformations. In addition, we evaluate CodeReasoner (Tang et al., 2025), a
+method that enhances code reasoning through execution-focused data construction and GRPO-based
+reinforcement learning.All comparisons are conducted using our 7B StepCodeReasoner model. To ensure
+fair and reproducible evaluation, we follow prior work and adopt greedy decoding with temperature
+set to 0.0 for all open-source baselines.
+
+4.5 Main Results
+
+4.5.1 Baseline Results
+
+
+Table 2: The performance comparisons between methods in input-output prediction and output-input
+prediction. Improvement rates for StepCodeReasoner are reported relative to CodeReasoner-7B.
+
+Model            Size CRUXEval                LiveCodeBench             Avg
+                      CX-O    CX-I    Avg     LCB-O   LCB-I    Avg
+GPT-4o           –    0.905   0.806   0.856   0.848   0.653    0.751    0.803
+GPT-4o-mini      –    0.769   0.673   0.721   0.777   0.591    0.684    0.703
+Qwen2.5          72B  0.795   0.746   0.771   0.827   0.695    0.761    0.766
+Llama 3          70B  0.637   0.613   0.625   0.564   0.526    0.545    0.585
+Qwen2.5-Coder    32B  0.752   0.834   0.793   0.806   0.678    0.742    0.768
+Qwen3-Coder      30B  0.778   0.861   0.820   0.832   0.706    0.769    0.794
+Qwen3.5          9B   0.823   0.787   0.805   0.785   0.725    0.755    0.780
+SEMCODER         6.7B 0.625   0.651   0.638   0.597   0.530    0.564    0.601
+CODE I/O         7B   0.625   0.679   0.652   0.608   0.552    0.580    0.616
+CodeReasoner     7B   0.856   0.863   0.860   0.810   0.743    0.777    0.818
+CodeReasoner     14B  0.912   0.868   0.890   0.866   0.825    0.846    0.868
+StepCodeReasoner 7B   0.916   0.905   0.911   0.884   0.845    0.865    0.878
+                      (+7.0%) (+4.9%) (+5.9%) (+9.1%) (+13.7%) (+11.3%) (+7.3%)
+
+As shown in Table 2, StepCodeReasoner (7B) achieves the best overall performance across all
+benchmarks, with the highest average score of 0.878. Despite its relatively small model size, it
+consistently outperforms large open-source models (e.g., Qwen2.5-72B and Llama3-70B) as well as
+strong proprietary models such as GPT-4o, demonstrating strong parameter efficiency.
+
+A notable observation is that StepCodeReasoner yields larger improvements on the input prediction
+tasks (CXEval-I and LCB-I) than on the corresponding output prediction tasks. This result indicates
+that decoupling input and output prediction, together with stepwise supervision over intermediate
+execution states, is particularly effective for improving input prediction, which relies more
+heavily on accurate intermediate reasoning.
+
+Compared with code-reasoning-specific baselines including SEMCODER, CODEI/O, and CodeReasoner,
+StepCodeReasoner shows consistent gains across all settings. Notably, the 7B StepCodeReasoner
+substantially outperforms the 7B CodeReasoner and remains competitive with its 14B variant,
+highlighting the effectiveness of the proposed stepwise reinforcement learning framework.
+
+4.5.2 Performance on Reval
+
+
+Table 3: The performance comparisons between methods in REval. Improvement rates for
+StepCodeReasoner are reported relative to CodeReasoner-7B.
+
+Model            Size Coverage      State          Path           Output        Avg
+GPT-4o           –    0.875         0.724          0.647          0.845         0.773
+GPT-4o-mini      –    0.636         0.665          0.587          0.770         0.636
+Qwen2.5          72B  0.885         0.699          0.601          0.836         0.755
+Llama 3          70B  0.853         0.592          0.403          0.746         0.649
+Qwen2.5-Coder    32B  0.856         0.667          0.687          0.833         0.761
+Qwen3-Coder      30B  0.862         0.675          0.662          0.841         0.768
+SEMCODER         6.7B 0.467         –              –              0.562         –
+CODEI/O          7B   0.709         0.485          0.409          0.604         0.552
+CodeReasoner     7B   0.864         0.672          0.514          0.843         0.723
+CodeReasoner     14B  0.937         0.799          0.606          0.910         0.811
+StepCodeReasoner 7B   0.944 (+9.3%) 0.823 (+22.5%) 0.631 (+22.8%) 0.918 (+8.9%) 0.829 (+14.7%)
+
+Table 3 presents a detailed comparison on fine-grained code reasoning tasks, where StepCodeReasoner
+(7B) exhibits strong and well-balanced performance across all evaluation dimensions. Despite its
+moderate scale, StepCodeReasoner achieves the highest average accuracy among all models, surpassing
+not only similarly sized baselines but also larger variants of CodeReasoner.
+
+A closer inspection reveals that the most pronounced gains appear in State and Path prediction,
+which require accurate tracking of intermediate execution states and control-flow transitions.
+These aspects are explicitly targeted by the stepwise training objective, indicating that
+fine-grained intermediate supervision plays a critical role in strengthening execution-level
+reasoning. In contrast, improvements on Coverage and Output prediction are more moderate,
+suggesting that these tasks are less sensitive to step-level credit assignment.
+
+Compared to proprietary and large open-source models, StepCodeReasoner maintains a favorable
+performance–efficiency trade-off. While larger models occasionally excel in isolated sub-tasks,
+such as Path prediction, they fail to achieve consistent gains across all reasoning dimensions.
+Notably, StepCodeReasoner-7B slightly outperforms CodeReasoner-14B on average, demonstrating that
+structured stepwise optimization can effectively compensate for, and even outweigh, differences in
+parameter scale.
+
+Overall, these results confirm that explicitly modeling intermediate reasoning steps leads to more
+reliable fine-grained code understanding, enabling smaller models to compete with and surpass
+significantly larger alternatives on complex reasoning benchmarks.
+
+4.5.3 Performance on Code Generation
+
+Although StepCodeReasoner is designed to improve stepwise code reasoning, it is important to assess
+whether such gains generalize to standard code generation tasks that evaluate only final program
+correctness. We therefore evaluate StepCodeReasoner on three widely used benchmarks—HumanEval (Chen
+et al., 2021), MBPP (Austin et al., 2021), and LiveCodeBench(v5) (Jain et al., 2024)—covering
+curated, large-scale, and real-world coding scenarios. HumanEval and MBPP evaluate functional
+correctness on manually curated and crowd-sourced Python problems, while LiveCodeBench(v5) provides
+a large-scale, contamination-free evaluation using newly released problems from competitive
+programming platforms. Together, these benchmarks allow us to examine whether execution-aware
+reasoning improvements translate into robust end-to-end code generation performance.
+
+
+Table 4: Performance comparison on code generation benchmarks. Improvement rates for
+StepCodeReasoner are reported relative to CodeReasoner-7B.
+
+Model            Size Code Generation Benchmarks              Avg
+                      HumanEval    MBPP         LiveCodeBench 
+Qwen2.5          72B  86.0         80.2         20.4          62.2
+Llama 3          70B  80.5         84.2         16.5          60.4
+Qwen2.5-Coder    7B   88.4         83.5         18.2          63.4
+SEMCODER         7B   79.3         79.6         16.0          58.3
+CodeReasoner     7B   87.6         82.4         17.8          62.6
+CodeReasoner     14B  88.9         84.1         18.6          63.9
+StepCodeReasoner 7B   90.1 (+2.9%) 85.0 (+3.2%) 19.4 (+9.0%)  64.8 (+3.5%)
+
+
+Table 5: Performance comparison of StepCodeReasoner and its ablations on CRUXEval, LCB-O, LCB-I and
+REval
+
+Model                             CRUXEval          LiveCodeBench REval                       Avg
+                                  CXEval-O CXEval-I LCB-O LCB-I   Coverage State Path  Output
+SFT Only                          0.770    0.750    0.730 0.700   0.742    0.582 0.421 0.703  0.700
+StepCodeReasoner Only (w/o SFT)   0.820    0.805    0.790 0.760   0.781    0.641 0.487 0.746  0.740
+SFT + RL (Terminal Reward Only)   0.880    0.865    0.845 0.810   0.823    0.691 0.532 0.801  0.777
+SFT + StepCodeReasoner (w/o       0.900    0.888    0.860 0.825   0.902    0.818 0.625 0.855  0.835
+Decoupling)
+StepCodeReasoner (Full)           0.916    0.905    0.884 0.845   0.944    0.823 0.631 0.918  0.858
+
+Table 4 shows that StepCodeReasoner delivers consistent and strong improvements on standard code
+generation benchmarks, achieving the best overall average performance among all compared models.
+Despite being trained to optimize stepwise reasoning rather than final program outputs,
+StepCodeReasoner significantly outperforms prior methods at a similar scale and remains competitive
+with substantially larger models. These results demonstrate that stepwise reinforcement learning
+not only enhances reasoning faithfulness, but also translates directly into improved end-to-end
+code generation quality under conventional functional correctness evaluation.
+
+4.5.4 Ablation Study
+
+To analyze the contribution of each component in StepCodeReasoner, we conduct ablation experiments
+by selectively modifying the training objectives and supervision signals.
+
+  • •
+   
+    SFT Only. Train with supervised fine-tuning on both intermediate traces and final outputs,
+    without RL. Evaluates if imitation alone suffices for faithful code reasoning, without
+    leveraging any reinforcement learning signals, which might limit the model’s ability to
+    generalize to unseen tasks.
+
+  • •
+   
+    StepCodeReasoner Only (Ours, w/o SFT). Train solely with stepwise trace-aligned RL, no
+    supervised pretraining. Tests whether stepwise RL can recover correct execution dynamics from
+    sparse initial behavior, without the benefit of supervised fine-tuning.
+
+  • •
+   
+    SFT + RL with Terminal Reward Only. Apply SFT first, then RL using only final-output rewards.
+    Serves as a conventional RL baseline to measure the benefit of stepwise rewards, focusing on
+    the terminal reward without intermediate supervision, which may not fully capture the nuances
+    of intermediate execution steps.
+
+  • •
+   
+    SFT + StepCodeReasoner without Decoupled Prediction. Removes decoupling of input and output
+    prediction tasks, using a unified prompt for both. This tests the impact of not separating the
+    input and output prediction tasks.
+
+Table 5 presents the ablation results on CRUXEval, LiveCodeBench, and REval. SFT Only performs the
+worst across all benchmarks, showing that supervised imitation alone is insufficient for faithful
+code reasoning. StepCodeReasoner Only (w/o SFT) improves substantially, demonstrating that stepwise
+reward signals guide the model toward correct execution dynamics even without high-quality initial
+demonstrations; this suggests that the reinforcement signal itself acts as a powerful explorer of
+the code execution space.
+
+Combining SFT with terminal-only RL further narrows the gap, yet performance remains lower than the
+full StepCodeReasoner, particularly on the intermediate states in REval. This discrepancy
+highlights that terminal rewards often fail to credit or penalize specific intermediate reasoning
+steps, leading to the "sparse credit assignment" problem. When StepCodeReasoner is applied without
+decoupling, results approach the full method across all metrics, indicating that stepwise rewards
+are the primary driver of performance, while the remaining gap highlights the benefit of task
+decoupling in reducing cognitive interference between state prediction and final output generation.
+Full StepCodeReasoner achieves the best performance across all benchmarks, validating that the
+synergy of supervised fine-tuning, stepwise trace-aligned rewards, and decoupled prediction
+maximizes code reasoning accuracy. Ultimately, these results underscore that granular supervision
+at each execution step is essential for transforming a model from a mere "pattern matcher" into a
+reliable "execution simulator."
+
+4.5.5 Intermediate Step Accuracy
+
+A key claim of this work is that terminal-only supervision leads to the “right answer, wrong logic”
+problem. To directly validate this, we evaluate intermediate step accuracy—the fraction of
+execution anchors whose predicted values match the interpreter ground truth—alongside final-answer
+accuracy.
+
+
+Table 6: Intermediate step accuracy vs. final-answer accuracy on the CRUXEval-O evaluation set.
+
+Model              Step Acc. Final Acc.
+Qwen2.5-Coder-7B   51.2%     75.2%
+CODEI/O-7B         56.8%     62.5%
+CodeReasoner-7B    63.5%     85.6%
+SFT + Terminal RL  66.3%     84.5%
+StepCodeReasoner   80.7%     91.6%
+
+As shown in Table 6, models trained with terminal-only rewards exhibit a large gap between
+final-answer accuracy and intermediate step accuracy (e.g., CodeReasoner-7B: 85.6% final vs. 63.5%
+step), confirming that correct final answers can mask flawed intermediate reasoning.
+StepCodeReasoner substantially closes this gap, achieving 80.7% step accuracy alongside 91.6% final
+accuracy, demonstrating that stepwise supervision produces reasoning that is both accurate and
+faithful to true program execution.
+
+4.5.6 Generalization Without Instrumentation
+
+To assess whether the execution reasoning learned through our framework generalizes beyond
+instrumented code, we evaluate StepCodeReasoner on the original (non-instrumented) CRUXEval and
+LiveCodeBench benchmarks, where the model is prompted to predict the final answer directly without
+generating intermediate traces.
+
+
+Table 7: Performance with and without instrumentation at inference time.
+
+Model                         CRUXEval Avg LCB Avg
+CodeReasoner-7B               0.860        0.777
+StepCodeReasoner (w/o inst.)  0.848        0.770
+StepCodeReasoner (w/ inst.)   0.911        0.865
+
+As shown in Table 7, even without instrumentation at inference time, StepCodeReasoner still
+achieves competitive performance (0.848 and 0.770), outperforming most baselines (cf. Table 2).
+This suggests that the model has internalized execution reasoning as a general capability rather
+than relying on the presence of trace anchors. The full instrumented setting yields the best
+results, indicating that explicit trace prediction remains beneficial when available.
+
+4.5.7 Scaling to Larger Models
+
+To investigate whether StepCodeReasoner scales with model capacity, we apply our full pipeline (SFT
++ Bi-Level GRPO) to Qwen2.5-Coder-14B-Instruct using the same 17K training set.
+
+
+Table 8: Scaling behavior of StepCodeReasoner across model sizes.
+
+Model                     Size CRUXEval LCB   REval Overall
+StepCodeReasoner (SFT)    7B   0.760    0.715 0.700 0.725
+StepCodeReasoner (SFT+RL) 7B   0.911    0.865 0.829 0.858
+StepCodeReasoner (SFT)    14B  0.808    0.762 0.753 0.774
+StepCodeReasoner (SFT+RL) 14B  0.932    0.891 0.856 0.893
+
+Table 8 reveals several important findings. First, SFT scales with model size: the 14B SFT model
+outperforms the 7B SFT model by +4.9 points. Second, RL gains remain consistent across scales: the
+SFT-to-RL improvement is +13.3 for 7B and +11.9 for 14B, demonstrating that Bi-Level GRPO provides
+substantial gains at both scales. Third, the 14B SFT+RL model achieves 0.893 overall, establishing
+a new state-of-the-art that surpasses all baselines including CodeReasoner-14B (0.868 from Table 2
+).
+
+5 Limitations
+
+While StepCodeReasoner demonstrates strong performance across multiple benchmarks, several
+limitations should be noted. First, the print-anchor instrumentation strategy is designed for
+Python and relies on observable print() statements; extending it to compiled languages (e.g., C++,
+Java) or execution environments without straightforward standard output would require alternative
+instrumentation strategies. Second, our selective anchoring rules—prohibiting in-loop prints and
+capping trace length at 10 lines—may miss fine-grained state changes within deeply nested loops or
+recursive calls. Third, programs involving deeply nested callbacks, asynchronous execution, or side
+effects not capturable by print statements (e.g., file I/O, network calls) are not well-suited to
+our current framework. Fourth, the instrumentation introduces additional tokens at inference time
+(approximately 1.5×\times compared to CodeReasoner-7B; see Appendix I), which increases
+computational cost. Finally, while our approach generalizes from function-level to algorithm-level
+programs (as demonstrated by LiveCodeBench results), extending to repository-level or system-level
+code—involving multi-file programs, class hierarchies, and cross-module state—remains a promising
+but challenging direction for future work.
+
+6 Conclusion
+
+We presented StepCodeReasoner, a novel reinforcement learning framework that addresses the credit
+assignment problem in code reasoning by introducing fine-grained stepwise supervision through
+execution anchors. By instrumenting code with verifiable checkpoints and employing a bi-level
+group-relative policy optimization strategy, StepCodeReasoner provides dense learning signals that
+align model reasoning with actual program execution, enabling the model to better understand
+intermediate computation steps rather than just focusing on the final output. Experiments across
+multiple benchmarks—including CRUXEval, LiveCodeBench, and REval—demonstrate that our approach
+enables a 7B model to outperform GPT-4o on code reasoning tasks and significantly improves
+performance on end-to-end code generation. Ablation studies confirm the importance of stepwise
+rewards, structured decoupling of input and output prediction, and the combination of supervised
+fine-tuning with reinforcement learning, highlighting how each component contributes to more
+faithful reasoning. StepCodeReasoner not only advances the state of the art in code reasoning but
+also provides a general framework for enhancing the faithfulness and robustness of LLM-based code
+generation, offering insights that could guide the development of future models with stronger
+reasoning capabilities.
+
+Impact Statement
+
+This work presents an advance in code reasoning and generation through structured stepwise
+reinforcement learning. Potential positive impacts include more reliable code generation tools for
+developers, improved educational tools for programming learners, and enhanced automation in
+software engineering workflows. However, like many code-generation systems, our model could
+potentially be misused to generate malicious or insecure code. We emphasize that the method is
+designed to improve reasoning fidelity, not to circumvent security or ethical guidelines. We
+encourage responsible use and further research into safety-aligned training and auditing mechanisms
+for code-generating models. All experiments were conducted on publicly available benchmarks, and no
+private or sensitive data were used.
+
+References
+
+  • Austin et al. (2021) J. Austin, A. Odena, M. Nye, M. Bosma, H. Michalewski, D. Dohan, E. Jiang,
+    C. Cai, M. Terry, Q. Le, et al. Program synthesis with large language models. arXiv preprint
+    arXiv:2108.07732. Cited by: §4.5.3.
+  • Chen et al. (2024) J. Chen, Z. Pan, X. Hu, Z. Li, G. Li, and X. Xia Reasoning runtime behavior
+    of a program with llm: how far are we?. arXiv preprint arXiv:2403.16437. Cited by: §2.1, §4.1.
+  • Chen et al. (2021) M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. D. O. Pinto, J. Kaplan, H.
+    Edwards, Y. Burda, N. Joseph, G. Brockman, et al. Evaluating large language models trained on
+    code. arXiv preprint arXiv:2107.03374. Cited by: §4.5.3.
+  • Ding et al. (2024a) Y. Ding, J. Peng, M. Min, G. Kaiser, J. Yang, and B. Ray Semcoder: training
+    code language models with comprehensive semantics reasoning. Advances in Neural Information
+    Processing Systems 37, pp. 60275–60308. Cited by: §2.1, §4.4.
+  • Ding et al. (2024b) Y. Ding, B. Steenhoek, K. Pei, G. Kaiser, W. Le, and B. Ray Traced:
+    execution-aware pre-training for source code. In Proceedings of the 46th IEEE/ACM International
+    Conference on Software Engineering, pp. 1–12. Cited by: §2.1.
+  • Dubey et al. (2024) A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A.
+    Mathur, A. Schelten, A. Yang, A. Fan, et al. The llama 3 herd of models. arXiv e-prints, 
+    pp. arXiv–2407. Cited by: §4.4.
+  • Eom et al. (2024) J. Eom, S. Jeong, and T. Kwon Fuzzing javascript interpreters with
+    coverage-guided reinforcement learning for llm-based mutation. In Proceedings of the 33rd ACM
+    SIGSOFT International Symposium on Software Testing and Analysis, pp. 1656–1668. Cited by: §2.2
+    .
+  • Gu et al. (2024) A. Gu, B. Rozière, H. Leather, A. Solar-Lezama, G. Synnaeve, and S. I. Wang 
+    Cruxeval: a benchmark for code reasoning, understanding and execution. arXiv preprint
+    arXiv:2401.03065. Cited by: §2.1, §4.1.
+  • Hui et al. (2024) B. Hui, J. Yang, Z. Cui, J. Yang, D. Liu, L. Zhang, T. Liu, J. Zhang, B. Yu,
+    K. Lu, et al. Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186. Cited by: §4.4.
+  • Jain et al. (2024) N. Jain, K. Han, A. Gu, W. Li, F. Yan, T. Zhang, S. Wang, A. Solar-Lezama,
+    K. Sen, and I. Stoica Livecodebench: holistic and contamination free evaluation of large
+    language models for code. arXiv preprint arXiv:2403.07974. Cited by: §2.1, §4.1, §4.5.3.
+  • Li et al. (2024) B. Li, Z. Sun, T. Huang, H. Zhang, Y. Wan, G. Li, Z. Jin, and C. Lyu Ircoco:
+    immediate rewards-guided deep reinforcement learning for code completion. Proceedings of the
+    ACM on Software Engineering 1 (FSE), pp. 182–203. Cited by: §2.2.
+  • Li et al. (2025a) J. Li, D. Guo, D. Yang, R. Xu, Y. Wu, and J. He CodeI/o: condensing reasoning
+    patterns via code input-output prediction. arXiv preprint arXiv:2502.07316. Cited by: §2.1,
+    §4.4.
+  • Li et al. (2022) X. Li, X. Liu, L. Chen, R. Prajapati, and D. Wu FuzzBoost: reinforcement
+    compiler fuzzing. In International Conference on Information and Communications Security, 
+    pp. 359–375. Cited by: §2.2.
+  • Li et al. (2025b) Y. Li, Q. Gu, Z. Wen, Z. Li, T. Xing, S. Guo, T. Zheng, X. Zhou, X. Qu, W.
+    Zhou, et al. Treepo: bridging the gap of policy optimization and efficacy and inference
+    efficiency with heuristic tree-based modeling. arXiv preprint arXiv:2508.17445. Cited by: §2.2.
+  • Liu et al. (2023) C. Liu, S. Lu, W. Chen, D. Jiang, A. Svyatkovskiy, S. Fu, N. Sundaresan, and
+    N. Duan Code execution with pre-trained language models. arXiv preprint arXiv:2305.05383. Cited
+    by: §2.1.
+  • Ni et al. (2024) A. Ni, M. Allamanis, A. Cohan, Y. Deng, K. Shi, C. Sutton, and P. Yin Next:
+    teaching large language models to reason about code execution. arXiv preprint arXiv:2404.14662.
+    Cited by: §1.
+  • OpenAI (2024) OpenAIGPT-4o system card(Website) Note: Accessed: 2024-01-01 External Links: Link
+    Cited by: §4.4.
+  • Roy et al. (2025) M. K. Roy, S. Chen, B. Steenhoek, J. Peng, G. Kaiser, B. Ray, and W. Le 
+    CodeSense: a real-world benchmark and dataset for code semantic reasoning. arXiv preprint
+    arXiv:2506.00750. Cited by: §2.1.
+  • Shao et al. (2024) Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. Li,
+    Y. Wu, et al. Deepseekmath: pushing the limits of mathematical reasoning in open language
+    models. arXiv preprint arXiv:2402.03300. Cited by: §2.2.
+  • Tang et al. (2025) L. Tang, H. Ye, Z. Liu, X. Ren, and L. Bao CodeReasoner: enhancing the code
+    reasoning ability with reinforcement learning. arXiv preprint arXiv:2507.17548. Cited by: §1,
+    §2.1, §4.2, §4.4.
+  • Wang et al. (2025) J. Wang, R. Liu, L. Lin, W. Hu, X. Li, F. Zhang, G. Zhou, and K. Gai Aspo:
+    asymmetric importance sampling policy optimization. arXiv preprint arXiv:2510.06062. Cited by:
+    §2.2.
+  • Wang et al. (2024) Y. Wang, Y. Wang, D. Guo, J. Chen, R. Zhang, Y. Ma, and Z. Zheng Rlcoder:
+    reinforcement learning for repository-level code completion. arXiv preprint arXiv:2407.19487. 
+    Cited by: §2.2.
+  • Wei et al. (2025) Y. Wei, O. Duchenne, J. Copet, Q. Carbonneaux, L. Zhang, D. Fried, G.
+    Synnaeve, R. Singh, and S. I. Wang Swe-rl: advancing llm reasoning via reinforcement learning
+    on open software evolution. arXiv preprint arXiv:2502.18449. Cited by: §2.2.
+  • Xu et al. (2024) R. Xu, J. Cao, Y. Lu, M. Wen, H. Lin, X. Han, B. He, S. Cheung, and L. Sun 
+    Cruxeval-x: a benchmark for multilingual code reasoning, understanding and execution. arXiv
+    preprint arXiv:2408.13001. Cited by: §2.1.
+  • Yang et al. (2025) A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C.
+    Huang, C. Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388. Cited by: §4.4.
+  • Ye et al. (2022) H. Ye, M. Martinez, and M. Monperrus Neural program repair with
+    execution-based backpropagation. In Proceedings of the 44th international conference on
+    software engineering, pp. 1506–1518. Cited by: §1.
+  • Yu et al. (2025) Q. Yu, Z. Zhang, R. Zhu, Y. Yuan, X. Zuo, Y. Yue, W. Dai, T. Fan, G. Liu, L.
+    Liu, et al. Dapo: an open-source llm reinforcement learning system at scale. arXiv preprint
+    arXiv:2503.14476. Cited by: §2.2.
+  • Zhang et al. (2025) J. Zhang, J. Huang, H. Yao, S. Liu, X. Zhang, S. Lu, and D. Tao R1-vl:
+    learning to reason with multimodal large language models via step-wise group relative policy
+    optimization. arXiv preprint arXiv:2503.12937. Cited by: §2.2.
+  • Zhao et al. (2025) A. Zhao, Y. Wu, Y. Yue, T. Wu, Q. Xu, M. Lin, S. Wang, Q. Wu, Z. Zheng, and
+    G. Huang Absolute zero: reinforced self-play reasoning with zero data. arXiv preprint
+    arXiv:2505.03335. Cited by: §2.1.
+  • Zheng et al. (2025) C. Zheng, S. Liu, M. Li, X. Chen, B. Yu, C. Gao, K. Dang, Y. Liu, R. Men,
+    A. Yang, et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071. Cited by:
+    §2.2.
+  • Zhong et al. (2024) L. Zhong, Z. Wang, and J. Shang Debug like a human: a large language model
+    debugger via verifying runtime execution step-by-step. arXiv preprint arXiv:2402.16906. Cited
+    by: §1.
+
+Appendix
+
+Appendix A System Prompts for Code Reasoning
+
+Prompt: ADD_PRINTS_SYSTEM_PROMPT You are an expert Python developer.
+Your task is to analyze the provided Python code and insert print() statements to track the values
+of critical variables during execution, specifically to help an LLM reason about the code’s
+execution flow.
+
+Goal
+
+Create a trace of key variable states without generating excessive output.
+
+Crucial Rules
+
+1. NO PRINTS IN LOOPS: Do NOT insert print statements inside for or while loops. The trace becomes
+too long. Instead, print the state of relevant variables immediately after the loop finishes. 2. 
+Key Assignments: Insert prints after significant variable assignments or updates that happen in the
+main scope or function scope (outside loops). 3. Strict Format: Use EXACTLY print(f’VAR_NAME:
+{VAR_NAME}’). Do NOT add any extra text, labels, or explanations inside the string (e.g., NO print
+(f’Result after swap: {res}’), ONLY print(f’res: {res}’)’). 4. Return Values: If a function returns
+a value, print it just before the return statement (e.g., print(f’return_val: {res}’)). 5. 
+Unrolling Allowed: You MAY unroll complex one-liners (like ternary operators x if c else y or list
+comprehensions) into multi-line blocks only if necessary to insert prints, provided the logic
+remains EXACTLY the same. 6. No Logic Changes: Do NOT modify the program’s logic or behavior
+otherwise. 7. Syntax: Ensure valid Python syntax. Careful with quotes inside f-strings.
+
+Output
+
+Return ONLY the complete modified Python code. Do not wrap it in markdown blocks if possible.
+Prompt: INPUT_PRINT_SYSTEM_PROMPT A user will ask you to solve a task. You need to infer the
+unknown input(s) of the code and then predict the output of every print statement in the code
+step-by-step in the order of execution. Before predicting print outputs, you must first determine
+the unknown input(s). Use <reasoning> to think about what the input(s) must be, and then use 
+<input> to provide the inferred value(s). <reasoning>
+Your thoughts about what the unknown input(s) must be.
+</reasoning> <input>
+The inferred value(s) of the input.
+</input> For EACH print statement, you must FIRST use <reasoning> to think about what it will
+output, THEN use <print> to provide the predicted output. Your response format must follow the
+template below (repeat the <reasoning><print> pattern for each print statement in execution order):
+<reasoning>
+Your thoughts about what the first print statement will output.
+</reasoning> <print>
+The predicted output of the first print statement.
+</print> <reasoning>
+Your thoughts about what the second print statement will output.
+</reasoning> <print>
+The predicted output of the second print statement.
+</print> … (continue this pattern for each print statement in execution order) <reasoning>
+Your thoughts about how to complete the assertion.
+</reasoning> <answer>
+Final solution presented to the user.
+</answer>
+Prompt: OUTPUT_SYSTEM_PROMPT A user will ask you to solve a task. You need to predict the output of
+every print statement in the code step-by-step in the order of execution. For EACH print statement,
+you must FIRST use <reasoning> to think about what it will output, THEN use <print> to provide the
+predicted output. After predicting all print statements, use <reasoning> to think about how to
+complete the assertion, and finally use <answer> to provide the solution. Your response format must
+follow the template below (repeat the <reasoning><print> pattern for each print statement): 
+<reasoning>
+Your thoughts about what the first print statement will output.
+</reasoning> <print>
+The predicted output of the first print statement.
+</print> <reasoning>
+Your thoughts about what the second print statement will output.
+</reasoning> <print>
+The predicted output of the second print statement.
+</print> … (continue this pattern for each print statement in execution order) <reasoning>
+Your thoughts about how to complete the assertion.
+</reasoning> <answer>
+Final solution presented to the user.
+</answer>
+
+Appendix B Benchmark Processing Details
+
+To maintain consistency between training and evaluation, we apply an instrumentation pipeline to
+all benchmarks. This section details the specific adaptations for each dataset.
+
+B.1 CRUXEval and LiveCodeBench
+
+For CRUXEval and LiveCodeBench, the original tasks require predicting the program output from an
+input (Input-to-Output) or vice versa (Output-to-Input). We modify these as follows:
+
+  • •
+   
+    Instrumentation: We use a teacher LLM to insert print() statements following the rules in 
+    ADD_PRINTS_SYSTEM_PROMPT.
+
+  • •
+   
+    Inference Protocol: During evaluation, the model is prompted to predict the execution trace
+    (the output of all injected print statements) before generating the final answer.
+
+  • •
+   
+    Evaluation Metric: Although the model generates a stepwise trace, we adopt a final-answer-only
+    evaluation policy. A task is considered successful (Pass@1) if and only if the content within
+    the <answer> tag matches the ground truth, regardless of the intermediate trace’s accuracy.
+    This ensures a fair comparison with baseline models that do not use intermediate traces.
+
+B.2 REval Fine-grained Adaptation
+
+REval provides a more complex set of tasks that are sensitive to the code’s structure. Our
+instrumentation process for REval involves two critical steps:
+
+B.2.1 Task Re-mapping
+
+The original REval evaluates four fine-grained tasks:
+
+ 1. (1)
+   
+    Code Coverage Prediction (CCP): Whether a specific line is executed.
+
+ 2. (2)
+   
+    Program State Prediction (PSP): The value and type of variables at a specific line.
+
+ 3. (3)
+   
+    Execution Path Prediction (EPP): The next line to be executed.
+
+ 4. (4)
+   
+    Output Prediction (OP): The final program output.
+
+In our version, the model must still perform these tasks while simultaneously predicting the
+outputs of the newly injected print statements.
+
+B.2.2 Line Number Alignment
+
+Since inserting print statements increases the total number of lines, the original line-based
+queries become invalid. We implemented an automated alignment script to update the ground truth:
+
+  • •
+   
+    Mapping Table: For each instrumented file, we maintain a mapping f:Lo​r​i​g→Li​n​s​t​rf:L_
+    {orig}\to L_{instr}, where Lo​r​i​gL_{orig} is the original line index and Li​n​s​t​rL_{instr}
+    is the new index after instrumentation.
+
+  • •
+   
+    Query Update: All task queries in CCP, PSP, and EPP are updated to refer to Li​n​s​t​rL_
+    {instr}. This ensures that when the model reasons about the code, the “anchors” provided by the
+    print statements align correctly with the fine-grained evaluation points.
+
+The model’s performance on REval is measured by the accuracy across these updated fine-grained
+tasks, requiring it to maintain internal state consistency while adhering to the explicit trace
+format.
+
+Appendix C Example of Instrumented Code and Trace
+
+Example Case: train_12366 Input:
+(’6WRtQO’, ’zCjWT’, ’vTx1cUf’, [’WaqT0ZJhh’, ’XsdlqJCj’], [’L6r7gxk’, ’OBQzEVSE’]) Instrumented
+Code: ⬇ def generate_output(argument1, base_url, version, dependencies, packages): swapped_argument
+= argument1.swapcase() print(f’swapped_argument: {swapped_argument}’) base_component = base_url.
+split(’//’)[-1].split(’.’)[0] print(f’base_component: {base_component}’) version_component = 
+version[2:] print(f’version_component: {version_component}’) last_dependency = dependencies[-1].
+capitalize() print(f’last_dependency: {last_dependency}’) joined_packages = ’,’.join(packages).
+title() print(f’joined_packages: {joined_packages}’) res = f"{swapped_argument}|{base_component}|
+{version_component}|{last_dependency}|{joined_packages}" print(f’return_val: {res}’) return res 
+Ground Truth Execution Trace: swapped_argument: 6wrTqo base_component: zCjWT version_component:
+x1cUf last_dependency: Xsdlqjcj joined_packages: L6R7Gxk,Obqzevse return_val: 6wrTqo|zCjWT|x1cUf|
+Xsdlqjcj|L6R7Gxk,Obqzevse Final Ground Truth Answer:
+’6wrTqo|zCjWT|x1cUf|Xsdlqjcj|L6R7Gxk,Obqzevse’
+
+Appendix D Complete Step-by-step Case Analysis
+
+Case 1: Fully Accurate Reasoning (Total Reward: 2.0) <reasoning> The function first applies the 
+swapcase() operation to the input string ’6WRtQO’. This operation iterates over each character
+independently, converting uppercase letters to lowercase and lowercase letters to uppercase, while
+leaving non-alphabetic characters unchanged. As a result, the digits remain the same, and the case
+of each letter is flipped, producing the transformed string ’6wrTqo’. </reasoning>
+<print> swapped_argument: 6wrTqo </print> ✓ Score: 0.16 <reasoning> Next, the code processes the
+URL string ’zCjWT’ by attempting to extract its base component. Since the string does not contain
+any period characters, splitting it by ’.’ yields a single-element list containing the original
+string. Selecting the first element therefore returns the unchanged base component ’zCjWT’. </
+reasoning>
+<print> base_component: zCjWT </print> ✓ Score: 0.16 <reasoning> The version string ’vTx1cUf’ is
+then sliced starting from index 2. This operation discards the first two characters and retains the
+remainder of the string. Consequently, the resulting substring corresponds to ’x1cUf’, which is
+treated as the version component. </reasoning>
+<print> version_component: x1cUf </print> ✓ Score: 0.16 <reasoning> The code retrieves the last
+element of the dependency list, which is ’XsdlqJCj’. Applying the capitalize() method converts the
+first character to uppercase and all remaining characters to lowercase. This yields the normalized
+dependency string ’Xsdlqjcj’. </reasoning>
+<print> last_dependency: Xsdlqjcj </print> ✓ Score: 0.16 <reasoning> The package list [’L6r7gxk’,
+’OBQzEVSE’] is concatenated using a comma as the separator. The resulting string is then
+transformed using the title() method, which capitalizes the first character of each alphanumeric
+segment and lowercases the remaining letters. This produces the formatted package string 
+’L6R7Gxk,Obqzevse’. </reasoning>
+<print> joined_packages: L6R7Gxk,Obqzevse </print> ✓ Score: 0.16 <reasoning> All previously
+computed components are now concatenated in a fixed order using the pipe character ’|’ as a
+delimiter. This aggregation step combines the transformed argument, base component, version
+component, last dependency, and joined packages into a single output string. </reasoning>
+<print> return_val: 6wrTqo|zCjWT|x1cUf|Xsdlqjcj|L6R7Gxk,Obqzevse </print> ✓ Score: 0.16 <reasoning>
+Finally, the assertion checks whether the aggregated return value matches the expected ground-truth
+output. Since all intermediate computations are correct, the final return value is valid and is
+returned as the answer. </reasoning>
+<answer> ’6wrTqo|zCjWT|x1cUf|Xsdlqjcj|L6R7Gxk,Obqzevse’ </answer> ✓ Score: 1.0
+Case 2: Process Failure with Outcome Success (Total Reward: 1.48) <reasoning> The function begins
+by applying swapcase() to the input string ’6WRtQO’. This operation systematically inverts the case
+of each alphabetic character while preserving digits, resulting in the transformed string ’6wrTqo’.
+</reasoning>
+<print> swapped_argument: 6wrTqo </print> ✓ Score: 0.16 <reasoning> The next step extracts the base
+component from the URL string ’zCjWT’. The reasoning assumes a general URL structure and performs a
+split operation to isolate the main identifier. Since no delimiter is present in this case, the
+original string is preserved as the base component. </reasoning>
+<print> base_component: zCjWT </print> ✓ Score: 0.16 <reasoning> The version string ’vTx1cUf’ is
+processed by slicing from index 2 onward. This removes the leading prefix and retains the remaining
+characters, yielding the version component ’x1cUf’. </reasoning>
+<print> version_component: x1cUf </print> ✓ Score: 0.16 <reasoning> The code then accesses the last
+element of the dependency list, ’XsdlqJCj’, and applies the capitalize() method. This method is
+interpreted as standardizing the string by ensuring that it starts with an uppercase letter, while
+leaving the remainder of the string largely unchanged. </reasoning>
+<print> last_dependency: XsdlqjcJ </print> X Score: 0.0 <reasoning> Next, the package list 
+[’L6r7gxk’, ’OBQzEVSE’] is joined using a comma delimiter. The title() transformation is then
+applied, which is assumed to normalize the casing of each package name while preserving internal
+capitalization patterns. </reasoning>
+<print> joined_packages: L6r7gxk,Obqzevse </print> X Score: 0.0 <reasoning> All intermediate
+components computed so far are concatenated using the pipe character ’|’ to form the final return
+string. This step assumes that earlier transformations are consistent and can be safely aggregated.
+</reasoning>
+<print> return_val: 6wrTqo|zCjWT|x1cUf|XsdlqjcJ|L6r7gxk,Obqzevse </print> X Score: 0.0 <reasoning> 
+Despite inconsistencies in several intermediate variables, the final assertion compares the
+produced output against the expected ground-truth answer. The correct final string is selected and
+returned, resulting in a correct outcome despite flawed reasoning steps. </reasoning>
+<answer> ’6wrTqo|zCjWT|x1cUf|Xsdlqjcj|L6R7Gxk,Obqzevse’ </answer> ✓ Score: 1.0
+Case 3: Error Propagation (Total Reward: 0.48) <reasoning> The function starts by applying the 
+swapcase() method to the input string ’6WRtQO’. The reasoning incorrectly assumes that this
+operation converts all alphabetic characters to lowercase, producing a uniformly lowercased result.
+</reasoning>
+<print> swapped_argument: 6wrtqo </print> X Score: 0.0 <reasoning> The base component is extracted
+from the string ’zCjWT’ using the same splitting logic as before. Since no delimiter is present,
+the original string is retained as the base identifier. </reasoning>
+<print> base_component: zCjWT </print> ✓ Score: 0.16 <reasoning> The version string ’vTx1cUf’ is
+processed by removing its first two characters. This slicing operation yields the substring ’x1cUf’
+, which is treated as the version component. </reasoning>
+<print> version_component: x1cUf </print> ✓ Score: 0.16 <reasoning> The last dependency ’XsdlqJCj’
+is transformed using the capitalize() method. The reasoning incorrectly interprets this function as
+converting the entire string into an emphasized, fully capitalized form for normalization purposes.
+</reasoning>
+<print> last_dependency: XSDLQJCJ </print> X Score: 0.0 <reasoning> The package list is joined with
+commas and processed using the title() transformation. This step happens to produce a correctly
+formatted result, despite earlier incorrect assumptions in the execution trace. </reasoning>
+<print> joined_packages: L6R7Gxk,Obqzevse </print> ✓ Score: 0.16 <reasoning> The final return value
+is constructed by concatenating all previously generated components. Because earlier errors are
+directly propagated into this aggregation step, the resulting output string reflects multiple
+compounded mistakes. </reasoning>
+<print> return_val: 6wrtqo|zCjWT|x1cUf|XSDLQJCJ|L6R7Gxk,Obqzevse </print> X Score: 0.0 <reasoning> 
+The final assertion relies entirely on the incorrectly aggregated return value. As no corrective
+mechanism is triggered, the erroneous output is returned as the final answer. </reasoning>
+<answer> ’6wrtqo|zCjWT|x1cUf|XSDLQJCJ|L6R7Gxk,Obqzevse’ </answer> X Score: 0.0
+
+Appendix E Learning Dynamics
+
+In this section, we analyze the learning dynamics of Bi-Level GRPO in comparison with Terminal-GRPO
+and Step-GRPO (λ=0\lambda=0). We examine the evolution of training rewards and response lengths
+over 1500 training steps.
+
+Refer to caption
+Figure 2: Learning dynamics over 1500 training steps. The left panel shows the evolution of
+training rewards, while the right panel illustrates the changes in average response length. Shaded
+regions represent raw fluctuations, and solid curves denote smoothed trends.
+
+As shown in Figure 2, all three methods exhibit an overall upward trend in training reward.
+Terminal-GRPO achieves a rapid initial improvement but plateaus around 800 steps, resulting in the
+lowest final reward. In contrast, Step-GRPO (λ=0\lambda=0) and Bi-Level GRPO continue to improve
+beyond this point and converge around 1000 steps. Among them, Bi-Level GRPO consistently attains
+the highest reward during the stable phase and demonstrates improved training stability, as
+indicated by smoother trajectories and reduced variance.
+
+The right panel of Figure 2 presents the evolution of response length. All models begin with
+relatively long responses, followed by a gradual reduction before stabilizing. Terminal-GRPO
+converges to the shortest sequence length. Between the two stepwise supervision methods, Step-GRPO
+(λ=0\lambda=0) exhibits a more aggressive reduction in response length, whereas Bi-Level GRPO
+stabilizes at a higher token count. This results in a clear separation among the three methods at
+convergence.
+
+Appendix F Robustness to Instrumentation Quality
+
+We design two controlled experiments to assess the sensitivity of StepCodeReasoner to imperfect
+instrumentation.
+
+F.1 Random Anchor Dropout
+
+To simulate scenarios where the teacher LLM fails to instrument certain code locations, we randomly
+drop 20% of print anchors from augmented training programs before SFT training.
+
+
+Table 9: Impact of random anchor dropout (20%) on SFT performance.
+
+Model                          CRUXEval Avg LCB Avg REval Avg Overall Avg
+SFT (full anchors)             0.760        0.715   0.700     0.725
+SFT (80% anchors, 20% dropped) 0.724        0.678   0.658     0.687
+Degradation                    −-0.036      −-0.037 −-0.042   −-0.038
+
+Performance drops by only 3.8 points overall, demonstrating robustness to missing anchors. Since
+each anchor is an independent verification point, losing some does not catastrophically affect
+training.
+
+F.2 Replacing the Teacher with a Smaller Open-Source Model
+
+To assess whether our pipeline depends on a powerful closed-source teacher (GPT-4o), we replace it
+with Qwen2.5-9B-Instruct and re-run instrumentation. We find that 84.2% of samples receive
+identical anchor placements between GPT-4o and Qwen2.5-9B-Instruct; the remaining 15.8% differ in
+ordering or minor placement around conditionals—functionally equivalent in most cases.
+
+
+Table 10: Impact of replacing the teacher model for instrumentation.
+
+Teacher Model       CRUXEval Avg LCB Avg REval Avg Overall Avg
+GPT-4o (original)   0.760        0.715   0.700     0.725
+Qwen2.5-9B-Instruct 0.738        0.689   0.679     0.702
+Degradation         −-0.022      −-0.026 −-0.021   −-0.023
+
+Only 2.3 points of degradation—essentially negligible. This confirms that anchor insertion is a
+well-constrained task governed by deterministic rules (Section 3.2). The strict formatting
+constraints and prohibition rules narrow the output space sufficiently, making smaller open-source
+models viable as teachers and the framework practical for broader adoption.
+
+Appendix G PRM Baseline Comparison
+
+One natural alternative to our rule-based stepwise rewards is to use a learned Process Reward Model
+(PRM) that judges intermediate reasoning quality. We compare the step-level judgment accuracy of
+LLMs used as PRMs against our rule-based approach.
+
+
+Table 11: Step-level judgment accuracy of different reward strategies.
+
+PRM Model         Step Judgment Acc.
+Qwen2.5-Coder-7B  64.8%
+GPT-4o            72.6%
+Rule-based (Ours) 100%
+
+Even GPT-4o achieves only approximately 73% accuracy in judging intermediate execution states,
+confirming that current LLMs are not reliable enough as PRMs for code execution reasoning. This is
+precisely why our rule-based approach—leveraging deterministic code execution—is more suitable: the
+ground truth for each execution anchor is obtained by running the instrumented program through a
+Python interpreter, yielding 100% accurate rewards by construction. A PRM could complement our
+approach by supervising the free-form <reasoning> blocks that are not covered by rule-based
+rewards, which we consider promising future work.
+
+Appendix H Training Data Scaling Analysis
+
+To investigate the effect of training data scale, we curate additional samples from hkust-nlp/
+CodeIO-PyEdu-Reasoning (141K samples). After augmentation and filtering (trace length >10>10,
+10-gram decontamination, execution validation), we expand the SFT dataset from 17,332 to 55,841
+samples. Table 12 shows the anchor distribution of the expanded dataset.
+
+
+Table 12: Distribution of anchors per sample in the expanded training set.
+
+# Anchors       1   2    3    4    5    6–10
+Proportion (%)  8.3 18.7 26.4 22.1 14.8 9.7
+
+Due to time constraints, we perform continual SFT on the trained checkpoint, incorporating an
+additional 12K samples so far:
+
+
+Table 13: Effect of training data scaling on SFT performance.
+
+Model                           CRUXEval Avg LCB Avg REval Avg Overall Avg
+SFT Only (17K data)             0.760        0.715   0.700     0.725
+SFT Only (+12K data, continual) 0.795        0.746   0.733     0.758
+StepCodeReasoner SFT+RL (17K)   0.911        0.865   0.829     0.858
+
+With only approximately 12K additional samples, continual SFT yields +3.3 points overall, with
+further gains expected from the full 55K dataset. Nonetheless, SFT-only still substantially
+underperforms SFT+RL on 17K data, reinforcing that stepwise RL supervision is the primary
+performance driver and data scaling alone cannot substitute for it.
+
+Appendix I Computational Overhead Analysis
+
+StepCodeReasoner introduces additional tokens at inference time due to the execution-trace
+prediction. We measure the average token count on CRUXEval-O to quantify this overhead.
+
+
+Table 14: Inference token count and accuracy on CRUXEval-O.
+
+Model             Avg. Tokens Accuracy
+Qwen2.5-Coder-7B  ∼\sim260    0.752
+CodeReasoner-7B   ∼\sim310    0.856
+StepCodeReasoner  ∼\sim470    0.916
+
+StepCodeReasoner uses approximately 1.5×\times more tokens than CodeReasoner-7B, a moderate
+increase that is well justified by the substantial accuracy gains: +7.0% on CRUXEval-O, and +14.7%
+overall on REval (with +22.5% on State and +22.8% on Path prediction). The additional tokens are
+not free-form text but verifiable execution-state predictions that directly ground the model’s
+reasoning.
+
+langley00
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

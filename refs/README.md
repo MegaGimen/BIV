@@ -399,6 +399,133 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
   [Sparse Delta Memory](https://arxiv.org/abs/2607.07386)（把 Gated DeltaNet 的状态扩成稀疏寻址的大显式记忆，
   并可把初始状态当**参数化记忆**训——和「律进参数」这件事直接同构）。
 
+## U. 「世界模型目标和 agent 目标冲突」在 MBRL 里有正式名字：objective mismatch
+
+这一组是整份文档里**最贴近用户原始问题**的。用户说的「训世界模型和训 agent 的目标函数根本相悖」，
+在 model-based RL 里叫 **objective mismatch**，有名字、有定理、也有诚实的失败记录。
+
+- **问题陈述（几乎是用户原话的学术版）：**
+  [VaGraM](https://arxiv.org/abs/2204.01464)（Voelcker 2022）开篇即说：
+  模型通常只被拟合去**重建动力学、尤其是状态观察**，而**模型误差对策略的影响根本没进训练目标**，
+  于是「让策略和价值学好」这个真实目的，和「预测未来状态」这个实际损失之间产生错配。
+  → 我们在助手位上算下一观察 token 的 CE，就是这句话的字面实例。
+- **正式的替代目标与界：**
+  [Value-Aware Loss Function for MBRL](https://consensus.app/papers/details/b0f6ce8be2c65cad9395b655aa4342f0/)（Farahmand 2017）——
+  论证「最小化 log-loss 学生成模型是 overkill」，给出把价值函数结构纳入的损失和**有限样本上界**；
+  [Iterative VAML](https://consensus.app/papers/details/14e6dd2e07ee51108dfbdf5849a185c5/)（Farahmand 2018）给出可解版本和有限样本保证；
+  [Model-Advantage Optimization](https://arxiv.org/abs/2106.14080)——用「同一策略在两个模型下的性能差」的上界当目标，
+  第一次让 value-aware MBRL 在连续控制上真正跑起来。
+- **[The Value Equivalence Principle](https://arxiv.org/abs/2011.03506)（Grimm 2020）—— 这是「要多少世界模型才够」的答案。**
+  两个模型只要对一组函数和策略给出**相同的 Bellman 更新**，就是价值等价的；
+  随着考虑的策略/函数集合变大，价值等价的模型类逐渐收缩，极限才收到真实模型。
+  意思是：**逐状态预测得准既困难又往往不必要**；有限的表征资源应该花在「对基于价值的规划直接有用」的模型上。
+  这条原理同时是 MuZero / VPN / Predictron 等经验成功的第一个理论支撑。
+  → 对我们：这给了一个原则性的理由，说明为什么不该把参数预算砸在把 stdout 一字不差地生成出来。
+- **[Deciding What to Model](https://arxiv.org/abs/2206.02072)（Arumugam 2022）—— 用率失真理论决定「压到多简」。**
+  当 agent 容量根本装不下真实环境时，迭代地算出一个**近似价值等价的有损压缩**去替代真实模型，
+  并给出信息论贝叶斯 regret 界，可写成两种形式：给定次优容忍度求最简模型，或给定容量求最好模型。
+- **[Error Bounds of Imitating Policies and Environments](https://doi.org/10.1109/tpami.2021.3096966)（Xu 2020）—— 对我们最扎心的一条。**
+  把「学环境模型」当成对环境做模仿学习：行为克隆式（= 我们现在做的下一观察 CE）会有**复合误差**，
+  而对抗式模仿把策略评估误差压到**关于有效规划步长线性**（而不是平方）依赖模型偏差。
+  → 直白说：**逐 token 拟合观察在长轨迹上误差是复利增长的，这不是工程细节，是有界可证的。**
+- **[An Optimal Tightness Bound for the Simulation Lemma](https://arxiv.org/abs/2406.16249)（Lobel 2024）——
+  把 RL 的地基定理 simulation lemma 收紧到常数因子都最优，且对转移误差是**次线性**依赖；
+  旧界在折扣因子大时会退化成空话。这是「模型误差 → 价值误差」这一环现在最好的砖。
+- **诚实的反面记录（必须写进来，否则会踩坑）：**
+  [Decision-Aware Model Learning for Actor-Critic: When Theory Does Not Meet Practice](https://consensus.app/papers/details/df54c74ed6165977957689b47d7bd7dd/)（Lovatto 2020）——
+  在连续域里，朴素的 MLE 常常**打赢**价值感知模型，且更省算力；理论保证不等于端到端更好。
+  [Calibrated Value-Aware Model Learning](https://arxiv.org/abs/2505.22772)（Voelcker 2025）——
+  包括 MuZero loss 在内的这一族价值感知损失**是未校准的代理损失**，不保证恢复正确的模型和价值函数，并给出修正。
+  → 结论不是「换成 value-aware 就赢」，而是：**观察 CE 是错的损失这件事有定理；换什么损失才对，还没定论。**
+- 相关：[Control-Oriented MBRL with Implicit Differentiation](https://doi.org/10.1609/aaai.v36i7.20758)（把模型参数经隐函数直接对回报求导）、
+  [Policy-Aware Simulator Learning](https://arxiv.org/abs/2605.29032)（2026；模型 vs 对抗策略的零和博弈，
+  给出 sublinear regret、critic 局部损失界住全局策略价值差、以及 **Error-MDP 对偶**——
+  「找最坏策略」形式上对偶于「以一步 critic 误差为奖励的标准 RL」，由此得到可证收敛的**主动数据选择**算法。
+  这条把 R 组的主动干预和本组的目标错配缝在了一起）、
+  [The Central Role of the Loss Function in RL](https://arxiv.org/abs/2409.12799)（不同回归损失如何改变样本效率与自适应性）。
+
+## W. 已经有人在代码域做过我们这件事：执行感知预训练（最接近的经验先例）
+
+前面 I–U 大多是理论。**这一组是「学环境动力学 → 下游任务变强」在 LLM 规模上已经跑通的经验证据**，
+只不过环境是「Python 解释器」而不是「shell」。这是我们假设最直接的先例，之前的 paper shelf 里完全没有。
+
+- **[TRACED: Execution-Aware Pre-Training for Source Code](https://doi.org/10.1145/3597503.3608140)（ICSE 2024）—— 结构上和我们一模一样。**
+  用「源码 + 可执行输入 + 对应执行轨迹」做预训练，目标是让模型**不再重复执行代码**就能静态估计动态属性。
+  结果：完整执行路径预测 +12.4%、运行时变量值预测 +25.2%，而且在**它没被直接训练的下游任务**
+  （克隆检索、漏洞检测）上也显著超过纯静态预训练模型。
+  → 这就是「世界理解 → 下游能力」的一个已完成的实例，只是域是解释器不是 OS。
+- **[SemCoder](https://arxiv.org/abs/2406.01006)（6.7B）—— 用「自言自语式推理」把静态代码和动态执行状态连起来。**
+  训模型不只写代码，还要用自然语言讲清楚每条语句的**局部执行效果**和整体输入输出行为（rubber-duck debugging）。
+  6.7B 在 HumanEval / CRUXEval 上打平或超过 GPT-3.5-turbo，
+  并且**明确对比了 monologue 式和 concrete scratchpad 式执行推理**，前者整合多维语义更顺——
+  这条对我们「潜意识 vs 显式 CoT」这一问有直接参考价值。
+- **[What I cannot execute, I do not understand（Execution Tuning, E.T.）](https://arxiv.org/abs/2503.05703)—— 长轨迹这条最关键。**
+  在真实执行轨迹上训练（行级 / 指令级两种粒度），CruxEval / MBPP 上约 80% 输出预测准确率；
+  关键发现是**动态 scratchpad**（模型自己维护并更新一份自包含的中间计算）在长执行（最长 14k 步）上
+  明显优于**把历史一路累积下去**的做法。
+  → 这在经验上说了和 K 组 strict mediation 同一件事：**维护「状态」比堆「历史」好**，而且在 14k 步这种我们关心的长度上被验证过。
+- **[StepCodeReasoner](https://arxiv.org/abs/2605.11922)（2026）—— 执行建模同时提升了代码生成。**
+  自动往代码里插入**基于 print 的执行轨迹锚点**（和 T 组 REPL state-tracking 那篇是同一个技巧），
+  把代码推理变成可验证的逐步执行建模问题，再用 Bi-Level GRPO 做两级信用分配。
+  7B 在 CRUXEval 91.1% / LiveCodeBench 86.5%，超过 GPT-4o；REval 82.9% 超过自己的 14B 版本。
+  论文明确写：**显式的执行建模同时改善了代码推理和代码生成。**
+  → 这是「世界模型目标提升 agent 目标」而不是抢权重的一个正面样本，且规模在我们够得着的范围。
+- [Self-Execution Simulation Improves Coding Models](https://arxiv.org/abs/2604.03253)（2026）——
+  执行轨迹 SFT + 可验证奖励 RL，两个互补目标（给代码和输入预测输出 / 用自预测的执行反馈解题），
+  让模型能对多个候选解自验证、迭代自修。
+- [CodeExecutor](https://arxiv.org/abs/2305.05383)（执行预训练 + 课程学习）、
+  [TraceFixer](https://arxiv.org/abs/2304.12743)（用部分执行轨迹训修复模型，比只学代码编辑高 13–20%）。
+- **反面：把轨迹塞进 prompt 基本没用。**
+  [Towards Effectively Leveraging Execution Traces for Program Repair](https://doi.org/10.18653/v1/2025.knowledgenlp-1.17)（2025）——
+  在 6 个「数据集 × 模型」组合里只有 2 个有提升，**而且轨迹越复杂收益越小**；
+  但**在小数据上微调一个小模型又不如 prompt**。
+  → 把这条和 S 组放在一起看结论很干净：**执行动力学放进上下文效果有限，放进权重才有跨任务的收益。**
+  这正是用户「把律编码进参数」的经验依据。
+
+## V. 把上面这些串成一条链（每段可挂定理，缺的地方明说）
+
+这是把 I–U 拼起来后能写出的算法骨架。**它不是「突破性堆栈」，是一张标注了哪里有砖、哪里是空的图。**
+
+1. **语料按多样性阈值配，而不是按 token 数配。** 挂 S 组：[2306.15063](https://arxiv.org/abs/2306.15063) 的任务多样性阈值、
+   [2412.00104](https://arxiv.org/abs/2412.00104) 的 memorization scaling law、[2512.18634](https://arxiv.org/abs/2512.18634) 的相变证明。
+   *缺*：这些阈值都在合成任务上算的，shell/SWE 语料的「多样性」怎么度量没人定义。
+2. **动作侧：给命令学动作表征，而不是当 token 串。** 挂 P 组：[Chandak](https://arxiv.org/abs/1902.00183) 的收敛条件、
+   [Pritz](https://arxiv.org/abs/2010.04444) 的「嵌入状态-动作训 RL 有效」的理论基础。
+   *缺*：bash 动作空间是否线性可嵌入，没人证也没人测。
+3. **状态侧：显式潜状态 z，且强制 strict mediation（预测只准读 z 和 a，不准回头翻历史）。**
+   挂 K 组：[2606.27681](https://arxiv.org/abs/2606.27681) 的可识别性 + fGRPO、[NextLat](https://arxiv.org/abs/2511.05963) 的收敛到 belief state、
+   [AC-State](https://arxiv.org/abs/2207.08229) 滤掉不可控噪声。
+   兼容 I 组「时间局部性」这条归纳偏置（[2602.06923](https://arxiv.org/abs/2602.06923)）。
+   *缺*：这些保证都在 TextWorld / 低维控制域上，真实 shell 的无界 stdout 没验过。
+4. **损失侧：别在观察 token 上算 CE 当主损失。** 挂 U 组（objective mismatch、价值等价、模仿环境的复合误差界）
+   和 M 组（[潜自预测是好辅助任务、观察重建当辅助任务反而拖累](https://arxiv.org/abs/2406.17718)）
+   以及 [RWML](https://arxiv.org/abs/2602.05842) 的经验版（token 级下一状态预测会塌缩，嵌入空间对齐才稳）。
+   *缺*：换成什么损失才对，literature 自己也没定论（[2505.22772](https://arxiv.org/abs/2505.22772) 指出价值感知损失未校准）。
+5. **自预测辅助损失 → 转移算子的谱特征 → 低秩 MDP 的 φ → 下游策略样本复杂度下降。**
+   挂 L 组：[2212.03319](https://arxiv.org/abs/2212.03319)（自预测=谱分解，防塌缩靠 stop-gradient + 更快的 predictor）、
+   [SPEDER](https://arxiv.org/abs/2208.09515)、[REP-UCB](https://arxiv.org/abs/2110.04652)、
+   [多任务表征迁移界](https://arxiv.org/abs/2206.05900)（下游次优性 = 上游表征误差 + 随下游样本消失的项）。
+   **这是「世界理解 → agent 变强」这句话唯一一条完整的形式化路径。**
+   *缺*：整条链没人端到端证过，尤其是动作为自由文本时。这是我们能贡献的位置。
+6. **φ 不预先给定：用 Forward-Backward 同时学基础特征和后继特征。**
+   挂 L 组：[2209.14935](https://arxiv.org/abs/2209.14935)、[2502.10790](https://arxiv.org/abs/2502.10790)。
+7. **T→π：用摊销规划/想象 backup 编译，而不是在同一个未冻结的 LM head 上同时更新观察 CE 和策略 CE。**
+   挂 L 组：[MPDP](https://arxiv.org/abs/2307.12933) 的单调改进保证、[SAVE](https://arxiv.org/abs/1912.02807)、
+   LLM 侧的 [Internalizing the Future](https://arxiv.org/abs/2606.27483)（WM-AMT → FE-SFT → FC-RL，并点名 format-capability gap）。
+   训 π 时冻结 z 的转移。
+8. **架构：确认底座能在一次前向里追踪状态。** 挂 T 组：Gated DeltaNet 是 $\mathsf{PNC}^1$-complete，
+   前提是特征值范围覆盖负值（[2411.12537](https://arxiv.org/abs/2411.12537)、[2603.03612](https://arxiv.org/abs/2603.03612)）；
+   用 [REPL 状态追踪协议](https://arxiv.org/abs/2602.14814)去实测。
+   *缺*：没人在 Qwen3.5-35B-A3B 的实际权重上查过特征值范围。
+9. **评测：三件事必须同时报。** (a) 观察保真度；(b) agent 指标；(c) 二者的**相关方向**
+   （[PatchWorld](https://arxiv.org/abs/2605.30880) 测出可能是负的）。
+   律的判据用 Q 组的**一致重命名**（`rm`→`zaq` 仍能预测「文件没了」）和 I 组的**世界模型恢复度**，
+   而不是 CE；因果主张必须做 activation patching（N 组）。
+10. **干预：离线语料里没有我们选的 `do(a)`，这是 CHT 的硬墙。**
+    工具有（R 组的 γ-Progress、Curiosity-Critic、CAASL；U 组 Policy-Aware Simulator Learning 的 Error-MDP 对偶给出可证收敛的主动数据选择），
+    但 [2606.19476](https://arxiv.org/abs/2606.19476) 证明在一般 MDP 上靠 in-context 预测误差估学习进度必然有偏，
+    所以要把 shell 上的探索**降成非时序的实验设计问题**才有保证。
+
 ## O. 现在真正还缺的（三轮检索后剩下的硬洞）
 
 1. **组合本身（最硬，也是我们能贡献的位置）。**
