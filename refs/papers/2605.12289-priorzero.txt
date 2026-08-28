@@ -1,0 +1,2441 @@
+source: https://arxiv.org/html/2605.12289
+arxiv: https://arxiv.org/abs/2605.12289
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Categorization of LLM Knowledge Transfer Paradigms
+ 4. 3 PriorZero
+     1. 3.1 Planning with a Latent World Model
+     2. 3.2 Root-Prior Injection
+         1. Why MCTS?
+         2. Root-Only Injection.
+         3. Structured Prior Extraction.
+     3. 3.3 Decoupled Training Strategy
+         1. Alternating Fine-Tuning.
+         2. Why This Decoupling Works.
+ 5. 4 Experiments and Analysis
+     1. 4.1 Experimental Setup
+         1. Environments.
+         2. Implementation Details.
+         3. Evaluation Metrics.
+     2. 4.2 Main Results on Jericho
+     3. 4.3 Analysis of Root-Prior Injection
+     4. 4.4 Ablation Studies
+         1. Effect of LLM Fine-Tuning.
+         2. CoT Loss Weight Analysis.
+         3. Scaling with LLM Size.
+         4. Effect of MCTS.
+     5. 4.5 Extension to the Grid-World BabyAI Benchmark
+ 6. 5 Related Work
+     1. Pre-Training for RL.
+     2. LLM Priors for RL.
+     3. RL Fine-Tuning of LLMs.
+ 7. 6 Conclusion
+ 8. References
+ 9. Appendix Contents
+10. A Detailed Analysis of LLM Knowledge Transfer Paradigms
+     1. Paradigm 1: LLM Directly as Policy (Naive Policy).
+     2. Paradigm 2: End-to-End RL Fine-Tuning (Naive RLFT).
+     3. Paradigm 3: LLM as Dynamics Model (Latent World-Model Backbone).
+     4. Paradigm 4: LLM as Text Encoder.
+11. B Implementation and Experiment Details
+     1. B.1 PriorZero Implementation Details
+         1. Planning advantage and comparison with GRPO.
+         2. PriorZero loss vs. AlphaZero-like SFT loss.
+         3. Fusion of the LLM prior and world-model policy.
+     2. B.2 Jericho Details
+         1. B.2.1 Environment Details
+         2. B.2.2 Additional Training Curves
+         3. B.2.3 Root-Prior Injection Analysis
+             1. Two-phase entropy dynamics.
+             2. Action-level case study.
+     3. B.3 BabyAI Details
+         1. B.3.1 Environment and Platform
+             1. Observation Space.
+             2. Action Space.
+             3. Reward Structure.
+         2. B.3.2 Task Selection
+         3. B.3.3 Implementation and Configuration
+             1. LLM Inference Configuration.
+             2. Action Prior Extraction Pipeline.
+             3. Format Reward.
+             4. Multi-Task Training.
+             5. LLM Prompt Design.
+             6. Baselines.
+             7. Hardware and Wall-Clock Time.
+             8. Computational cost comparison.
+         4. B.3.4 Per-Level Evaluation Curves
+             1. Per-Level Curves.
+             2. Where Does the World Model Contribute Beyond the LLM?
+             3. Where Does the LLM Prior Help on Top of UniZero?
+             4. Anomalies.
+12. C Detailed Related Work
+     1. C.1 Pre-training in Reinforcement Learning
+     2. C.2 Leveraging LLM Priors in Reinforcement Learning
+     3. C.3 Reinforcement Learning for Fine-Tuning LLMs
+13. D Prompt Template
+
+License: CC BY 4.0
+arXiv:2605.12289v1 [cs.LG] 12 May 2026
+
+PriorZero: Bridging Language Priors and World Models for Decision Making
+
+Junyu Xiong Affiliation: University of Science and Technology of China    Yuan Pu Affiliation: 
+Shanghai Artificial Intelligence Laboratory    Jia Tang Affiliation: Nanjing University of
+Aeronautics and Astronautics    Yazhe Niu Affiliation: The Chinese University of Hong Kong MMLab^
+†Corresponding author.
+
+Abstract
+
+Leveraging the rich world knowledge of Large Language Models (LLMs) to enhance Reinforcement
+Learning (RL) agents offers a promising path toward general intelligence. However, a fundamental
+prior-dynamics mismatch hinders existing approaches: static LLM knowledge cannot directly adapt to
+the complex transition dynamics of long-horizon tasks. Using LLM priors as fixed policies limits
+exploration diversity, as the prior is blind to environment-specific dynamics; while end-to-end
+fine-tuning suffers from optimization instability and credit assignment issues. To bridge this gap,
+we propose PriorZero, a unified framework that integrates LLM-derived conceptual priors into
+world-model-based planning through a decoupled rollout-training design. During rollout, a novel
+root-prior injection mechanism incorporates LLM priors exclusively at the root node of Monte Carlo
+Tree Search (MCTS), focusing search on semantically promising actions while preserving the world
+model’s deep lookahead capability. During training, PriorZero decouples world-model learning from
+LLM adaptation: the world model is continuously refined on interaction data to jointly improve its
+dynamics, policy, and value predictions, its value estimates are then leveraged to provide
+fine-grained credit assignment signals for stable LLM fine-tuning via alternating optimization.
+Experiments across diverse benchmarks, including text-based adventure games in Jericho and
+instruction-following gridworld tasks in BabyAI, demonstrate that PriorZero consistently improves
+both exploration efficiency and asymptotic performance, establishing a promising framework for
+LLM-empowered decision-making. Our code is available at https://github.com/opendilab/LightZero.
+
+1 Introduction
+
+Large Language Models (LLMs) encode broad semantic and commonsense knowledge that can significantly
+benefit reinforcement learning (RL) agents in language-conditioned, embodied, and interactive
+decision-making tasks (Huang et al., 2022; Ahn et al., 2022; Li et al., 2022; Carta et al., 2023).
+Such knowledge is particularly valuable in long-horizon environments with sparse rewards, where
+purely trial-and-error exploration often entails prohibitive interaction costs.
+
+However, transferring the static, declarative knowledge of LLMs to dynamic RL tasks remains
+challenging. The core difficulty lies in a prior–dynamics mismatch: LLMs excel at semantic
+plausibility and high-level reasoning, whereas RL agents must model environment-specific
+transitions, assign long-term credit, and plan under feedback. Existing paradigms expose this
+mismatch in different ways. Directly using an LLM as a policy (Huang et al., 2022; Ahn et al., 2022
+; Huang et al., 2023) often leads to myopic decisions because linguistic likelihood is not
+equivalent to environment return. End-to-end RL fine-tuning of LLM policies (Carta et al., 2023)
+introduces environment feedback, but suffers from high-variance credit assignment and poor
+scalability in long-horizon sparse-reward tasks. Using language models as dynamics models (Lin et
+al., 2024) can leverage language-conditioned prediction, but accurate action-conditioned transition
+modeling remains difficult: LLMs are pretrained via token-level autoregressive objectives, whereas
+latent dynamics models must predict state transitions at the state-action level—this granularity
+gap prevents the pretrained knowledge from being directly reused for dynamics learning. Finally,
+treating LLMs as frozen representations (Li et al., 2022) improves sample efficiency but limits
+task-specific adaptation.
+
+To address these bottlenecks, we propose PriorZero, a unified framework that integrates LLM
+semantic priors into world-model-based latent planning. Building upon recent advancements in
+model-based RL and latent world models (Hansen et al., 2024; Wang et al., 2024b; Pu et al., ; Xuan
+et al., 2024; Niu et al., 2024; Pu et al., 2025), PriorZero places a learnable world model between
+the LLM and the environment. This design enables the LLM to provide valuable semantic guidance
+while delegating transition modeling, value estimation, and multi-step planning to the world model.
+PriorZero decouples the rollout and training processes through two complementary mechanisms.
+
+During rollout, we introduce Root-Prior Injection: LLM semantic priors are fused exclusively at the
+root node of latent-space Monte Carlo Tree Search (MCTS). This provides the search with an
+informative initial direction while preserving the world model’s capacity to conduct deeper latent
+exploration, effectively preventing MCTS from falling into meaningless trajectory exploration
+(e.g., reward loops or logically inconsistent paths).
+
+During training, we introduces Alternating Reinforcement Fine-Tuning, which decouples world-model
+learning from LLM adaptation. First, the interaction data collected under the guidance of LLM
+priors is used to update the world model, accelerating the convergence of its components. Then, the
+world model’s action-value estimates are utilized to construct fine-grained credit assignment
+signals for stable LLM fine-tuning. This alternating process aligns the LLM prior more closely with
+environment-specific decision outcomes while avoiding the instability of end-to-end optimization.
+
+Experiments on Jericho Hausknecht et al. (2020) and BabyAI Chevalier-Boisvert et al. (2019)
+demonstrate that PriorZero improves exploration efficiency and final performance across text-based
+adventure games and gridworld instruction-following tasks. Our main contributions are:
+
+  • •
+   
+    We analyze the major paradigms for transferring LLM knowledge to RL agents and identify the 
+    prior-dynamics mismatch as the central obstacle in long-horizon, sparse-reward decision-making.
+
+  • •
+   
+    We propose PriorZero, a framework that synergizes LLM priors with world-model planning through
+    two core mechanisms: Root-Prior Injection, which injects semantic guidance at the MCTS root
+    node to facilitate exploration; and Alternating Reinforcement Fine-Tuning, which leverages
+    world-model value estimates as fine-grained credit assignment signals for stable LLM
+    adaptation.
+
+  • •
+   
+    We demonstrate strong performance on the Jericho and BabyAI benchmarks, and validate the
+    specific contributions of root-prior injection, LLM fine-tuning, CoT-based prior extraction,
+    model scale, and MCTS through comprehensive ablations.
+
+2 Categorization of LLM Knowledge Transfer Paradigms
+
+Transferring the world knowledge of LLMs to RL agents is a compelling yet challenging research
+direction (Shi et al., 2025; Yu et al., 2026). We categorize existing approaches (Huang et al.,
+2022; Ahn et al., 2022; Huang et al., 2023; Szot et al., 2024; Lin et al., 2024; Shi et al., 2025;
+Yu et al., 2026) along three dimensions—LLM plasticity, core mechanism, and primary bottleneck—and
+identify established paradigms (Table 1). Figure 1 compares their performance on a representative
+Jericho task (Detective). Detailed analysis of each paradigm are provided in Appendix A.
+
+
+Table 1: Comparison of LLM knowledge transfer paradigms for RL, characterized in LLM plasticity,
+core mechanism, and primary bottleneck. Existing paradigms (P1–P4) each face a distinct structural
+bottleneck in long-horizon, sparse-reward tasks. PriorZero resolves these by decoupling the LLM
+prior from world-model dynamics, yielding a favorable balance between adaptability and stability.
+
+Paradigm      LLM                Core Mechanism                       Primary Bottleneck
+          Plasticity
+  Naive     Frozen    Prompts LLM to directly output       Knowing-Doing Gap: no
+ Policy               actions in text format.              environment-specific adaptation.
+  Naive     Trained   LLM as learnable policy, end-to-end  Credit assignment failure under sparse
+  RLFT                RL Training.                         rewards and diverse feedbacks.
+Dynamics    Trained   LLM predicts state transitions.      Granularity Mismatch: token-level ≠\neq
+  Model                                                    state-action-level.
+  Text      Frozen    LLM encodes texts and extracts       Representation Bottleneck: non-adaptive.
+ Encoder              static semantic features.
+PriorZero Alternating Decouples LLM from world-model;      Requires balancing LLM prior and
+                      closed-loop mutual improvement.      world-model policy.
+
+Refer to caption
+Figure 1: Training curves of five LLM knowledge transfer paradigms on the Detective
+environment.P1–P3 stagnate at low return due to their structural bottlenecks: myopic action
+selection (P1), high-variance end-to-end updates (P2), and granularity mismatch between token-level
+pretraining and state-action-level dynamics (P3). P4 improves steadily but saturates below
+PriorZero due to its non-adaptive text representation. PriorZero achieves both faster convergence
+and the highest asymptotic return through its decoupling design (Table 1).
+
+P1 (Naive Policy) directly prompts the LLM to select actions (Huang et al., 2022; Ahn et al., 2022;
+Wang et al., 2023; Yao et al., 2022), but the absence of an environmental feedback loop yields
+myopic policies—the “knowing-doing gap”. P2 (Naive RLFT) fine-tunes the LLM end-to-end via RL (
+Schmied et al., 2023; Zhai et al., 2024; Carta et al., 2023), yet suffers from high-variance
+gradients under sparse rewards, poor exploration in large action spaces, and prohibitive
+computational cost. P3 (Dynamics Modeling) uses the LLM to predict state transitions (Hao et al.,
+2023; Xie et al., 2025), but a granularity mismatch between token-level text generation and
+state-action-level transition prediction prevents the LLM’s pretrained knowledge from being
+effectively reused for latent dynamics learning. P4 (Text Encoder) extracts static LLM features for
+downstream RL modules (Xu et al., 2025; Szot et al., 2024; Wang et al., 2024a; Yan et al., 2025),
+avoiding catastrophic forgetting but imposing a performance ceiling due to non-adaptive
+representations. These limitations motivate PriorZero’s design: rather than forcing the LLM into a
+role in decision-making tasks, which is often ill-suited (e.g., dynamics modeling or end-to-end
+policy), we let it provide what it does best—semantic priors—and delegate dynamics and planning to
+a world model.
+
+3 PriorZero
+
+PriorZero proposes a decoupled rollout-training architecture that integrates Large Language Model
+(LLM) semantic priors into a world-model-based planning framework (Figure 2). Two principles guide
+its design, each directly responding to a failure mode identified in Section 2: (i) the LLM prior
+must not interfere with the world model’s faithful dynamics modeling—preventing the granularity
+mismatch that disabled P3; and (ii) the world model’s planning knowledge must provide a
+low-variance, fine-grained supervision signal for LLM adaptation—resolving the credit-assignment
+failure that plagued P2. During rollout, LLM-derived action priors are injected exclusively at the
+MCTS root node (§3.2). During training, world-model learning and LLM adaptation are optimized under
+distinct objectives in an alternating schedule (§3.3). Full implementation details are in Appendix 
+B.
+
+Refer to caption
+Figure 2: Overview of PriorZero. Bottom: during rollout, the LLM produces a semantic action prior
+πLLM\pi_{\mathrm{LLM}} via chain-of-thought reasoning, which is fused with the world-model policy
+πWM\pi_{\mathrm{WM}} exclusively at the MCTS root node; non-root nodes rely entirely on the world
+model. Top: during training, the world model is updated on interaction data to refine its dynamics,
+value, and policy predictions; the resulting value estimates construct low-variance advantage
+signals for alternating LLM fine-tuning via PPO, forming a closed-loop mutual-improvement cycle.
+
+3.1 Planning with a Latent World Model
+
+PriorZero adopts the same world-model setup as UniZero (Pu et al., ): a unified Transformer that
+processes interleaved observation and action embeddings to produce context-conditioned latent
+representations. Let ℋt=(ot−H+1,at−H+1,…,ot)\mathcal{H}_{t}=(o_{t-H+1},a_{t-H+1},\ldots,o_{t})
+denote the historical context of length HH at step tt (H=10H{=}10 during training and H=4H{=}4 at
+test time). The Transformer encodes this sequence into zt=hθ​(ℋt)z_{t}=h_{\theta}(\mathcal{H}_{t}),
+from which prediction heads output the policy and value:
+
+ πWM(⋅∣zt)=fθπ(zt),vθ(zt)=fθv(zt).\pi_{\mathrm{WM}}(\cdot\mid z_{t})=f_{\theta}^{\pi}(z_{t}),\
+ qquad v_{\theta}(z_{t})=f_{\theta}^{v}(z_{t}).
+
+Unlike LLMs, which model long-range dependencies at the token level, the world model captures
+long-range dependencies at the state-action level, directly relevant for credit assignment and
+planning. During the MCTS procedure, the dynamics model recursively unrolls imagined trajectories
+in the latent space, starting from ztz_{t}:
+
+ (z^t+k+1,r^t+k)=gθ(z^t+k,at+k),k=0,1,…,(\hat{z}_{t+k+1},\hat{r}_{t+k})=g_{\theta}(\hat{z}_
+ {t+k},a_{t+k}),\quad k=0,1,\ldots,
+
+where z^t≡zt\hat{z}_{t}\equiv z_{t}. In parallel, the same history is serialized into a textualized
+prompt 𝒞t\mathcal{C}_{t} (the language counterpart of ℋt\mathcal{H}_{t}) together with the
+candidate action set 𝒜t\mathcal{A}_{t}. The pretrained LLM then serves as an independent
+commonsense oracle, producing an action prior πLLM(⋅∣𝒞t)\pi_{\mathrm{LLM}}(\cdot\mid\mathcal{C}_
+{t}) that encodes its plausibility judgment over 𝒜t\mathcal{A}_{t}, obtained through
+chain-of-thought reasoning (detailed below).
+
+3.2 Root-Prior Injection
+
+Why MCTS?
+
+A pretrained LLM offers strong priors but no environment-specific lookahead; pure model-free RL
+lacks sample-efficient credit assignment under sparse rewards. MCTS provides a step-wise
+policy-improvement operator over a learned latent dynamics model, turning πWM\pi_{\mathrm{WM}} at
+each step into a stronger search-improved distribution. The remaining question is how to inject the
+LLM prior into MCTS without contaminating downstream simulation.
+
+Root-Only Injection.
+
+The core design of PriorZero is to fuse the LLM prior exclusively at the MCTS root node. The root
+corresponds to ztz_{t}, which encodes the full historical context ℋt\mathcal{H}_{t} and aligns with
+the LLM’s judgment based on 𝒞t\mathcal{C}_{t}. Non-root nodes in the search tree are recursively
+generated by the latent dynamics model and have no direct textual counterpart; injecting the LLM
+prior at such nodes would force a textual interpretation onto a state that no longer admits one,
+introducing systematic bias. The fused prior at the root and the world-model-only prior at non-root
+nodes are:
+
+ Proot​(a∣zt)=(1−α)​πWM​(a∣zt)+α​πLLM​(a∣𝒞t),Pnon​-​root​(a∣z^)=πWM​(a∣z^).P_{\mathrm{root}}(a\mid
+ z_{t})=(1-\alpha)\,\pi_{\mathrm{WM}}(a\mid z_{t})+\alpha\,\pi_{\mathrm{LLM}}(a\mid\mathcal{C}_
+ {t}),\qquad P_{\mathrm{non\text{-}root}}(a\mid\hat{z})=\pi_{\mathrm{WM}}(a\mid\hat{z}).
+
+Node selection follows the standard pUCT criterion. The MCTS lookahead resolves the myopia of
+LLM-only policies (P1) by replacing single-step likelihood with multi-step value estimation. Upon
+completion of the search, the root visit counts are temperature-scaled into the execution policy
+πMCTS​(a∣zt)∝N​(zt,a)1/τ\pi_{\mathrm{MCTS}}(a\mid z_{t})\propto N(z_{t},a)^{1/\tau}.
+
+Structured Prior Extraction.
+
+To obtain high-quality priors, we use a two-stage prompt template. The LLM first produces a
+situation analysis ctc_{t} under a neutrality constraint—a system instruction that requires the
+analysis to describe the state objectively without committing to any action (see example in
+Appendix B). Conditioned on (𝒞t,ct)(\mathcal{C}_{t},c_{t}), the LLM then outputs the action
+distribution:
+
+ πLLM(a∣𝒞t)≜PLLM(a∣𝒞t,ct),ct∼LLM(⋅∣𝒞t,[neutrality_constraint]).\pi_{\mathrm{LLM}}(a\mid\mathcal{C}
+ _{t})\triangleq P_{\mathrm{LLM}}(a\mid\mathcal{C}_{t},c_{t}),\quad c_{t}\sim\mathrm{LLM}(\cdot\
+ mid\mathcal{C}_{t},\texttt{[neutrality\_constraint]}).
+
+This “analyze-before-decide” design avoids the rationalization bias where the LLM, having committed
+to an action, retroactively constructs reasoning that justifies it. Root-prior injection thus
+achieves a clean division of labor: the LLM biases the search toward semantically promising
+actions, while the world model performs the multi-step lookahead that determines their actual
+long-term value.
+
+3.3 Decoupled Training Strategy
+
+Alternating Fine-Tuning.
+
+World-model learning and LLM policy fine-tuning use distinct optimization objectives over a shared
+interaction stream, forming a closed-loop training pipeline. The two modules follow an asymmetric
+alternating schedule: NWMN_{\mathrm{WM}} world-model updates are followed by NLLMN_{\mathrm{LLM}}
+LLM updates, with NWM:NLLM=10:1N_{\mathrm{WM}}{:}N_{\mathrm{LLM}}{=}10{:}1. The world-model
+objective follows UniZero (Pu et al., ), including policy distillation, distributional value
+prediction (categorical head over a discretized support), reward prediction, and latent consistency
+losses. A world-model warm-up phase precedes the first LLM update to ensure that the value is
+sufficiently accurate to provide meaningful signal.
+
+The core innovation is to construct a low-variance policy-gradient signal for the LLM from the
+world model’s value estimates. We use the nn-step bootstrapped TD advantage:
+
+ A⁡(zt,at)=Qn​(zt,at)−vθ​(zt),Qn​(zt,at)=∑i=0n−1γi​rt+i+γn​vθ​(zt+n),A(z_{t},a_{t})=Q_{n}(z_{t},a_
+ {t})-v_{\theta}(z_{t}),\quad Q_{n}(z_{t},a_{t})=\sum_{i=0}^{n-1}\gamma^{i}r_{t+i}+\gamma^{n}v_{\
+ theta}(z_{t+n}),
+
+where vθv_{\theta} is the history-conditioned world-model value head, trained against MCTS-improved
+targets. Combining nn real rewards with a trained bootstrap keeps variance well below Monte-Carlo
+returns. Raw advantages are normalized to A^\hat{A} within each LLM phase, then softly fused with a
+binary structured-template reward rfmtr_{\mathrm{fmt}} to obtain A^final\hat{A}_{\mathrm{final}}
+(blending coefficient in Appendix B); this enforces schema compliance without overwhelming the
+value signal. The LLM parameters ϕ\phi are updated via the clipped PPO objective with a KL
+regularizer to a frozen reference πref\pi_{\mathrm{ref}}, following the RLFT recipes in LightRFT (
+Niu et al., 2025) and OpenRLHF (Hu et al., 2024):
+
+ ℒtotal(ϕ)=−𝔼t​[min⁡(ρt​A^final,clip⁡(ρt,1−ϵ,1+ϵ)​A^final)]⏟ℒPPO+βDKL(πϕ∥πref),\mathcal{L}_{\
+ mathrm{total}}(\phi)=\underbrace{-\,\mathbb{E}_{t}\!\left[\min\!\big(\rho_{t}\,\hat{A}_{\mathrm
+ {final}},\,\mathrm{clip}(\rho_{t},1{-}\epsilon,1{+}\epsilon)\,\hat{A}_{\mathrm{final}}\big)\
+ right]}_{\mathcal{L}_{\mathrm{PPO}}}\;+\;\beta\,D_{\mathrm{KL}}(\pi_{\phi}\,\|\,\pi_{\mathrm
+ {ref}}),
+
+where ρt=πϕ(yt∣⋅)/πϕold(yt∣⋅)\rho_{t}=\pi_{\phi}(y_{t}\mid\cdot)/\pi_{\phi_{\mathrm{old}}}(y_{t}\
+mid\cdot) is the per-token importance ratio over the generated CoT-and-action sequence. To focus
+updates on the tokens that determine the executed action, we scale the per-token loss of the CoT
+prefix by wcot=0.1w_{\mathrm{cot}}{=}0.1 while action tokens carry full weight; the ratio ρt\rho_
+{t} itself is unaffected.
+
+Why This Decoupling Works.
+
+The closed loop directly addresses each failure mode identified in Section 2: (P1) the
+knowing-doing gap is closed because the LLM’s prior is grounded by world-model lookahead at every
+step; (P2) the credit-assignment failure of end-to-end RLFT is avoided because gradients reach the
+LLM only through the world-model’s variance-reduced advantage, never through long on-policy
+returns; (P3) the granularity mismatch is sidestepped because the LLM is never asked to predict
+transitions—it provides priors only at the root, where textual and latent representations align;
+(P4) the representation bottleneck is broken because the LLM is trainable, allowing its priors to
+co-evolve with the world model. The overall effect is a progressive alignment between LLM-encoded
+world knowledge and the environment’s state-action-level dynamics.
+
+4 Experiments and Analysis
+
+4.1 Experimental Setup
+
+Environments.
+
+We evaluate PriorZero on two complementary benchmarks. The primary evaluation uses Jericho 
+Hausknecht et al. (2020), a suite of text-based adventure games that stress long-horizon planning
+under sparse rewards. All methods restrict their action selection to the valid_actions provided by
+Jericho. To test generalization beyond text games, we further evaluate on BabyAI Chevalier-Boisvert
+et al. (2019), a grid-world environment with natural-language commands (§4.5). For Jericho, we
+select four games spanning distinct capability dimensions:
+
+  • •
+   
+    Detective—a mystery-solving game with short optimal paths (<<100 steps) and compact action
+    spaces (<<10 per step). It tests commonsense reasoning via logical inference from textual
+    clues.
+
+  • •
+   
+    Acorncourt—a puzzle-driven adventure with moderate horizons. Evaluates combinatorial
+    action-space handling, requiring objects to be discovered and combined in the correct sequence.
+
+  • •
+   
+    Zork1—a dungeon-exploration game with extended trajectories (>>300 steps) and over 50 actions
+    per step. Evaluates long-horizon planning under sparse rewards across a vast, interconnected
+    map.
+
+  • •
+   
+    Omniquest—a fantasy adventure with limited environmental feedback. Evaluates sparse-reward
+    exploration, as meaningful rewards are separated by long sequences of unrewarded actions.
+
+Implementation Details.
+
+Our experiments build upon the unified MCTS framework established by LightZero (Niu et al., 2024).
+We instantiate PriorZero on top of UniZero (Pu et al., ) with Qwen2.5-3B-Instruct as the LLM.
+During inference, the LLM scores candidate actions conditioned on a chain-of-thought prefix;
+log-probabilities are normalized via softmax with temperature 1 to produce a smooth policy prior.
+During training, the fusion weight is α=0.5\alpha{=}0.5, the CoT loss weight is wcot=0.1w_{\mathrm
+{cot}}{=}0.1, and the alternating schedule performs NWM=2000N_{\mathrm{WM}}{=}2000 world-model
+steps followed by NLLM=200N_{\mathrm{LLM}}{=}200 LLM PPO steps (AdamW, lr 1×10−61{\times}10^{-6},
+KL weight 0.010.01). Full hyperparameters are provided in Appendix B, and a per-paradigm compute
+breakdown is reported in Appendix B.
+
+Evaluation Metrics.
+
+We compare PriorZero with baselines in terms of convergence behavior across different environments,
+assessing overall decision-making capability and learning efficiency. In addition, we analyze the
+entropy of the MCTS root-node visit distributions, which reflects policy uncertainty and provides
+insight into how semantic priors influence exploration.^1^1 1 The main comparison runs use three
+random seeds. Failed-variant ablation curves are reported from a single seed: preliminary runs
+already established their non-viability, and additional seeds would not have changed the
+qualitative conclusion.
+
+4.2 Main Results on Jericho
+
+Refer to caption
+Figure 3: Main performance comparison between PriorZero and UniZero on four Jericho environments.
+Shaded regions indicate variation across three random seeds.
+
+Figure 3 compares PriorZero with UniZero on Jericho. In acorncourt and omniquest, PriorZero reaches
+high-return regions substantially earlier than UniZero, indicating that semantic priors are useful
+when sparse rewards make classical RL exploration inefficient. In detective, UniZero obtains strong
+early gains, but PriorZero continues improving and eventually surpasses it, suggesting that
+language priors become more valuable as they are adapted to task-specific dynamics. In the
+long-horizon zork1, PriorZero achieves a higher asymptotic return, showing that root-prior guidance
+can still benefit planning even when success depends on extended multi-step trajectories.
+
+Figure 8 further examines the LLM component during alternating training. We refer to the standalone
+LLM policy as PriorZero’s LLM component evaluated in isolation: actions are sampled directly from
+πLLM\pi_{\mathrm{LLM}} without any world-model rollout or MCTS, so the curve measures the LLM’s own
+policy quality as it is fine-tuned by the world-model advantage. Across the four games, the
+standalone LLM policy improves steadily rather than collapsing under sparse rewards, confirming
+that the world-model-based advantage provides a stable, low-variance policy-gradient signal for LLM
+adaptation. This trend explains why PriorZero’s gains are not limited to the initial use of a
+frozen prior: as training proceeds, the LLM prior becomes increasingly aligned with environment
+dynamics, which improves root-node search guidance and in turn exposes the world model to
+higher-quality trajectories.
+
+4.3 Analysis of Root-Prior Injection
+
+Refer to caption
+Figure 4: Return and MCTS root-node visit count entropy on zork1 environment. Solid curves denote
+evaluation returns, and dashed curves denote MCTS root-node visit count entropy.
+
+Figure 4 tracks both return and MCTS root-node visit count entropy on zork1. Two phases emerge.
+Early in training, PriorZero improves faster than UniZero while its root-node entropy is lower—the
+LLM prior concentrates search on semantically meaningful actions, avoiding cyclic exploration in 
+zork1’s large admissible-action space. Later, as the world model matures, PriorZero’s root entropy
+rises above UniZero’s while its return remains higher, showing that the prior does not collapse
+search onto a single action but instead prevents the visit distribution from being dominated by
+brittle world-model preferences. A representative case study and further breakdown are in Appendix 
+B.1.
+
+Fig. 9 illustrates this effect at the action level. In the game history, the agent repeatedly
+enters a closet to the north and returns south, forming an unproductive loop, while the current
+observation indicates that moving west leads back to the hallway. The LLM assigns most probability
+mass to west, whereas the world model still favors north. Root-prior fusion redirects MCTS toward
+the appropriate action and helps break the dead-loop exploration pattern. More generally, these
+examples show that LLM priors can provide useful initial directions for MCTS, especially when the
+learned world model has not yet distinguished productive actions from locally repetitive but
+low-value behavior.
+
+4.4 Ablation Studies
+
+We conduct ablation studies on Jericho to validate the four key design choices of PriorZero: (a)
+ the alternating fine-tuning schedule (§3.3), (b) the chain-of-thought prior extraction with
+weighted token loss (§3.2), (c) the capacity of the underlying LLM, and (d) the necessity of MCTS
+lookahead.
+
+Refer to caption
+Figure 5: Ablation studies of the PriorZero on the detective and zork1. (a) Impact of the training
+strategy, comparing full PriorZero against a frozen-prior baseline and a non-alternating
+optimization variant. (b) Effect of Chain-of-Thought (CoT) reasoning and the corresponding CoT loss
+weight (wc​o​tw_{cot}). Note that removing CoT entirely leads to numerical instability (NaN). (c)
+Scaling the LLM prior from a 3B to a 7B parameter. (d) Contribution of MCTS planning to performance
+and stability.
+
+
+Figure 6: Aggregated return of PriorZero vs. UniZero on BabyAI-18, averaged over the 18 levels.
+Shaded regions indicate variation across three random seeds. PriorZero reaches high-return regions
+earlier and converges to a higher plateau, confirming that root-prior injection and alternating
+fine-tuning are also effective on the grid-world BabyAI benchmark.
+
+Effect of LLM Fine-Tuning.
+
+Fig. 5a compares PriorZero against two variants: a frozen-LLM variant and a non-alternating
+variant. While the frozen-LLM variant provides useful early-stage guidance—demonstrating the
+inherent strength of LLM priors, particularly in the challenging zork1 environment—its performance
+eventually plateaus at a suboptimal level. In later training stages, the static LLM priors become
+increasingly misaligned with the agent’s needs; because the LLM cannot be fine-tuned to adapt,
+these priors act as a bottleneck, leading to poor results even in the simpler detective game.
+Conversely, the non-alternating variant attempts to update the LLM from the very beginning. This
+approach, however, forces the LLM to learn from the purely noisy value signals of an uninitialized
+world model, leading to detrimental updates (or "knowledge corruption"). Consequently, this variant
+achieves only mediocre performance in detective and suffers a complete performance collapse in the
+difficult zork1. These findings underscore that PriorZero’s efficacy stems not just from injecting
+LLM priors, but crucially from the asymmetric alternating schedule, which ensures the world model
+establishes reliable value estimates before they are used to guide the LLM’s training.
+
+CoT Loss Weight Analysis.
+
+Figure 5b investigates the role of CoT reasoning and the loss weight wcotw_{\mathrm{cot}} applied
+to the reasoning-prefix tokens during LLM fine-tuning. Completely omitting CoT reasoning induces
+severe training instability, resulting in numerical failures (NaN): without an intermediate
+reasoning prefix, the policy-gradient variance on raw action tokens becomes effectively unbounded
+under sparse rewards, producing NaN within a few iterations. Conversely, applying a full CoT loss
+weight (wcot=1.0w_{\mathrm{cot}}{=}1.0) prevents numerical collapse but leads to volatile learning
+dynamics and inferior final performance. The likely cause is that strong supervision on the long
+reasoning prefix diffuses optimization capacity onto fine-grained reasoning-text tokens, while
+credit assignment within a long reasoning sequence is itself noisy—so heavy gradients on these
+tokens hurt rather than help. Our default configuration (wcot=0.1w_{\mathrm{cot}}{=}0.1) strikes a
+better balance: the action-token loss remains the dominant learning signal, while the reasoning
+prefix is preserved as a contextual scaffold.
+
+Scaling with LLM Size.
+
+Figure 5c assesses the scalability of LLM priors by upgrading the base model to Qwen2.5-7B-Instruct
+. In the long-horizon zork1, the 7B model exhibits faster convergence and achieves superior
+performance, confirming that more potent semantic priors significantly enhance exploration in
+expansive action spaces. Conversely, in the simpler detective task, while the 7B variant remains
+competitive, it suffers from higher variance compared to the 3B model, which converges more
+smoothly. This suggests that while scaling up the LLM bolsters semantic guidance—especially for
+complex tasks—it also introduces increased sensitivity to training dynamics, indicating that model
+scaling must be paired with robust optimization strategies to maintain stability.
+
+Effect of MCTS.
+
+Figure 5d isolates the impact of MCTS by disabling it, thereby forcing the agent to rely solely on
+the world model without lookahead planning. This variant collapses across both detective and zork1,
+and exhibits severe numerical instability in the former. This demonstrates that MCTS is an
+indispensable component of the PriorZero architecture: by fusing LLM semantic priors with
+world-model predictions, MCTS produces planning-improved policy targets that stabilize learning
+under sparse rewards—a stabilization role that no single component can play alone.
+
+4.5 Extension to the Grid-World BabyAI Benchmark
+
+To test whether PriorZero benefits beyond textgames, we evaluate on the BabyAI (Chevalier-Boisvert
+et al., 2019)—a grid-world environment (Xi et al., 2025b). Agents navigate procedurally generated
+rooms, move objects, unlock doors, and interact with the environment in response to language
+commands. Unlike Jericho’s free-form text, BabyAI provides structured states (object descriptions
+with relative positions), high-level semantic actions (e.g., “go to red ball 1”), and a continuous
+reward. Following Xi et al. (2025b), we train an agent across 18 levels spanning four categories.
+For BabyAI we use a larger backbone, Qwen2.5-7B-Instruct, with an alternating schedule of NWM=500N_
+{\mathrm{WM}}{=}500 world-model steps and NLLM=100N_{\mathrm{LLM}}{=}100 LLM steps (5:15{:}1
+ratio); the increased LLM capacity matches the multi-task nature of BabyAI’s 18 levels, while the
+smaller step counts reflect the shorter episodes.
+
+Figure 6 reports aggregated return on the 18 BabyAI levels. PriorZero and UniZero learn at similar
+rates in the early phase, but in the later phase the LLM prior helps the world model escape local
+optima, lifting PriorZero to a higher asymptotic plateau (0.820.82 vs. 0.790.79). The gap is most
+pronounced on compositional levels such as SynthLoc, where UniZero fails to learn any positive
+behavior while PriorZero attains 0.960.96, indicating that semantic priors remain useful when
+agents must decompose goals into sub-tasks. Per-level curves, the standalone LLM ablation, and
+detailed setup are in Appendix B.
+
+5 Related Work
+
+Pre-Training for RL.
+
+Recent work integrates pre-training into RL to improve sample efficiency and generalization. World
+Models (Ha and Schmidhuber, 2018) learn generative dynamics in latent space; CURL (Laskin et al.,
+2020) applies contrastive learning in pixel space; PIE-G (Yuan et al., 2022) transfers pre-trained
+encoders for zero-shot learning; VIP (Ma et al., 2022) extracts implicit value from videos; and
+Dynalang (Lin et al., 2024) trains world models on text corpora for planning without environments.
+PriorZero does not require pre-training: the world model is trained online from scratch, while the
+LLM prior is adapted in-the-loop without relying on offline text datasets.
+
+LLM Priors for RL.
+
+LLMs have been leveraged to assist RL agents in multiple ways, which largely correspond to the
+paradigms categorized in §2: as zero-shot planners (Huang et al., 2022) (P1), as end-to-end
+fine-tuned policies (Carta et al., 2023) (P2), as dynamics models (Lin et al., 2024) (P3), as
+frozen text encoders (Paischer et al., 2022) (P4), and as MCTS action proposers (Shi et al., 2025).
+The first four exhibit bottlenecks analyzed in §2; the last keeps the LLM frozen and therefore
+cannot close the prior-dynamics mismatch through adaptation. PriorZero is the first to integrate
+LLM priors with a learnable world model through root-prior injection and alternating fine-tuning,
+enabling continuous policy refinement while keeping dynamics learning uncontaminated by token-level
+bias.
+
+RL Fine-Tuning of LLMs.
+
+RLHF (Christiano et al., 2017; Ouyang et al., 2022; Xiong et al., 2026) has become the dominant
+paradigm for LLM alignment, with extensions to AI feedback (Bai et al., 2022; Lee et al., 2023) and
+search-augmented training (Guan et al., 2025). For decision-making, Schmied et al. (2025) study
+RLFT effects on LLM decision behaviors but are limited to short-horizon tasks. PriorZero constructs
+advantage signals from world-model value estimates via value bootstrapping, providing low-variance
+feedback that resolves the credit-assignment failure limiting end-to-end RLFT (P2 in §2) and
+enables stable fine-tuning in long-horizon, sparse-reward environments. For a more comprehensive
+discussion of each line of work, please refer to Appendix C.
+
+6 Conclusion
+
+We introduced PriorZero, a unified framework that addresses the prior-dynamics mismatch between
+pretrained LLM and long-horizon RL optimization through a decoupled rollout-training design. During
+rollout, root-only injection fuses LLM priors exclusively at the MCTS root node, guiding search
+toward semantically plausible actions while preserving the world model’s multi-step lookahead
+capacity. During training, alternating fine-tuning uses world-model value estimates to construct
+better advantage signals, providing stable policy-gradient for LLM adaptation. Together, these
+components form a closed loop in which the world model and LLM mutually reinforce each other: the
+LLM’s priors focus the search, and the world model’s planning refines the LLM’s priors. Experiments
+on Jericho and BabyAI validate that PriorZero consistently improves exploration and return;
+ablations confirm that each component is necessary, and that the framework scales with LLM
+capacity.
+
+Acknowledgments and Disclosure of Funding
+
+We extend our gratitude to several team-members of the Shanghai AI Laboratory for their invaluable
+assistance, support, and feedback on this paper and the associated codebase.
+
+References
+
+  • Ahn et al. (2022) M. Ahn, A. Brohan, N. Brown, Y. Chebotar, O. Cortes, B. David, C. Finn, C.
+    Fu, K. Gopalakrishnan, K. Hausman, et al. Do as i can, not as i say: grounding language in
+    robotic affordances. arXiv preprint arXiv:2204.01691. Cited by: Appendix A, §C.2, §C.2, §1, §1,
+    §2, §2.
+  • Bai et al. (2022) Y. Bai, S. Kadavath, S. Kundu, A. Askell, J. Kernion, A. Jones, A. Chen, A.
+    Goldie, A. Mirhoseini, C. McKinnon, et al. Constitutional ai: harmlessness from ai feedback. 
+    arXiv preprint arXiv:2212.08073. Cited by: §C.3, §5.
+  • Basavatia et al. (2024) S. Basavatia, K. Murugesan, and S. Ratnakar Starling: self-supervised
+    training of text-based reinforcement learning agent with large language models. In Findings of
+    the Association for Computational Linguistics: ACL 2024, pp. 15804–15819. Cited by: §C.1.
+  • Cao et al. (2024) M. Cao, L. Shu, L. Yu, Y. Zhu, N. Wichers, Y. Liu, and L. Meng Beyond sparse
+    rewards: enhancing reinforcement learning with language model critique in text generation. 
+    arXiv preprint arXiv:2401.07382. Cited by: §C.2, §C.2.
+  • Carta et al. (2023) T. Carta, C. Romac, T. Wolf, S. Lamprier, O. Sigaud, and P. Oudeyer 
+    Grounding large language models in interactive environments with online reinforcement learning.
+    In Proceedings of the 40th International Conference on Machine Learning, Proceedings of Machine
+    Learning Research, Vol. 202, pp. 3676–3713. Cited by: §1, §1, §2, §5.
+  • Chevalier-Boisvert et al. (2019) M. Chevalier-Boisvert, D. Bahdanau, S. Lahlou, L. Willems, C.
+    Saharia, T. H. Nguyen, and Y. Bengio BabyAI: a platform to study the sample efficiency of
+    grounded language learning. In International Conference on Learning Representations, Cited by:
+    §B.3.1, §1, §4.1, §4.5.
+  • Christiano et al. (2017) P. F. Christiano, J. Leike, T. Brown, M. Martic, S. Legg, and D.
+    Amodei Deep reinforcement learning from human preferences. Advances in neural information
+    processing systems 30. Cited by: §C.3, §5.
+  • Guan et al. (2025) X. Guan, L. L. Zhang, Y. Liu, N. Shang, Y. Sun, Y. Zhu, F. Yang, and M. Yang
+    RStar-math: small llms can master math reasoning with self-evolved deep thinking. arXiv
+    preprint arXiv:2501.04519. Cited by: §C.3, §5.
+  • Ha and Schmidhuber (2018) D. Ha and J. Schmidhuber World models. arXiv preprint
+    arXiv:1803.10122 2 (3), pp. 440. Cited by: §C.1, §5.
+  • Hansen et al. (2024) N. Hansen, H. Su, and X. Wang TD-MPC2: scalable, robust world models for
+    continuous control. In Proceedings of the International Conference on Learning Representations,
+    Cited by: §1.
+  • Hao et al. (2023) S. Hao, Y. Gu, H. Ma, J. Hong, Z. Wang, D. Wang, and Z. Hu Reasoning with
+    language model is planning with world model. In Proceedings of the 2023 Conference on Empirical
+    Methods in Natural Language Processing, pp. 8154–8173. Cited by: §2.
+  • Hausknecht et al. (2020) M. Hausknecht, P. Ammanabrolu, M. Côté, and X. Yuan Interactive
+    fiction games: a colossal adventure. In Proceedings of the AAAI Conference on Artificial
+    Intelligence, Cited by: §1, §4.1.
+  • Hu et al. (2024) J. Hu, X. Wu, Z. Zhu, Xianyu, W. Wang, D. Zhang, and Y. Cao OpenRLHF: an
+    easy-to-use, scalable and high-performance rlhf framework. arXiv preprint arXiv:2405.11143. 
+    Cited by: §B.1, §3.3.
+  • Huang et al. (2022) W. Huang, P. Abbeel, D. Pathak, and I. Mordatch Language models as
+    zero-shot planners: extracting actionable knowledge for embodied agents. In Proceedings of the
+    39th International Conference on Machine Learning, Proceedings of Machine Learning Research,
+    Vol. 162, pp. 9118–9147. Cited by: Appendix A, §C.2, §C.2, §1, §1, §2, §2, §5.
+  • Huang et al. (2023) W. Huang, F. Xia, T. Xiao, H. Chan, J. Liang, P. Florence, A. Zeng, J.
+    Tompson, I. Mordatch, Y. Chebotar, P. Sermanet, T. Jackson, N. Brown, L. Luu, S. Levine, K.
+    Hausman, and B. Ichter Inner monologue: embodied reasoning through planning with language
+    models. In Proceedings of The 6th Conference on Robot Learning, Proceedings of Machine Learning
+    Research, Vol. 205, pp. 1769–1782. Cited by: §1, §2.
+  • Kwon et al. (2023) W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H.
+    Zhang, and I. Stoica Efficient memory management for large language model serving with
+    pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles, 
+    pp. 611–626. Cited by: §B.3.3.
+  • Laskin et al. (2020) M. Laskin, A. Srinivas, and P. Abbeel Curl: contrastive unsupervised
+    representations for reinforcement learning. In International conference on machine learning, 
+    pp. 5639–5650. Cited by: §C.1, §5.
+  • Lee et al. (2023) H. Lee, S. Phatale, H. Mansoor, K. R. Lu, T. Mesnard, J. Ferret, C. Bishop,
+    E. Hall, V. Carbune, and A. Rastogi Rlaif: scaling reinforcement learning from human feedback
+    with ai feedback. Cited by: §C.3, §5.
+  • Li et al. (2022) S. Li, X. Puig, C. Paxton, Y. Du, C. Wang, L. Fan, T. Chen, D. Huang, E.
+    Akyürek, A. Anandkumar, et al. Pre-trained language models for interactive decision-making. 
+    Advances in Neural Information Processing Systems 35, pp. 31199–31212. Cited by: §C.2, §C.2, §1
+    , §1.
+  • Lin et al. (2024) J. Lin, Y. Du, O. Watkins, D. Hafner, P. Abbeel, D. Klein, and A. Dragan 
+    Learning to model the world with language. In Proceedings of the 41st International Conference
+    on Machine Learning, Proceedings of Machine Learning Research, Vol. 235, pp. 29992–30017. Cited
+    by: §C.1, §1, §2, §5, §5.
+  • Liu et al. (2024) O. Liu, D. Fu, D. Yogatama, and W. Neiswanger Dellma: decision making under
+    uncertainty with large language models. arXiv preprint arXiv:2402.02392. Cited by: §C.2, §C.2.
+  • Ma et al. (2022) Y. J. Ma, S. Sodhani, D. Jayaraman, O. Bastani, V. Kumar, and A. Zhang Vip:
+    towards universal visual reward and representation via value-implicit pre-training. arXiv
+    preprint arXiv:2210.00030. Cited by: §C.1, §5.
+  • Niu et al. (2025) Y. Niu, Y. Pu, D. Shi, Y. Lu, Y. Xiong, R. Ge, J. Sun, Z. Wan, and S. Zhang 
+    LightRFT: light, efficient, omni-modal & reward-model driven reinforcement fine-tuning
+    framework. GitHub. Note: https://github.com/opendilab/LightRFT Cited by: §B.1, §3.3.
+  • Niu et al. (2024) Y. Niu, Y. Pu, Z. Yang, X. Li, T. Zhou, J. Ren, S. Hu, H. Li, and Y. Liu 
+    LightZero: a unified benchmark for monte carlo tree search in general sequential decision
+    scenarios. Advances in Neural Information Processing Systems 36. Cited by: §1, §4.1.
+  • Ouyang et al. (2022) L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. L. Wainwright, P. Mishkin, C.
+    Zhang, S. Agarwal, K. Slama, A. Ray, J. Schulman, J. Hilton, F. Kelton, L. Miller, M. Simens,
+    A. Askell, P. Welinder, P. Christiano, J. Leike, and R. Lowe Training language models to follow
+    instructions with human feedback. External Links: 2203.02155, Link Cited by: §C.3, §5.
+  • Paischer et al. (2022) F. Paischer, T. Adler, V. Patil, A. Bitto-Nemling, M. Holzleitner, S.
+    Lehner, H. Eghbal-Zadeh, and S. Hochreiter History compression via language models in
+    reinforcement learning. In Proceedings of the 39th International Conference on Machine Learning
+    , Proceedings of Machine Learning Research, Vol. 162, pp. 17156–17185. Cited by: §5.
+  • Pu et al. (2025) Y. Pu, Y. Niu, J. Tang, J. Xiong, S. Hu, and H. Li One model for all tasks:
+    leveraging efficient world models in multi-task planning. arXiv preprint arXiv:2509.07945. 
+    Cited by: §1.
+  • [28] Y. Pu, Y. Niu, Z. Yang, J. Ren, H. Li, and Y. Liu UniZero: generalized and efficient
+    planning with scalable latent world models. Transactions on Machine Learning Research. Cited
+    by: §1, §3.1, §3.3, §4.1.
+  • Schmied et al. (2025) T. Schmied, J. Bornschein, J. Grau-Moya, M. Wulfmeier, and R. Pascanu 
+    LLMs are greedy agents: effects of rl fine-tuning on decision-making abilities. External Links:
+    2504.16078, Link Cited by: §C.3, §5.
+  • Schmied et al. (2023) T. Schmied, M. Hofmarcher, F. Paischer, R. Pascanu, and S. Hochreiter 
+    Learning to modulate pre-trained models in rl. In Advances in Neural Information Processing
+    Systems, Cited by: §2.
+  • Seo et al. (2022) Y. Seo, K. Lee, S. L. James, and P. Abbeel Reinforcement learning with
+    action-free pre-training from videos. In International Conference on Machine Learning, 
+    pp. 19561–19579. Cited by: §C.1.
+  • Shi et al. (2025) Z. Shi, M. Fang, and L. Chen Monte carlo planning with large language model
+    for text-based game agents. arXiv preprint arXiv:2504.16855. Cited by: §C.2, §C.2, §2, §5.
+  • Stiennon et al. (2020) N. Stiennon, L. Ouyang, J. Wu, D. Ziegler, R. Lowe, C. Voss, A. Radford,
+    D. Amodei, and P. F. Christiano Learning to summarize with human feedback. Advances in neural
+    information processing systems 33, pp. 3008–3021. Cited by: §C.3.
+  • Szot et al. (2024) A. Szot, M. Schwarzer, H. Agrawal, B. Mazoure, W. Talbott, K. Metcalf, N.
+    Mackraz, D. Hjelm, and A. Toshev Large language models as generalizable policies for embodied
+    tasks. In International Conference on Learning Representations, Cited by: §2, §2.
+  • Wang et al. (2024a) B. Wang, Y. Qu, Y. Jiang, J. Shao, C. Liu, W. Yang, and X. Ji Llm-empowered
+    state representation for reinforcement learning. arXiv preprint arXiv:2407.13237. Cited by: §2.
+  • Wang et al. (2023) G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. Fan, and A.
+    Anandkumar Voyager: an open-ended embodied agent with large language models. arXiv preprint
+    arXiv:2305.16291. Cited by: Appendix A, §2.
+  • Wang et al. (2024b) S. Wang, S. Liu, W. Ye, J. You, and Y. Gao EfficientZero v2: mastering
+    discrete and continuous control with limited data. In Proceedings of the 41st International
+    Conference on Machine Learning, Cited by: §1.
+  • Wu et al. (2023) J. Wu, H. Ma, C. Deng, and M. Long Pre-training contextualized world models
+    with in-the-wild videos for reinforcement learning. Advances in Neural Information Processing
+    Systems 36, pp. 39719–39743. Cited by: §C.1.
+  • Xi et al. (2025a) Z. Xi, Y. Ding, W. Chen, B. Hong, H. Guo, J. Wang, X. Guo, D. Yang, C. Liao,
+    W. He, S. Gao, L. Chen, R. Zheng, Y. Zou, T. Gui, Q. Zhang, X. Qiu, X. Huang, Z. Wu, and Y.
+    Jiang AgentGym: evolving large language model-based agents across diverse environments. In 
+    Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics, Cited
+    by: §B.3.1.
+  • Xi et al. (2025b) Z. Xi, J. Huang, C. Liao, B. Huang, H. Guo, J. Liu, R. Zheng, J. Ye, J.
+    Zhang, W. Chen, W. He, Y. Ding, G. Li, Z. Chen, Z. Du, X. Yao, T. Gui, Q. Zhang, X. Qiu, and X.
+    Huang AgentGym-rl: training llm agents for long-horizon decision making through multi-turn
+    reinforcement learning. arXiv preprint arXiv:2509.08755. Cited by: §B.3.2, §4.5.
+  • Xie et al. (2025) K. Xie, I. Yang, J. Gunerli, and M. Riedl Making large language models into
+    world models with precondition and effect knowledge. In Proceedings of the 31st International
+    Conference on Computational Linguistics, pp. 7532–7545. Cited by: §2.
+  • Xiong et al. (2026) J. Xiong, Y. Wang, W. Zhao, C. Liu, B. Yin, W. Zhou, and H. Li Docr1:
+    evidence page-guided grpo for multi-page document understanding. In Proceedings of the AAAI
+    Conference on Artificial Intelligence, Vol. 40, pp. 11178–11186. Cited by: §5.
+  • Xu et al. (2025) H. Xu, P. Peng, G. Tan, Y. Chang, L. Li, and Y. Tian VLMs-guided
+    representation distillation for efficient vision-based reinforcement learning. In Proceedings
+    of the Computer Vision and Pattern Recognition Conference, pp. 29534–29544. Cited by: §2.
+  • Xuan et al. (2024) C. Xuan, Y. Niu, Y. Pu, S. Hu, Y. Liu, and J. Yang Rezero: boosting
+    mcts-based algorithms by backward-view and entire-buffer reanalyze. arXiv preprint
+    arXiv:2404.16364. Cited by: §1.
+  • Yan et al. (2025) X. Yan, Y. Song, X. Feng, M. Yang, H. Zhang, H. B. Ammar, and J. Wang 
+    Efficient reinforcement learning with large language model priors. In 13th International
+    Conference on Learning Representations Iclr 2025, pp. 30818–30842. Cited by: §2.
+  • Yao et al. (2022) S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao React:
+    synergizing reasoning and acting in language models. arXiv preprint arXiv:2210.03629. Cited by:
+    §2.
+  • Yu et al. (2026) X. Yu, B. Peng, R. Xu, Y. Shen, P. He, S. Nath, N. Singh, J. Gao, and Z. Yu 
+    Reinforcement world model learning for llm-based agents. arXiv preprint arXiv:2602.05842. Cited
+    by: §2.
+  • Yuan et al. (2022) Z. Yuan, Z. Xue, B. Yuan, X. Wang, Y. Wu, Y. Gao, and H. Xu Pre-trained
+    image encoder for generalizable visual reinforcement learning. Advances in Neural Information
+    Processing Systems 35, pp. 13022–13037. Cited by: §C.1, §5.
+  • Zhai et al. (2024) Y. Zhai, H. Bai, Z. Lin, J. Pan, S. Tong, Y. Zhou, A. Suhr, S. Xie, Y.
+    LeCun, Y. Ma, et al. Fine-tuning large vision-language models as decision-making agents via
+    reinforcement learning. Advances in neural information processing systems 37, pp. 110935–110971
+    . Cited by: §2.
+  • Zhang et al. (2025) Y. Zhang, S. Zhang, Y. Huang, Z. Xia, Z. Fang, X. Yang, R. Duan, D. Yan, Y.
+    Dong, and J. Zhu Stair: improving safety alignment with introspective reasoning. arXiv preprint
+    arXiv:2502.02384. Cited by: §C.3.
+  • Ziegler et al. (2019) D. M. Ziegler, N. Stiennon, J. Wu, T. B. Brown, A. Radford, D. Amodei, P.
+    Christiano, and G. Irving Fine-tuning language models from human preferences. arXiv preprint
+    arXiv:1909.08593. Cited by: §C.3.
+
+Appendix Contents
+
+  • A.
+   
+    Appendix A Detailed Analysis of LLM Knowledge Transfer Paradigms .A
+
+  • B.
+   
+    Appendix B Implementation and Experiment Details .B
+
+  • C.
+   
+    Appendix C Detailed Related Work .C
+
+  • D.
+   
+    Appendix D Prompt Template .D
+
+Appendix A Detailed Analysis of LLM Knowledge Transfer Paradigms
+
+We provide detailed formulations and analysis of the four existing paradigms for transferring LLM
+knowledge to RL agents, summarized in Table 1 and illustrated in Figure 7. These paradigms
+correspond to four natural roles an LLM may assume in a text-based RL pipeline: as the policy, as a
+trainable policy, as the dynamics model backbone, or as the text encoder, as visualized in the four
+panels of Figure 7. Unless otherwise stated, all ablations use the same Jericho task setup and
+admissible action interface as the main PriorZero experiments.
+
+Refer to caption
+Figure 7: Comparison of the four LLM-knowledge-transfer paradigms studied in our ablations. Each
+panel shows where the LLM is inserted into the RL pipeline (as the policy, as a trainable policy,
+as the dynamics model backbone, or as the text encoder), with an icon in the top-right corner of
+each module indicating its training status: a fire icon denotes trainable components, while a ice
+icon denotes fixed (frozen) components.
+
+Paradigm 1: LLM Directly as Policy (Naive Policy).
+
+The most intuitive approach is to use the LLM itself as a zero-shot or few-shot policy [Huang et
+al., 2022, Ahn et al., 2022, Wang et al., 2023]. At each environment step, the current textual
+observation, a bounded interaction history, and the valid action set returned by Jericho are
+converted into a natural-language prompt. In our implementation, the history length is fixed to
+2525 previous transitions, and the prompt explicitly lists the current valid actions. A frozen
+Qwen2.5-3B-Insrtuct model then scores each admissible action string. Formally, for an action a∈𝒜ta\
+in\mathcal{A}_{t} with tokenization y⁡(a)y(a), we compute
+
+ sθ​(a∣ot,ht,𝒜t)=1|y⁡(a)|​∑i=1|y⁡(a)|log⁡pθ​(yi​(a)∣Prompt⁡(ot,ht,𝒜t),y<i​(a)),s_{\theta}(a\
+ mid o_{t},h_{t},\mathcal{A}_{t})=\frac{1}{|y(a)|}\sum_{i=1}^{|y(a)|}\log p_{\theta}\!\left(y_  (1)
+ {i}(a)\mid\mathrm{Prompt}(o_{t},h_{t},\mathcal{A}_{t}),y_{<i}(a)\right),
+
+where oto_{t} is the current observation, hth_{t} is the truncated history, and 𝒜t\mathcal{A}_{t}
+is the valid action set. The induced policy is obtained by temperature-normalizing the action
+scores,
+
+ πLLM​(a∣ot,ht)=exp⁡(sθ​(a∣ot,ht,𝒜t)/τ)∑a′∈𝒜texp⁡(sθ​(a′∣ot,ht,𝒜t)/τ).\pi_{\mathrm{LLM}}(a\mid
+ o_{t},h_{t})=\frac{\exp(s_{\theta}(a\mid o_{t},h_{t},\mathcal{A}_{t})/\tau)}{\sum_{a^{\prime}  (2)
+ \in\mathcal{A}_{t}}\exp(s_{\theta}(a^{\prime}\mid o_{t},h_{t},\mathcal{A}_{t})/\tau)}.
+
+The greedy variant (used in this paper) executes arg⁡maxa∈𝒜t​πLLM​(a∣ot,ht)\arg\max_{a\in\mathcal
+{A}_{t}}\pi_{\mathrm{LLM}}(a\mid o_{t},h_{t}), while the stochastic variant samples from this
+distribution. This baseline deliberately removes the world model, MCTS, replay buffer, value
+learning, and all forms of training. It therefore isolates the effect of the pretrained LLM prior
+when used as a complete decision rule. Although this paradigm is simple and can exploit commonsense
+affordances encoded in the LLM, it is fundamentally limited by the knowing-doing gap: high
+language-model likelihood does not imply high environment return. The model may prefer actions that
+are linguistically plausible or locally sensible, but it has no mechanism for environment-specific
+adaptation—no temporal credit assignment, no belief-state maintenance, no systematic exploration,
+and no multi-step lookahead. Consequently, errors made early in an episode cannot be corrected
+through policy improvement, and the agent stagnates in long-horizon settings.
+
+Paradigm 2: End-to-End RL Fine-Tuning (Naive RLFT).
+
+The second paradigm closes the environment-feedback loop by treating the LLM as a parameterized
+policy and fine-tuning it with reinforcement learning. We instantiate this baseline as a standard
+actor-critic RLFT procedure. The actor is initialized from the LLM policy, and a scalar value head
+is attached to the same backbone. A frozen reference model is retained to regularize updates
+through a KL penalty. At iteration kk, the current policy collects NN complete Jericho episodes,
+all step-level samples are merged into a rollout buffer, and the value head is used to compute
+generalized advantage estimates. Specifically,
+
+ δt=rt+γ​Vϕ​(st+1)−Vϕ​(st),A^t=∑ℓ=0T−t(γ​λ)ℓ​δt+ℓ,\delta_{t}=r_{t}+\gamma V_{\phi}(s_{t+1})-V_  (3)
+ {\phi}(s_{t}),\qquad\hat{A}_{t}=\sum_{\ell=0}^{T-t}(\gamma\lambda)^{\ell}\delta_{t+\ell},
+
+with return target R^t=A^t+Vϕ​(st)\hat{R}_{t}=\hat{A}_{t}+V_{\phi}(s_{t}). The implementation uses
+the value predicted at the prompt boundary, i.e., the state representation immediately before the
+action tokens, so that the value corresponds to the current game state rather than to the generated
+action text.
+
+Policy optimization then follows the clipped PPO objective:
+
+ ℒPPO=−𝔼t[min(ρtA^t,clip(ρt,1−ϵ,1+ϵ)A^t)]+cvℒV+βKL(πθ∥πref),\mathcal{L}_{\mathrm{PPO}}=-\
+ mathbb{E}_{t}\left[\min\left(\rho_{t}\hat{A}_{t},\mathrm{clip}(\rho_{t},1-\epsilon,1+\         (4)
+ epsilon)\hat{A}_{t}\right)\right]+c_{v}\mathcal{L}_{V}+\beta\,\mathrm{KL}\!\left(\pi_{\theta}
+ \,\|\,\pi_{\mathrm{ref}}\right),
+
+where ρt=πθ​(at∣st)/πθold​(at∣st)\rho_{t}=\pi_{\theta}(a_{t}\mid s_{t})/\pi_{\theta_{\mathrm{old}}}
+(a_{t}\mid s_{t}), ℒV\mathcal{L}_{V} is a clipped value regression loss, and πref\pi_{\mathrm{ref}}
+is the frozen reference policy. In our ablation, one training iteration collects a fixed number of
+full episodes (default 5050), normalizes advantages across all the workers, and performs multiple
+PPO epochs over minibatches sampled from the merged rollout data. The full experiment is budgeted
+by total environment steps rather than by gradient steps, matching the reporting convention used by
+PriorZero.
+
+This paradigm is appealing because it directly optimizes the LLM for task reward and allows the
+policy to adapt beyond static prompting. However, in Jericho-style environments it faces a
+difficult combination of sparse rewards, long horizons, and large language-action spaces. The LLM
+must simultaneously learn action grounding, exploration, value estimation, and long-horizon credit
+assignment from expensive on-policy rollouts. Even with PPO clipping and reference KL
+regularization, useful gradients are delayed and high variance, while each update requires forward/
+backward passes through a large language model. Thus RLFT can improve local action preferences but
+remains computationally expensive and statistically inefficient as a standalone solution.
+
+Paradigm 3: LLM as Dynamics Model (Latent World-Model Backbone).
+
+A third paradigm retains the model-based RL structure but replaces the latent dynamics backbone
+with an LLM. In this ablation, we keep the UniZero-style interaction loop, replay buffer, MCTS,
+reward/value/policy heads, and the lightweight BGE observation encoder. The only architectural
+substitution is inside the latent world model: the transformer that processes interleaved latent
+observation tokens and action tokens is replaced by Qwen2.5-0.5B. Thus the LLM is not used to read
+raw observations or directly generate actions; it serves as the sequence backbone for latent
+transition modeling.
+
+Let zt=fBGE​(ot)z_{t}=f_{\mathrm{BGE}}(o_{t}) denote the observation embedding and e⁡(at)e(a_{t})
+denote the learned action embedding. The world model receives sequences of the form
+
+ x1:2​K=(zt−K+1,e(at−K+1),…,zt,e(at)),x_{1:2K}=(z_{t-K+1},e(a_{t-K+1}),\ldots,z_{t},e(a_{t})),  (5)
+
+and predicts next-latent observations, rewards, values, and policies from the Qwen hidden states.
+Because Qwen2.5 uses grouped-query attention, the implementation adapts the UniZero KV cache so
+that the number of key/value heads and the per-head hidden dimension match the pretrained Qwen
+configuration. The downstream UniZero heads are trained with the same world-model losses as the
+standard backbone, including latent reconstruction, reward, policy and value prediction.
+
+This ablation tests whether next-token pretraining provides a useful inductive bias for latent
+dynamics. The limitation is a granularity mismatch: a causal LLM is pretrained at the token level
+to model natural-language continuations, while a latent world model must operate at the
+state-action level to represent action-conditioned, controllable state transitions. These two
+structures are related but not equivalent—linguistically similar states may have different
+transition consequences, and dynamically equivalent states may be described with different text. As
+a result, the world knowledge encoded in token-level pretraining cannot be effectively reused for
+latent dynamics learning: replacing the dynamics backbone with a pretrained LLM imports semantic
+structure but also imposes a representation geometry poorly aligned with one-step transition
+accuracy and multi-step MCTS rollout consistency. This paradigm therefore probes whether LLM
+capacity can substitute for a task-trained dynamics model; our results indicate that it cannot.
+
+Paradigm 4: LLM as Text Encoder.
+
+The fourth paradigm places the LLM at the perception layer. Instead of using a lightweight BGE
+encoder to convert observations into latent vectors, this ablation uses Qwen3-4B as the text
+encoder. Given an observation token sequence x1:Lx_{1:L}, the causal LLM produces final-layer
+hidden states h1:Lh_{1:L}. Since the hidden state at the last non-padding token is the
+representation used to predict the next token, we use that vector as the sentence-level embedding
+and project it into the UniZero latent dimension:
+
+ zt=Norm⁡(W​hL),z_{t}=\mathrm{Norm}\!\left(Wh_{L}\right),  (6)
+
+where WW is a learnable projection head and Norm\mathrm{Norm} is the same encoder normalization
+used by the world model. The pretrained Qwen encoder is frozen, while the projection and downstream
+RL/world-model modules are optimized by the usual training objective.
+
+This paradigm avoids catastrophic forgetting and provides a stronger semantic encoder than a
+lightweight sentence model. Nevertheless, it introduces a representation bottleneck: the frozen
+next-token representation is optimized to support language continuation, not to preserve the
+controllable variables required by planning. Textual observations that are close under semantic
+similarity can require different actions, whereas observations with different surface forms can
+correspond to the same underlying game state. Because the LLM encoder is frozen, the RL agent can
+only adapt the projection and downstream dynamics model, limiting its ability to reshape the
+representation around task-specific invariances and action-conditioned distinctions. The resulting
+non-adaptive representation imposes a performance ceiling—the agent benefits from richer language
+features but cannot surpass the expressiveness boundary set by the frozen encoder.
+
+Appendix B Implementation and Experiment Details
+
+B.1 PriorZero Implementation Details
+
+Our code is available at https://github.com/opendilab/LightZero.
+
+This subsection gives the complete implementation-level view of PriorZero. The actual system
+contains three coupled but gradient-decoupled components: (i) a UniZero-style world model with
+latent MCTS, (ii) an LLM prior module that scores admissible action strings through prompt
+log-probabilities, and (iii) an alternating trainer that uses world-model value estimates to
+fine-tune the LLM, with the LLM rollout-and-update infrastructure (vLLM-based generation, PPO token
+loss, KL regularization, and reference-model bookkeeping) adapted from LightRFT [Niu et al., 2025]
+and OpenRLHF [Hu et al., 2024]. The two trainable modules communicate only through rollout data and
+scalar training targets: LLM priors affect the MCTS root distribution and thereby the collected
+trajectories, while world-model values produce the advantage signal used to update the LLM. Table 2
+summarizes the overall PriorZero training procedure in pseudocode form.
+
+
+Table 2: Pseudocode of PriorZero. The LLM prior is injected only at the MCTS root during rollout,
+while LLM fine-tuning is driven by value-based advantage computed from the target world model.
+
+Input: environment ℰ\mathcal{E}, admissible actions 𝒜⁡(s)\mathcal{A}(s), MCTS budget KK, TD horizon
+           nn, fusion weight α\alpha, schedules NWM,NLLMN_{\mathrm{WM}},N_{\mathrm{LLM}}
+ Initialize: world model θ\theta, target world model θ¯←θ\bar{\theta}\leftarrow\theta, LLM ϕ\phi,
+reference LLM ϕref\phi_{\mathrm{ref}}, replay buffer 𝒟\mathcal{D}, phase p←WMp\leftarrow\mathrm{WM}
+1  while training budget is not exhausted do
+2  if p=WMp=\mathrm{WM} or collection is enabled in the LLM phase then
+3  for each environment step tt do
+4  𝒞t←BuildPrompt⁡(ot,ℋt,𝒜⁡(st))\mathcal{C}_{t}\leftarrow\operatorname{BuildPrompt}(o_{t},\mathcal
+   {H}_{t},\mathcal{A}(s_{t}))
+5  (πLLMT,ℬt)←ScoreActionsWithLLM⁡(ϕ,𝒞t,𝒜⁡(st))(\pi_{\mathrm{LLM}}^{T},\mathcal{B}_{t})\leftarrow\
+   operatorname{ScoreActionsWithLLM}(\phi,\mathcal{C}_{t},\mathcal{A}(s_{t}))
+6  (zt,πWM,vθ)←InitialInferenceθ⁡(st)(z_{t},\pi_{\mathrm{WM}},v_{\theta})\leftarrow\operatorname
+   {InitialInference}_{\theta}(s_{t})
+7  Proot←(1−α)​πWM+α​πLLMTP_{\mathrm{root}}\leftarrow(1-\alpha)\pi_{\mathrm{WM}}+\alpha\pi_{\mathrm
+   {LLM}}^{T} root only
+8  (πMCTS,Vt)←MCTS⁡(zt,Proot,K,θ)(\pi_{\mathrm{MCTS}},V_{t})\leftarrow\operatorname{MCTS}(z_{t},P_
+   {\mathrm{root}},K;\theta) internal nodes use πWM\pi_{\mathrm{WM}}
+9  at∼πMCTS(⋅∣st)a_{t}\sim\pi_{\mathrm{MCTS}}(\cdot\mid s_{t});  (ot+1,rt,done)←ℰ.Step⁡(at)(o_
+   {t+1},r_{t},\mathrm{done})\leftarrow\mathcal{E}.\operatorname{Step}(a_{t})
+10 𝒟←𝒟∪(ot,ℋt,at,rt,πMCTS,Vt,ℬt)\mathcal{D}\leftarrow\mathcal{D}\cup(o_{t},\mathcal{H}_{t},a_{t},r_
+   {t},\pi_{\mathrm{MCTS}},V_{t},\mathcal{B}_{t})
+11 end for
+12 end if
+13 if p=WMp=\mathrm{WM} then
+14 for i=1,…,NWMi=1,\ldots,N_{\mathrm{WM}} do
+15 ℳ←SampleWindows⁡(𝒟)\mathcal{M}\leftarrow\operatorname{SampleWindows}(\mathcal{D}); update θ\
+   theta with reward, value, policy, and dynamics losses
+16 θ¯←UpdateTarget⁡(θ¯,θ)\bar{\theta}\leftarrow\operatorname{UpdateTarget}(\bar{\theta},\theta)
+17 end for;  p←LLMp\leftarrow\mathrm{LLM}
+18 else
+19 for i=1,…,NLLMi=1,\ldots,N_{\mathrm{LLM}} do
+20 ℳ←FetchLLMSamples⁡(𝒟)\mathcal{M}\leftarrow\operatorname{FetchLLMSamples}(\mathcal{D})
+21 Qt(n)←∑j=0n−1γj​rt+j+γn​vθ¯​(st+n)Q_{t}^{(n)}\leftarrow\sum_{j=0}^{n-1}\gamma^{j}r_{t+j}+\gamma^
+   {n}v_{\bar{\theta}}(s_{t+n})
+22 At←Qt(n)−vθ¯​(st)A_{t}\leftarrow Q_{t}^{(n)}-v_{\bar{\theta}}(s_{t});  A^←Normalize⁡(A,rfmt)\hat
+   {A}\leftarrow\operatorname{Normalize}(A,r_{\mathrm{fmt}})
+23 update ϕ\phi with clipped PPO token loss and KL to ϕref\phi_{\mathrm{ref}}
+24 synchronize ϕ\phi to the vLLM rollout engine
+25 end for;  p←WMp\leftarrow\mathrm{WM}
+26 end if
+27 end while
+
+Planning advantage and comparison with GRPO.
+
+For LLM fine-tuning, PriorZero does not use a group-relative reward baseline. For each sampled
+transition, the replay buffer computes two world-model value quantities using the target model θ¯\
+bar{\theta}: a bootstrapped TD target from the future state and a predicted value at the current
+state. The raw advantage is
+
+ At=Qθ¯(n)​(st,at)−vθ¯​(st),Qθ¯(n)​(st,at)=∑i=0n−1γi​rt+i+γn​vθ¯​(st+n).A_{t}=Q^{(n)}_{\bar{\
+ theta}}(s_{t},a_{t})-v_{\bar{\theta}}(s_{t}),\qquad Q^{(n)}_{\bar{\theta}}(s_{t},a_{t})=\sum_{i=
+ 0}^{n-1}\gamma^{i}r_{t+i}+\gamma^{n}v_{\bar{\theta}}(s_{t+n}).
+
+In the default configuration, these raw advantages are accumulated within the current LLM phase and
+normalized by global phase statistics,
+
+ A^t=At−μphaseσphase+ϵ.\hat{A}_{t}=\frac{A_{t}-\mu_{\mathrm{phase}}}{\sigma_{\mathrm{phase}}+\
+ epsilon}.
+
+When CoT format supervision is enabled, the final scalar used by the policy loss is
+
+ A^tfinal=(1−λfmt)​A^t+λfmt​rfmt,\hat{A}^{\mathrm{final}}_{t}=(1-\lambda_{\mathrm{fmt}})\hat{A}_
+ {t}+\lambda_{\mathrm{fmt}}r_{\mathrm{fmt}},
+
+where rfmt∈{0,1}r_{\mathrm{fmt}}\in\{0,1\} checks whether the LLM output follows the required 
+Reasoning: ... Action: ... template.
+
+This differs from GRPO-style training in the source of the baseline and in the unit of comparison.
+GRPO samples multiple completions for the same prompt and constructs a relative advantage by
+subtracting the mean reward of that prompt’s completion group, often also dividing by the group
+standard deviation:
+
+ AiGRPO≈Ri−1G​∑j=1GRjstd⁡({Rj}j=1G)+ϵ.A^{\mathrm{GRPO}}_{i}\approx\frac{R_{i}-\frac{1}{G}\sum_{j=
+ 1}^{G}R_{j}}{\mathrm{std}(\{R_{j}\}_{j=1}^{G})+\epsilon}.
+
+Such a baseline avoids learning an explicit value function, but it requires several rollouts per
+prompt and its signal is only relative within the sampled group. In sparse, long-horizon
+environments, most group rewards can be identical or delayed, making the normalized reward signal
+noisy or uninformative. PriorZero instead uses the world model as a state-dependent critic: it
+combines real short-horizon rewards with bootstrapped long-term value and compares the resulting
+target against the same state’s baseline. This gives lower-variance credit assignment without
+requiring multiple LLM completions for every prompt, while preserving an absolute notion of whether
+the executed action improved over the current value estimate.
+
+This estimator is approximately off-policy: actions ata_{t} are drawn from the MCTS visit
+distribution πMCTS\pi_{\mathrm{MCTS}} rather than from πϕ\pi_{\phi} directly, so vθ¯v_{\bar{\
+theta}} acts as a proxy for VπϕV^{\pi_{\phi}} rather than an exact on-policy value. Two factors
+keep this approximation tight in our setting. First, the LLM prior is injected at the MCTS root
+(line 7 of Table 2), so πϕ\pi_{\phi} and πMCTS\pi_{\mathrm{MCTS}} are coupled by construction: the
+search distribution is a planning-improved version of the LLM prior on the same root state, not an
+independently sampled behaviour policy. Second, the clipped PPO ratio ρt,j∈[1−ϵlow,1+ϵhigh]\rho_
+{t,j}\in[1-\epsilon_{\mathrm{low}},1+\epsilon_{\mathrm{high}}] together with the KL regularizer
+βDKL(πϕ∥πϕref)\beta D_{\mathrm{KL}}(\pi_{\phi}\|\pi_{\phi_{\mathrm{ref}}}) bounds the per-update
+policy drift, which limits how far πϕ\pi_{\phi} can move away from the behaviour distribution that
+produced the stored advantages, making this a standard near-on-policy regime in PPO-style
+fine-tuning. Such crucial under Jericho-style sparse rewards, where any additional variance in the
+policy-gradient signal would be amplified by long credit-assignment chains.
+
+The trade-off is that PriorZero depends on the world model’s value quality, which is why the
+implementation uses a WM warm-up and asymmetric alternating updates with many more WM updates than
+LLM updates.
+
+PriorZero loss vs. AlphaZero-like SFT loss.
+
+An AlphaZero-like supervised objective for the LLM prior would train the LLM to imitate the
+search-improved policy:
+
+ ℒAZ​-​SFT(ϕ)=−𝔼st∼𝒟∑a∈𝒜tπMCTS(a∣st)logπϕ(a∣𝒞t).\mathcal{L}_{\mathrm{AZ\text{-}SFT}}(\phi)=-\
+ mathbb{E}_{s_{t}\sim\mathcal{D}}\sum_{a\in\mathcal{A}_{t}}\pi_{\mathrm{MCTS}}(a\mid s_{t})\log\
+ pi_{\phi}(a\mid\mathcal{C}_{t}).
+
+For a language model implementation, this is usually approximated by SFT on the selected action
+string, possibly weighted by the MCTS visit count:
+
+ ℒSFT(ϕ)=−wt∑j∈y⁡(at)logπϕ(yj(at)∣𝒞t,y<j(at)).\mathcal{L}_{\mathrm{SFT}}(\phi)=-w_{t}\sum_{j\in y
+ (a_{t})}\log\pi_{\phi}(y_{j}(a_{t})\mid\mathcal{C}_{t},y_{<j}(a_{t})).
+
+This objective is simple, but it treats the planner output as a label to imitate. It does not
+directly encode whether the chosen action is better or worse than the current value baseline, and
+the update direction is always to increase the likelihood of the supervised target. As a result, a
+noisy MCTS target early in training can be copied into the LLM prior, and the loss has no clipped
+policy-improvement mechanism to control update size.
+
+PriorZero instead optimizes a clipped policy-gradient objective over the stored action tokens:
+
+ ρt,j​(ϕ)=exp⁡(log⁡πϕ​(yj∣𝒞t,y<j)−log⁡πϕold​(yj∣𝒞t,y<j)),\rho_{t,j}(\phi)=\exp\!\left(\log\pi_{\
+ phi}(y_{j}\mid\mathcal{C}_{t},y_{<j})-\log\pi_{\phi_{\mathrm{old}}}(y_{j}\mid\mathcal{C}_{t},y_
+ {<j})\right),
+
+ ℒPZ(ϕ)=−𝔼t,j[mt,jmin(ρt,jA^tfinal,clip(ρt,j,1−ϵlow,1+ϵhigh)A^tfinal)]+βDKL(πϕ∥πϕref).\mathcal{L}_
+ {\mathrm{PZ}}(\phi)=-\mathbb{E}_{t,j}\left[m_{t,j}\min\!\left(\rho_{t,j}\hat{A}^{\mathrm{final}}_
+ {t},\;\mathrm{clip}(\rho_{t,j},1-\epsilon_{\mathrm{low}},1+\epsilon_{\mathrm{high}})\hat{A}^{\
+ mathrm{final}}_{t}\right)\right]+\beta D_{\mathrm{KL}}(\pi_{\phi}\|\pi_{\phi_{\mathrm{ref}}}).
+
+Here mt,jm_{t,j} is the action-token mask; when CoT is used, reasoning-prefix tokens receive a
+smaller weight wcotw_{\mathrm{cot}} so that the RL signal focuses on the final action while still
+preserving the structured reasoning format. Positive advantages increase the probability of actions
+whose TD target exceeds the baseline, while negative advantages decrease actions that underperform
+the baseline. Thus the LLM is not merely distilled from MCTS; it is updated according to whether
+the action actually improved the world-model value estimate under environment feedback.
+
+Fusion of the LLM prior and world-model policy.
+
+The implementation fuses the two policies in probability space rather than adding raw logits. This
+is important because LLM prompt log-probabilities and world-model policy logits have different
+scales. Concretely, invalid actions are first masked out, the LLM scores are temperature-normalized
+over the admissible action set, and the world-model logits are separately converted to πWM\pi_{\
+mathrm{WM}}. The fused root logits are then obtained by taking the logarithm of a convex mixture:
+
+ ℓroot​(a)=log⁡(λWM​πWM​(a∣zt)+(1−λWM)​πLLMT​(a∣𝒞t)+ϵ).\ell_{\mathrm{root}}(a)=\log\!\left(\
+ lambda_{\mathrm{WM}}\pi_{\mathrm{WM}}(a\mid z_{t})+(1-\lambda_{\mathrm{WM}})\pi_{\mathrm{LLM}}^
+ {T}(a\mid\mathcal{C}_{t})+\epsilon\right).
+
+The default experiments use a fixed mixture with λWM=0.5\lambda_{\mathrm{WM}}=0.5. The code also
+supports an adaptive variant that sets the LLM coefficient from the normalized entropy of the
+world-model root policy:
+
+ αt=αmin+(αmax−αmin)​(1−H(πWM(⋅∣zt))log⁡|𝒜t|),Proot=(1−αt)​πWM+αt​πLLMT.\alpha_{t}=\alpha_{\min}+
+ (\alpha_{\max}-\alpha_{\min})\left(1-\frac{H(\pi_{\mathrm{WM}}(\cdot\mid z_{t}))}{\log|\mathcal
+ {A}_{t}|}\right),\qquad P_{\mathrm{root}}=(1-\alpha_{t})\pi_{\mathrm{WM}}+\alpha_{t}\pi_{\mathrm
+ {LLM}}^{T}.
+
+In all modes, the fusion is applied only at the root node. This design reflects three
+implementation considerations. First, the root state corresponds to a real textual observation, so
+the LLM prior is semantically grounded there; deeper MCTS nodes are imagined latent states and may
+not have faithful textual descriptions. Second, root-only fusion prevents the LLM from overwriting
+the world model’s action-conditioned dynamics during multi-step lookahead. Third, the fused root
+distribution affects the world model indirectly through data and MCTS visit-count targets, while
+gradients remain separated: the world model learns from collected trajectories and search targets,
+and the LLM learns from value advantages computed after replay sampling. This keeps the LLM-prior
+and WM-policy roles complementary: the LLM proposes where search should begin, and the world model
+decides which branches are valuable through latent planning.
+
+B.2 Jericho Details
+
+B.2.1 Environment Details
+
+We evaluate on four Jericho text adventure games spanning a range of difficulty levels. Table 3
+lists the games with their action space sizes and maximum episode lengths as configured in the
+codebase.
+
+
+Table 3: Jericho games information, with per-game action space size and maximum episode steps.
+
+   Game       Game File   Action Space Size Max Steps
+ Detective  detective.z5  12                100
+ OmniQuest  omniquest.z5  25                100
+Acorn Court acorncourt.z5 45                50
+  Zork I      zork1.z5    55                500
+
+Each game is trained independently (single-task), with 2 evaluator environments running in
+parallel.
+
+B.2.2 Additional Training Curves
+
+During alternating training, the LLM module itself undergoes progressive improvement. Figure 8
+shows the LLM’s standalone policy performance across training, illustrating how the world model’s
+value estimates serve as effective supervision signals for LLM adaptation.
+
+Refer to caption
+Figure 8: Standalone LLM policy performance during PriorZero’s alternating training across four
+Jericho environments. The LLM policy quality improves progressively with each alternating
+fine-tuning cycle, demonstrating that the world model’s value estimates provide effective signals
+for LLM adaptation. Periodic dips correspond to the beginning of new fine-tuning cycles before the
+LLM re-adapts.
+
+B.2.3 Root-Prior Injection Analysis
+
+Figure 4 compares the MCTS root-node visit distribution entropy between PriorZero and UniZero
+during training, and Figure 9 presents qualitative studies of the prior fusion process at the root
+node.
+
+Two-phase entropy dynamics.
+
+The entropy curves in Figure 4 exhibit a characteristic two-phase pattern that goes beyond a simple
+“lower entropy == better search” interpretation. In the early phase, PriorZero’s root-node entropy
+is lower than UniZero’s: the LLM prior provides an informative initial search direction, allowing
+the agent to concentrate visits on semantically meaningful actions instead of repeatedly revisiting
+low-value branches. In the large admissible-action space of zork1, such directional guidance is
+crucial for avoiding inefficient or cyclic exploration before the world model has learned reliable
+value estimates. As training proceeds, PriorZero maintains comparable or higher returns while its
+root-node entropy rises above UniZero’s. This reversal indicates that root-prior fusion does not
+collapse search onto the most likely action; rather, the LLM prior guides MCTS toward semantically
+plausible regions while still leaving sufficient room to compare alternative actions through
+world-model rollouts. In this sense, root-prior injection improves exploration quality: it filters
+out obviously unproductive directions early, and later prevents the search distribution from being
+dominated by brittle world-model preferences. In the final phase of training (last 20% of
+evaluations), PriorZero attains a substantially higher mean return than UniZero on zork1.
+
+Action-level case study.
+
+Figure 9 illustrates this effect at the action level. In the game history, the agent repeatedly
+enters a closet to the north and returns south, forming an unproductive loop, while the current
+observation indicates that moving west leads back to the hallway. The LLM assigns most probability
+mass to west, whereas the world model still favors north. Root-prior fusion therefore redirects
+MCTS toward the appropriate action and helps break the dead-loop exploration pattern. More
+generally, these examples show that LLM priors can provide useful initial directions for MCTS,
+especially when the learned world model has not yet distinguished productive actions from locally
+repetitive but low-value behavior.
+
+
+Figure 9: Case study of root-node prior fusion. The LLM assigns high probability to west, while the
+world model still favors north; fusion redirects MCTS toward the action that breaks the north–south
+dead loop.
+
+B.3 BabyAI Details
+
+BabyAI tests whether PriorZero generalizes beyond text-based games. Compared with Jericho, BabyAI
+differs in three dimensions that interact with our method: it provides structured natural-language
+observations (rather than free-form text), high-level semantic actions (rather than verb-object
+commands), and a continuous shaped reward (rather than sparse integer scores). It is also a
+multi-task benchmark—a single agent is trained across 18 levels simultaneously, in contrast to
+Jericho where each game is trained independently. The remainder of this subsection details the
+environment interface, the level set, BabyAI-specific implementation choices, and per-level
+results.
+
+B.3.1 Environment and Platform
+
+BabyAI Chevalier-Boisvert et al. [2019] is a grid-world platform built on MiniGrid that serves as a
+representative setting for embodied tasks. It features procedurally generated rooms with colored
+objects (balls, keys, boxes, doors) and natural-language mission specifications. Agents navigate
+rooms, move objects, unlock doors, and interact with the environment in response to textual
+commands. We use the AgentGym Xi et al. [2025a] HTTP server to interface with BabyAI environments.
+The server exposes a REST API (/create, /reset, /step, /close) that manages multiple concurrent
+environment instances. Each /reset call accepts a data_idx parameter encoding both the level
+identity and random seed: level_id=data_idxmod40+1\text{level\_id}=\text{data\_idx}\bmod 40+1, seed
+=⌊data_idx/40⌋\text{seed}=\lfloor\text{data\_idx}/40\rfloor.
+
+Observation Space.
+
+The AgentGym server converts BabyAI’s raw 7×7×37{\times}7{\times}3 grid observation into a
+structured natural-language description. The description includes: (1) visible objects with their
+colors, types, and relative positions (e.g., “There is a red ball 1 right in front of you 3 steps
+away”); (2) wall/barrier distances; (3) the agent’s carrying status; and (4) the mission goal
+(e.g., “Your goal: go to the red ball”). This text is tokenized by a BGE-base-en-v1.5 encoder (max
+sequence length 512) for the world model, and presented as-is to the LLM.
+
+Action Space.
+
+We use the server’s high-level semantic actions, which abstract over low-level movement primitives
+(turn left/right, move forward, pickup, drop, toggle). The server computes reachable actions via
+BFS path planning at each step, producing a dynamic action space of 3–15 actions such as “go to red
+ball 1”, “pickup blue key 1”, “toggle and go through green closed door 1”. This is analogous to
+Jericho’s valid_actions but with smaller branching factor. The maximum action space size is padded
+to 20 for the world model’s fixed-size policy head.
+
+Reward Structure.
+
+BabyAI uses a continuous reward r=1−0.9⋅(t/Tmax)r=1-0.9\cdot(t/T_{\max}) upon task completion,
+where tt is the number of steps taken and TmaxT_{\max} is the maximum episode length. Failed
+episodes receive r=0r=0. This provides denser feedback than Jericho’s sparse integer scores, but
+still requires efficient planning since reward decays with step count.
+
+B.3.2 Task Selection
+
+Following AgentGym-RL Xi et al. [2025b], we train and evaluate on 18 out of 40 BabyAI levels.
+Table 4 lists all 18 levels grouped by task category.
+
+
+Table 4: The 18 BabyAI levels used for training and evaluation, following the AgentGym-RL protocol.
+Levels span four task categories of increasing compositional complexity.
+
+ID Level Name         Description
+Navigation (11 levels)
+1  GoToRedBallGrey    Navigate to a red ball in a grey room
+2  GoToRedBall        Navigate to a red ball with distractors
+3  GoToRedBallNoDists Navigate to a red ball without distractors
+4  GoToObjS6          Navigate to a named object in a 6×\times6 room
+5  GoToLocalS8N7      Navigate to a local object (8×\times8, 7 objects)
+6  GoToObjMazeS7      Navigate to an object through a 7×\times7 maze
+7  GoToImpUnlock      Navigate requiring implicit door unlocking
+8  GoToSeqS5R2        Sequential navigation to two objects
+9  GoToRedBlueBall    Navigate to a red or blue ball
+10 GoToDoor           Navigate to a specified door
+11 GoToObjDoor        Navigate to an object or door by description
+Pickup (3 levels)
+19 PickupLoc          Pick up an object specified by location
+20 PickupDistDebug    Pick up an object with distractors (debug)
+21 PickupAbove        Pick up an object above another object
+Interaction (2 levels)
+30 ActionObjDoor      Perform a specified action on an object or door
+31 FindObjS7          Find a hidden object across multiple rooms
+Compositional (2 levels)
+33 OneRoomS20         Complete a task in a large 20×\times20 single room
+36 SynthLoc           Synthesized multi-step task with location constraints
+
+B.3.3 Implementation and Configuration
+
+Table 5 lists the key hyperparameters and environment settings used in the Jericho and BabyAI
+experiments.
+
+
+Table 5: Hyperparameters and environment settings for the Jericho and BabyAI experiments.
+
+             Parameter               Jericho               BabyAI
+             LLM model               Qwen2.5-3B-Instruct   Qwen2.5-7B-Instruct
+       Environment interface         Local Python API      HTTP (AgentGym server)
+         Action space size           10–100+               3–15 (high-level)
+         Max episode steps           50–500                20
+            Reward type              Sparse integer        Continuous [0,1][0,1]
+           KL coefficient            0.01                  0.1
+           Entropy bonus             0.0                   0.001
+          WM update iters            2000                  500
+          LLM update iters           200                   100
+        MCTS sims (collect)          25                    25
+          MCTS sims (eval)           25                    50
+       Fusion weight α\alpha         0.5                   0.5
+CoT loss weight wcotw_{\mathrm{cot}} 0.1                   0.1
+         LLM learning rate           1×10−61\times 10^{-6} 1×10−61\times 10^{-6}
+          Train batch size           128                   128
+       Micro train batch size        4                     2
+         Replay buffer size          3×1053\times 10^{5}   5×1055\times 10^{5}
+           WM batch size             64                    64
+          WM learning rate           3×10−43\times 10^{-4} 3×10−43\times 10^{-4}
+            Text encoder             BGE-base-en-v1.5      BGE-base-en-v1.5
+          # training tasks           4 (single-task)       18 (multi-task)
+
+LLM Inference Configuration.
+
+Table 6 summarizes the LLM inference parameters. Both environments use vLLM Kwon et al. [2023] for
+batched inference with DeepSpeed ZeRO-2 for training.
+
+
+Table 6: LLM inference and training infrastructure parameters.
+
+                             Parameter                              Jericho       BabyAI
+                                        vLLM Inference
+                       Sampling temperature                         1.0           1.0
+                              Top-pp                                0.95          0.95
+                         Prompt max length                          8192          4096
+                        Generate max length                         512           512
+                        Log-prob reduction                          mean          mean
+                     Tensor parallel size (3B)                      1             —
+                     Tensor parallel size (7B)                      2             2
+                    GPU memory utilization (3B)                     0.25          —
+                    GPU memory utilization (7B)                     0.35          0.35
+                          Prefix caching                            off           off
+                                        CoT Generation
+                          CoT temperature                           1.0           1.0
+                            CoT top-pp                              1.0           1.0
+                          CoT max tokens                            512           512
+                          CoT stop tokens                           "\n\n"        "\n\n"
+                      CoT enabled by default                        Yes           Yes
+                                      DeepSpeed Training
+                            ZeRO stage                              2             2
+                         Gradient clipping                          1.0           1.0
+                 Adam (β1,β2)(\beta_{1},\beta_{2})                  (0.9, 0.95)   (0.9, 0.95)
+                           Weight decay                             0.01          0.01
+                           LR scheduler                             cosine w/ min cosine w/ min
+                          LR warmup ratio                           0.03          0.03
+PPO clip (ϵlow,ϵhigh)(\epsilon_{\text{low}},\epsilon_{\text{high}}) (0.2, 0.2)    (0.2, 0.2)
+                           KL estimator                             k3            k3
+                       Format reward weight                         0.5           0.3
+                      Advantage normalization                       global batch  global batch
+
+Action Prior Extraction Pipeline.
+
+The action prior extraction does not parse free-form LLM output. Instead, it uses vLLM’s 
+prompt_logprobs feature to compute the conditional log-probability of each candidate action given
+the prompt context. For each valid action aia_{i} in the current state:
+
+ 1. 1.
+   
+    Prompt construction: The system prompt and user prompt are concatenated via the tokenizer’s
+    chat template. If CoT is enabled, a CoT prefix (generated in a separate vLLM call) is prepended
+    to the action text.
+
+ 2. 2.
+   
+    Full sequence assembly: The prompt token IDs are concatenated with the label token IDs:
+    [prompt_ids;label_ids][\text{prompt\_ids};\text{label\_ids}], where label_ids encodes either “
+    Action: <action><eos>” (no CoT) or “<cot_prefix> <action><eos>” (with CoT).
+
+ 3. 3.
+   
+    Scoring: All sequences are submitted to vLLM in a single batch with prompt_logprobs=1 and 
+    max_tokens=1. The per-token log-probabilities of the label portion are extracted and averaged (
+    reduction=mean) to produce the action score: s⁡(ai)=1|Li|​∑j∈Lilog⁡p⁡(tj∣t<j)s(a_{i})=\frac{1}
+    {|L_{i}|}\sum_{j\in L_{i}}\log p(t_{j}\mid t_{<j}).
+
+ 4. 4.
+   
+    Prior distribution: The scores {s⁡(ai)}\{s(a_{i})\} form the LLM prior in log-probability
+    space. Temperature scaling (TJericho=1.0T_{\text{Jericho}}{=}1.0, TBabyAI=1.0T_{\text{BabyAI}}
+    {=}1.0) is applied before fusion with the world model’s policy logits at the MCTS root node.
+
+This prompt-logprobs approach avoids the fragility of regex-based output parsing and provides
+calibrated probability estimates over the full action vocabulary.
+
+Format Reward.
+
+When CoT is enabled, a binary format reward rfmt∈{0,1}r_{\mathrm{fmt}}\in\{0,1\} is set to 1 iff
+the LLM output strictly matches Reasoning: <analysis>\nAction: <action> with exactly one occurrence
+of each keyword. Following the blending introduced in §3.3, the final advantage is A^final=(1−λfmt)
+​A^+λfmt​rfmt\hat{A}_{\mathrm{final}}=(1-\lambda_{\mathrm{fmt}})\,\hat{A}+\lambda_{\mathrm{fmt}}
+\,r_{\mathrm{fmt}}, with λfmt=0.5\lambda_{\mathrm{fmt}}{=}0.5 for Jericho and λfmt=0.3\lambda_{\
+mathrm{fmt}}{=}0.3 for BabyAI.
+
+Multi-Task Training.
+
+Unlike Jericho where each game is trained independently, BabyAI follows the AgentGym-RL multi-task
+protocol: a single agent is trained across all 18 levels simultaneously. During collection, levels
+are sampled uniformly at random; during evaluation, all 18 levels are cycled deterministically to
+ensure complete coverage.
+
+LLM Prompt Design.
+
+The BabyAI-specific system prompt (Figure 12) instructs the LLM as “an expert agent navigating a
+BabyAI grid-world environment” and enumerates the six available high-level action types: basic
+movement (turn left/right, move forward), navigation (go to <obj> <id>), object interaction (pick
+up <obj> <id>), and door operations (go through, toggle and go through, toggle). The user prompt
+includes the action history with rewards (history_with_reward=True), the current observation, and
+the list of valid actions (observation_with_valid_actions=True). When CoT is enabled (default for
+BabyAI), the LLM produces a “Reasoning” section analyzing the observation and goal before
+outputting the chosen action.
+
+Baselines.
+
+The UniZero baseline uses the identical world model architecture (2-layer transformer, d=768d{=}
+768, 24 heads) and MCTS configuration but without any LLM module. All world-model hyperparameters
+are kept identical to PriorZero for a fair ablation.
+
+Hardware and Wall-Clock Time.
+
+All experiments are run on NVIDIA H200 GPUs. For Jericho, each single-task run uses 4 H200 GPUs
+(4-way DDP) with the Qwen2.5-3B-Instruct backbone; one full run reaches 50​k50\text{k} environment
+steps in approximately 3535 wall-clock hours. For BabyAI-18, each multi-task run uses 4 H200 GPUs
+(2-way DDP combined with vLLM tensor parallelism for the Qwen2.5-7B-Instruct model); one full run
+reaches 100​k100\text{k} environment steps in approximately 4848 wall-clock hours. The higher
+per-step cost on BabyAI is dominated by the larger 7B LLM and the multi-task setting (18 levels
+sampled per iteration); the higher absolute step count required by BabyAI partially offsets the
+per-step gain.
+
+Computational cost comparison.
+
+Table 7 summarizes the per-iteration compute profile of each paradigm under equivalent environment
+budgets.
+
+
+Table 7: Approximate per-iteration compute breakdown on Jericho (Qwen2.5-3B, 4×\timesGPU).
+
+       Component         Naive RLFT (P2)       PriorZero          UniZero
+ LLM forward (rollout)  Every step        Root only           —
+LLM backward (training) Every iteration   Every KK-th WM iter —
+  WM forward/backward   —                 Every iteration     Every iteration
+Reference model memory  Yes (frozen copy) Yes (frozen copy)   —
+
+PriorZero’s LLM compute is concentrated in two places: (1) a single forward pass per MCTS root node
+during rollout (amortized over the ∼50{\sim}50 MCTS simulations that follow without LLM
+involvement), and (2) PPO updates on the LLM every KK world-model iterations during training.
+Because the alternating schedule performs far fewer LLM gradient steps than Naive RLFT (which
+updates the LLM at every iteration), PriorZero’s total LLM training cost is a fraction of P2’s
+despite using the same model size. The world-model component (2-layer transformer, d=768d{=}768)
+adds negligible overhead relative to the LLM.
+
+B.3.4 Per-Level Evaluation Curves
+
+Per-Level Curves.
+
+Fig. 10 presents detailed curves for all 18 BabyAI levels, complementing the aggregated return
+comparison in the main text (Figure 6). We show a three-way comparison: PriorZero uses the full
+framework (world model + root-level LLM prior + MCTS); the standalone LLM policy (labeled
+“PriorZero (LLM-only)” in the figure legend) keeps the same fine-tuned LLM module but evaluates
+with the LLM policy alone (no world-model lookahead / MCTS); and UniZero is the world-model
+baseline without any LLM prior. This decomposition isolates (i) how much the world model and
+planning contribute beyond the LLM’s standalone behavior, and (ii) how much the LLM prior
+contributes beyond UniZero’s planning.
+
+
+Figure 10: Per-level return on all 18 BabyAI levels. Each subplot shares a common xx-axis (Env
+Steps, obtained by the data collector step counter) and yy-axis (return in [0,1][0,1]). Curves are
+means over two seeds; shaded bands span the min–max envelope across seeds. Red: PriorZero. Orange
+(dashed): PriorZero (LLM-only) — the fine-tuned LLM policy alone. Blue: UniZero. The three
+categories at the top are Navigation (L1–L11), Pickup (L19–L21), and Interaction/Compositional
+(L30–L36).
+
+Where Does the World Model Contribute Beyond the LLM?
+
+Comparing PriorZero against the standalone LLM policy isolates the gain from world-model planning,
+which scales with task compositionality:
+
+  • •
+   
+    Compositional / multi-room tasks (GoToObjMazeS7, OneRoomS20, ActionObjDoor, FindObjS7, 
+    PickupAbove): the standalone LLM fails outright (return ≈0{\approx}0), while the full stack
+    reaches ≥0.90{\geq}0.90. These tasks require ordered sub-goal sequences that open-loop LLM
+    sampling cannot plan; MCTS lookahead through the learned world model is the decisive signal.
+
+  • •
+   
+    Navigation with distractors (GoToRedBallGrey, GoToRedBall, GoToRedBlueBall): the standalone LLM
+    achieves 0.40.4–0.70.7 but is unstable, whereas the full stack sits consistently above
+    0.880.88. The LLM identifies the right object class; world-model value bootstrapping
+    disambiguates among visually similar candidates.
+
+  • •
+   
+    Easy single-object tasks (GoToRedBallNoDists, GoToDoor, GoToLocalS8N7, PickupLoc, 
+    PickupDistDebug): the standalone LLM already saturates (≥0.87{\geq}0.87); the world model adds
+    at most a few points. The full stack pays no tax on easy levels.
+
+Where Does the LLM Prior Help on Top of UniZero?
+
+Comparing PriorZero against UniZero isolates the gain from injecting the LLM prior at the MCTS
+root. The most striking case is SynthLoc (L36), where UniZero’s mean return collapses to 0.00.0
+while PriorZero reaches 0.960.96: the level uses locative compositional instructions (“next to”,
+“to the left of”) that benefit disproportionately from LLM grounding. Smaller gains (+5+5 to +13+13
+points) appear on GoToRedBallGrey, GoToRedBall, GoToRedBlueBall, and PickupLoc, where the action
+space contains near-synonymous candidates that the world model alone cannot cheaply discriminate.
+
+Anomalies.
+
+Three levels deserve flagging. GoToImpUnlock (L7) requires implicit door unlocking; both UniZero
+and all PriorZero variants stall near 00 within ∼100​k\sim\!100\text{k} env steps, suggesting
+longer training or an explicit intermediate-reward curriculum is needed. SynthLoc (L36) is the
+clearest case where the LLM prior is necessary, not merely accelerating: random exploration never
+grounds locative phrases, but the frozen LLM vocabulary supplies this grounding for free. FindObjS7
+(L31) is the only level where UniZero slightly edges out PriorZero (0.9950.995 vs. 0.9600.960);
+both saturate and the gap is within UniZero’s seed variation.
+
+Appendix C Detailed Related Work
+
+C.1 Pre-training in Reinforcement Learning
+
+To address the issues of low sample efficiency and poor generalization in high-dimensional
+observation spaces, recent studies have explored integrating self-supervised pre-training and
+representation learning into reinforcement learning (RL). These approaches aim to improve policy
+learning and generalization through unsupervised or cross-task representations. Early work on World
+Models [Ha and Schmidhuber, 2018] demonstrated the potential of representation pre-training for
+improving sample efficiency by learning a generative model of environment dynamics in a latent
+space and training control policies on top of it. In the visual domain, CURL [Laskin et al., 2020]
+leverages contrastive learning to extract visual features from pixel observations, alleviating the
+representation bottleneck in RL. Seo et al. [Seo et al., 2022] propose action-free video
+pre-training, where environment dynamics are first learned from large-scale unlabeled videos and
+then fine-tuned with action-conditioned world models in downstream tasks, while intrinsic rewards
+are constructed from latent representations to guide exploration. PIE-G [Yuan et al., 2022]
+transfers ImageNet-pretrained encoders to RL and achieves cross-environment zero-shot
+generalization. VIP [Ma et al., 2022] formulates representation learning as conditional value
+function estimation and extracts temporally smooth implicit values from third-person videos to
+provide dense unsupervised rewards. ContextWM [Wu et al., 2023] further improves robustness and
+transferability in real-world video data by explicitly disentangling background and dynamic
+information through a context encoder. In text-based environments, Dynalang [Lin et al., 2024]
+trains world models on large-scale text corpora and performs planning and policy optimization in
+the latent space, enabling task priors without explicit environment interaction. Starling [
+Basavatia et al., 2024] leverages large language models (LLMs) to generate self-supervised signals
+that guide sample-efficient policy learning in text-based environments.
+
+Different from these approaches, PriorZero does not rely on additional representation pre-training
+or cross-modal datasets. Instead, it directly incorporates LLM priors into the world-model planning
+process—the world model is trained online from scratch while the LLM prior is adapted in-the-loop,
+avoiding the granularity mismatch (P3 in §2) that arises when LLMs are used as dynamics models.
+
+C.2 Leveraging LLM Priors in Reinforcement Learning
+
+With the emergence of large language models (LLMs) that possess strong world knowledge and
+reasoning capabilities, recent research has explored leveraging them to assist reinforcement
+learning agents. Li et al. [Li et al., 2022] first introduced pretrained language models to provide
+commonsense priors for state understanding and action selection in text-based games. Huang et al. [
+Huang et al., 2022] propose using LLMs as zero-shot planners that generate executable high-level
+action sequences from textual prompts to guide embodied agents. SayCan [Ahn et al., 2022] further
+combines LLM reasoning with value function estimation to improve the success rate of robotic task
+execution. Beyond planning, LLMs have also been used to guide exploration. The ELLM framework [Cao
+et al., 2024] generates semantically meaningful sub-goals with language models and uses them as
+exploration rewards to make policy learning more goal-directed. Inner Monologue [Huang et al., 2022
+] demonstrates that LLM-generated “internal monologues” can coordinate multiple modules in embodied
+systems. DLLM [Liu et al., 2024] embeds LLM-generated sub-goals into model-based RL simulations and
+assigns higher rewards to trajectories consistent with language prompts, thereby improving
+exploration efficiency in long-horizon tasks. Shi et al. [Shi et al., 2025] further incorporate
+LLMs directly into Monte Carlo Tree Search (MCTS), where candidate actions generated by LLMs guide
+planning in text-based games.
+
+In contrast to these methods—which span paradigms P1 (Naive Policy: [Huang et al., 2022, Ahn et
+al., 2022]), P4 (Text Encoder: [Li et al., 2022]), and LLM-guided exploration/search ([Cao et al.,
+2024, Liu et al., 2024, Shi et al., 2025])—PriorZero integrates LLM priors with a learnable world
+model through root-only injection and alternating fine-tuning. This enables the agent to
+continuously refine its decision-making policy through environment interaction while keeping
+dynamics learning uncontaminated by token-level bias.
+
+C.3 Reinforcement Learning for Fine-Tuning LLMs
+
+Reinforcement Learning from Human Feedback (RLHF) has become the dominant paradigm for aligning
+large language models. Christiano et al. [Christiano et al., 2017] first proposed learning reward
+models from human preferences and optimizing policies accordingly. Ziegler et al. [Ziegler et al.,
+2019] applied this framework to language model summarization, and Stiennon et al. [Stiennon et al.,
+2020] further validated its effectiveness on long-form summarization tasks. InstructGPT [Ouyang et
+al., 2022] extended RLHF to large-scale models with tens of billions of parameters, combining PPO
+optimization with human preference data to significantly improve instruction-following behavior. To
+reduce the cost of human annotations, Constitutional AI [Bai et al., 2022] and RLAIF [Lee et al.,
+2023] replace human feedback with AI-generated preferences or LLM-based reward scoring, achieving
+competitive performance across multiple tasks. In decision-making scenarios, Reinforcement Learning
+Fine-Tuning (RLFT) has been explored to improve multi-step decision capabilities of LLMs. Schmied
+et al. [Schmied et al., 2025] systematically study the effects of RLFT on decision-making behaviors
+and show that RLFT can mitigate greedy tendencies and the “knowing–doing gap” in LLMs. However,
+their experiments are mainly limited to short-horizon tasks such as bandits and tic-tac-toe. Recent
+works further combine self-play or search mechanisms to generate high-quality training signals. For
+example, rStar-Math [Guan et al., 2025] performs deep exploration in reasoning space via Monte
+Carlo Tree Search and filters correct reasoning paths using code execution feedback to construct
+high-quality process supervision data for RFT. STAIR [Zhang et al., 2025] fine-tunes models on
+reasoning chains containing introspective reasoning under safety constraints for alignment.
+
+Unlike these methods, PriorZero constructs reinforcement learning advantage signals using value
+estimates generated during world-model planning. This provides low-variance training feedback that
+resolves the credit-assignment failure limiting end-to-end RLFT (P2 in §2) and allows RLFT to scale
+from short-horizon decision tasks to complex long-horizon environments.
+
+Appendix D Prompt Template
+
+PriorZero uses a unified two-stage prompt template to extract semantic action priors from the LLM
+during rollout, following the structured prior extraction process described in §3.2. The template
+consists of a system prompt (defining the agent role, environment context, and output format) and a
+user prompt (injecting the interaction history, current observation, and valid actions). The LLM
+first produces a neutral situation analysis (CoT reasoning), then outputs a probability
+distribution over candidate actions. Both Jericho and BabyAI share the same prompt skeleton and
+scoring pipeline—the BabyAI variant inherits all LLM-calling, CoT-generation, and prompt-logprobs
+scoring logic from the Jericho implementation, overriding only the system prompt and user prompt
+text to reflect the grid-world domain. Neither environment uses few-shot examples; the prompt
+relies entirely on zero-shot instruction following. Figure 11 shows the Jericho prompt template,
+and Figure 12 shows the BabyAI variant. Red placeholders are filled at each step with the current
+observation, action history, and valid action list.
+
+
+Figure 11: Prompt template for extracting semantic action priors from the LLM in Jericho
+environments. Red text indicates placeholders filled with task-specific content (game description,
+current observation, valid actions). The template enforces a two-stage generation: first a neutral
+situation analysis (CoT reasoning), then a probability distribution over candidate actions.
+
+System Prompt:
+You are an expert agent navigating a BabyAI grid-world environment. You are placed in rooms and
+must accomplish goals by choosing optimal actions.
+Available action types:
+ – turn left / turn right / move forward: basic movement
+ – go to <obj> <id>: navigate to a specific object
+ – pick up <obj> <id>: pick up an object
+ – go through <door> <id>: go through an open door
+ – toggle and go through <door> <id>: open and go through a closed/locked door
+  (locked doors require a matching color key)
+ – toggle: open/close a door directly in front of you
+Your goal is to complete the given task efficiently to maximize your score.
+OUTPUT FORMAT:
+You MUST produce exactly TWO parts in the following order:
+1. Reasoning: Analyze the current observation, your position, nearby objects, and which action best
+progresses toward the goal.
+2. Action: The final chosen action (must be one of the valid actions).
+Strict Format Example:
+Reasoning: <detailed_analysis>
+Action: <single_action>
+User Prompt:
+=== ACTION HISTORY ===
+Step 1:
+ Observation: <obs_text_1>
+ Action: <action_1>
+ Reward: <reward_1>
+…
+=== CURRENT OBSERVATION ===
+<current_obs_text>
+[Valid Actions]
+Choose from: ‘go to red ball 1’, ‘pick up blue key 1’, …
+=== INSTRUCTION ===
+Analyze the observation and provide your response:
+Reasoning: <detailed_analysis>
+Action: <single_action>
+
+
+Figure 12: Prompt template for extracting semantic action priors from the LLM in BabyAI
+environments. The template shares the same two-stage structure as the Jericho variant (Figure 11),
+with three key differences: (1) the system prompt enumerates BabyAI’s high-level semantic action
+types; (2) the user prompt includes valid actions by default (controlled by 
+observation_with_valid_actions=True); (3) CoT reasoning is enabled by default. Red text indicates
+placeholders filled at each step.
+
+NeurIPS Paper Checklist
+
+ 1. 1.
+   
+    Claims
+
+ 2. Question: Do the main claims made in the abstract and introduction accurately reflect the
+    paper’s contributions and scope?
+
+ 3. Answer: [Yes]
+
+ 4. Justification: The abstract and introduction accurately describe our contributions: root-prior
+    injection for MCTS guidance and alternating fine-tuning for LLM adaptation, validated on
+    Jericho and BabyAI benchmarks.
+
+ 5. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the abstract and introduction do not include the claims made in
+        the paper.
+
+      □ •
+       
+        The abstract and/or introduction should clearly state the claims made, including the
+        contributions made in the paper and important assumptions and limitations. A [No] or [N/A] 
+        answer to this question will not be perceived well by the reviewers.
+
+      □ •
+       
+        The claims made should match theoretical and experimental results, and reflect how much the
+        results can be expected to generalize to other settings.
+
+      □ •
+       
+        It is fine to include aspirational goals as motivation as long as it is clear that these
+        goals are not attained by the paper.
+
+ 6. 2.
+   
+    Limitations
+
+ 7. Question: Does the paper discuss the limitations of the work performed by the authors?
+
+ 8. Answer: [Yes]
+
+ 9. Justification: We acknowledge that our evaluation is limited to text-based (Jericho) and
+    grid-world (BabyAI) environments with discrete action spaces. The conclusion notes this scope
+    and the commented future-work direction (multimodal embodied settings) reflects an acknowledged
+    limitation.
+
+10. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper has no limitation while the answer [No] means that
+        the paper has limitations, but those are not discussed in the paper.
+
+      □ •
+       
+        The authors are encouraged to create a separate “Limitations” section in their paper.
+
+      □ •
+       
+        The paper should point out any strong assumptions and how robust the results are to
+        violations of these assumptions (e.g., independence assumptions, noiseless settings, model
+        well-specification, asymptotic approximations only holding locally). The authors should
+        reflect on how these assumptions might be violated in practice and what the implications
+        would be.
+
+      □ •
+       
+        The authors should reflect on the scope of the claims made, e.g., if the approach was only
+        tested on a few datasets or with a few runs. In general, empirical results often depend on
+        implicit assumptions, which should be articulated.
+
+      □ •
+       
+        The authors should reflect on the factors that influence the performance of the approach.
+        For example, a facial recognition algorithm may perform poorly when image resolution is low
+        or images are taken in low lighting. Or a speech-to-text system might not be used reliably
+        to provide closed captions for online lectures because it fails to handle technical jargon.
+
+      □ •
+       
+        The authors should discuss the computational efficiency of the proposed algorithms and how
+        they scale with dataset size.
+
+      □ •
+       
+        If applicable, the authors should discuss possible limitations of their approach to address
+        problems of privacy and fairness.
+
+      □ •
+       
+        While the authors might fear that complete honesty about limitations might be used by
+        reviewers as grounds for rejection, a worse outcome might be that reviewers discover
+        limitations that aren’t acknowledged in the paper. The authors should use their best
+        judgment and recognize that individual actions in favor of transparency play an important
+        role in developing norms that preserve the integrity of the community. Reviewers will be
+        specifically instructed to not penalize honesty concerning limitations.
+
+11. 3.
+   
+    Theory assumptions and proofs
+
+12. Question: For each theoretical result, does the paper provide the full set of assumptions and a
+    complete (and correct) proof?
+
+13. Answer: [N/A]
+
+14. Justification: This paper does not include theoretical results. Our contributions are
+    algorithmic and empirical.
+
+15. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not include theoretical results.
+
+      □ •
+       
+        All the theorems, formulas, and proofs in the paper should be numbered and
+        cross-referenced.
+
+      □ •
+       
+        All assumptions should be clearly stated or referenced in the statement of any theorems.
+
+      □ •
+       
+        The proofs can either appear in the main paper or the supplemental material, but if they
+        appear in the supplemental material, the authors are encouraged to provide a short proof
+        sketch to provide intuition.
+
+      □ •
+       
+        Inversely, any informal proof provided in the core of the paper should be complemented by
+        formal proofs provided in appendix or supplemental material.
+
+      □ •
+       
+        Theorems and Lemmas that the proof relies upon should be properly referenced.
+
+16. 4.
+   
+    Experimental result reproducibility
+
+17. Question: Does the paper fully disclose all the information needed to reproduce the main
+    experimental results of the paper to the extent that it affects the main claims and/or
+    conclusions of the paper (regardless of whether the code and data are provided or not)?
+
+18. Answer: [Yes]
+
+19. Justification: We provide full implementation details in Appendix B, including hyperparameters
+    (Table 5), prompt templates (Figures 11 and 12), and training procedures. Code will be released
+    upon acceptance.
+
+20. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not include experiments.
+
+      □ •
+       
+        If the paper includes experiments, a [No] answer to this question will not be perceived
+        well by the reviewers: Making the paper reproducible is important, regardless of whether
+        the code and data are provided or not.
+
+      □ •
+       
+        If the contribution is a dataset and/or model, the authors should describe the steps taken
+        to make their results reproducible or verifiable.
+
+      □ •
+       
+        Depending on the contribution, reproducibility can be accomplished in various ways. For
+        example, if the contribution is a novel architecture, describing the architecture fully
+        might suffice, or if the contribution is a specific model and empirical evaluation, it may
+        be necessary to either make it possible for others to replicate the model with the same
+        dataset, or provide access to the model. In general. releasing code and data is often one
+        good way to accomplish this, but reproducibility can also be provided via detailed
+        instructions for how to replicate the results, access to a hosted model (e.g., in the case
+        of a large language model), releasing of a model checkpoint, or other means that are
+        appropriate to the research performed.
+
+      □ •
+       
+        While NeurIPS does not require releasing code, the conference does require all submissions
+        to provide some reasonable avenue for reproducibility, which may depend on the nature of
+        the contribution. For example
+
+         1. (a)
+           
+            If the contribution is primarily a new algorithm, the paper should make it clear how to
+            reproduce that algorithm.
+
+         2. (b)
+           
+            If the contribution is primarily a new model architecture, the paper should describe
+            the architecture clearly and fully.
+
+         3. (c)
+           
+            If the contribution is a new model (e.g., a large language model), then there should
+            either be a way to access this model for reproducing the results or a way to reproduce
+            the model (e.g., with an open-source dataset or instructions for how to construct the
+            dataset).
+
+         4. (d)
+           
+            We recognize that reproducibility may be tricky in some cases, in which case authors
+            are welcome to describe the particular way they provide for reproducibility. In the
+            case of closed-source models, it may be that access to the model is limited in some way
+            (e.g., to registered users), but it should be possible for other researchers to have
+            some path to reproducing or verifying the results.
+
+21. 5.
+   
+    Open access to data and code
+
+22. Question: Does the paper provide open access to the data and code, with sufficient instructions
+    to faithfully reproduce the main experimental results, as described in supplemental material?
+
+23. Answer: [Yes]
+
+24. Justification: We will release our code upon acceptance. The environments (Jericho, BabyAI) are
+    publicly available. Implementation details are provided in Appendix B.
+
+25. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that paper does not include experiments requiring code.
+
+      □ •
+       
+        Please see the NeurIPS code and data submission guidelines (https://neurips.cc/public/
+        guides/CodeSubmissionPolicy) for more details.
+
+      □ •
+       
+        While we encourage the release of code and data, we understand that this might not be
+        possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not
+        including code, unless this is central to the contribution (e.g., for a new open-source
+        benchmark).
+
+      □ •
+       
+        The instructions should contain the exact command and environment needed to run to
+        reproduce the results. See the NeurIPS code and data submission guidelines (https://
+        neurips.cc/public/guides/CodeSubmissionPolicy) for more details.
+
+      □ •
+       
+        The authors should provide instructions on data access and preparation, including how to
+        access the raw data, preprocessed data, intermediate data, and generated data, etc.
+
+      □ •
+       
+        The authors should provide scripts to reproduce all experimental results for the new
+        proposed method and baselines. If only a subset of experiments are reproducible, they
+        should state which ones are omitted from the script and why.
+
+      □ •
+       
+        At submission time, to preserve anonymity, the authors should release anonymized versions
+        (if applicable).
+
+      □ •
+       
+        Providing as much information as possible in supplemental material (appended to the paper)
+        is recommended, but including URLs to data and code is permitted.
+
+26. 6.
+   
+    Experimental setting/details
+
+27. Question: Does the paper specify all the training and test details (e.g., data splits,
+    hyperparameters, how they were chosen, type of optimizer) necessary to understand the results?
+
+28. Answer: [Yes]
+
+29. Justification: All training and evaluation details are provided in Section 4 and Appendix B,
+    including hyperparameters, environment configurations, and LLM inference settings.
+
+30. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not include experiments.
+
+      □ •
+       
+        The experimental setting should be presented in the core of the paper to a level of detail
+        that is necessary to appreciate the results and make sense of them.
+
+      □ •
+       
+        The full details can be provided either with the code, in appendix, or as supplemental
+        material.
+
+31. 7.
+   
+    Experiment statistical significance
+
+32. Question: Does the paper report error bars suitably and correctly defined or other appropriate
+    information about the statistical significance of the experiments?
+
+33. Answer: [Yes]
+
+34. Justification: Main comparisons (PriorZero vs. UniZero, Figure 3) report shaded regions showing
+    variation across 3 random seeds. Ablation variants that clearly failed (frozen prior,
+    non-alternating, wcot=1.0w_{\mathrm{cot}}{=}1.0, CoT-off, MCTS-off) are reported from a single
+    seed, as documented in the footnote in Section 4.
+
+35. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not include experiments.
+
+      □ •
+       
+        The authors should answer [Yes] if the results are accompanied by error bars, confidence
+        intervals, or statistical significance tests, at least for the experiments that support the
+        main claims of the paper.
+
+      □ •
+       
+        The factors of variability that the error bars are capturing should be clearly stated (for
+        example, train/test split, initialization, random drawing of some parameter, or overall run
+        with given experimental conditions).
+
+      □ •
+       
+        The method for calculating the error bars should be explained (closed form formula, call to
+        a library function, bootstrap, etc.)
+
+      □ •
+       
+        The assumptions made should be given (e.g., Normally distributed errors).
+
+      □ •
+       
+        It should be clear whether the error bar is the standard deviation or the standard error of
+        the mean.
+
+      □ •
+       
+        It is OK to report 1-sigma error bars, but one should state it. The authors should
+        preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis
+        of Normality of errors is not verified.
+
+      □ •
+       
+        For asymmetric distributions, the authors should be careful not to show in tables or plots
+        symmetric error bars that would yield results that are out of range (e.g., negative error
+        rates).
+
+      □ •
+       
+        If error bars are reported in tables or plots, the authors should explain in the text how
+        they were calculated and reference the corresponding figures or tables in the text.
+
+36. 8.
+   
+    Experiments compute resources
+
+37. Question: For each experiment, does the paper provide sufficient information on the computer
+    resources (type of compute workers, memory, time of execution) needed to reproduce the
+    experiments?
+
+38. Answer: [Yes]
+
+39. Justification: All experiments run on NVIDIA H200 GPUs. Each Jericho run uses 4 H200 GPUs and
+    reaches 50​k50\text{k} environment steps in ∼35\sim\!35 wall-clock hours; each BabyAI-18 run
+    uses 4 H200 GPUs and reaches 100​k100\text{k} environment steps in ∼48\sim\!48 wall-clock
+    hours. Full hardware and timing details are in Appendix B.
+
+40. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not include experiments.
+
+      □ •
+       
+        The paper should indicate the type of compute workers CPU or GPU, internal cluster, or
+        cloud provider, including relevant memory and storage.
+
+      □ •
+       
+        The paper should provide the amount of compute required for each of the individual
+        experimental runs as well as estimate the total compute.
+
+      □ •
+       
+        The paper should disclose whether the full research project required more compute than the
+        experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make
+        it into the paper).
+
+41. 9.
+   
+    Code of ethics
+
+42. Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS
+    Code of Ethics https://neurips.cc/public/EthicsGuidelines?
+
+43. Answer: [Yes]
+
+44. Justification: Our research conforms to the NeurIPS Code of Ethics. We use publicly available
+    benchmarks and do not involve human subjects or sensitive data.
+
+45. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics.
+
+      □ •
+       
+        If the authors answer [No] , they should explain the special circumstances that require a
+        deviation from the Code of Ethics.
+
+      □ •
+       
+        The authors should make sure to preserve anonymity (e.g., if there is a special
+        consideration due to laws or regulations in their jurisdiction).
+
+46. 10.
+   
+    Broader impacts
+
+47. Question: Does the paper discuss both potential positive societal impacts and negative societal
+    impacts of the work performed?
+
+48. Answer: [N/A]
+
+49. Justification: This is foundational research on RL algorithms. We do not foresee direct
+    negative societal impacts from our method.
+
+50. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that there is no societal impact of the work performed.
+
+      □ •
+       
+        If the authors answer [N/A] or [No] , they should explain why their work has no societal
+        impact or why the paper does not address societal impact.
+
+      □ •
+       
+        Examples of negative societal impacts include potential malicious or unintended uses (e.g.,
+        disinformation, generating fake profiles, surveillance), fairness considerations (e.g.,
+        deployment of technologies that could make decisions that unfairly impact specific groups),
+        privacy considerations, and security considerations.
+
+      □ •
+       
+        The conference expects that many papers will be foundational research and not tied to
+        particular applications, let alone deployments. However, if there is a direct path to any
+        negative applications, the authors should point it out. For example, it is legitimate to
+        point out that an improvement in the quality of generative models could be used to generate
+        Deepfakes for disinformation. On the other hand, it is not needed to point out that a
+        generic algorithm for optimizing neural networks could enable people to train models that
+        generate Deepfakes faster.
+
+      □ •
+       
+        The authors should consider possible harms that could arise when the technology is being
+        used as intended and functioning correctly, harms that could arise when the technology is
+        being used as intended but gives incorrect results, and harms following from (intentional
+        or unintentional) misuse of the technology.
+
+      □ •
+       
+        If there are negative societal impacts, the authors could also discuss possible mitigation
+        strategies (e.g., gated release of models, providing defenses in addition to attacks,
+        mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback
+        over time, improving the efficiency and accessibility of ML).
+
+51. 11.
+   
+    Safeguards
+
+52. Question: Does the paper describe safeguards that have been put in place for responsible
+    release of data or models that have a high risk for misuse (e.g., pre-trained language models,
+    image generators, or scraped datasets)?
+
+53. Answer: [N/A]
+
+54. Justification: We do not release models or datasets. We use publicly available LLMs (Qwen2.5)
+    and benchmarks (Jericho, BabyAI).
+
+55. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper poses no such risks.
+
+      □ •
+       
+        Released models that have a high risk for misuse or dual-use should be released with
+        necessary safeguards to allow for controlled use of the model, for example by requiring
+        that users adhere to usage guidelines or restrictions to access the model or implementing
+        safety filters.
+
+      □ •
+       
+        Datasets that have been scraped from the Internet could pose safety risks. The authors
+        should describe how they avoided releasing unsafe images.
+
+      □ •
+       
+        We recognize that providing effective safeguards is challenging, and many papers do not
+        require this, but we encourage authors to take this into account and make a best faith
+        effort.
+
+56. 12.
+   
+    Licenses for existing assets
+
+57. Question: Are the creators or original owners of assets (e.g., code, data, models), used in the
+    paper, properly credited and are the license and terms of use explicitly mentioned and properly
+    respected?
+
+58. Answer: [Yes]
+
+59. Justification: We cite all assets used: Jericho (MIT License), BabyAI (MIT License), Qwen2.5
+    (Apache 2.0), BGE-base-en-v1.5 (MIT License), and UniZero/LightZero (Apache 2.0). All are
+    publicly available with permissive open-source licenses.
+
+60. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not use existing assets.
+
+      □ •
+       
+        The authors should cite the original paper that produced the code package or dataset.
+
+      □ •
+       
+        The authors should state which version of the asset is used and, if possible, include a
+        URL.
+
+      □ •
+       
+        The name of the license (e.g., CC-BY 4.0) should be included for each asset.
+
+      □ •
+       
+        For scraped data from a particular source (e.g., website), the copyright and terms of
+        service of that source should be provided.
+
+      □ •
+       
+        If assets are released, the license, copyright information, and terms of use in the package
+        should be provided. For popular datasets, paperswithcode.com/datasets has curated licenses
+        for some datasets. Their licensing guide can help determine the license of a dataset.
+
+      □ •
+       
+        For existing datasets that are re-packaged, both the original license and the license of
+        the derived asset (if it has changed) should be provided.
+
+      □ •
+       
+        If this information is not available online, the authors are encouraged to reach out to the
+        asset’s creators.
+
+61. 13.
+   
+    New assets
+
+62. Question: Are new assets introduced in the paper well documented and is the documentation
+    provided alongside the assets?
+
+63. Answer: [Yes]
+
+64. Justification: We will release code with documentation and an open-source license (Apache 2.0)
+    upon acceptance.
+
+65. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not release new assets.
+
+      □ •
+       
+        Researchers should communicate the details of the dataset/code/model as part of their
+        submissions via structured templates. This includes details about training, license,
+        limitations, etc.
+
+      □ •
+       
+        The paper should discuss whether and how consent was obtained from people whose asset is
+        used.
+
+      □ •
+       
+        At submission time, remember to anonymize your assets (if applicable). You can either
+        create an anonymized URL or include an anonymized zip file.
+
+66. 14.
+   
+    Crowdsourcing and research with human subjects
+
+67. Question: For crowdsourcing experiments and research with human subjects, does the paper
+    include the full text of instructions given to participants and screenshots, if applicable, as
+    well as details about compensation (if any)?
+
+68. Answer: [N/A]
+
+69. Justification: This paper does not involve crowdsourcing or human subjects research.
+
+70. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not involve crowdsourcing nor research with
+        human subjects.
+
+      □ •
+       
+        Including this information in the supplemental material is fine, but if the main
+        contribution of the paper involves human subjects, then as much detail as possible should
+        be included in the main paper.
+
+      □ •
+       
+        According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or
+        other labor should be paid at least the minimum wage in the country of the data collector.
+
+71. 15.
+   
+    Institutional review board (IRB) approvals or equivalent for research with human subjects
+
+72. Question: Does the paper describe potential risks incurred by study participants, whether such
+    risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals
+    (or an equivalent approval/review based on the requirements of your country or institution)
+    were obtained?
+
+73. Answer: [N/A]
+
+74. Justification: This paper does not involve human subjects research.
+
+75. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the paper does not involve crowdsourcing nor research with
+        human subjects.
+
+      □ •
+       
+        Depending on the country in which research is conducted, IRB approval (or equivalent) may
+        be required for any human subjects research. If you obtained IRB approval, you should
+        clearly state this in the paper.
+
+      □ •
+       
+        We recognize that the procedures for this may vary significantly between institutions and
+        locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines
+        for their institution.
+
+      □ •
+       
+        For initial submissions, do not include any information that would break anonymity (if
+        applicable), such as the institution conducting the review.
+
+76. 16.
+   
+    Declaration of LLM usage
+
+77. Question: Does the paper describe the usage of LLMs if it is an important, original, or
+    non-standard component of the core methods in this research? Note that if the LLM is used only
+    for writing, editing, or formatting purposes and does not impact the core methodology,
+    scientific rigor, or originality of the research, declaration is not required.
+
+78. Answer: [Yes]
+
+79. Justification: LLMs (Qwen2.5-3B/7B) are a core component of our method, providing semantic
+    action priors for MCTS planning. We describe their usage in Section 3 and Appendix B.
+
+80. Guidelines:
+
+      □ •
+       
+        The answer [N/A] means that the core method development in this research does not involve
+        LLMs as any important, original, or non-standard components.
+
+      □ •
+       
+        Please refer to our LLM policy in the NeurIPS handbook for what should or should not be
+        described.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

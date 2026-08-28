@@ -1,0 +1,1303 @@
+source: https://arxiv.org/html/2602.05842
+arxiv: https://arxiv.org/abs/2602.05842
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Method
+     1. 2.1 Notation
+     2. 2.2 Reinforcement World Model Learning
+ 4. 3 Experiments
+     1. 3.1 Experiment Setup
+         1. Benchmarks
+         2. Baselines
+         3. Models and Training Data
+     2. 3.2 Main Results
+     3. 3.3 RWML Forgets Less
+     4. 3.4 Ablation Studies
+ 5. 4 Discussion
+     1. 4.1 Impact of RWML on Decision-Making
+     2. 4.2 Weight Change Analysis
+     3. 4.3 Impact of Base Model Capability
+ 6. 5 Related Work
+     1. Training Decision-Making Agents
+     2. Training World Models
+ 7. 6 Conclusion
+ 8. 7 Impact Statements
+ 9. References
+10. A LLM Usage
+11. B More Details on ALFWorld
+     1. B.1 RWML Training Setup
+     2. B.2 Policy RL Training Setup
+     3. B.3 Other Training Setup
+12. C More Details on τ2\tau^{2} Bench
+     1. C.1 RWML Training Setup
+     2. C.2 Policy RL Training Setup
+     3. C.3 Additional Evaluation Results
+     4. C.4 Other Training Setup
+13. D More Details on Ablation Studies
+14. E More Details on Parameter Change Analysis
+
+License: CC BY 4.0
+arXiv:2602.05842v2 [cs.CL] 09 Feb 2026
+
+Reinforcement World Model Learning for LLM-based Agents
+
+Xiao Yu Affiliation: Columbia University, New York Correspondence to: xy2437@columbia.edu    Baolin
+Peng Affiliation: Microsoft Research, Redmond    Ruize Xu Affiliation: Dartmouth College, Hanover 
+   Yelong Shen Affiliation: Microsoft Research, Redmond    Pengcheng He Affiliation: Microsoft
+Research, Redmond    Suman Nath Affiliation: Microsoft Research, Redmond    Nikhil Singh 
+Affiliation: Dartmouth College, Hanover    Jiangfeng Gao Affiliation: Microsoft Research, Redmond 
+   Zhou Yu Affiliation: Columbia University, New York
+
+Abstract
+
+Large language models (LLMs) have achieved strong performance in language-centric tasks. However,
+in agentic settings, LLMs often struggle to anticipate action consequences and adapt to environment
+dynamics, highlighting the need for world-modeling capabilities in LLM-based agents. We propose
+Reinforcement World Model Learning (RWML), a self-supervised method that learns action-conditioned
+world models for LLM-based agents on textual states using sim-to-real gap rewards. Our method
+aligns simulated next states produced by the model with realized next states observed from the
+environment, encouraging consistency between internal world simulations and actual environment
+dynamics in a pre-trained embedding space. Unlike next-state token prediction, which prioritizes
+token-level fidelity (i.e., reproducing exact wording) over semantic equivalence and can lead to
+model collapse, our method provides a more robust training signal and is empirically less
+susceptible to reward hacking than LLM-as-a-judge. We evaluate our method on ALFWorld and τ2\tau^
+{2} Bench and observe significant gains over the base model, despite being entirely self-supervised
+. When combined with task-success rewards, our method outperforms direct task-success reward RL by
+6.9 and 5.7 points on ALFWorld and τ2\tau^{2} Bench respectively, while matching the performance of
+expert-data training.
+
+Keywords: 
+
+Machine Learning, ICML
+^†^†affiliationnotice: ^∗Project Lead ^†Equal Advising
+
+1 Introduction
+
+Large language models (LLMs) have achieved remarkable success in a wide range of language-centric
+tasks, including question answering, code generation, and multi-step reasoning (Brown et al., 2020;
+Wei et al., 2022; Lample and Conneau, 2019; Rozière et al., 2024; DeepSeek-AI et al., 2025; OpenAI
+and et al., 2024). These advances have motivated growing interests in using LLMs as autonomous
+agents to interact with realistic environments and complete long-horizon tasks (Yao et al., 2023;
+Deng et al., 2023). Despite strong linguistic and reasoning abilities, LLM-based agents struggle in
+many agentic settings that require anticipating action consequences and adapting to environment
+dynamics (Liu et al., 2025). This discrepancy highlights the distinction between language
+competence from pretraining and agentic intelligence required for LLM-based agents.
+
+
+Figure 1: We propose RWML as a scalable, self-supervised method to improve the world modeling
+ability of LLM-based agent by learning from next-states, prior to downstream policy RL which learns
+from task-success reward.
+
+A key reason for this limitation is the misalignment between standard pretraining objectives and
+agentic use cases. Standard pretraining objectives such as next-token prediction over static text
+corpora emphasize language understanding and generation. In contrast, modern LLM-based agents
+operate in complex, long-horizon environments, where successful task completion requires reasoning
+about both the current state and how the environment might evolve in response to actions (LeCun,
+2022; Hu and Shu, 2023; Hao et al., 2023). The ability to model potential future outcomes of one’s
+actions is central to biological intelligence. Research in neuroscience and psychology shows that
+humans, animals, and intelligent systems use internal world models to reason, plan, explore, and
+learn efficiently from very few trials (Craik, 1944; Tolman, 1948; Daw et al., 2005; Daw and Dayan,
+2014; Bennett, 2023). We believe this capacity for world modeling is likewise essential for
+effective reasoning and planning in LLM-based agents.
+
+Recent work has explored equipping LLM-based agents with world-modeling capabilities, training LLMs
+to predict next-states using next-token prediction (i.e., SFT). Examples include Zhang et al.
+(2025a); Yu et al. (2025c) which teaches LLMs to model environment transitions using trajectories
+provided by expert policies or high-quality synthetic data generated with stronger language models.
+While effective in some settings, these methods face scalability challenges: (1) they rely heavily
+on high-quality data from experts/strong LLMs; and (2) they are based on SFT, which prioritizes
+token-level fidelity (i.e., reproducing exact wording) over semantic equivalence and can lead to
+model collapse.
+
+In this paper, we propose Reinforcement World Model Learning (RWML), a self-supervised training
+method based on RL that learns action-conditioned world models for LLM-based agents. Rather than
+optimizing token-level fidelity with SFT, RWML trains LLMs to minimize the discrepancy between
+simulated next states produced by the model and realized next states observed from the environment,
+measured in a pre-trained embedding space. This sim-to-real alignment promotes semantic consistency
+between the agent’s internal world model and real environment dynamics while preserving
+task-relevant transitions, making them suitable for downstream decision-making. We evaluate our
+method on two long-horizon agent benchmarks (ALFWorld and τ2\tau^{2} Bench), and find RWML
+significantly improved the base model performance by 19.6 and 6.9 points without using any expert
+data, strong LLMs, or task-success reward signal. When combined with task-success rewards, agents
+trained with RWML outperform direct task-success reward RL by 6.9 and 5.7 points on ALFWorld and τ2
+\tau^{2} Bench, respectively, while matching the performance of training with expert data.
+
+In summary, our contributions are: (1) We propose RWML as a scalable, self-supervised training
+method for LLM-based agents that learns action-conditioned world models from sim-to-real gap
+rewards. (2) We evaluate our method on two long-horizon benchmarks (ALFWorld and τ2\tau^{2} Bench)
+and find that RWML significantly improves base model performance. When combined with task-success
+rewards, our models outperform standard RL and match the performance of training with expert data.
+(3) We conduct comprehensive analyses — including ablation studies, model forgetting, qualitative
+analysis, and more — to highlight the benefits of RL and world model learning for LLM-based agents.
+
+Refer to caption
+Figure 2: Overview of RWML. Given a target model πθ\pi_{\theta}, we first collect training data for
+RWML by using πθ\pi_{\theta} to gather rollouts (s0,a0,s1,a1,…​sT)(s_{0},a_{0},s_{1},a_{1},...s_
+{T}) with the environment, and then convert these rollouts into ⟨s≤t,at,st+1⟩\left\langle s_{\leq
+t},a_{t},s_{t+1}\right\rangle triplets for all tt, after subsampling “too easy” samples defined in
+Equation 1. We then train πθ\pi_{\theta} to reason as a world model via GRPO, using lightweight
+reward functions (e.g., embedding-based cosine similarity) to compare the predicted s^t+1\hat{s}_
+{t+1} with the real st+1s_{t+1}.
+
+2 Method
+
+2.1 Notation
+
+Completing tasks in complex, long-horizon environments is typically formulated as a Markov Decision
+Process of ⟨𝒮,𝒜,𝒯,ℛ,γ⟩\left\langle\mathcal{S},\mathcal{A},\mathcal{T},\mathcal{R},\gamma\right\
+rangle. In the generic setting of multi-step tasks, an LLM-powered agent πθ\pi_{\theta} receives a
+task instruction and an observation^1^1 1 Technically, any input to the agent from our environments
+is an observation (as in POMDP). However, to simplify notation we use ss to generally denote input
+data received from the environment. from the environment st∼𝒮s_{t}\sim\mathcal{S}, generates an
+action at∼π(⋅|st)a_{t}\sim\pi(\cdot|s_{t}), and receives a new observation st+1∼𝒮s_{t+1}\sim\
+mathcal{S}. During action generation, the model is often given up to HH turns of interaction
+history ⟨st−H,at−H,…,st⟩\left\langle s_{t-H},a_{t-H},...,s_{t}\right\rangle, and is allowed to
+think/reason before generating the next action ata_{t}. This interaction process is repeated until
+the task completion or reaching a maximum number of steps, upon which a terminal reward rT∼ℛ⁡
+(aT,sT)r_{T}\sim\mathcal{R}(a_{T},s_{T}) is returned based on whether the task is failed/completed
+successfully. The discounting factor γ∈(0,1]\gamma\in(0,1] is used to discount and propagate future
+rewards during RL training. Note that since this work trains LLMs as world models, we denote
+generated states as s^t\hat{s}_{t} to distinguish them from real environment states sts_{t}.
+
+For example, in environments such as ALFWorld (Shridhar et al., 2021), an action ata_{t} may be “go
+to sidetable 1”, and the resulting state st+1s_{t+1} describes the outcome of that interaction,
+such as the objects currently available to agent (e.g., “You arrive at sidetable 1. On the
+sidetable you see a mug, a pepper shaker, and a tomato.”). In more complex environments such as τ2\
+tau^{2} Bench (Barres et al., 2025), an action ata_{t} could be a tool-call or a response to the
+user, and the next state st+1s_{t+1} returns either a tool response (often in json format), or a
+natural language response generated by the user simulator (powered by an LLM). For more details on
+each environment, please see Appendices B and C, respectively.
+
+2.2 Reinforcement World Model Learning
+
+A key challenge in scaling agentic post-training methods such as RL is their reliance on accurate
+task-success rewards provided at the end of an episode. While effective, these rewards are sparse
+and require careful design by domain experts (Barres et al., 2025; Xie et al., 2024; Rawles et al.,
+2025; Zhou et al., 2024). As tasks and environments become more complex, this reliance introduces
+scaling challenges.
+
+We introduce Reinforcement World Model Learning (RWML), a scalable, self-supervised training method
+where the agent learns accurate world model knowledge from the environment dynamics 𝒯\mathcal{T},
+before further finetuning with task-success reward RL. Intuitively, RWML trains an LLM policy πθ\
+pi_{\theta} to also be able to reason about the consequences s^t+1\hat{s}_{t+1} given an action
+ata_{t} and a history HH of past interactions:
+
+ (reason,s^t+1)∼πθ(⋅|s≤t,at);s≤t≡⟨st−H,at−H,…,st⟩(\mathrm{reason},\hat{s}_{t+1})\sim\pi_{\theta}(\
+ cdot|s_{\leq t},a_{t});s_{\leq t}\equiv\left\langle s_{t-H},a_{t-H},...,s_{t}\right\rangle
+
+where “reason\mathrm{reason}” denotes reasoning tokens generated by the model before generating the
+final prediction of the next state s^t+1\hat{s}_{t+1}. To evaluate the quality of the prediction,
+we use a simple binary^2^2 2 Empirically, we find that binarized rewards are more robust and less
+susceptible to hacking (see Section 3.4). reward function that compares the distance between s^t+1\
+hat{s}_{t+1} and the ground truth st+1s_{t+1}:
+
+ rWM​(s^t+1,st+1)={1.0,if ​d​(s^t+1,st+1)<τd,0.0,otherwise.r^{\mathrm{WM}}(\hat{s}_{t+1},s_{t+1})=
+ \begin{cases}1.0,&\text{if }d(\hat{s}_{t+1},s_{t+1})<\tau_{d},\\ 0.0,&\text{otherwise}.\end
+ {cases}
+
+where τd\tau_{d} is a hyperparameter, and dd is implemented mainly using an off-the-shelf embedding
+model E⁡(⋅)E(\cdot) with cosine similarity (Karpukhin et al., 2020; Zhang et al., 2025b):
+
+ d⁡(s^t+1,st+1)=1−cos⁡(E⁡(s^t+1),E⁡(st+1)).d(\hat{s}_{t+1},s_{t+1})=1-\cos(E(\hat{s}_{t+1}),E(s_
+ {t+1})).
+
+To optimize this reward, we use standard GRPO (Shao et al., 2024; DeepSeek-AI et al., 2025):
+
+ 𝔼πθold[min(ρθA,clip(ρθ,1±ϵ)A)−βDKL(πθ||πθref)],\displaystyle\mathbb{E}_{\pi_{\theta_{\mathrm
+ {old}}}}\left[\min{\left(\rho_{\theta}A,\textrm{clip}(\rho_{\theta},1\pm\epsilon)A\right)}-\beta
+ D_{\textrm{KL}}(\pi_{\theta}||\pi_{\theta_{\mathrm{ref}}})\right],
+
+where ρθ=πθ​(y|x)/πθref​(y|x)\rho_{\theta}=\pi_{\theta}(y|x)/\pi_{\theta_{\mathrm{ref}}}(y|x) is
+the importance sampling ratio, β\beta is the KL regularization coefficient, and A=[rWM−mean​(rWM)]/
+std​(rWM)A=[r^{\mathrm{WM}}-\textrm{mean}(r^{\mathrm{WM}})]/{\textrm{std}(r^{\mathrm{WM}})} is the
+group-relative advantage using our reward function. We note that the entire process does not
+require any expert data, stronger LLMs, or task-success reward signals.
+
+To collect training data for RWML, we directly use the target model πθ\pi_{\theta} to gather
+rollouts (s0,a0,s1,a1,…​sT)(s_{0},a_{0},s_{1},a_{1},...s_{T}) with the environment, and then
+convert the rollouts into triplets of ⟨s≤t,at,st+1⟩\left\langle s_{\leq t},a_{t},s_{t+1}\right\
+rangle for all tt. To improve coverage and diversity, we perform N>1N>1 rollouts per training task.
+To help the model focus on learning non-trivial world model knowledge during RL, we follow
+intuitions from (Snell et al., 2024; Sun et al., 2025) and subsample the portion of the dataset
+that are “too easy” to learn. Specifically, we first use SFT to train a separate LLM πθ′\pi^{\
+prime}_{\theta} capable of predicting s^t+1\hat{s}_{t+1} using 10% of the full dataset. Then, we
+use this πθ′\pi^{\prime}_{\theta} to generate s^t+1\hat{s}_{t+1} on the other 90% of the dataset
+(i.e., the training split), subsampling training samples that consistently achieve high reward
+through K=10K=10 attempts:
+
+ 1K​∑KrWM​(s^t+1,st+1)≥τeasy,\frac{1}{K}\sum\limits_{K}r^{\mathrm{WM}}(\hat{s}_{t+1},s_{t+1})\  (1)
+ geq\tau_{\mathrm{easy}},
+
+where τeasy\tau_{\mathrm{easy}} is a hyperparameter. For “easy” samples above the threshold, we
+only include them in the final training split with probability p=0.1p=0.1, prioritizing harder
+samples while preserving diversity. This resulting dataset is used for GRPO training in RWML, as
+described in the previous section. An overview of the entire process is shown in Figure 2.
+
+3 Experiments
+
+We evaluate RWML on two widely used long-horizon environments that require accurate world and tool
+understanding for effective planning and task completion.
+
+3.1 Experiment Setup
+
+Benchmarks
+
+We conduct experiments on two popular agent benchmarks, ALFWorld (Shridhar et al., 2021) and τ2\tau
+^{2} Bench (Barres et al., 2025). ALFWorld is a text-based embodied environment where the agent
+needs to locate and interact with objects to complete household tasks using natural language
+instructions. τ2\tau^{2} Bench is an interleaved tool-use environment where the model acts as a
+customer service agent and uses tool-calls to resolve issues while conversing to a simulated user
+who raised the issue. We use the official training and test splits provided by each benchmark for
+training and evaluation.
+
+Baselines
+
+We compare with other policy and world model related training methods from three categories: (1)
+learning from task-success reward; (2) learning from interaction/transition function 𝒯\mathcal{T},
+similar to our method; and (3) learning from expert annotations/stronger LLMs.
+
+ 1. 1.
+   
+    Learning from task-success reward: we consider Reinforced Finetuning (RFT) using rejection
+    sampling and standard RL with task-success reward (Policy RL). RFT first uses the target model
+    to rollout NN trajectories per training task and then performs SFT training only on the
+    trajectories that correctly solved the task (Touvron et al., 2023; Zelikman et al., 2022).
+    Policy RL directly uses GRPO to train the base model πθ\pi_{\theta} to optimize for
+    task-success reward using online rollouts (Feng et al., 2025c; Yu et al., 2025a).
+
+ 2. 2.
+   
+    Learning from interaction/transition function: we consider World Model SFT (WM SFT) which uses
+    identical training data as RWML, but trains the model to directly predict st+1s_{t+1} using
+    SFT. Note that no reasoning is involved in WM SFT as only st+1s_{t+1} is available.
+
+ 3. 3.
+   
+    Learning from expert/strong LLMs: we consider Implicit World Modeling (IWM) and Self-Reflection
+    (SR) from Zhang et al. (2025a); Yu et al. (2025c). Using expert rollouts (s0,a0∗,s1,a1∗,…)(s_
+    {0},a^{*}_{0},s_{1},a^{*}_{1},...), these methods first augment them with alternative,
+    non-optimal action-state pairs (st,at′)(s_{t},a^{\prime}_{t}) generated by the target model πθ\
+    pi_{\theta}. Then, either these data are converted to next-state prediction triplets
+    ⟨s≤t,at,st+1⟩\left\langle s_{\leq t},a_{t},s_{t+1}\right\rangle for WM learning, or a strong
+    LLM is used to synthesize reasoning data (contrasting expert actions with alternative
+    non-optimal actions) for reflection learning. Finally, these data are combined with the expert
+    policy data (i.e., predict at+1∗a^{*}_{t+1}), and SFT is used to train on the combined dataset.
+    Since these two methods heavily rely on expert rollouts, we also consider a simpler baseline
+    that directly learns the expert policy using SFT (denoted as “Imitation Learning”). For more
+    implementation details, please refer to Sections B.3 and C.4.
+
+In addition to these training-based methods, we also evaluate ReACT-style prompting (Yao et al.,
+2023) on closed-source LLMs such as GPT-5 (Singh et al., 2025) as additional references. For a more
+high-level comparison between these methods and our approach, please see Table A1.
+
+
+Table 1: Performance on ALFWorld and τ2\tau^{2} Bench. All results are averaged over 3 runs, with a
+maximum step of 30. Our methods are highlighted in gray. *We use Qwen3-235B-A22B-instruct for
+ALFWorld, and Qwen3-235B-A22B-thinking for τ2\tau^{2} Bench.
+
+Method                   ALFWorld                         τ2\tau^{2} Bench
+                         ID         OOD        AVG        Retail     Telecom    Airline    AVG
+ReACT(Qwen2.5-7B)        16.2±\pm   6.8±\pm2.0 13.0±\pm   15.0±\pm   27.5±\pm   18.3±\pm   20.7±\pm
+                         1.0                   1.3        2.0        0.0        2.4        0.9
+ReACT(Qwen3-8B)          40.9±\pm   31.3±\pm   37.7±\pm   37.7±\pm   31.2±\pm   21.6±\pm   31.9±\pm
+                         1.5        2.6        1.8        4.9        4.2        5.2        2.9
+ReACT(Qwen3-235B*)       38.0±\pm   32.3±\pm   36.1±\pm   50.6±\pm   48.8±\pm   51.3±\pm   50.0±\pm
+                         0.4        2.7        0.7        2.7        3.8        5.5        3.4
+ReACT(GPT-4.1)           42.5±\pm   47.4±\pm   44.1±\pm   55.8±\pm   41.7±\pm   48.3±\pm   48.7±\pm
+                         1.0        0.7        0.5        2.4        4.3        2.4        4.5
+ReACT(GPT-5)             51.6±\pm   44.8±\pm   49.3±\pm   55.8±\pm   65.0±\pm   55.0±\pm   59.3±\pm
+                         1.3        0.7        0.9        7.2        5.4        4.1        0.5
+Learning from task success reward                                                          
+RFT                      34.4±\pm   34.4±\pm   34.4±\pm   43.3±\pm   33.3±\pm   13.3±\pm   33.3±\pm
+                         3.8        3.4        2.6        3.1        3.1        2.4        1.7
+Policy RL                82.1±\pm   79.2±\pm   81.0±\pm   40.8±\pm   39.2±\pm   30.0±\pm   38.0±\pm
+                         3.6        2.0        1.6        1.2        1.2        8.2        1.6
+Self-Supervised                                                                            
+WM SFT                   3.1±\pm0.0 2.1±\pm0.7 2.8±\pm0.3 32.3±\pm   24.1±\pm   26.9±\pm   27.9±\pm
+                                                          5.3        6.1        6.6        3.1
+RWML (ours)              34.4±\pm   29.2±\pm   32.6±\pm   40.8±\pm   40.5±\pm   31.3±\pm   38.8±\pm
+                         0.6        7.5        2.1        4.0        4.9        6.7        2.5
+Self-Supervised + Policy                                                                   
+RL
+WM SFT + Policy RL       76.2±\pm   82.3±\pm   80.4±\pm   40.8±\pm   45.0±\pm   30.0±\pm   40.3±\pm
+                         3.4        0.7        1.5        4.2        5.4        7.1        3.9
+RWML + Policy RL (ours)  86.7±\pm   90.1±\pm   87.9±\pm   44.2±\pm   45.8±\pm   38.3±\pm   43.7±\pm
+                         2.8        0.7        1.6        2.1        2.4        2.4        2.1
+
+
+Table 2: Comparing ours against training methods that uses expert data/strong LLMs. Imitation
+Learning, IWM, and SR are reproduced following Zhang et al. (2025a), which reports 78.1, 82.8, 82.0
+for ID and 64.1, 70.3, 71.1 for OOD on ALFWorld, respectively. Highest score is in bold, second
+highest score is in underline. Our models show competitive performance without using expert/strong
+LLM data.
+
+         Method                      ALFWorld                          τ2\tau^{2} Bench
+                             ID        OOD        AVG       Retail    Telecom    Airline      AVG
+Learning from experts/strong LLMs                                                          
+Imitation Learning       84.9±\pm   77.6±\pm   82.5±\pm   48.3±\pm   41.7±\pm   38.3±\pm   43.7±\pm
+                         1.9        3.2        2.3        1.2        3.1        2.4        1.3
+IWM                      85.6±\pm   78.1±\pm   83.1±\pm   40.8±\pm   44.2±\pm   46.7±\pm   43.3±\pm
+                         1.6        1.6        1.0        4.3        5.1        2.4        2.6
+SR                       83.9±\pm   82.3±\pm   83.3±\pm   45.0±\pm   45.8±\pm   43.3±\pm   45.0±\pm
+                         1.0        0.7        0.4        3.5        8.3        2.4        3.6
+Self-Supervised + Policy                                                                   
+RL
+WM SFT + Policy RL       76.2±\pm   82.3±\pm   80.4±\pm   40.8±\pm   45.0±\pm   30.0±\pm   40.3±\pm
+                         3.4        0.7        1.5        4.2        5.4        7.1        3.9
+RWML + Policy RL (ours)  86.7±\pm   90.1±\pm   87.9±\pm   44.2±\pm   45.8±\pm   38.3±\pm   43.7±\pm
+                         2.8        0.7        1.6        2.1        2.4        2.4        2.1
+
+Models and Training Data
+
+Following prior work (Feng et al., 2025c; Yu et al., 2025a; Zhang et al., 2025a), we train from
+Qwen2.5-7B-Instruct (Qwen et al., 2025) on ALFWorld for all methods. On τ2\tau^{2} Bench, we train
+from Qwen3-8B (Yang et al., 2025) for all methods, due to the difficulty of the benchmark and the
+enhanced tool-use capabilities from Qwen3 models.
+
+For RWML, we collect interaction data using πθ\pi_{\theta} to rollout NN trajectories per training
+task with temperature τ=1.0\tau=1.0, with N=3N=3 for ALFWorld and N=6N=6 for τ2\tau^{2} Bench.
+Then, we split all turns into triplets of ⟨s≤t,at,st+1⟩\left\langle s_{\leq t},a_{t},s_{t+1}\right\
+rangle for all tt, using 90% of the triplets for training and 10% for validation. Finally, we
+subsample “simple” training samples using a τeasy\tau_{\mathrm{easy}} that corresponds to ∼\sim30%
+of the training data for both benchmarks. In contrast to our baselines, we note that the entire
+process does not require any expert annotation/stronger LLMs nor require task success/failure
+signals. Only triplets of ⟨s≤t,at,st+1⟩\left\langle s_{\leq t},a_{t},s_{t+1}\right\rangle are
+required.
+
+Finally, for Policy RL training, we use GRPO to let the model learn to solve the tasks using
+task-success rewards with γ=1.0\gamma=1.0. For ALFWorld, we follow prior work (Yu et al., 2025a)
+and allow a maximum of 30 steps per task. For τ2\tau^{2} Bench, due to cost concerns we train and
+evaluate using Qwen3-235B-A22B-Instruct (Yang et al., 2025) as the user simulator, and allow a
+maximum step of 30 per task. For evaluation results using the official setting (GPT-4.1 as user
+simulator), please refer to Section C.3. All trainings are performed with B200 GPUs. For more
+training and hyperparameter details, please see Appendix B and Appendix C for ALFWorld and τ2\tau^
+{2} Bench, respectively.
+
+3.2 Main Results
+
+In Table 1 we demonstrate the effectiveness of RWML as a self-supervised method, trained solely
+from interaction data. Without using any expert data, strong LLMs, or task-success reward signals,
+RWML significantly improved agentic capability compared to the base model, advancing 19.6 and 7.9
+points on ALFWorld and τ2\tau^{2} Bench, respectively. When combined with task-success reward
+(i.e., Policy RL), we find our models outperform all other training-based baselines. Notably, in
+Table 2 we find (1) on ALFWorld, our models even outperform approaches that use expert annotations/
+strong LLMs; and (2) on τ2\tau^{2} Bench, our models achieve the second best overall score, despite
+not accessing any expert data/strong LLMs. This demonstrates the effectiveness of RWML, whose
+scalable, self-supervised design represents a promising direction for “mid-training” algorithms
+that can complement post-training methods such as Policy RL to further improve LLM-based agent
+performance.
+
+3.3 RWML Forgets Less
+
+In Table 3, we evaluate relative susceptibility of RL and SFT to catastrophic forgetting (
+Kirkpatrick et al., 2017; Luo et al., 2025c) in the context of world model learning. We evaluate
+our models trained on ALFWorld and τ2\tau^{2} Bench on (1) general knowledge benchmarks such as
+MMLU-Redux (Gema et al., 2025) and IFEval (Zhou et al., 2023); (2) math and STEM problems such as
+MATH-500 (Lightman et al., 2023), GSM8k (Cobbe et al., 2021), and GPQA-Diamond (Rein et al., 2023);
+and (3) coding tasks such as LiveCodeBench (Jain et al., 2024). In Table 3, we find RWML leads to
+less model forgetting compared to WM SFT on nearly all benchmarks. We believe this is consistent
+with findings from prior work (Shenfeld et al., 2025; Chen et al., 2025a), that online RL preserves
+prior knowledge and capabilities significantly better than SFT due to its on-policy nature. For
+more analysis on model parameter updates, please see Section 4.2.
+
+3.4 Ablation Studies
+
+In Table 4 we present an ablation study to investigate the contribution of different components in
+our RWML. Specifically, we consider: (1) replacing our embedding-based reward with LLM-as-a-judge (
+Zheng et al., 2023); (2) removing the data subsampling step which subsamples “too easy” samples,
+denoted as “w/o subsample”; (3) removing the RWML training entirely, denoted as “w/o training”. For
+LLM-as-a-judge, we consider two variants: prompting the LLM to compare the generated s^t+1\hat{s}_
+{t+1} with the ground truth st+1s_{t+1} and return a real-valued reward r∈[0,1]r\in[0,1], allowing
+for partial credits. We denote this as “w/ LLM-as-a-judge”. Alternatively, we prompt the LLM to
+return a binary reward of either 0.0 or 1.0. We denote this as “w/ bin(LLM-as-a-judge)”. In both
+cases, we use Qwen-3-235B-A22B-Instruct (Yang et al., 2025) as the judge model as it is a fast,
+strong, open-source LLM that can be hosted locally.
+
+Results in Table 4 show that all components of our method are important in improving model
+performance. Additionally, we find that (1) weaker models such as Qwen2.5-7B are more susceptible
+to data quality/noisy reward functions; (2) LLM-as-a-judge is unreliable and can sometimes be
+hacked during training (see Appendix D for an example); and (3) subsampling “easy” training samples
+is beneficial to further improve model performance.
+
+
+Table 3: Measuring forgetting after training on ALFWorld and τ2\tau^{2} Bench. For LiveCodeBench,
+we use questions between 2025-01-01 and 2025-04-30. Evaluation is done with temperature of 1.0 and
+max response length of 16k using EvalScope (ModelScope, 2024). Largest performance degradation (Δ\
+Delta) is highlighted in dark red. Best viewed in color.
+
+                       ALFWorld                                τ2\tau^{2} Bench
+                       Qwen2.5-7B +WM SFT        +RWML         Qwen3-8B +WM SFT       +RWML
+          MMLU-Redux   77.26      67.16(Δ\       74.88(Δ\      87.75    87.02(Δ\      87.42(Δ\
+General                           Delta-10.10)   Delta-2.38)            Delta-0.73)   Delta-0.33)
+            IFEval     71.34      68.39(Δ\       69.32(Δ\      84.46    82.07(Δ\      83.36(Δ\
+                                  Delta-2.95)    Delta-2.02)            Delta-2.39)   Delta-1.10)
+           MATH-500    75.40      71.60(Δ\       75.40(Δ\      92.80    92.80(Δ\      92.80(Δ\
+                                  Delta-3.80)    Delta0.00)             Delta0.00)    Delta0.00)
+ Math &      GSM8k     91.66      90.45(Δ\       91.28(Δ\      96.13    95.53(Δ\      95.68(Δ\
+  STEM                            Delta-1.21)    Delta-0.38)            Delta-0.60)   Delta-0.45)
+         GPQA-Diamond  32.83      25.25(Δ\       28.79(Δ\      59.09    57.07(Δ\      58.08(Δ\
+                                  Delta-7.58)    Delta-4.05)            Delta-2.02)   Delta-1.01)
+ Coding  LiveCodeBench 19.23      15.38(Δ\       16.48(Δ\      43.41    41.21(Δ\      43.41(Δ\
+                                  Delta-3.85)    Delta-2.75)            Delta-2.20)   Delta0.00)
+
+
+Table 4: Ablation studies on RWML. We use Qwen2.5-7B-Instruct on ALFWorld and Qwen3-8B on τ2\tau^
+{2} Bench. We find that stronger base models (e.g., Qwen3-8B on τ2\tau^{2} Bench) is less
+susceptible to data quality/reward hacking, and that subsampling “too easy” training samples is
+beneficial to further improve performance.
+
+        Method                     ALFWorld                          τ2\tau^{2} Bench
+                           ID        OOD        AVG       Retail    Telecom    Airline      AVG
+RWML (ours)            34.4±\pm   29.2±\pm   32.6±\pm   40.8±\pm   40.5±\pm   31.3±\pm   38.8±\pm
+                       0.6        7.5        2.1        4.0        4.9        6.7        2.5
+- w/ bin               21.9±\pm   9.9±\pm1.9 14.5±\pm   30.0±\pm   34.2±\pm   28.3±\pm   31.3±\pm
+(LLM-as-a-judge)       2.4                   1.3        5.4        1.2        4.7        2.9
+- w/ LLM-as-a-judge    3.9±\pm1.0 3.0±\pm1.2 3.6±\pm1.3 36.1±\pm   34.2±\pm   21.7±\pm   33.7±\pm
+                                                        2.5        4.3        4.7        3.9
+- w/o subsample        3.1±\pm1.3 2.6±\pm1.5 2.9±\pm1.0 39.2±\pm   40.0±\pm   28.3±\pm   36.3±\pm
+                                                        6.2        2.0        6.2        2.5
+- w/o training         16.2±\pm   6.8±\pm2.0 13.0±\pm   37.7±\pm   31.2±\pm   21.6±\pm   31.9±\pm
+                       1.0                   1.3        4.9        4.2        5.2        2.9
+
+4 Discussion
+
+
+(a) ALFWorld
+
+
+(b) τ2\tau^{2} Bench
+
+
+Figure 3: Comparing parameter change ratios per layer across models trained with different
+algorithms. We find WM SFT-trained models shows significantly more parameter change compare to RWML
+and Policy RL, potentially contributing to model forgetting in Section 3.3.
+
+4.1 Impact of RWML on Decision-Making
+
+In this section, we provide some qualitative and quantitative analyses of model’s decision-making
+behavior before and after RWML training. Qualitatively, in Figure 5 we find RWML-trained models
+produce more accurate and efficient decisions, utilizing its improved knowledge about the
+environment. For example, in ALFWorld, our model correctly predicts that a “knife” is most likely
+on “countertop” rather than other locations, completing the task within 5 steps. In τ2\tau^{2}
+Bench, it correctly considers the possibility that the airplane mode is on — a case omitted by the
+base model.
+
+Quantitatively, we find RWML effectively mitigates generating invalid/ineffective actions on both
+benchmarks, despite not being explicitly trained to do so. On ALFWorld, the proportion of invalid
+(e.g., formatting errors) or inefficient actions (e.g., “look” and “examine” actions) drops from
+59.30% to 39.45% after RWML. Similarly, on τ2\tau^{2} Bench, the proportion of invalid tool calls
+(e.g., made-up tool names or incorrect arguments) decreases from 24.90% to 8.84% per tool-call
+made. Overall, our qualitative and quantitative results demonstrate that RWML meaningfully improves
+the decision-making ability of an LLM in agentic environments.
+
+
+Figure 4: RWML training with different base models on τ2\tau^{2} Bench.
+
+4.2 Weight Change Analysis
+
+To understand the effectiveness of RWML, we also analyze how it reshapes model parameters during
+training. Following Zhu et al. (2025), we examine parameter-wise weight changes relative to the
+untrained base model, adopting the same definition and threshold η=10−3\eta=10^{-3} to identify
+major point-wise updates:
+
+ |wi^−wi|>η⋅max⁡(|wi|,|wi^|),|\hat{w_{i}}-w_{i}|>\eta\cdot\max(|w_{i}|,|\hat{w_{i}}|),
+
+where wi,wi^∈ℝw_{i},\hat{w_{i}}\in\mathbb{R} are finite, non-zero scalars of models’ weight points
+before and after tuning.
+
+For each layer, we compute the ratio of parameters that undergo major updates. Results for Qwen3-8B
+on τ2\tau^{2}-Bench and Qwen2.5-7B-Instruct on ALFWorld are shown in Figure 3. Full results are in
+Appendix E. A consistent pattern emerges that RWML induces notably fewer parameter changes across
+layers compared to WM SFT, indicating that it encodes task-relevant information with a smaller and
+more targeted set of updates (also see Appendix E). This suggests that RWML learns in a more
+parameter-efficient and structurally conservative manner, avoiding widespread modifications to the
+pretrained representation space.
+
+Importantly, this compact update behavior also help explain why RWML integrates well with
+subsequent policy learning, as shown in Figure 3. When followed by Policy RL, the resulting
+weight-change ratios remain remarkably close to those of Policy RL applied directly to the base
+model. In contrast, models initialized with WM SFT exhibit substantially higher change ratios after
+policy optimization, reflecting stronger parametric interference. These observations suggest that
+RWML maintains a parameter landscape more compatible with policy learning, reducing conflict and
+redundancy during post-training.
+
+Overall, we find this parameter update behavior of RWML is consistent across both benchmarks and
+largely invariant to different transformer components, including attention (Q/K/V/O) and MLP
+projection layers (see Appendix E). The consistently lower change ratio of RWML-trained models
+compared to that of WM SFT also aligns with our findings in Section 3.3, which shows that RWML
+better mitigates catastrophic forgetting. These results provide a perspective distinct from the
+conventional SFT-then-RL paradigm: applying RL in both “mid-training” and post-training stages
+appears to produce more stable and consistent parameter updates, and may help explain the improved
+performance.
+
+4.3 Impact of Base Model Capability
+
+On the challenging τ2\tau^{2} bench, we find the ability to learn and transfer world model
+knowledge from RWML to decision-making is dependent on the capability of the base model. In Figure 
+4, we perform RWML training with three different base models: Qwen2.5-7B, Qwen3-8B, and
+Qwen3-30B-A3B^3^3 3 We use Qwen3-30B-A3B-Thinking-2507, an enhanced version of Qwen3-30B-A3B
+post-trained with additional reasoning and agent data, leaving less room for further improvement..
+We find that weaker models like Qwen2.5-7B struggle to transfer world knowledge to decision-making
+on the challenging τ2\tau^{2} Bench, while stronger models (Qwen3-8B and Qwen3-30B-A3B) show
+substantial gains, approaching the performance of Qwen3-235B-A22B-Thinking-2507. This suggests that
+RWML is most effective for (sufficiently) strong base models. We leave improving transfer abilities
+for weaker models to future work.
+
+Refer to caption
+Figure 5: After RWML, models produce more accurate and efficient decisions by leveraging its
+improved knowledge of the environment.
+
+5 Related Work
+
+Training Decision-Making Agents
+
+LLM-based agents (Yao et al., 2023; Shinn et al., 2023) has seen wide applications in domains such
+as interactive gaming (Wang et al., 2023; Feng et al., 2025c); software engineering (Jimenez et
+al., 2024; Yang et al., 2024); computer, phone, browser-use (Xie et al., 2024; Rawles et al., 2025;
+Zhou et al., 2024; Yu et al., 2025b), and more. Many early work on training language agents
+primarily rely on imitation learning (i.e., SFT), using either demonstrations from human experts (
+Deng et al., 2023; Chen et al., 2025b; Wang et al., 2025a) or trajectories synthesized from
+stronger LLMs often accompanied with a set of manually designed workflows/heuristics (Zeng et al.,
+2023; Chen et al., 2024; Su et al., 2025; Xu et al., 2025). While high-quality SFT data offers
+dense supervision signals, it is difficult to scale due to the high cost of collecting such
+demonstrations. Alternatively, recent efforts in RL bypasses the need for step-by-step
+demonstrations and instead directly learn from terminal rewards (i.e., task success) through trail
+and error. Recent work include Feng et al. (2025a); Tan et al. (2025); Luo et al. (2025a); Jin et
+al. (2025); Wang et al. (2025b), often powered by algorithms such as PPO (Schulman et al., 2017)
+and GRPO (Shao et al., 2024). However, designing task-success reward functions in complex
+environments still requires substantial human expertise (Chowdhury et al., 2024; Xie et al., 2024;
+Gou et al., 2025), limiting scalability. Together, these works motivate the need for more scalable
+training methods to bridge the gap between next-token-prediction pretrained models and their
+downstream applications in long-horizon agentic environments.
+
+Training World Models
+
+Beyond task-success rewards, real-world interaction data contains rich information that can be used
+to help decision-making. Early examples include Dyna algorithms (Sutton, 1991) which separately
+trains a world model to combine model-based with model-free learning for efficient policy training.
+Recent applications on LLM agents either train a separate world model to support inference-time
+algorithms such as MCTS (Hao et al., 2023; Wu et al., 2025; Chae et al., 2025; Gu et al., 2025), or
+jointly learn world models and policies within a single model to improve generalization (FAIR
+CodeGen team et al., 2025; Zhang et al., 2025a; Yu et al., 2025a; Yu et al., 2025c; Feng et al.,
+2025b; Li et al., 2025; Qian et al., 2026). However, these approaches either require expensive
+training/inference of multiple models, or rely on additional annotations from experts/strong LLMs
+during world model learning. We propose RWML as a scalable, self-supervised method to improve the
+world knowledge and decision-making ability of a single model.
+
+6 Conclusion
+
+We propose RWML, a scalable, self-supervised method that enhances the environment understanding and
+decision-making ability of LLM-based agents prior to downstream RL with task-success reward.
+Without expert/strong LLM annotations or task-success signals, RWML trains the LLM as an
+action-conditioned world model by aligning the simulated next states with observed environment
+states in a pre-trained embedding space. We evaluate RWML on two long-horizon agent benchmarks,
+ALFWorld and τ2\tau^{2} Bench, and find significant performance gains while using only interaction
+data. When combined with task-success rewards in policy RL, our method outperforms direct policy RL
+on both benchmarks and matches training with expert data. We believe our work opens up new avenues
+for scalable, self-supervised training methods to further advance LLM-based agents in the era of
+agentic RL.
+
+7 Impact Statements
+
+This paper presents work that aims to advance the agentic capabilities of LLM-based agents through
+a scalable, self-supervised method. While most LLM-based agent methods are not designed for
+unethical use, their applications and data collection processes may still pose risks of misuse. In
+this work, we propose RWML, which improves world modeling in LLM-based agents using interaction
+data without expert annotations or stronger LLMs, and is trained exclusively on established,
+isolated benchmarks without real-world impact. We believe that developing guardrails, such as
+safety filters (OpenAI, 2022; Inan et al., 2023; Luo et al., 2025b), and using isolated
+environments like sandboxes (AgentInfra Team, 2025; Pan et al., 2025), is essential for safe AI
+agent research. We do not condone the use of RWML or its constituent methods for any unlawful or
+morally unjust purposes.
+
+References
+
+  • AgentInfra Team (2025) AgentInfra Team All-in-one agent sandbox environment. External Links: 
+    Link Cited by: §7.
+  • Barres et al. (2025) V. Barres, H. Dong, S. Ray, X. Si, and K. Narasimhan τ2\tau^{2}-Bench:
+    evaluating conversational agents in a dual-control environment. External Links: 2506.07982,
+    Link Cited by: Appendix C, §2.1, §2.2, §3.1.
+  • Bennett (2023) M.S. Bennett A brief history of intelligence: evolution, ai, and the five
+    breakthroughs that made our brains. HarperCollins. External Links: ISBN 9780063286368, Link 
+    Cited by: §1.
+  • Brown et al. (2020) T. B. Brown, B. Mann, N. Ryder, M. Subbiah, J. Kaplan, P. Dhariwal, A.
+    Neelakantan, P. Shyam, G. Sastry, A. Askell, S. Agarwal, A. Herbert-Voss, G. Krueger, T.
+    Henighan, R. Child, A. Ramesh, D. M. Ziegler, J. Wu, C. Winter, C. Hesse, M. Chen, E. Sigler,
+    M. Litwin, S. Gray, B. Chess, J. Clark, C. Berner, S. McCandlish, A. Radford, I. Sutskever, and
+    D. Amodei Language models are few-shot learners. External Links: 2005.14165, Link Cited by: §1.
+  • Chae et al. (2025) H. Chae, N. Kim, K. T. Ong, M. Gwak, G. Song, J. Kim, S. Kim, D. Lee, and J.
+    Yeo Web agents with world models: learning and leveraging environment dynamics in web
+    navigation. External Links: 2410.13232, Link Cited by: §5.
+  • Chen et al. (2025a) H. Chen, N. Razin, K. Narasimhan, and D. Chen Retaining by doing: the role
+    of on-policy data in mitigating forgetting. External Links: 2510.18874, Link Cited by: §3.3.
+  • Chen et al. (2025b) W. Chen, J. Cui, J. Hu, Y. Qin, J. Fang, Y. Zhao, C. Wang, J. Liu, G. Chen,
+    Y. Huo, Y. Yao, Y. Lin, Z. Liu, and M. Sun GUICourse: from general vision language models to
+    versatile gui agents. External Links: 2406.11317, Link Cited by: §5.
+  • Chen et al. (2024) Z. Chen, K. Liu, Q. Wang, W. Zhang, J. Liu, D. Lin, K. Chen, and F. Zhao 
+    Agent-flan: designing data and methods of effective agent tuning for large language models. 
+    External Links: 2403.12881, Link Cited by: §5.
+  • Chowdhury et al. (2024) N. Chowdhury, J. Aung, C. J. Shern, O. Jaffe, D. Sherburn, G. Starace,
+    E. Mays, R. Dias, M. Aljubeh, M. Glaese, C. E. Jimenez, J. Yang, L. Ho, T. Patwardhan, K. Liu,
+    and A. Madry Introducing SWE-bench verified. External Links: Link Cited by: §5.
+  • Cobbe et al. (2021) K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M.
+    Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman Training verifiers to
+    solve math word problems. External Links: 2110.14168, Link Cited by: §3.3.
+  • Craik (1944) K. J. W. Craik The nature of explanation. Philosophy 19 (73), pp. 173–174. Cited
+    by: §1.
+  • Daw and Dayan (2014) N. D. Daw and P. Dayan The algorithmic anatomy of model-based evaluation. 
+    Philosophical Transactions of the Royal Society B: Biological Sciences 369 (1655), pp. 20130478
+    . Cited by: §1.
+  • Daw et al. (2005) N. D. Daw, Y. Niv, and P. Dayan Uncertainty-based competition between
+    prefrontal and dorsolateral striatal systems for behavioral control. Nature Neuroscience 8, 
+    pp. 1704–1711. External Links: Link Cited by: §1.
+  • DeepSeek-AI et al. (2025) DeepSeek-AI, D. Guo, D. Yang, H. Zhang, J. Song, R. Zhang, R. Xu, Q.
+    Zhu, S. Ma, P. Wang, X. Bi, X. Zhang, X. Yu, Y. Wu, Z. F. Wu, Z. Gou, Z. Shao, Z. Li, Z. Gao,
+    A. Liu, B. Xue, B. Wang, B. Wu, B. Feng, C. Lu, C. Zhao, C. Deng, C. Zhang, C. Ruan, D. Dai, D.
+    Chen, D. Ji, E. Li, F. Lin, F. Dai, F. Luo, G. Hao, G. Chen, G. Li, H. Zhang, H. Bao, H. Xu, H.
+    Wang, H. Ding, H. Xin, H. Gao, H. Qu, H. Li, J. Guo, J. Li, J. Wang, J. Chen, J. Yuan, J. Qiu,
+    J. Li, J. L. Cai, J. Ni, J. Liang, J. Chen, K. Dong, K. Hu, K. Gao, K. Guan, K. Huang, K. Yu,
+    L. Wang, L. Zhang, L. Zhao, L. Wang, L. Zhang, L. Xu, L. Xia, M. Zhang, M. Zhang, M. Tang, M.
+    Li, M. Wang, M. Li, N. Tian, P. Huang, P. Zhang, Q. Wang, Q. Chen, Q. Du, R. Ge, R. Zhang, R.
+    Pan, R. Wang, R. J. Chen, R. L. Jin, R. Chen, and et al. DeepSeek-r1: incentivizing reasoning
+    capability in llms via reinforcement learning. External Links: 2501.12948, Link Cited by: §1,
+    §2.2.
+  • Deng et al. (2023) X. Deng, Y. Gu, B. Zheng, S. Chen, S. Stevens, B. Wang, H. Sun, and Y. Su 
+    Mind2Web: towards a generalist agent for the web. External Links: 2306.06070, Link Cited by: §1
+    , §5.
+  • FAIR CodeGen team et al. (2025) FAIR CodeGen team, J. Copet, Q. Carbonneaux, G. Cohen, J.
+    Gehring, J. Kahn, J. Kossen, F. Kreuk, E. McMilin, M. Meyer, Y. Wei, D. Zhang, K. Zheng, J.
+    Armengol-Estapé, P. Bashiri, M. Beck, P. Chambon, A. Charnalia, C. Cummins, J. Decugis, Z. V.
+    Fisches, F. Fleuret, F. Gloeckle, A. Gu, M. Hassid, D. Haziza, B. Y. Idrissi, C. Keller, R.
+    Kindi, H. Leather, G. Maimon, A. Markosyan, F. Massa, P. Mazaré, V. Mella, N. Murray, K.
+    Muzumdar, P. O’Hearn, M. Pagliardini, D. Pedchenko, T. Remez, V. Seeker, M. Selvi, O. Sultan,
+    S. Wang, L. Wehrstedt, O. Yoran, L. Zhang, T. Cohen, Y. Adi, and G. Synnaeve CWM: an
+    open-weights llm for research on code generation with world models. External Links: 2510.02387,
+    Link Cited by: §5.
+  • Feng et al. (2025a) J. Feng, S. Huang, X. Qu, G. Zhang, Y. Qin, B. Zhong, C. Jiang, J. Chi, and
+    W. Zhong ReTool: reinforcement learning for strategic tool use in llms. External Links: 
+    2504.11536, Link Cited by: §5.
+  • Feng et al. (2025b) J. Feng, Y. Zhang, C. Zhang, Y. Lu, S. Liu, and M. Wang Web world models. 
+    External Links: 2512.23676, Link Cited by: §5.
+  • Feng et al. (2025c) L. Feng, Z. Xue, T. Liu, and B. An Group-in-group policy optimization for
+    llm agent training. External Links: 2505.10978, Link Cited by: §B.2, item 1, §3.1, §5.
+  • Gema et al. (2025) A. P. Gema, J. O. J. Leang, G. Hong, A. Devoto, A. C. M. Mancino, R. Saxena,
+    X. He, Y. Zhao, X. Du, M. R. G. Madani, C. Barale, R. McHardy, J. Harris, J. Kaddour, E. van
+    Krieken, and P. Minervini Are we done with mmlu?. External Links: 2406.04127, Link Cited by:
+    §3.3.
+  • Gou et al. (2025) B. Gou, Z. Huang, Y. Ning, Y. Gu, M. Lin, W. Qi, A. Kopanev, B. Yu, B. J.
+    Gutiérrez, Y. Shu, C. H. Song, J. Wu, S. Chen, H. N. Moussa, T. Zhang, J. Xie, Y. Li, T. Xue,
+    Z. Liao, K. Zhang, B. Zheng, Z. Cai, V. Rozgic, M. Ziyadi, H. Sun, and Y. Su Mind2Web 2:
+    evaluating agentic search with agent-as-a-judge. External Links: 2506.21506, Link Cited by: §5.
+  • Gu et al. (2025) Y. Gu, K. Zhang, Y. Ning, B. Zheng, B. Gou, T. Xue, C. Chang, S. Srivastava,
+    Y. Xie, P. Qi, H. Sun, and Y. Su Is your llm secretly a world model of the internet?
+    model-based planning for web agents. External Links: 2411.06559, Link Cited by: §5.
+  • Hao et al. (2023) S. Hao, Y. Gu, H. Ma, J. J. Hong, Z. Wang, D. Z. Wang, and Z. Hu Reasoning
+    with language model is planning with world model. External Links: 2305.14992, Link Cited by: §1
+    , §5.
+  • Hu and Shu (2023) Z. Hu and T. Shu Language models, agent models, and world models: the law for
+    machine reasoning and planning. External Links: 2312.05230, Link Cited by: §1.
+  • Inan et al. (2023) H. Inan, K. Upasani, J. Chi, R. Rungta, K. Iyer, Y. Mao, M. Tontchev, Q. Hu,
+    B. Fuller, D. Testuggine, and M. Khabsa Llama guard: llm-based input-output safeguard for
+    human-ai conversations. External Links: 2312.06674, Link Cited by: §7.
+  • Jain et al. (2024) N. Jain, K. Han, A. Gu, W. Li, F. Yan, T. Zhang, S. Wang, A. Solar-Lezama,
+    K. Sen, and I. Stoica LiveCodeBench: holistic and contamination free evaluation of large
+    language models for code. External Links: 2403.07974, Link Cited by: §3.3.
+  • Jimenez et al. (2024) C. E. Jimenez, J. Yang, A. Wettig, S. Yao, K. Pei, O. Press, and K.
+    Narasimhan SWE-bench: can language models resolve real-world github issues?. External Links: 
+    2310.06770, Link Cited by: §5.
+  • Jin et al. (2025) B. Jin, H. Zeng, Z. Yue, J. Yoon, S. Arik, D. Wang, H. Zamani, and J. Han 
+    Search-r1: training llms to reason and leverage search engines with reinforcement learning. 
+    arXiv preprint arXiv:2503.09516. Cited by: §5.
+  • Karpukhin et al. (2020) V. Karpukhin, B. Oğuz, S. Min, P. Lewis, L. Wu, S. Edunov, D. Chen, and
+    W. Yih Dense passage retrieval for open-domain question answering. External Links: 2004.04906,
+    Link Cited by: §2.2.
+  • Kirkpatrick et al. (2017) J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins,
+    A. A. Rusu, K. Milan, J. Quan, T. Ramalho, A. Grabska-Barwinska, D. Hassabis, C. Clopath, D.
+    Kumaran, and R. Hadsell Overcoming catastrophic forgetting in neural networks. Proceedings of
+    the National Academy of Sciences 114 (13), pp. 3521–3526. External Links: ISSN 1091-6490, Link,
+    Document Cited by: §3.3.
+  • Lample and Conneau (2019) G. Lample and A. Conneau Cross-lingual language model pretraining. 
+    External Links: 1901.07291, Link Cited by: §1.
+  • LeCun (2022) Y. LeCun A path towards autonomous machine intelligence version. External Links: 
+    Link Cited by: §1.
+  • Li et al. (2025) Y. Li, H. Wang, J. Qiu, Z. Yin, D. Zhang, C. Qian, Z. Li, P. Ma, G. Chen, H.
+    Ji, and M. Wang From word to world: can large language models be implicit text-based world
+    models?. External Links: 2512.18832, Link Cited by: §5.
+  • Lightman et al. (2023) H. Lightman, V. Kosaraju, Y. Burda, H. Edwards, B. Baker, T. Lee, J.
+    Leike, J. Schulman, I. Sutskever, and K. Cobbe Let’s verify step by step. arXiv preprint
+    arXiv:2305.20050. Cited by: §3.3.
+  • Lin (2004) C. Lin ROUGE: a package for automatic evaluation of summaries. In Text Summarization
+    Branches Out, Barcelona, Spain, pp. 74–81. External Links: Link Cited by: §C.1.
+  • Liu et al. (2025) X. Liu, H. Yu, H. Zhang, Y. Xu, X. Lei, H. Lai, Y. Gu, H. Ding, K. Men, K.
+    Yang, S. Zhang, X. Deng, A. Zeng, Z. Du, C. Zhang, S. Shen, T. Zhang, Y. Su, H. Sun, M. Huang,
+    Y. Dong, and J. Tang AgentBench: evaluating llms as agents. External Links: 2308.03688, Link 
+    Cited by: §1.
+  • Luo et al. (2025a) R. Luo, L. Wang, W. He, and X. Xia GUI-r1: a generalist r1-style
+    vision-language action model for gui agents. arXiv preprint arXiv:2504.10458. Cited by: §5.
+  • Luo et al. (2025b) W. Luo, S. Dai, X. Liu, S. Banerjee, H. Sun, M. Chen, and C. Xiao AGrail: a
+    lifelong agent guardrail with effective and adaptive safety detection. External Links: 
+    2502.11448, Link Cited by: §7.
+  • Luo et al. (2025c) Y. Luo, Z. Yang, F. Meng, Y. Li, J. Zhou, and Y. Zhang An empirical study of
+    catastrophic forgetting in large language models during continual fine-tuning. External Links: 
+    2308.08747, Link Cited by: §3.3.
+  • ModelScope (2024) ModelScope EvalScope: evaluation framework for large models. External Links: 
+    Link Cited by: Table 3, Table 3.
+  • OpenAI and et al. (2024) OpenAI and et al. OpenAI o1 system card. External Links: 2412.16720,
+    Link Cited by: §1.
+  • OpenAI (2022) OpenAI New and improved content moderation tooling. Note: https://openai.com/
+    index/new-and-improved-content-moderation-tooling/Accessed: 2025-05-13 Cited by: §7.
+  • Pan et al. (2025) J. Pan, X. Wang, G. Neubig, N. Jaitly, H. Ji, A. Suhr, and Y. Zhang Training
+    software engineering agents and verifiers with swe‑gym. In Proceedings of the 42nd
+    International Conference on Machine Learning (ICML 2025), Note: arXiv:2412.21139, accepted at
+    ICML 2025 External Links: Link Cited by: §7.
+  • Qian et al. (2026) C. Qian, E. C. Acikgoz, B. Li, X. Chen, Y. Zhang, B. He, Q. Luo, D.
+    Hakkani-Tür, G. Tur, Y. Li, et al. Current agents fail to leverage world model as tool for
+    foresight. arXiv preprint arXiv:2601.03905. Cited by: §5.
+  • Qwen et al. (2025) Qwen, :, A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu,
+    F. Huang, H. Wei, H. Lin, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Lin, K. Dang,
+    K. Lu, K. Bao, K. Yang, L. Yu, M. Li, M. Xue, P. Zhang, Q. Zhu, R. Men, R. Lin, T. Li, T. Tang,
+    T. Xia, X. Ren, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Wan, Y. Liu, Z. Cui, Z. Zhang, and Z. Qiu 
+    Qwen2.5 technical report. External Links: 2412.15115, Link Cited by: §3.1.
+  • Rawles et al. (2025) C. Rawles, S. Clinckemaillie, Y. Chang, J. Waltz, G. Lau, M. Fair, A. Li,
+    W. Bishop, W. Li, F. Campbell-Ajala, D. Toyama, R. Berry, D. Tyamagundlu, T. Lillicrap, and O.
+    Riva AndroidWorld: a dynamic benchmarking environment for autonomous agents. External Links: 
+    2405.14573, Link Cited by: §2.2, §5.
+  • Rein et al. (2023) D. Rein, B. L. Hou, A. C. Stickland, J. Petty, R. Y. Pang, J. Dirani, J.
+    Michael, and S. R. Bowman GPQA: a graduate-level google-proof q&a benchmark. External Links: 
+    2311.12022, Link Cited by: §3.3.
+  • Rozière et al. (2024) B. Rozière, J. Gehring, F. Gloeckle, S. Sootla, I. Gat, X. E. Tan, Y.
+    Adi, J. Liu, R. Sauvestre, T. Remez, J. Rapin, A. Kozhevnikov, I. Evtimov, J. Bitton, M. Bhatt,
+    C. C. Ferrer, A. Grattafiori, W. Xiong, A. Défossez, J. Copet, F. Azhar, H. Touvron, L. Martin,
+    N. Usunier, T. Scialom, and G. Synnaeve Code llama: open foundation models for code. External
+    Links: 2308.12950, Link Cited by: §1.
+  • Schulman et al. (2017) J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov Proximal
+    policy optimization algorithms. External Links: 1707.06347, Link Cited by: §5.
+  • Shao et al. (2024) Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. K.
+    Li, Y. Wu, and D. Guo DeepSeekMath: pushing the limits of mathematical reasoning in open
+    language models. External Links: 2402.03300, Link Cited by: §2.2, §5.
+  • Shenfeld et al. (2025) I. Shenfeld, J. Pari, and P. Agrawal RL’s razor: why online
+    reinforcement learning forgets less. External Links: 2509.04259, Link Cited by: §3.3.
+  • Shinn et al. (2023) N. Shinn, F. Cassano, E. Berman, A. Gopinath, K. Narasimhan, and S. Yao 
+    Reflexion: language agents with verbal reinforcement learning. External Links: 2303.11366, Link
+    Cited by: §5.
+  • Shridhar et al. (2021) M. Shridhar, X. Yuan, M. Côté, Y. Bisk, A. Trischler, and M. Hausknecht 
+    ALFWorld: aligning text and embodied environments for interactive learning. External Links: 
+    2010.03768, Link Cited by: Appendix B, §2.1, §3.1.
+  • Singh et al. (2025) A. Singh, A. Fry, A. Perelman, A. Tart, A. Ganesh, A. El-Kishky, A.
+    McLaughlin, A. Low, A. Ostrow, A. Ananthram, A. Nathan, A. Luo, A. Helyar, A. Madry, A.
+    Efremov, A. Spyra, A. Baker-Whitcomb, A. Beutel, A. Karpenko, A. Makelov, A. Neitz, A. Wei, A.
+    Barr, A. Kirchmeyer, A. Ivanov, A. Christakis, A. Gillespie, A. Tam, A. Bennett, A. Wan, A.
+    Huang, A. M. Sandjideh, A. Yang, A. Kumar, A. Saraiva, A. Vallone, A. Gheorghe, A. G. Garcia,
+    A. Braunstein, A. Liu, A. Schmidt, A. Mereskin, and et al. OpenAI gpt-5 system card. External
+    Links: 2601.03267, Link Cited by: §3.1.
+  • Snell et al. (2024) C. Snell, J. Lee, K. Xu, and A. Kumar Scaling llm test-time compute
+    optimally can be more effective than scaling model parameters. External Links: 2408.03314, Link
+    Cited by: §2.2.
+  • Su et al. (2025) H. Su, R. Sun, J. Yoon, P. Yin, T. Yu, and S. O. Arik Learn-by-interact: a
+    data-centric framework for self-adaptive agents in realistic environments. External Links: 
+    2501.10893, Link Cited by: §5.
+  • Sun et al. (2025) Y. Sun, Y. Cao, P. Huang, H. Bai, H. Hajishirzi, N. Dziri, and D. Song RL
+    grokking recipe: how does rl unlock and transfer new algorithms in llms?. External Links: 
+    2509.21016, Link Cited by: §2.2.
+  • Sutton (1991) R. S. Sutton Dyna, an integrated architecture for learning, planning, and
+    reacting. SIGART Bull. 2 (4), pp. 160–163. External Links: ISSN 0163-5719, Link, Document Cited
+    by: §5.
+  • Tan et al. (2025) S. Tan, M. Luo, C. Cai, T. Venkat, K. Montgomery, A. Hao, T. Wu, A. Balyan,
+    M. Roongta, C. Wang, L. E. Li, R. A. Popa, and I. Stoica RLLM: a framework for post-training
+    language agents. Note: https://pretty-radio-b75.notion.site/
+    rLLM-A-Framework-for-Post-Training-Language-Agents-21b81902c146819db63cd98a54ba5f31Notion Blog 
+    Cited by: §5.
+  • Tolman (1948) E. C. Tolman Cognitive maps in rats and men.. Psychological review 55 (4), 
+    pp. 189. Cited by: §1.
+  • Touvron et al. (2023) H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N.
+    Bashlykov, S. Batra, P. Bhargava, S. Bhosale, D. Bikel, L. Blecher, C. C. Ferrer, M. Chen, G.
+    Cucurull, D. Esiobu, J. Fernandes, J. Fu, W. Fu, B. Fuller, C. Gao, V. Goswami, N. Goyal, A.
+    Hartshorn, S. Hosseini, R. Hou, H. Inan, M. Kardas, V. Kerkez, M. Khabsa, I. Kloumann, A.
+    Korenev, P. S. Koura, M. Lachaux, T. Lavril, J. Lee, D. Liskovich, Y. Lu, Y. Mao, X. Martinet,
+    T. Mihaylov, P. Mishra, I. Molybog, Y. Nie, A. Poulton, J. Reizenstein, R. Rungta, K. Saladi,
+    A. Schelten, R. Silva, E. M. Smith, R. Subramanian, X. E. Tan, B. Tang, R. Taylor, A. Williams,
+    J. X. Kuan, P. Xu, Z. Yan, I. Zarov, Y. Zhang, A. Fan, M. Kambadur, S. Narang, A. Rodriguez, R.
+    Stojnic, S. Edunov, and T. Scialom Llama 2: open foundation and fine-tuned chat models. 
+    External Links: 2307.09288, Link Cited by: item 1.
+  • Wang et al. (2023) G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. Fan, and A.
+    Anandkumar Voyager: an open-ended embodied agent with large language models. External Links: 
+    2305.16291, Link Cited by: §5.
+  • Wang et al. (2025a) X. Wang, B. Wang, D. Lu, J. Yang, T. Xie, J. Wang, J. Deng, X. Guo, Y. Xu,
+    C. H. Wu, Z. Shen, Z. Li, R. Li, X. Li, J. Chen, B. Zheng, P. Li, F. Lei, R. Cao, Y. Fu, D.
+    Shin, M. Shin, J. Hu, Y. Wang, J. Chen, Y. Ye, D. Zhang, D. Du, H. Hu, H. Chen, Z. Zhou, H.
+    Yao, Z. Chen, Q. Gu, Y. Wang, H. Wang, D. Yang, V. Zhong, F. Sung, Y. Charles, Z. Yang, and T.
+    Yu OpenCUA: open foundations for computer-use agents. External Links: 2508.09123, Link Cited
+    by: §5.
+  • Wang et al. (2025b) Z. Wang, K. Wang, Q. Wang, P. Zhang, L. Li, Z. Yang, X. Jin, K. Yu, M. N.
+    Nguyen, L. Liu, E. Gottlieb, Y. Lu, K. Cho, J. Wu, L. Fei-Fei, L. Wang, Y. Choi, and M. Li 
+    RAGEN: understanding self-evolution in llm agents via multi-turn reinforcement learning. 
+    External Links: 2504.20073, Link Cited by: §5.
+  • Wei et al. (2022) J. Wei, Y. Tay, R. Bommasani, C. Raffel, B. Zoph, S. Borgeaud, D. Yogatama,
+    M. Bosma, D. Zhou, D. Metzler, E. H. Chi, T. Hashimoto, O. Vinyals, P. Liang, J. Dean, and W.
+    Fedus Emergent abilities of large language models. External Links: 2206.07682, Link Cited by:
+    §1.
+  • Wu et al. (2025) J. Wu, S. Yin, N. Feng, and M. Long RLVR-world: training world models with
+    reinforcement learning. External Links: 2505.13934, Link Cited by: §5.
+  • Xie et al. (2024) T. Xie, D. Zhang, J. Chen, X. Li, S. Zhao, R. Cao, T. J. Hua, Z. Cheng, D.
+    Shin, F. Lei, Y. Liu, Y. Xu, S. Zhou, S. Savarese, C. Xiong, V. Zhong, and T. Yu OSWorld:
+    benchmarking multimodal agents for open-ended tasks in real computer environments. External
+    Links: 2404.07972, Link Cited by: §2.2, §5.
+  • Xu et al. (2025) Y. Xu, Z. Wang, J. Wang, D. Lu, T. Xie, A. Saha, D. Sahoo, T. Yu, and C. Xiong
+    Aguvis: unified pure vision agents for autonomous gui interaction. External Links: 2412.04454,
+    Link Cited by: §5.
+  • Yang et al. (2025) A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C.
+    Huang, C. Lv, C. Zheng, D. Liu, F. Zhou, F. Huang, F. Hu, H. Ge, H. Wei, H. Lin, J. Tang, J.
+    Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Zhou, J. Lin, K. Dang, K. Bao, K. Yang, L.
+    Yu, L. Deng, M. Li, M. Xue, M. Li, P. Zhang, P. Wang, Q. Zhu, R. Men, R. Gao, S. Liu, S. Luo,
+    T. Li, T. Tang, W. Yin, X. Ren, X. Wang, X. Zhang, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Zhang,
+    Y. Wan, Y. Liu, Z. Wang, Z. Cui, Z. Zhang, Z. Zhou, and Z. Qiu Qwen3 technical report. External
+    Links: 2505.09388, Link Cited by: §3.1, §3.1, §3.4.
+  • Yang et al. (2024) J. Yang, C. E. Jimenez, A. Wettig, K. Lieret, S. Yao, K. Narasimhan, and O.
+    Press SWE-agent: agent-computer interfaces enable automated software engineering. External
+    Links: 2405.15793, Link Cited by: §5.
+  • Yao et al. (2023) S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao ReAct:
+    synergizing reasoning and acting in language models. External Links: 2210.03629, Link Cited by:
+    §1, §3.1, §5.
+  • Yu et al. (2025a) X. Yu, B. Peng, M. Galley, H. Cheng, Q. Wu, J. Kulkarni, S. Nath, Z. Yu, and
+    J. Gao Dyna-mind: learning to simulate from experience for better ai agents. External Links: 
+    2510.09577, Link Cited by: §B.2, item 1, §3.1, §3.1, §5.
+  • Yu et al. (2025b) X. Yu, B. Peng, V. Vajipey, H. Cheng, M. Galley, J. Gao, and Z. Yu ExACT:
+    teaching ai agents to explore with reflective-mcts and exploratory learning. External Links: 
+    2410.02052, Link Cited by: §5.
+  • Yu et al. (2025c) X. Yu, B. Peng, R. Xu, M. Galley, H. Cheng, S. Nath, J. Gao, and Z. Yu 
+    Dyna-think: synergizing reasoning, acting, and world model simulation in ai agents. External
+    Links: 2506.00320, Link Cited by: Table A1, Table A1, §B.3, §1, item 3, §5.
+  • Zelikman et al. (2022) E. Zelikman, Y. Wu, J. Mu, and N. D. Goodman STaR: bootstrapping
+    reasoning with reasoning. External Links: 2203.14465, Link Cited by: item 1.
+  • Zeng et al. (2023) A. Zeng, M. Liu, R. Lu, B. Wang, X. Liu, Y. Dong, and J. Tang AgentTuning:
+    enabling generalized agent abilities for llms. External Links: 2310.12823, Link Cited by: §5.
+  • Zhang et al. (2025a) K. Zhang, X. Chen, B. Liu, T. Xue, Z. Liao, Z. Liu, X. Wang, Y. Ning, Z.
+    Chen, X. Fu, J. Xie, Y. Sun, B. Gou, Q. Qi, Z. Meng, J. Yang, N. Zhang, X. Li, A. Shah, D.
+    Huynh, H. Li, Z. Yang, S. Cao, L. Jang, S. Zhou, J. Zhu, H. Sun, J. Weston, Y. Su, and Y. Wu 
+    Agent learning via early experience. External Links: 2510.08558, Link Cited by: Table A1, Table
+    A1, §B.3, §1, item 3, §3.1, Table 2, Table 2, §5.
+  • Zhang et al. (2025b) Y. Zhang, M. Li, D. Long, X. Zhang, H. Lin, B. Yang, P. Xie, A. Yang, D.
+    Liu, J. Lin, F. Huang, and J. Zhou Qwen3 embedding: advancing text embedding and reranking
+    through foundation models. External Links: 2506.05176, Link Cited by: §B.1, §C.1, §2.2.
+  • Zheng et al. (2023) L. Zheng, W. Chiang, Y. Sheng, S. Zhuang, Z. Wu, Y. Zhuang, Z. Lin, Z. Li,
+    D. Li, E. P. Xing, H. Zhang, J. E. Gonzalez, and I. Stoica Judging llm-as-a-judge with mt-bench
+    and chatbot arena. External Links: 2306.05685, Link Cited by: §3.4.
+  • Zhou et al. (2023) J. Zhou, T. Lu, S. Mishra, S. Brahma, S. Basu, Y. Luan, D. Zhou, and L. Hou 
+    Instruction-following evaluation for large language models. External Links: 2311.07911, Link 
+    Cited by: §3.3.
+  • Zhou et al. (2024) S. Zhou, F. F. Xu, H. Zhu, X. Zhou, R. Lo, A. Sridhar, X. Cheng, T. Ou, Y.
+    Bisk, D. Fried, U. Alon, and G. Neubig WebArena: a realistic web environment for building
+    autonomous agents. External Links: 2307.13854, Link Cited by: §2.2, §5.
+  • Zhu et al. (2025) H. Zhu, Z. Zhang, H. Huang, D. Su, Z. Liu, J. Zhao, I. Fedorov, H.
+    Pirsiavash, J. Lee, D. Z. Pan, Z. Wang, Y. Tian, and K. S. Tai The path not taken: RLVR
+    provably learns off the principals. In NeurIPS 2025 Workshop on Efficient Reasoning, External
+    Links: Link Cited by: §4.2.
+
+Appendix A LLM Usage
+
+This work used LLMs as general-purpose writing assistants to improve the grammar and clarity of the
+paper. We did not use LLMs to generate any research ideas, automate experiments, or analyze
+results.
+
+
+Table A1: Comparing RWML to related methods. Expert Actions indicates if the method requires expert
+rollouts; LLM Synthetic Data indicates if the method uses LLM-generated data; Task Success Reward
+indicates if the method requires accessing task-success reward signals for training/data
+collection.
+
+                                            Expert Actions LLM Synthetic Data Task-Success Reward
+IWM (Zhang et al., 2025a; Yu et al., 2025c) Required       ✗                  ✗
+SR (Zhang et al., 2025a; Yu et al., 2025c)  Required       Required           ✗
+            Imitation Learning              Required       ✗                  ✗
+                    RFT                     ✗              ✗                  Required
+                RWML (ours)                 ✗              ✗                  ✗
+
+
+Table A2: Hyperparameters introduced in RWML. Value represents value used in ALFWorld, τ2\tau^{2}
+Bench, respectively.
+
+ Stage    Name   Value      Heuristics                             Intuition
+                       Set such that “too   
+RWML     τd\tau_ 0.1,  easy” samples        Spending more training on medium-to-hard samples better
+Data     {d}     0.15  correspond to ∼\     incentivizes the model to learn non-trivial world-model
+                       sim30% of the        knowledge.
+                       original dataset
+         τeasy\                             Spending more training on medium-to-hard samples better
+RWML     tau_{\  0.0,  Fixed                incentivizes the model to learn non-trivial world-model
+Data     mathrm  0.0                        knowledge.
+         {easy}}
+RWML     pp      0.1,  Fixed                The final dataset retains mostly medium-to-hard
+Data             0.1                        examples while preserving sufficient dataset diversity.
+                       Add 0.15 from τd\    Slightly higher than that of data construction since it
+                       tau_{d} used in data uses a fine-tuned model. Values that are too high
+RWML     τd\tau_ 0.2,  collection, then     (e.g., >0.5) make the world-modeling task overly easy,
+Training {d}     0.4   rounded to nearest   encouraging generic next-state descriptions. Values
+                       0.2                  that are too low (e.g., <0.1) approximate exact
+                                            matching and become overly strict in many settings.
+
+Appendix B More Details on ALFWorld
+
+ALFWorld (Shridhar et al., 2021) is a text-based, long-horizon agent environment designed to align
+with the embodied ALFRED benchmark (Shridhar et al., 2021). An ALFWorld task can involve over 50
+locations and require more than 50 steps for an expert policy, challenging agents to plan, track
+subgoals, and explore these locations efficiently. In particular, a key challenge in ALFWorld is
+identifying likely locations of household items (e.g., desklamps are likely on desks, shelves, or
+dressers). This makes ALFWorld well suited for evaluating both pretrained commonsense and learned
+world knowledge of an LLM-based agent.
+
+B.1 RWML Training Setup
+
+To collect training data for RWML (and WM SFT), we use the target model (Qwen2.5-7B-Instruct) to
+rollout N=3N=3 trajectories per training task with temperature τ=1.0\tau=1.0. We use 2048 tasks
+from the ALFWorld original training set with a maximum step of 30. We then convert these rollouts
+to triplets of ⟨s≤t,at,st+1⟩\left\langle s_{\leq t},a_{t},s_{t+1}\right\rangle. After minor
+postprocessing (e.g., removing some samples that contains invalid actions), we obtain 21,011
+triplets for training and 2,288 for validation. Then, we finetune a filtering model with SFT on the
+validation split, and subsampled “too easy” training samples with τd=0.1,τeasy=0.0\tau_{d}=0.1,\
+tau_{\mathrm{easy}}=0.0 which corresponds to ∼\sim30% of the original training data. We set p=0.1p=
+0.1 to subsample these “too easy” training samples, so that the final dataset retains mostly
+medium-to-hard examples while preserving sufficient dataset diversity. We note that this value is
+chosen heuristically without tuning and is also fixed for τ2\tau^{2} Bench (see Section B.1). An
+overview of hyperparameter heuristics/intuitions is shown in Table A2. This results in a final
+training set of 15,813 triplets. For a fair comparison, both RWML and WM SFT are then trained on
+this final training set.
+
+For rWMr^{\textrm{WM}} during training, we using Qwen3-Embedding-8B (Zhang et al., 2025b) with τd=
+0.2\tau_{d}=0.2. For RWML, we prompt the model to generate reasoning before making a final
+prediction of the next state. For WM SFT, we directly train the model to predict the next state
+with empty reasoning tokens. Since there is no reasoning data available for the triplets, we find
+this training method for WM SFT can better enable generalization/reasoning during the second stage
+Policy RL training. We present the prompts used for RWML and WM SFT in Table A4 and Table A5,
+respectively. For RWML, we train over 2 epochs using a learning rate of 1e-6, batch size of 32,
+group size of 8 with 2xB200 GPUs. For WM SFT, we train over 2 epochs using a learning rate of 2e-6,
+effective batch size of 32 over 4xB200 GPUs.
+
+B.2 Policy RL Training Setup
+
+For Policy RL, we mainly follow setups and prompts from Feng et al. (2025c); Yu et al. (2025a). We
+use the official training split from ALFWorld during training, prompting the model to generate
+reasoning tokens (i.e., <think>…</think>) before generating an action. We use a maximum step of 15
+during training, using γ=1.0\gamma=1.0 to propagate terminal task success rewards to every turn in
+the trajectory. We note that this setup is identical to all Policy RL experiments (e.g.,
+RWML+Policy RL and WM SFT+Policy RL). The only differences is the starting model checkpoint. All
+Policy RL runs are trained with GRPO over 300 steps with a group size of 8 on 2xB200 GPUs. Average
+training time is 28 hours.
+
+B.3 Other Training Setup
+
+For Imitation Learning, IWM, and SR, we use expert data from the official ALFWorld dataset,
+following Zhang et al. (2025a). For reflection data in SR, we follow Zhang et al. (2025a) and use a
+branching factor of 3 per expert action. Then, we use the prompt provided in Zhang et al. (2025a)
+to generate reflection data with the target model (i.e., Qwen2.5-7B-Instruct). However, we find
+that the target model cannot consistently generate coherent reflections, likely due to its limited
+long-context instruction-following capability. Therefore, following Yu et al. (2025c), we use a
+stronger LLM (i.e., GPT-4o) to generate reflections. After data collection, we follow Zhang et al.
+(2025a) and performed SFT training by combining the world model data/critic data with the original
+expert actions dataset. All training is done on 4xB200 GPUs, similar to our WM SFT.
+
+Appendix C More Details on τ2\tau^{2} Bench
+
+τ2\tau^{2} Bench (Barres et al., 2025) is a text-based, long-horizon agent environment designed to
+evaluate the customer service ability of an LLM-based agent in a dual-control environment, where
+both the agent and user can make use of tool calls to act in a shared, dynamic environment. A τ2\
+tau^{2} Bench task, in practice, requires the agent to communicate with the user to gather
+information, make tool-calls, and adapt to the evolving environment state (e.g., users making
+tool-calls). Tasks spans across domains such as telecom, retail, and airline support, creating
+diverse multi-step interactions that challenge agents to plan, adapt, and coordinate with the user.
+In particular, solving τ2\tau^{2} Bench tasks requires reasoning about which tool to use (e.g.,
+what information or actions each tool provides) as well as modeling user intent and behavior. This
+makes τ2\tau^{2} Bench suitable for evaluating the tool/user understanding and modeling ability of
+an LLM-based agent.
+
+C.1 RWML Training Setup
+
+To collect training data for RWML (and WM SFT), we use the target model (Qwen3-8B) to rollout
+Ntotal=6N_{\mathrm{total}}=6 trajectories per training task. Specifically, since τ2\tau^{2} Bench
+has limited training samples (178 tasks in the training split), we performed rollout with N=3N=3
+using GPT-4.1 as the user simulator and N=3N=3 using Qwen3-235B-A22B-Instruct as the user simulator
+to promote diversity. We then converted all rollouts to triplets of ⟨s≤t,at,st+1⟩\left\langle s_{\
+leq t},a_{t},s_{t+1}\right\rangle. To prevent the model from memorizing database values in the tool
+responses (e.g.,{"customer_id": "abc123", "full_name": "John Doe"}), we masked these values by
+converting them to the corresponding OpenAPI schema (e.g., {"type": "object", "properties":
+{"customer_id": {"type": "string"}, "full_name": {"type": "string"}}}). Similarly, to prevent
+memorization of user details, we also provide basic user information available to the user
+simulator (e.g., “I am John Doe. My phone number is 123-456-7890.”) in the prompt. We do not
+provide information regarding the user’s intent in the world model learning prompts. We present an
+example in Table A6 and Table A7. Then, we follow Section B.1 to subsample “too easy” triplets with
+τd=0.15,τeasy=0.0\tau_{d}=0.15,\tau_{\mathrm{easy}}=0.0 and obtained 5,578 triplets for training.
+We set p=0.1p=0.1 to subsample these “too easy” training samples, so that the final dataset retains
+mostly medium-to-hard examples while preserving sufficient dataset diversity. An overview of
+hyperparameter heuristics/intuitions is show in Table A2. In total, ∼\sim60% of the st+1s_{t+1} are
+tool-use responses and ∼\sim40% are user responses.
+
+For rWMr^{\textrm{WM}} during training, we use Qwen3-Embedding-8B (Zhang et al., 2025b) similar to
+Section B.1. However, since tool-use responses are generally structured outputs, we find using
+rouge-score (Lin, 2004) is more effective at capturing these structures and any missing keys/
+values. Our final reward function in τ2\tau^{2} Bench is defined as:
+
+ rWM​(s^t+1,st+1)={1.0,if ​d​(s^t+1,st+1)<τd​ and ​st+1​is a user response,round(rouge(s^
+ t+1,st+1), 0.2),if ​st+1​ is a tool-use response,0.0,otherwise.r^{\mathrm{WM}}(\hat{s}_{t+1},s_
+ {t+1})=\begin{cases}1.0,&\text{if }d(\hat{s}_{t+1},s_{t+1})<\tau_{d}\text{ and }s_{t+1}\text{is a
+ user response},\\ \textrm{round(rouge($\hat{s}_{t+1},s_{t+1}$), 0.2)},&\text{if }s_{t+1}\text{ is
+ a tool-use response},\\ 0.0,&\text{otherwise}.\end{cases}
+
+with τd=0.4\tau_{d}=0.4 as user responses are highly non-deterministic, and round(⋅\cdot, 0.2) is
+used to promote better training stability. For RWML, we train over 2 epochs using a learning rate
+of 1e-6, batch size of 32, and group size of 16 with 4xB200 GPUs. For WM SFT, we train over 2
+epochs using a learning rate of 2e-6 and an effective batch size of 32 over 4xB200 GPUs.
+
+C.2 Policy RL Training Setup
+
+We extend the codebase from Section B.2 to allow for multi-turn rollouts with t​a​u2tau^{2} Bench.
+We use the official prompts from t​a​u2tau^{2} Bench for both training and evaluation. However,
+since the official setting requires using GPT-4.1 as user simulator, to save cost we use the
+open-source Qwen3-235B-A22B-Instruct as user simulator during Policy RL. During Policy RL, we use a
+maximum step of 30 and γ=1.0\gamma=1.0 to propagate terminal task success rewards to every turn in
+the trajectory. All Policy RL runs are trained with GRPO over 200 steps with a group size of 8 on
+8xB200 GPUs. Average training time is 5 days.
+
+
+Table A3: Performance on τ2\tau^{2} Bench using the official evaluation setting (GPT-4.1 as user
+simulator, and a maximum step of 100).
+
+          Method            Retail      Telecom     Airline     AVG
+      ReACT(Qwen3-8B)       42.5±\pm2.0 30.0±\pm4.1 23.3±\pm4.7 33.7±\pm0.5
+      ReACT(GPT-4.1)        66.7±\pm3.1 50.0±\pm2.0 41.7±\pm0.0 55.0±\pm1.4
+       ReACT(GPT-5)         77.5±\pm7.4 97.5±\pm2.0 51.7±\pm2.4 80.3±\pm4.2
+                     Learning from experts/strong LLMs
+    Imitation Learning      49.2±\pm4.5 50.0±\pm2.0 33.3±\pm3.3 46.3±\pm3.3
+            SR              52.5±\pm3.5 45.8±\pm6.5 43.3±\pm2.6 48.0±\pm2.5
+                     Learning from task success reward
+         Policy RL          34.2±\pm3.1 45.0±\pm7.4 31.7±\pm5.3 38.0±\pm2.2
+      Self-supervised                                           
+          WM SFT            40.8±\pm3.1 30.8±\pm1.2 30.0±\pm8.2 34.7±\pm3.3
+        RWML (ours)         43.3±\pm3.1 47.5±\pm2.0 45.0±\pm8.2 45.3±\pm3.1
+Self-supervised + Policy RL                                     
+  RWML + Policy RL (ours)   48.3±\pm4.7 41.7±\pm2.4 50.0±\pm0.0 46.0±\pm2.8
+
+C.3 Additional Evaluation Results
+
+To augment our evaluation in Table 1 and Table 2, we additionally evaluate our models using the
+official setting with GPT-4.1 as user simulator and a maximum step of 100. Since GPT-4.1 is
+expensive, we evaluate the representative models in each category of Table 1 and Table 2. We
+present the results in Table A3. In general, we find our method surpasses all training methods that
+does not use experts/strong LLMs; and is competitive compared to methods that use experts/strong
+LLMs.
+
+C.4 Other Training Setup
+
+Imitation Learning, IWM, and SR requires expert rollouts for training. However, since τ2\tau^{2}
+Bench does not provide expert trajectory annotations, we collect “expert” rollouts using rejection
+sampling with a strong LLM. Specifically, we use Qwen3-235B-A22B-Thinking-2507 and perform rollouts
+with Ntotal=6N_{\mathrm{total}}=6, with N=3N=3 using GPT-4.1 as user simulator and N=3N=3 using
+Qwen3-235B-A22B-Instruct (same as Section C.1). We then only keep rollouts that successfully solved
+the tasks as expert rollouts. For reflection data in SR, we follow the same procedure as ALFWorld (
+Section B.1). Similar to ALFWorld, due to the weak performance of the target model on the
+benchmark, we use GPT-4.1 instead of Qwen3-8B to generate reflection data. All training is done on
+8xB200 GPUs.
+
+Appendix D More Details on Ablation Studies
+
+For LLM-as-a-judge in Table 4, we present an example prompt and an example (hacked) response from
+ALFWorld in Table A8. We note that the model being trained is Qwen2.5-7B-Instruct, where as the
+judge model is Qwen3-235B-A22B-Instruct. In general, we find LLM-as-a-judge can be unreliable,
+awarding high scores to predictions that does not show genuine understanding of the environment
+dynamics relevant to the task.
+
+Appendix E More Details on Parameter Change Analysis
+
+
+(a) Layer-wise parameter change ratios by transformer layer (ALFWorld and τ2\tau^{2}-Bench).
+
+
+(b) Module-wise parameter change ratios aggregated across layers (attention Q/K/V/O and MLP
+projections).
+
+
+Figure A1: Parameter change analysis across datasets and training variants. Top: layer-wise weight
+change ratios by transformer layer. Bottom: main module-wise change ratios aggregated across
+layers.
+
+We report a fine-grained analysis of parameter updates at both the layer and module levels.
+Specifically, we compute the fraction of parameters exhibiting major changes within each
+transformer layer, with results summarized in Figure 1(a). Across both benchmarks, we observe
+highly consistent trends throughout the network depth. Models trained with RWML display the lowest
+proportion of updated parameters, whereas WM SFT leads to noticeably broader parameter
+modifications. This pattern aligns with the forgetting behavior analyzed in Section 3.3, where RWML
+models retain prior knowledge more effectively.
+
+In addition, we compare the effects of policy RL when applied to different mid-trained
+initializations. Notably, the parameter change profiles of policy RL remain largely similar
+regardless of whether RWML is applied beforehand, and closely resemble those obtained when policy
+RL is performed directly on the base model. In contrast, initializing policy RL from a WM SFT model
+results in substantially elevated update ratios. These results indicate that RWML preserves a
+parameter configuration that is more amenable to subsequent policy optimization, reducing the
+extent of disruptive updates during post-training.
+
+To further validate that this behavior is not an artifact of layer aggregation, we conduct a
+module-wise breakdown over attention projections (Q/K/V/O) and MLP projection parameters, as shown
+in Figure 1(b). The observed trends closely mirror the layer-wise results, suggesting that the
+relative stability induced by RWML is consistent across different architectural components rather
+than being localized to specific modules.
+
+Overall, these detailed analyses provide additional evidence that employing RL during both
+mid-training and post-training leads to more coherent and stable parameter update than the
+conventional SFT-then-RL pipeline.
+
+Finally, we emphasize that the analyses presented here are empirical and are intended to provide
+descriptive evidence rather than a complete mechanistic explanation. While the observed parameter
+update patterns offer insights into how RWML influences subsequent training dynamics, a more
+systematic understanding of RL-based training—particularly from the perspectives of optimization
+dynamics and mechanistic interpretability—remains an important direction for future work. We hope
+these findings motivate further investigation into the internal representations and learning
+trajectories induced by RL at different stages of model training.
+
+
+Table A4: Prompt for RWML in ALFWorld, given a current state sts_{t} and an action ata_{t}. Final
+output within the <next_state> </next_state> tags is used to compare with the next state in rWM​(s^
+t+1,st+1)r^{\textrm{WM}}(\hat{s}_{t+1},s_{t+1}) during RL.
+
+You are an expert agent operating in the ALFRED Embodied Environment. Your task is to …// omitting
+task instruction and previous action history here for brevity
+Your current observation is: {current_state} Potential action: {action}
+Now, your task is to predict the immediate next observation after taking the potential action
+above. You should first briefly reason step-by-step about the previous steps and current situation
+— summarize key information you’ve learned about the environment that is relevant to the task. This
+reflection and reasoning process must be enclosed within <think> </think> tags. Once you’ve
+finished your reasoning, you should describe the next observation (use the past and current
+observations as examples!) and present them within <next_state> </next_state> tags.
+
+
+Table A5: Prompt for WM SFT in ALFWorld, given a current state sts_{t} and an action ata_{t}. The
+label is the next state st+1s_{t+1}.
+
+You are an expert agent operating in the ALFRED Embodied Environment. Your task is to …// omitting
+task instruction and previous action history here for brevity
+Your current observation is: {current_state} Potential action: {action}
+Now, your task is to predict the immediate next observation after executing the potential action
+above. Directly present your final prediction of the next observation (use the past and current
+observations as examples!) within <next_state> </next_state> tags. DO NOT generate anything else.
+Label: <think> </think> <next_state> {next_state} </next_state>
+
+
+Table A6: Prompt for RWML in τ2\tau^{2} Bench, given s≤ts_{\leq t} and an action ata_{t}. Final
+output within the <next_state> </next_state> tags is used to compare with the next state in rWM​(s^
+t+1,st+1)r^{\textrm{WM}}(\hat{s}_{t+1},s_{t+1}) during RL.
+
+You are a customer service agent that helps the user according to the <policy> provided below…//
+omitting task instruction, policy, and tool usage details here for brevity
+# User Information The following information about the user is available: {available_user_info}
+# History {current_state} Potential assistant response: {action}
+# Your Task Now, your task is to predict the immediate next user/tool response if the above
+‘potential assistant response’ is used based on the available information above. Once you’ve
+finished your thinking, format your final prediction of the next user/tool response and task
+completion status within <next_state> </next_state> tags. Note that a user response should be
+written as plain text. A tool response may be a short status message (e.g., no data found, error,
+transaction success, etc.,) or a JSON object; if it is JSON, only predict the JSON schema in
+OpenAPI format rather than actual values (e.g., {"type": "object", "properties": {"customer_id":
+{"type": "string"}, "full_name": {"type": "string"}},…}).
+
+
+Table A7: Prompt for WM SFT in τ2\tau^{2} Bench, given s≤ts_{\leq t} and an action ata_{t}. The
+label is the next state st+1s_{t+1}.
+
+You are a customer service agent that helps the user according to the <policy> provided below…//
+omitting task instruction, policy, and tool usage details here for brevity
+# User Information The following information about the user is available: {available_user_info}
+# History {current_state} Potential assistant response: {action}
+# Your Task Now, your task is to predict the immediate next user/tool response if the above
+‘potential assistant response’ is used based on the available information above. DO NOT perform any
+thinking. Directly present your final prediction of the next user/tool response within <next_state>
+</next_state> tags. Note that a user response should be written as plain text. A tool response may
+be a short status message (e.g., no data found, error, transaction success, etc.,) or a JSON
+object; if it is JSON, only predict the JSON schema in OpenAPI format rather than actual values
+(e.g., {"type": "object", "properties": {"customer_id": {"type": "string"}, "full_name": {"type":
+"string"}},…}).
+Label: <think> </think> <next_state> {next_state} </next_state>
+
+
+Table A8: Example prompt for LLM-as-a-judge in our ablation studies. In general, we find
+LLM-as-a-judge is unreliable and can award high scores to predictions that are not meaningful.
+“predicted_next_state” are contents extracted from the <next_state></next_state> tags in the
+generated response.
+
+You are a helpful judge AI agent. # Current state
+{current_state}
+# Action proposed by an AI agent
+{action_text}
+# Predicted next observation
+After executing the above action, another AI agent predicted the next observation as follows:
+{predicted_next_state}
+# Actual next observation
+The actual next observation from the environment is as follows:
+{actual_next_state}
+# Evaluate the predicted next observation
+Now, your task is to evaluate how well the predicted next observation matches the actual next
+observation. Specifically, you need to judge whether the prediction demonstrates a genuine
+understanding of the environment dynamics relevant to the task, using the actual next observation
+as reference.
+- If all important task-related information in the actual next observation is present in the
+predicted next observation, assign a score of 1.0.
+- Otherwise, assign a score of 0.0.
+# Your output format
+Your task is to output a JSON object in the following format:
+<json>
+{
+"analysis": "which important task-related content is present/missing in the predicted next
+observation.",
+"score": 0.0 or 1.0
+}
+</json> Directly output the JSON object. DO NOT generate anything else.
+Example generation that achieved a score of 1.0: <think> The potential action is to go to
+countertop 1. After this action, I should observe that I am at countertop 1, and the contents of
+the countertop will be displayed. The task is not yet completed as I have not found the tomato or
+started the process of putting it in the microwave. </think> <next_state> The immediate next
+observation after going to countertop 1 will describe the contents of countertop 1 or indicate if
+there is anything special about the countertop.</next_state>
+Example actual next state: You arrive at countertop 1. On the countertop 1, you see a apple 2, a
+bread 2, (…omitted), a knife 4, a knife 1, a potato 1, a saltshaker 1, a spatula 1, a spoon 2, and
+a spoon 1.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

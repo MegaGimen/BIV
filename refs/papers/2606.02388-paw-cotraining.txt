@@ -1,0 +1,1080 @@
+source: https://arxiv.org/html/2606.02388
+arxiv: https://arxiv.org/abs/2606.02388
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Preliminaries
+     1. Problem setup.
+     2. On-policy Agentic RL.
+     3. World-modeling for language agents.
+ 4. 3 Methodology
+     1. 3.1 Constructing World Modeling Supervision from RL Rollouts
+         1. WM data selection.
+         2. Co-training in one forward pass.
+     2. 3.2 Clipped MAE Loss for Noisy Observation Prediction
+         1. MAE-style token loss.
+         2. Confidence clipping.
+     3. 3.3 Reward-Adaptive Loss Balancing
+     4. 3.4 Training and Inference
+ 5. 4 Experiments
+     1. 4.1 Experiment Setup
+         1. Benchmarks.
+         2. Baselines.
+         3. Implementation details.
+     2. 4.2 Experimental Results
+     3. 4.3 Different Models and RL algorithms
+     4. 4.4 PaW Helps Where RL Fails
+     5. 4.5 Computational Overhead
+     6. 4.6 Ablation Study
+     7. 4.7 Hyperparameter Sensitivity
+ 6. 5 Related Work
+     1. Training LLM agents.
+     2. World modeling for language agents.
+ 7. 6 Conclusion
+ 8. 7 Limitations
+ 9. References
+10. A Implementation Details
+     1. A.1 Details of Training
+         1. Hyperparameters for ALFWorld.
+         2. Hyperparameters for WebShop.
+         3. Hyperparameters for Search-Augmented QA.
+     2. A.2 Baseline Details
+     3. A.3 Prompts
+     4. A.4 Noise-Gradient Analysis
+11. B Additional Experimental Results
+     1. B.1 Full Results of ALFWorld and WebShop
+     2. B.2 Training Dynamics
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2606.02388v1 [cs.LG] 01 Jun 2026
+
+Policy and World Modeling Co-Training for Language Agents
+
+Ning Lu ^†^†thanks: Equal contribution. Affiliation: Southern University of Science and Technology 
+Affiliation: Hong Kong University of Science and Technology    Baijiong Lin^1^1footnotemark: 1 
+Affiliation: Hong Kong University of Science and Technology (Guangzhou)    Shengcai Liu ^†^†thanks:
+Corresponding author: liusc3@sustech.edu.cn. Affiliation: Southern University of Science and
+Technology    Jiahao Wu Affiliation: Southern University of Science and Technology Affiliation: 
+Hong Kong Polytechnic University    Haoze Lv Affiliation: Southern University of Science and
+Technology    Yanbin Wei Affiliation: Southern University of Science and Technology Affiliation: 
+Hong Kong University of Science and Technology    Lingting Zhu Affiliation: LIGHTSPEED    Shengju
+Qian Affiliation: LIGHTSPEED    Xin Wang Affiliation: LIGHTSPEED    Ying-Cong Chen Affiliation: 
+Hong Kong University of Science and Technology (Guangzhou)    Qi Wang Affiliation: Southern
+University of Science and Technology    Ke Tang Affiliation: Southern University of Science and
+Technology
+
+Abstract
+
+Reinforcement learning (RL) improves large language model (LLM) agents by teaching them which
+actions lead to high rewards, but provides little supervision on what those actions do to the
+environment. World modeling (WM) can fill this gap, yet existing approaches often require separate
+simulators, extra training stages, or additional inference-time computation. We observe that
+on-policy RL rollouts already contain the needed signal: each transition pairs an action with its
+resulting next observation. Based on this observation, we propose PaW, a Policy and World modeling
+co-training framework that adds auxiliary WM supervision to the same policy during RL, without
+changing the inference paradigm. To make auxiliary WM supervision informative and stable, PaW
+introduces three components: action-entropy-based WM data selection, noise-tolerant WM loss, and
+reward-adaptive loss balancing. Experiments on three agentic task benchmarks show consistent
+improvements over strong RL baselines across models and RL algorithms. These results suggest that
+standard RL rollouts are a practical source of WM supervision for language-agent training.
+
+1 Introduction
+
+Reinforcement learning (RL) has become a dominant paradigm for improving large language model (LLM)
+agent performance  DeepSeek-AI (2026); GLM-5-Team (2026). However, standard RL optimizes actions
+for reward maximization without learning their consequences, leaving agents brittle to invalid
+operations, irreversible state changes, and delayed failures in long-horizon tasks Hao et al.
+(2023a); Liu et al. (2026b). World modeling (WM) addresses this gap by predicting the next
+observation from the interaction history and the chosen action, encouraging the agent to
+internalize environment dynamics rather than memorize which actions get rewards Zhang et al. (2025)
+.
+
+Refer to caption
+Figure 1: Comparison of world modeling paradigms for LLM agents. While prior methods rely on
+separate simulators, additional training, or inference-time planning, our PaW jointly optimizes
+policy learning and world modeling within the same model.
+
+Existing WM methods for LLM agents typically introduce this ability outside the standard RL
+training, as shown in Figure 1. One line of work trains a world model simulator, either as a
+separate model or within the policy model itself, to generate imagined trajectories for RL training
+or to scale inference-time planning Gu et al. (2025); Fang et al. (2025); Xiao et al. (2026); Li et
+al. (2026); Liu et al. (2026b). Another line of work first instills WM ability into the model and
+then fine-tunes it with RL training Zhang et al. (2025); Yu et al. (2026). In both cases, WM
+learning incurs extra cost: a separate model, an additional training stage, or inference-time
+computation. This raises a question: can world-modeling ability be learned jointly with policy
+improvement within the same RL training process?
+
+Refer to caption
+(a)
+
+Refer to caption
+(b)
+
+
+(c)
+
+
+(d)
+
+
+Figure 2: Illustration of noisy observation tokens and the effect of clipped MAE loss. (a) and (b)
+show two noisy WM training examples from ALFWorld and WebShop, where the same (𝒐t,𝒂t)(\bm{o}_{t},\
+bm{a}_{t}) pair can lead to different next observation 𝒐t+1\bm{o}_{t+1} in (a) and observations may
+contain random surface noise in (b). (c) shows that CE WM loss (Equation 5) assigns a
+disproportionately large gradient share to noisy tokens. See Section A.4 for details. (d) shows
+that replacing CE (Equation 5) with clipped MAE (Equation 9) during training improves RL
+performance.
+
+Our key observation is that on-policy RL rollouts already provide world-modeling supervision. Each
+interaction step yields both policy supervision from the action and its advantage, and dynamics
+supervision from the resulting next observation, which reveals what the action causes. While
+standard RL uses only the former, we exploits the latter as dense action-conditioned
+next-observation supervision, without requiring additional rollouts.
+
+Motivated by this observation, we propose PaW, a framework for Policy and World modeling
+co-training during on-policy RL post-training. As shown in Figures 1 and 3, PaW reuses RL rollouts
+by appending next-observation tokens and applying an auxiliary next-token-prediction loss to train
+the same model. Policy learning is unchanged because causal attention prevents later
+next-observation tokens from affecting the action logits. In inference, the agent behaves like a
+standard policy model, with no additional simulation steps.
+
+However, as illustrated in Figures 2(a) and 2(b), rollout observations provide noisy supervision:
+some transitions are uninformative, some target tokens are unpredictable, and the auxiliary WM loss
+must balance with the RL loss. Thus, PaW combines three key designs: action-entropy-based WM data
+selection, clipped MAE for noisy observations, and reward-adaptive loss balancing. Together, they
+make auxiliary WM supervision both informative and stable. We evaluate PaW on two types of agentic
+tasks: interactive decision-making (ALFWorld and WebShop) and search-augmented QA. Across models
+and RL algorithms, PaW consistently improves strong RL baselines, with negligible training
+overhead. These results suggest that standard RL rollouts already provide a practical source of
+world-model supervision for language-agent training.
+
+Our contributions are summarized as follows: 1. We identify next observations in on-policy rollouts
+as an overlooked source of action-conditioned WM supervision for language-agent RL; 2. We propose 
+PaW, the first policy and world-modeling co-training method for RL. It reuses on-policy rollouts
+for joint policy optimization and world-modeling supervision, with high-action-entropy transition
+selection, clipped MAE loss, and adaptive WM loss balancing; 3. We show consistent improvements
+over strong RL baselines on three agentic tasks across models and RL algorithms.
+
+2 Preliminaries
+
+Problem setup.
+
+We consider language-agent tasks where a policy 𝝅𝜽\bm{\pi_{\theta}} solves a user-specified goal
+through multi-turn interaction with an environment. At turn tt, the agent observes 𝒐t\bm{o}_{t},
+forms a decision context 𝒉t\bm{h}_{t} from the instruction and interaction history, and samples a
+textual or serialized action 𝒂t∼𝝅𝜽(⋅∣𝒉t)\bm{a}_{t}\sim\bm{\pi_{\theta}}(\cdot\mid\bm{h}_{t}). The
+environment executes 𝒂t\bm{a}_{t} and returns reward rtr_{t} and next observation 𝒐t+1\bm{o}_{t+1},
+yielding a trajectory 𝝉={𝒐0,𝒂0,r0,𝒐1,…,𝒐T−1,𝒂T−1,rT−1,𝒐T}\bm{\tau}=\{\bm{o}_{0},\bm{a}_{0},r_{0},\
+bm{o}_{1},\ldots,\bm{o}_{T-1},\bm{a}_{T-1},r_{T-1},\bm{o}_{T}\} with return R⁡(𝝉)=∑t=0T−1rtR(\bm{\
+tau})=\sum_{t=0}^{T-1}r_{t}.
+
+Refer to caption
+Figure 3: Overview of PaW. PaW introduces auxiliary world modeling to agentic RL via action-entropy
+WM data selection, clipped MAE, and reward-adaptive loss balancing.
+
+On-policy Agentic RL.
+
+Agentic RL fine-tunes 𝝅𝜽\bm{\pi_{\theta}} to maximize J⁡(𝜽)=𝔼𝝉∼𝝅𝜽​[R⁡(𝝉)]J(\bm{\theta})=\mathbb{E}_
+{\bm{\tau}\sim\bm{\pi_{\theta}}}[R(\bm{\tau})] using sampled rollouts. Most on-policy algorithms
+can be abstracted as minimizing an advantage-weighted action loss:
+
+ ℒRL​(𝜽)=−𝔼𝝉​[∑t=0T−1At​log⁡𝝅𝜽​(𝒂t∣𝒉t)],\mathcal{L}_{\mathrm{RL}}(\bm{\theta})=-\mathbb{E}_{\   (1)
+ bm{\tau}}\left[\sum_{t=0}^{T-1}A_{t}\log\bm{\pi_{\theta}}(\bm{a}_{t}\mid\bm{h}_{t})\right],
+
+where AtA_{t} is a reward-derived advantage and log⁡𝝅𝜽​(𝒂t∣𝒉t)\log\bm{\pi_{\theta}}(\bm{a}_{t}\mid\
+bm{h}_{t}) sums token-level log-likelihoods of the action sequence. Different algorithms, such as
+GRPO (Shao et al., 2024) and GIGPO (Feng et al., 2025), mainly differ in how they estimate AtA_{t}
+and instantiate the surrogate objective. Our method is orthogonal to these choices and augments
+this base RL loss with world modeling supervision.
+
+World-modeling for language agents.
+
+World modeling aims to capture action-conditioned dynamics by predicting the environment response
+after an action Zhang et al. (2025). For language agents, this becomes next-observation prediction:
+given (𝒉t,𝒂t)(\bm{h}_{t},\bm{a}_{t}), an autoregressive model predicts the textual observation 𝒐t+1
+\bm{o}_{t+1} with objective:
+
+ ℒWM​(ϕ)=−𝔼⁡[log⁡𝝅ϕ​(𝒐t+1∣𝒉t,𝒂t)],\mathcal{L}_{\mathrm{WM}}(\bm{\phi})=-\mathbb{E}\left[\log\   (2)
+ bm{\pi_{\phi}}(\bm{o}_{t+1}\mid\bm{h}_{t},\bm{a}_{t})\right],
+
+where the likelihood is computed over observation tokens. Learning world modeling enables agents to
+better understand action outcomes and make better decisions in long-horizon tasks Zhang et al.
+(2025); Liu et al. (2026b).
+
+3 Methodology
+
+In this section, we present PaW, a framework for co-training policy learning with world modeling
+within a single policy model during on-policy RL by augmenting the base RL objective with an
+auxiliary WM objective:
+
+ ℒPaW​(𝜽)=ℒRL​(𝜽)+λWM​ℒWM​(𝜽).\mathcal{L}_{\mathrm{PaW{}}}(\bm{\theta})=\mathcal{L}_{\mathrm    (3)
+ {RL}}(\bm{\theta})+\lambda_{\mathrm{WM}}\mathcal{L}_{\mathrm{WM}}(\bm{\theta}).
+
+Here, both terms update the same parameters 𝜽\bm{\theta}: the RL loss improves action selection,
+while the WM loss trains next-observation prediction from rollout transitions. See Figure 3 for the
+overview. The rest of this section instantiates this objective by describing how we construct WM
+supervision with action-entropy-based data selection in Section 3.1, make observation prediction
+robust with clipped MAE in Section 3.2, set λWM\lambda_{\mathrm{WM}} as a reward-adaptive
+coefficient in Section 3.3, and summarize training and inference in Section 3.4.
+
+3.1 Constructing World Modeling Supervision from RL Rollouts
+
+At each RL update, we sample task instances and collect rollout groups 𝒢\mathcal{G} with the
+current policy, where each group g∈𝒢g\in\mathcal{G} contains trajectories from the same task. Each
+group forms a transition pool 𝒫g={(𝒉t,𝒂t,rt,𝒐t+1)∣𝝉∈g, 0≤t<T}\mathcal{P}_{g}=\{(\bm{h}_{t},\bm{a}_
+{t},r_{t},\bm{o}_{t+1})\mid\bm{\tau}\in g,\;0\leq t<T\}, and the update-level pool is 𝒫=⋃g∈𝒢𝒫g\
+mathcal{P}=\bigcup_{g\in\mathcal{G}}\mathcal{P}_{g}.
+
+Each transition in this pool serves two roles: (𝒉t,𝒂t,At)(\bm{h}_{t},\bm{a}_{t},A_{t}), with AtA_
+{t} computed from rewards, provides the action-level signal for policy learning, while (𝒉t,𝒂t,𝒐t+1)
+(\bm{h}_{t},\bm{a}_{t},\bm{o}_{t+1}) provides the token-level target for next-observation
+prediction. However, using all transitions for WM learning can overweight redundant or
+low-informative action consequences. Thus, we select a subset of transitions for the auxiliary
+next-observation loss.
+
+WM data selection.
+
+For each transition, let qt,i=𝝅𝜽​(𝒂t(i)∣𝒉t,𝒂t(<i))q_{t,i}=\bm{\pi_{\theta}}\left(\bm{a}_{t}^{(i)}\
+mid\bm{h}_{t},\bm{a}_{t}^{(<i)}\right) denote the next-token probability at the ii-th action
+position. We compute the average action-token entropy H(𝒂t|𝒉t)=−1|𝒂t|∑i=1|𝒂t|qt,ilogqt,iH(\bm{a}_
+{t}|\bm{h}_{t})=-\frac{1}{|\bm{a}_{t}|}\sum_{i=1}^{|\bm{a}_{t}|}q_{t,i}\log q_{t,i}. Intuitively,
+high-entropy actions correspond to decision points where the policy assigns probability mass to
+more diverse action alternatives. Their resulting observations are therefore more informative for
+learning action-conditioned environment transitions than highly deterministic, repetitive actions.
+We apply the selector to all candidate WM transitions in the current RL update. Given a retained
+fraction α∈(0,1]\alpha\in(0,1], we keep the top-α\alpha fraction by action entropy:
+
+ 𝒮α=Topα⁡(𝒫;H⁡(𝒂t∣𝒉t)),\mathcal{S}_{\alpha}=\operatorname{Top}_{\alpha}\left(\mathcal{P};\,H(\  (4)
+ bm{a}_{t}\mid\bm{h}_{t})\right),
+
+where Topα\operatorname{Top}_{\alpha} returns the highest-entropy α\alpha fraction of 𝒫\mathcal{P}.
+The RL loss is computed on all generated actions in the rollout groups, while the world-model loss
+is computed only on selected transitions in 𝒮α\mathcal{S}_{\alpha}.
+
+Co-training in one forward pass.
+
+Operationally, each transition is serialized as (𝒉t,𝒂t,𝒐t+1)(\bm{h}_{t},\bm{a}_{t},\bm{o}_{t+1}),
+with rewards used only for advantage computation. We apply an action-token mask for the base RL
+loss and an observation-token mask for the auxiliary loss on appended next-observation tokens in 𝒮α
+\mathcal{S}_{\alpha}. Causal attention prevents action tokens from attending to appended
+observations, so 𝒐t+1\bm{o}_{t+1} does not affect action logits; meanwhile, observation logits are
+conditioned on (𝒉t,𝒂t)(\bm{h}_{t},\bm{a}_{t}) for next-observation prediction. The entropy uses
+action-token distributions already available in the rollout or training pass, introducing no
+additional model forward.
+
+3.2 Clipped MAE Loss for Noisy Observation Prediction
+
+After action-entropy-based selection, the selected transitions provide action-conditioned targets
+for world modeling. A direct instantiation is to apply the cross-entropy objective from Equation 2
+to the next-observation tokens. For a selected transition (𝒉t,𝒂t,rt,𝒐t+1)∈𝒮α(\bm{h}_{t},\bm{a}_
+{t},r_{t},\bm{o}_{t+1})\in\mathcal{S}_{\alpha}, let pt,i=𝝅𝜽​(𝒐t+1(i)∣𝒉t,𝒂t,𝒐t+1(<i))p_{t,i}=\bm{\
+pi_{\theta}}\!\left(\bm{o}_{t+1}^{(i)}\mid\bm{h}_{t},\bm{a}_{t},\bm{o}_{t+1}^{(<i)}\right) be the
+probability assigned to the ii-th target token in 𝒐t+1\bm{o}_{t+1}. The standard CE loss on the
+selected set can be written as:
+
+ ℒWMCE(𝜽;𝒮α)=𝔼𝒮α[−1|𝒐t+1|∑i=1|𝒐t+1|logpt,i].\mathcal{L}_{\mathrm{WM}}^{\mathrm{CE}}(\bm{\
+ theta};\mathcal{S}_{\alpha})=\mathbb{E}_{\mathcal{S}_{\alpha}}\left[-\frac{1}{|\bm{o}_{t+1}|}  (5)
+ \sum_{i=1}^{|\bm{o}_{t+1}|}\log p_{t,i}\right].
+
+Although CE is standard for language modeling, it is poorly matched to observation prediction in
+agentic environments. As illustrated in Figures 2(a) and 2(b), next observations may be stochastic,
+non-unique, or contaminated by nuisance tokens such as IDs, product names, and random strings.
+Overfitting these tokens can consume optimization capacity without improving action-relevant
+dynamics.
+
+MAE-style token loss.
+
+To reduce the influence of hard and low-probability observation tokens, we replace the per-token CE
+loss ℓCE(i)=−log⁡pt,i\ell_{\mathrm{CE}}^{(i)}=-\log p_{t,i} with a mean absolute error (MAE;Ghosh
+et al. (2017)) loss ℓMAE(i)=1−pt,i\ell_{\mathrm{MAE}}^{(i)}=1-p_{t,i}. Their gradients with respect
+to model parameters are:
+
+ ∇𝜽ℓCE(i)=−∇𝜽pt,ipt,i,∇𝜽ℓMAE(i)=−∇𝜽pt,i.\nabla_{\bm{\theta}}\ell_{\mathrm{CE}}^{(i)}=-\frac{\
+ nabla_{\bm{\theta}}p_{t,i}}{p_{t,i}},\quad\nabla_{\bm{\theta}}\ell_{\mathrm{MAE}}^{(i)}=-\     (6)
+ nabla_{\bm{\theta}}p_{t,i}.
+
+CE therefore amplifies the gradient contribution of low-probability tokens by 1/pt,i1/p_{t,i},
+whereas MAE keeps this contribution bounded. This makes MAE less sensitive to unpredictable
+observation fragments, as also reflected by the gradient-share analysis in Figure 2(c).
+
+Confidence clipping.
+
+MAE alone still keeps optimizing tokens after the model already predicts them with high confidence.
+However, in stochastic textual environments, forcing the model to further fit one observed
+realization may encourage memorization of arbitrary surface details. We therefore introduce a
+token-level confidence mask:
+
+ mt,i=[pt,i≤ρ],m_{t,i}=\mathds{1}\!\left[p_{t,i}\leq\rho\right],  (7)
+
+where ρ\rho is a confidence threshold. Tokens with pt,i>ρp_{t,i}>\rho are treated as sufficiently
+learned and are removed from the auxiliary target. For one selected transition, the clipped MAE
+loss is:
+
+ ℓCMAE​(𝒉t,𝒂t,𝒐t+1)=∑i=1|𝒐t+1|mt,i​(1−pt,i)|𝒐t+1|.\ell_{\mathrm{CMAE}}(\bm{h}_{t},\bm{a}_{t},\  (8)
+ bm{o}_{t+1})=\frac{\sum_{i=1}^{|\bm{o}_{t+1}|}m_{t,i}(1-p_{t,i})}{|\bm{o}_{t+1}|}.
+
+The WM loss on the selected transitions is then:
+
+ ℒWMCMAE​(𝜽,𝒮α)=𝔼𝒮α​[ℓCMAE​(𝒉t,𝒂t,𝒐t+1)].\mathcal{L}_{\mathrm{WM}}^{\mathrm{CMAE}}(\bm{\
+ theta};\mathcal{S}_{\alpha})=\mathbb{E}_{\mathcal{S}_{\alpha}}\left[\ell_{\mathrm{CMAE}}(\bm   (9)
+ {h}_{t},\bm{a}_{t},\bm{o}_{t+1})\right].
+
+This loss focuses learning on insufficiently predicted observation tokens, while avoiding the
+excessive CE pressure on noisy or non-action-relevant tokens.
+
+
+Algorithm 1 On-policy RL training with PaW.
+1: for each RL update do
+2:   Sample tasks and collect rollout groups 𝒢\mathcal{G} using 𝝅𝜽\bm{\pi_{\theta}};
+3:   Form transition pools {𝒫g}g∈𝒢\{\mathcal{P}_{g}\}_{g\in\mathcal{G}} and 𝒫=⋃g𝒫g\mathcal{P}=\
+bigcup_{g}\mathcal{P}_{g};
+4:   Compute selected transitions 𝒮α\mathcal{S}_{\alpha} using Equation 4;
+5:   for each rollout group g∈𝒢g\in\mathcal{G} do
+6:    Set 𝒮α,g:=𝒮α∩𝒫g\mathcal{S}_{\alpha,g}:=\mathcal{S}_{\alpha}\cap\mathcal{P}_{g};
+7:    Compute ℒRL​(𝜽,g)\mathcal{L}_{\mathrm{RL}}(\bm{\theta};g) using Equation 1;
+8:    Compute ℒWMCMAE​(𝜽,𝒮α,g)\mathcal{L}_{\mathrm{WM}}^{\mathrm{CMAE}}(\bm{\theta};\mathcal{S}_{\
+alpha,g}) using Equation 9;
+9:    Compute λWM,g\lambda_{\mathrm{WM},g} using Equation 10;
+10:   end for
+11:   Optimize Equation 11 to update 𝜽\bm{\theta};
+12: end for
+
+3.3 Reward-Adaptive Loss Balancing
+
+Even after entropy filtering and token-level clipping, WM supervision remains dense because every
+selected observation can contribute many token-level gradients. If applied with a fixed large
+weight, this auxiliary objective may dominate the sparse reward-driven policy update. Moreover, the
+need for auxiliary dynamics learning is task-dependent: low-performing rollout groups can benefit
+more from additional next-observation supervision, while high-performing groups should focus more
+on refining the policy objective.
+
+We therefore instantiate the schematic coefficient λWM\lambda_{\mathrm{WM}} in Equation 3 as a
+reward-adaptive coefficient for each rollout group g∈𝒢g\in\mathcal{G}. We set:
+
+ λWM,g=1−R¯gRmax,\lambda_{\mathrm{WM},g}=1-\frac{\bar{R}_{g}}{R_{\mathrm{max}}},  (10)
+
+where R¯g=|g|−1​∑𝝉∈gR⁡(𝝉)\bar{R}_{g}=|g|^{-1}\sum_{\bm{\tau}\in g}R(\bm{\tau}) denotes its mean
+episode return and RmaxR_{\mathrm{max}} denotes the maximum attainable episode return in the
+environment. When a rollout group has low mean return, λWM,g\lambda_{\mathrm{WM},g} is large and
+the update receives stronger WM supervision. As R¯g\bar{R}_{g} approaches RmaxR_{\mathrm{max}},
+λWM,g\lambda_{\mathrm{WM},g} decreases, reducing the auxiliary pressure and letting the base RL
+objective dominate.
+
+Type        Method         ALFWorld                             WebShop
+                           Pick Look Clean Heat Cool Pick2 Avg. Score Succ.
+Closed-Source Model
+Prompting   GPT-4o         75.3 60.8 31.2  56.7 21.6 49.8  48.0 31.8  23.7
+Prompting   Gemini-2.5-Pro 92.8 63.3 62.1  69.0 26.6 58.7  60.3 42.5  35.9
+Qwen2.5-1.5B-Instruct
+Prompting   Qwen2.5        5.9  5.5  3.3   9.7  4.2  0.0   4.1  23.1  5.2
+Prompting   ReAct          17.4 20.5 15.7  6.2  7.7  2.0   12.8 40.1  11.3
+Prompting   Reflexion      35.3 22.2 21.7  13.6 19.4 3.7   21.8 55.8  21.9
+RL Training GRPO           86.5 46.3 79.0  70.2 69.1 47.8  70.0 75.6  60.6
+RL Training GRPO w/ PaW    87.8 59.3 84.5  73.7 75.4 69.6  77.9 83.8  68.6
+RL Training GIGPO          95.3 84.3 87.7  92.6 79.8 82.3  87.6 83.2  66.2
+RL Training GIGPO w/ PaW   95.3 83.3 91.8  89.5 89.1 84.5  90.4 87.7  75.3
+Qwen2.5-7B-Instruct
+Prompting   Qwen2.5        33.4 21.6 19.3  6.9  2.8  3.2   14.8 26.4  7.8
+Prompting   ReAct          48.5 35.4 34.3  13.2 18.2 17.6  31.2 46.2  19.5
+Prompting   Reflexion      62.0 41.6 44.9  30.9 36.3 23.8  42.7 58.1  28.8
+RL Training GRPO           90.8 66.1 89.3  74.7 72.5 64.7  77.6 75.4  66.5
+RL Training GRPO w/ PaW    90.4 80.7 86.8  82.9 76.5 67.3  80.6 84.5  70.5
+RL Training GIGPO          97.7 82.7 98.8  83.7 89.3 79.2  90.8 85.0  73.8
+RL Training GIGPO w/ PaW   98.2 85.6 98.6  84.5 91.5 84.3  91.8 87.6  76.7
+
+
+Table 1: Performance on ALFWorld and WebShop. For ALFWorld, we report the success rate (%) for each
+subtask and the overall average. For WebShop, we report the average score and success rate (%).
+Bold numbers indicate the better result between each vanilla RL baseline and its PaW-augmented
+variant. Full results with standard variance can be found in Section B.1.
+
+3.4 Training and Inference
+
+Combining the three designs above, the co-training objective of PaW in Equation 3 becomes the
+following final objective, which preserves the base on-policy RL loss over each rollout group while
+adding a reward-adaptively weighted CMAE world-model loss on the entropy-selected transitions:
+
+ ℒPaW​(𝜽)=\displaystyle\       𝔼g∈𝒢[ℒRL(𝜽;g)\displaystyle\mathbb{E}_{g\in\mathcal{G}}\Big[\
+ mathcal{L}_{\mathrm{PaW{}}}(\ mathcal{L}_{\mathrm{RL}}(\bm{\theta};g)
+ bm{\theta})=                                                                                  (11)
+                               +λWM,gℒWMCMAE(𝜽;𝒮α,g)].\displaystyle+\lambda_{\mathrm{WM},g}\
+                               mathcal{L}_{\mathrm{WM}}^{\mathrm{CMAE}}(\bm{\theta};\mathcal
+                               {S}_{\alpha,g})\Big].
+
+where 𝒮α,g=𝒮α∩𝒫g\mathcal{S}_{\alpha,g}=\mathcal{S}_{\alpha}\cap\mathcal{P}_{g}, ℒRL​(𝜽,g)\mathcal
+{L}_{\mathrm{RL}}(\bm{\theta};g) is the base on-policy RL loss from Equation 1, and the auxiliary
+loss is computed only on 𝒮α,g\mathcal{S}_{\alpha,g}. If a group contains no selected transition,
+its auxiliary term is omitted.
+
+Algorithm 1 summarizes one on-policy RL update with PaW. The procedure follows the base RL
+algorithm for rollout collection and advantage computation, then co-trains the same model with
+globally selected observation supervision and group-specific auxiliary weighting. Therefore, PaW
+requires no additional environment interaction, no separate model, and no separate training stage.
+It also introduces no additional model forward: the action entropy, action-token loss, and
+observation-token loss are computed from distributions already available during rollout generation
+or the masked training pass.
+
+After training, PaW introduces no inference-time change. The model receives the decision context 𝒉t
+\bm{h}_{t} and generates the next action 𝒂t\bm{a}_{t} exactly as a standard policy model. It does
+not rollout imagined observations, perform planning with a simulator, or call an additional model.
+Thus, all benefits of WM co-training are obtained during training, while deployment keeps the same
+interface and cost as the underlying RL-trained agent.
+
+Type        Method       Single-Hop QA           Multi-Hop QA                             Avg.
+                         NQ^† TriviaQA^⋆ PopQA^⋆ HotpotQA^† 2Wiki^⋆ MuSiQue^⋆ Bamboogle^⋆
+Qwen2.5-3B-Instruct
+RL Training Search-R1    34.1 54.5       37.8    32.4       31.9    10.3      26.4        32.5
+RL Training ZeroSearch   41.4 57.4       44.8    27.4       30.0    9.8       11.1        31.7
+RL Training GRPO         44.9 60.9       46.1    37.9       39.5    13.7      64.1        43.9
+RL Training GRPO w/ PaW  45.8 61.2       47.5    39.4       40.1    14.4      65.2        44.8
+RL Training GIGPO        42.5 58.5       46.3    35.2       34.4    11.8      60.0        41.2
+RL Training GIGPO w/ PaW 46.2 61.8       46.7    37.6       38.0    13.9      64.9        44.2
+Qwen2.5-7B-Instruct
+RL Training Search-R1    39.3 61.0       39.7    37.0       40.1    14.6      36.8        38.4
+RL Training ZeroSearch   43.6 61.8       51.5    34.6       35.2    18.4      27.8        39.0
+RL Training GRPO         47.9 63.9       47.8    43.9       43.6    18.3      69.6        47.9
+RL Training GRPO w/ PaW  48.9 64.9       48.5    44.9       45.1    18.9      70.1        48.8
+RL Training GIGPO        46.1 64.4       46.0    40.2       41.2    16.4      68.9        45.8
+RL Training GIGPO w/ PaW 46.5 66.0       47.2    42.2       42.8    18.6      69.5        47.5
+
+
+Table 2: Performance on search-augmented QA tasks. Agents are trained on NQ and HotpotQA. †\dagger
+and ⋆\star indicate in-domain and out-of-domain evaluation datasets, respectively. Avg. denotes the
+average score across all seven benchmarks. Bold indicates the better result between each vanilla RL
+baseline and its PaW-augmented variant.
+
+4 Experiments
+
+In this section, we empirically evaluate PaW on two types of agentic tasks, including interactive
+decision-making (i.e., ALFWorld and WebShop) and search-augmented QA.
+
+4.1 Experiment Setup
+
+Benchmarks.
+
+We evaluate PaW on interactive decision-making and search-augmented QA tasks. For interactive
+decision-making, we use ALFWorld Shridhar et al. (2021), an embodied text-based environment with
+3,827 household tasks instances across six household task categories: Pick & Place (Pick), Examine
+in Light (Look), Clean & Place (Clean), Heat & Place (Heat), Cool & Place (Cool), and Pick Two &
+Place (Pick2), and WebShop Yao et al. (2022), a web shopping environment with over 110K products
+and 12K user instructions. For search-augmented QA, we evaluate multi-turn tool use on single-hop
+benchmarks including NQ Kwiatkowski et al. (2019), TriviaQA Joshi et al. (2017), and PopQA Mallen
+et al. (2022), as well as multi-hop benchmarks including HotpotQA Yang et al. (2018), 2Wiki Ho et
+al. (2020), MuSiQue Trivedi et al. (2022), and Bamboogle Press et al. (2022).
+
+Baselines.
+
+We use GRPO Shao et al. (2024) and GIGPO Feng et al. (2025) as the main RL baselines, and compare
+each vanilla algorithm with its PaW-augmented variant. For ALFWorld and WebShop, we also compare
+against closed-source LLM agents, including GPT-4o Achiam et al. (2023) and Gemini-2.5-Pro Team et
+al. (2023), and prompting-based agents, including ReAct Yao et al. (2023) and Reflexion Shinn et
+al. (2024). For search-augmented QA, we additionally include Search-R1 Jin et al. (2025) and
+ZeroSearch Sun et al. (2025) as representative RL-based search-agent baselines.
+
+Implementation details.
+
+Following Feng et al. (2025), we use Qwen2.5-1.5B/7B-Instruct Yang et al. (2024) for ALFWorld and
+WebShop, and Qwen2.5-3B/7B-Instruct for search-augmented QA. We set the rollout group size to 88
+for ALFWorld and WebShop and 55 for search-augmented QA, where E5 Wang et al. (2022) is used as the
+retriever with at most 44 interaction turns. For PaW, we set entropy selection ratio to α=0.75\
+alpha=0.75 and the clipping threshold to ρ=0.2\rho=0.2, while keeping all RL hyperparameters
+identical to the corresponding vanilla RL baseline. All results are averaged over three random
+seeds. More details are shown in Appendix A.
+
+ RL          Model          Vanilla   w/ PaW
+PPO  Qwen2.5-1.5B-Instruct  59.1    65.2[+6.1]
+RLOO Qwen2.5-1.5B-Instruct  56.7    61.2[+4.5]
+GRPO       Qwen3-1.7B       45.4    54.2[+8.8]
+GRPO  Llama3.2-3B-Instruct  4.0     62.2[+58.2]
+GRPO  Qwen2.5-14B-Instruct  74.7    77.1[+2.4]
+
+
+Table 3: WebShop success rate (%) across different RL algorithms and base models.
+
+4.2 Experimental Results
+
+Table 1 shows that PaW consistently improves both GRPO and GIGPO on ALFWorld and WebShop across
+model scales. On ALFWorld, PaW improves the overall success rate of GRPO by +7.9+7.9 and +3.0+3.0
+for Qwen2.5-1.5B-Instruct and Qwen2.5-7B-Instruct, respectively. It also improves GIGPO by +2.8+2.8
+and +1.0+1.0. On WebShop, PaW yields even larger success-rate gains, improving GRPO by +8.0+8.0 and
++4.0+4.0 and GIGPO by +9.1+9.1 and +2.9+2.9 at 1.5B and 7B, respectively. These results indicate
+that rollout-based world-model co-training improves long-horizon agent decision-making without
+adding extra models or changing inference.
+
+Table 2 further evaluates PaW on multi-turn search-augmented QA tasks. For GRPO, PaW improves the
+average score from 43.9%43.9\% to 44.8%44.8\% at 3B and from 47.9%47.9\% to 48.8%48.8\% at 7B. For
+GIGPO, the average score increases from 41.2%41.2\% to 44.2%44.2\% at 3B and from 45.8%45.8\% to
+47.5%47.5\% at 7B. The gains across interactive environments and search-augmented QA suggest that
+PaW is complementary to different RL algorithms and generalizes across agentic tasks. More results
+can be found in Appendix B.
+
+
+Figure 4: Training rewards of Llama3.2-3B-Instruct on WebShop. Compared with vanilla GRPO, PaW
+helps the agent escape sparse-reward failure and obtain positive success signals.
+
+4.3 Different Models and RL algorithms
+
+We further examine whether the gains from PaW generalize beyond the main GRPO/GIGPO settings. To
+test generality across RL algorithms, we combine PaW with PPO Schulman et al. (2017) and RLOO Kool
+et al. (2019); Ahmadian et al. (2024). To test generality across model backbones, we apply GRPO w/
+PaW to different model families and scales, including Qwen3-1.7B Qwen Team (2025),
+Llama3.2-3B-Instruct Grattafiori et al. (2024), and Qwen2.5-14B-Instruct. Implementation details
+can be found in Appendix A. As shown in Table 3, PaW consistently improves WebShop success rate
+across RL algorithms, model families, and model scales. It improves PPO and RLOO by +6.1+6.1 and
++4.5+4.5, respectively, showing that the proposed world-model co-training objective is not tied to
+a specific RL algorithm. The improvement also persists across different backbones, including a
++2.4+2.4 gain on Qwen2.5-14B-Instruct. Notably, PaW improves Llama3.2-3B-Instruct from 4.0%4.0\% to
+62.2%62.2\%, suggesting that world-model supervision can provide useful learning signals when
+vanilla RL struggles to obtain positive rewards; we analyze this case in Section 4.4.
+
+
+Figure 5: Per-step training time and GPU memory breakdown on ALFWorld with Qwen2.5-1.5B-Instruct.
+PaW increases both wall-clock time and GPU memory usage by approximately 2%2\%.
+
+4.4 PaW Helps Where RL Fails
+
+We next study whether PaW can help in sparse-reward settings where vanilla RL struggles to learn
+from on-policy rollouts. We train Llama3.2-3B-Instruct on WebShop with GRPO and compare the
+training dynamics with and without PaW. As shown in Figure 4, vanilla GRPO rarely obtains positive
+rewards in this challenging setting, causing the training signal to collapse. In contrast, PaW
+provides dense WM supervision by predicting next observations from collected state-action
+transitions. This auxiliary supervision allows the model to learn useful transition information
+even when most trajectories receive zero task reward. After several training steps, the model
+begins to generate successful rollouts, which in turn provides meaningful RL signals for further
+policy improvement. This result suggests that PaW can improve RL robustness by mitigating
+sparse-reward failures, especially for weaker base models or harder tasks. This analysis also
+corresponds to the +58.2+58.2 improvement on Llama3.2-3B-Instruct reported in Table 3.
+
+4.5 Computational Overhead
+
+We further measure the computational overhead introduced by PaW. We profile the per-step wall-clock
+time and GPU memory usage of vanilla GRPO and GRPO w/ PaW on ALFWorld with Qwen2.5-1.5B-Instruct.
+As shown in Figure 5, PaW introduces negligible overhead: it reuses the same rollout data and actor
+forward pass, adding only the WM objective during the RL update while leaving the rest of the
+pipeline unchanged. It adds only 10.710.7 s per step (2.1%2.1\% of the ∼505\sim\!505 s GRPO step
+time), with peak and average GPU memory increasing by 2.42.4 GB (2.4%2.4\%) and 2.22.2 GB (2.2%2.2\
+%), respectively. Thus, PaW improves agent performance with minimal training overhead.
+
+    Method      ALFWorld WebShop
+     GRPO       70.0     60.6
+  GRPO w/ PaW   77.9     68.6
+w/o Ada. Coef.  75.5     67.0
+  w/ CE loss    68.5     57.2
+
+
+Table 4: Ablation results on ALFWorld and WebShop with Qwen2.5-1.5B-Instruct using GRPO as the base
+RL algorithm. “w/o Ada. Coef.” sets λWM,g=1\lambda_{\mathrm{WM},g}=1 for all rollout groups, and “w
+/ CE loss” replaces the CMAE observation loss with standard cross-entropy.
+
+4.6 Ablation Study
+
+Table 4 studies the reward-adaptive WM coefficient and the clipped MAE WM loss in PaW on ALFWorld
+and WebShop with Qwen2.5-1.5B-Instruct and GRPO . Fixing λWM,g=1\lambda_{\mathrm{WM},g}=1 still
+outperforms vanilla GRPO but reduces performance from 77.9%77.9\% to 75.5%75.5\% on ALFWorld and
+from 68.6%68.6\% to 67.0%67.0\% on WebShop, showing the benefit of adaptive loss balancing.
+Replacing CMAE with standard cross-entropy causes a larger drop, to 68.5%68.5\% on ALFWorld and
+57.2%57.2\% on WebShop, indicating that CE can overfit noisy observation tokens while CMAE provides
+more robust supervision. Together, both components are important for effective world modeling
+co-training.
+
+4.7 Hyperparameter Sensitivity
+
+We further analyze the sensitivity of PaW to the entropy selection ratio α\alpha and clipping
+threshold ρ\rho on WebShop with Qwen2.5-1.5B-Instruct and GRPO. As shown in Figure 6, PaW remains
+effective across a broad range of values. Moderate clipping works best, with ρ=0.2\rho=0.2
+performing the strongest, while overly large thresholds reduce performance, highlighting the
+importance of filtering unpredictable observation tokens. Performance also varies smoothly with α\
+alpha, with α=0.75\alpha=0.75 giving the best result, suggesting that entropy-based transition
+selection is useful but not overly sensitive to the exact ratio. Overall, PaW does not require
+delicate hyperparameter tuning.
+
+
+Figure 6: Hyperparameter sensitivity on WebShop with Qwen2.5-1.5B-Instruct using GRPO as the base
+RL algorithm. We vary the CMAE clipping threshold ρ\rho and the entropy selection ratio α\alpha.
+
+5 Related Work
+
+Training LLM agents.
+
+LLM agents map instructions, interaction histories, and observations into executable actions for
+web, tool-use, embodied, and other interactive tasks Wang et al. (2023); Yao et al. (2023); Shinn
+et al. (2023). Beyond prompting, recent work trains agents with supervised fine-tuning or
+reinforcement learning Deng et al. (2023); Zeng et al. (2024); Chen et al. (2023); Xi et al. (2024)
+; Jin et al. (2025); Sun et al. (2025); Feng et al. (2025). Because agent rewards are often sparse
+and delayed, existing RL methods mainly improve credit assignment or add auxiliary training
+signals Feng et al. (2025); Fang et al. (2026); Lu et al. (2026). PaW is complementary to these
+approaches: instead of changing the policy-gradient estimator, it reuses the same on-policy
+rollouts to provide dense next-observation supervision.
+
+World modeling for language agents.
+
+World models learn environment dynamics by predicting future states or rewards Ha and Schmidhuber
+(2018); Hafner et al. (2020); Hafner et al. (2021). Recent language-agent methods use LLMs as world
+models, simulators, or transition predictors for planning, verification, and policy learning Hao et
+al. (2023b); Lin et al. (2024); Guo et al. (2025); Chae et al. (2025); Yu et al. (2026); Liu et al.
+(2026a). While these methods demonstrate the value of future-observation modeling, they often
+require a separate world model, additional simulator training, or inference-time planning. In
+contrast, PaW folds world modeling into standard on-policy RL by training the same policy model to
+predict next observations from its own rollouts, introducing no extra interactions, no separate
+model, and no additional inference-time computation.
+
+6 Conclusion
+
+In this paper, we presented PaW, a policy and world modeling co-training framework for LLM agents.
+Rather than training a separate simulator or adding inference-time planning, PaW reuses on-policy
+RL rollouts as action-conditioned next-observation supervision and optimizes an auxiliary
+world-modeling loss on the same policy model. To make this supervision effective in noisy agentic
+environments, PaW combines action-entropy-based transition selection, clipped MAE observation
+prediction, and reward-adaptive loss balancing. Experiments on ALFWorld, WebShop, and
+search-augmented QA show consistent gains across RL algorithms and model scales, with minimal
+training overhead and no additional inference cost. These results suggest that standard RL rollouts
+provide a simple and practical source of world modeling supervision for improving language-agent
+training.
+
+7 Limitations
+
+While PaW consistently improves RL performance, it has two main limitations. First, it relies on
+one-step next-observation supervision, which captures local dynamics but does not explicitly model
+longer-horizon dependencies or compounding prediction errors. Extending the co-training objective
+to multi-step world modeling is a promising direction for future work. Second, WM supervision is
+constructed from raw on-policy rollouts without trajectory-level deduplication; repeated
+trajectories may reduce supervision diversity and bias the auxiliary objective toward frequent
+patterns. Incorporating deduplication or diversity-aware sampling may further improve the
+efficiency and effectiveness of world modeling.
+
+References
+
+  • Achiam et al. (2023) J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D.
+    Almeida, J. Altenschmidt, S. Altman, S. Anadkat, et al. GPT-4 technical report. arXiv preprint
+    arXiv:2303.08774. Cited by: 1st item, §4.1.
+  • Ahmadian et al. (2024) A. Ahmadian, C. Cremer, M. Gallé, M. Fadaee, J. Kreutzer, O. Pietquin,
+    A. Üstün, and S. Hooker Back to basics: revisiting reinforce style optimization for learning
+    from human feedback in LLMs. In Annual Meeting of the Association for Computational Linguistics
+    , Cited by: 6th item, §4.3.
+  • Chae et al. (2025) H. Chae, N. Kim, K. T. Ong, M. Gwak, G. Song, J. Kim, S. Kim, D. Lee, and J.
+    Yeo Web agents with world models: learning and leveraging environment dynamics in web
+    navigation. In International Conference on Learning Representations, Cited by: §5.
+  • Chen et al. (2023) B. Chen, C. Shu, E. Shareghi, N. Collier, K. Narasimhan, and S. Yao FireAct:
+    toward language agent fine-tuning. arXiv preprint arXiv:2310.05915. Cited by: §5.
+  • DeepSeek-AI (2026) DeepSeek-AI DeepSeek-v4: towards highly efficient million-token context
+    intelligence. Cited by: §1.
+  • Deng et al. (2023) X. Deng, Y. Gu, B. Zheng, S. Chen, S. Stevens, B. Wang, H. Sun, and Y. Su 
+    Mind2Web: towards a generalist agent for the web. In Conference on Neural Information
+    Processing Systems Datasets and Benchmarks Track, Cited by: §5.
+  • Fang et al. (2025) T. Fang, H. Zhang, Z. Zhang, K. Ma, W. Yu, H. Mi, and D. Yu WebEvolver:
+    enhancing web agent self-improvement with co-evolving world model. In Conference on Empirical
+    Methods in Natural Language Processing, Cited by: §1.
+  • Fang et al. (2026) Y. Fang, J. Lin, X. Fu, C. Qin, H. Shi, C. Liu, and P. Zhao Proximity-based
+    multi-turn optimization: practical credit assignment for LLM agent training. arXiv preprint
+    arXiv:2602.19225. Cited by: §5.
+  • Feng et al. (2025) L. Feng, Z. Xue, T. Liu, and B. An Group-in-group policy optimization for
+    LLM agent training. In Conference on Neural Information Processing Systems, Cited by: 8th item,
+    §2, §4.1, §4.1, §5.
+  • Ghosh et al. (2017) A. Ghosh, H. Kumar, and P. S. Sastry Robust loss functions under label
+    noise for deep neural networks. In Proceedings of the Thirty-First AAAI Conference on
+    Artificial Intelligence, pp. 1919–1925. Cited by: §3.2.
+  • GLM-5-Team (2026) GLM-5-Team GLM-5: from vibe coding to agentic engineering. arXiv preprint
+    arXiv:2602.15763. Cited by: §1.
+  • Grattafiori et al. (2024) A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A.
+    Al-Dahle, A. Letman, A. Mathur, A. Schelten, A. Vaughan, et al. The llama 3 herd of models. 
+    arXiv preprint arXiv:2407.21783. Cited by: §4.3.
+  • Gu et al. (2025) Y. Gu, K. Zhang, Y. Ning, B. Zheng, B. Gou, T. Xue, C. Chang, S. Srivastava,
+    Y. Xie, P. Qi, H. Sun, and Y. Su Is your LLM secretly a world model of the internet?
+    model-based planning for web agents. Transactions on Machine Learning Research. Cited by: §1.
+  • Guo et al. (2025) S. Guo, O. D. Domingues, R. Avalos, A. Courville, and F. Strub World
+    modelling improves language model agents. arXiv preprint arXiv:2506.02918. Cited by: §5.
+  • Ha and Schmidhuber (2018) D. Ha and J. Schmidhuber World models. arXiv preprint
+    arXiv:1803.10122. Cited by: §5.
+  • Hafner et al. (2020) D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi Dream to control: learning
+    behaviors by latent imagination. In International Conference on Learning Representations, Cited
+    by: §5.
+  • Hafner et al. (2021) D. Hafner, T. Lillicrap, M. Norouzi, and J. Ba Mastering atari with
+    discrete world models. In International Conference on Learning Representations, Cited by: §5.
+  • Hao et al. (2023a) S. Hao, Y. Gu, H. Ma, J. J. Hong, Z. Wang, D. Z. Wang, and Z. Hu Reasoning
+    with language model is planning with world model. In Conference on Empirical Methods in Natural
+    Language Processing, Cited by: §1.
+  • Hao et al. (2023b) S. Hao, Y. Gu, H. Ma, J. J. Hong, Z. Wang, D. Z. Wang, and Z. Hu Reasoning
+    with language model is planning with world model. In Conference on Empirical Methods in Natural
+    Language Processing, Cited by: §5.
+  • Ho et al. (2020) X. Ho, A. D. Nguyen, S. Sugawara, and A. Aizawa Constructing a multi-hop qa
+    dataset for comprehensive evaluation of reasoning steps. arXiv preprint arXiv:2011.01060. Cited
+    by: §4.1.
+  • Jin et al. (2025) B. Jin, H. Zeng, Z. Yue, J. Yoon, S. O. Arik, D. Wang, H. Zamani, and J. Han 
+    Search-R1: training LLMs to reason and leverage search engines with reinforcement learning. In 
+    Conference on Language Modeling, Cited by: §4.1, §5.
+  • Joshi et al. (2017) M. Joshi, E. Choi, D. S. Weld, and L. Zettlemoyer TriviaQA: a large scale
+    distantly supervised challenge dataset for reading comprehension. arXiv preprint
+    arXiv:1705.03551. Cited by: §4.1.
+  • Kool et al. (2019) W. Kool, H. van Hoof, and M. Welling Buy 4 reinforce samples, get a baseline
+    for free!. In International Conference on Learning Representations Workshop, Cited by: 6th item
+    , §4.3.
+  • Kwiatkowski et al. (2019) T. Kwiatkowski, J. Palomaki, O. Redfield, M. Collins, A. Parikh, C.
+    Alberti, D. Epstein, I. Polosukhin, J. Devlin, K. Lee, et al. Natural questions: a benchmark
+    for question answering research. Transactions of the Association for Computational Linguistics 
+    7, pp. 453–466. Cited by: §4.1.
+  • Li et al. (2026) Y. Li, H. Wang, J. Qiu, Z. Yin, D. Zhang, C. Qian, Z. Li, P. Ma, G. Chen, and
+    H. Ji From word to world: can large language models be implicit text-based world models?. arXiv
+    preprint arXiv:2512.18832. Cited by: §1.
+  • Lin et al. (2024) J. Lin, Y. Du, O. Watkins, D. Hafner, P. Abbeel, D. Klein, and A. Dragan 
+    Learning to model the world with language. In International Conference on Machine Learning, 
+    Cited by: §5.
+  • Liu et al. (2026a) Y. Liu, J. Wang, H. Wang, B. Guo, and W. Li Imagine-then-plan: agent
+    learning from adaptive lookahead with world models. arXiv preprint arXiv:2601.08955. Cited by:
+    §5.
+  • Liu et al. (2026b) Y. Liu, J. Wang, H. Wang, B. Guo, and W. Li Imagine-then-plan: agent
+    learning from adaptive lookahead with world models. arXiv preprint arXiv:2601.08955. Cited by:
+    §1, §1, §2.
+  • Lu et al. (2026) Z. Lu, Z. Yao, Z. Han, Z. Wang, J. Wu, Q. Gu, X. Cai, W. Lu, J. Xiao, Y.
+    Zhuang, and Y. Shen Self-distilled agentic reinforcement learning. arXiv preprint
+    arXiv:2605.15155. Cited by: §5.
+  • Mallen et al. (2022) A. Mallen, A. Asai, V. Zhong, R. Das, D. Khashabi, and H. Hajishirzi When
+    not to trust language models: investigating effectiveness of parametric and non-parametric
+    memories. arXiv preprint arXiv:2212.10511. Cited by: §4.1.
+  • Press et al. (2022) O. Press, M. Zhang, S. Min, L. Schmidt, N. A. Smith, and M. Lewis Measuring
+    and narrowing the compositionality gap in language models. arXiv preprint arXiv:2210.03350. 
+    Cited by: §4.1.
+  • Qwen Team (2025) Qwen Team Qwen3 technical report. arXiv preprint arXiv:2505.09388. Cited by:
+    §4.3.
+  • Schulman et al. (2017) J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov Proximal
+    policy optimization algorithms. arXiv preprint arXiv:1707.06347. Cited by: 5th item, §4.3.
+  • Shao et al. (2024) Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. Li,
+    Y. Wu, et al. DeepSeekMath: pushing the limits of mathematical reasoning in open language
+    models. arXiv preprint arXiv:2402.03300. Cited by: 7th item, §2, §4.1.
+  • Shinn et al. (2024) N. Shinn, F. Cassano, A. Gopinath, K. Narasimhan, and S. Yao Reflexion:
+    language agents with verbal reinforcement learning. In Conference on Neural Information
+    Processing Systems, Cited by: 4th item, §4.1.
+  • Shinn et al. (2023) N. Shinn, F. Cassano, B. Labash, A. Gopinath, K. Narasimhan, and S. Yao 
+    Reflexion: language agents with verbal reinforcement learning. In Conference on Neural
+    Information Processing Systems, Cited by: §5.
+  • Shridhar et al. (2021) M. Shridhar, X. Yuan, M. Cote, Y. Bisk, A. Trischler, and M. Hausknecht 
+    ALFWorld: aligning text and embodied environments for interactive learning. In International
+    Conference on Learning Representations, Cited by: §4.1.
+  • Sun et al. (2025) H. Sun, Z. Qiao, J. Guo, X. Fan, Y. Hou, Y. Jiang, P. Xie, F. Huang, and Y.
+    Zhang ZeroSearch: incentivize the search capability of LLMs without searching. arXiv preprint
+    arXiv:2505.04588. Cited by: §4.1, §5.
+  • Team et al. (2023) G. Team, R. Anil, S. Borgeaud, J. Alayrac, J. Yu, R. Soricut, J. Schalkwyk,
+    A. M. Dai, A. Hauth, K. Millican, et al. Gemini: a family of highly capable multimodal models. 
+    arXiv preprint arXiv:2312.11805. Cited by: 2nd item, §4.1.
+  • Trivedi et al. (2022) H. Trivedi, N. Balasubramanian, T. Khot, and A. Sabharwal MuSiQue:
+    multihop questions via single-hop question composition. Transactions of the Association for
+    Computational Linguistics 10, pp. 539–554. Cited by: §4.1.
+  • Wang et al. (2023) L. Wang, C. Ma, X. Feng, Z. Zhang, H. Yang, J. Zhang, Z. Chen, J. Tang, X.
+    Chen, Y. Lin, W. X. Zhao, Z. Wei, and J. Wen A survey on large language model based autonomous
+    agents. arXiv preprint arXiv:2308.11432. Cited by: §5.
+  • Wang et al. (2022) L. Wang, N. Yang, X. Huang, B. Jiao, L. Yang, D. Jiang, R. Majumder, and F.
+    Wei Text embeddings by weakly-supervised contrastive pre-training. arXiv preprint
+    arXiv:2212.03533. Cited by: §4.1.
+  • Wei et al. (2022) J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le, D. Zhou, 
+    et al. Chain-of-thought prompting elicits reasoning in large language models. In Conference on
+    Neural Information Processing Systems, Cited by: §A.3.
+  • Xi et al. (2024) Z. Xi, Y. Ding, W. Chen, B. Hong, H. Guo, J. Wang, et al. AgentGym: evolving
+    large language model-based agents across diverse environments. In Annual Meeting of the
+    Association for Computational Linguistics, Cited by: §5.
+  • Xiao et al. (2026) Z. Xiao, J. Tu, C. Zou, Y. Zuo, Z. Li, P. Wang, B. Yu, F. Huang, J. Lin, and
+    Z. Liu WebWorld: A large-scale world model for web agent training. arXiv preprint
+    arXiv:2602.14721. Cited by: §1.
+  • Yang et al. (2024) A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F.
+    Huang, H. Wei, et al. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115. Cited by:
+    §4.1.
+  • Yang et al. (2018) Z. Yang, P. Qi, S. Zhang, Y. Bengio, W. W. Cohen, R. Salakhutdinov, and C.
+    D. Manning HotpotQA: a dataset for diverse, explainable multi-hop question answering. arXiv
+    preprint arXiv:1809.09600. Cited by: §4.1.
+  • Yao et al. (2022) S. Yao, H. Chen, J. Yang, and K. Narasimhan WebShop: towards scalable
+    real-world web interaction with grounded language agents. In Conference on Neural Information
+    Processing Systems, Cited by: §4.1.
+  • Yao et al. (2023) S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao ReAct:
+    synergizing reasoning and acting in language models. In International Conference on Learning
+    Representations, Cited by: 3rd item, §4.1, §5.
+  • Yu et al. (2026) X. Yu, B. Peng, R. Xu, Y. Shen, P. He, S. Nath, N. Singh, J. Gao, and Z. Yu 
+    Reinforcement world model learning for LLM-based agents. arXiv preprint arXiv:2602.05842. Cited
+    by: §1, §5.
+  • Zeng et al. (2024) A. Zeng, M. Liu, R. Lu, B. Wang, X. Liu, Y. Dong, and J. Tang AgentTuning:
+    enabling generalized agent abilities for LLMs. In Findings of the Annual Meeting of the
+    Association for Computational Linguistics, Cited by: §5.
+  • Zhang et al. (2025) K. Zhang, X. Chen, B. Liu, T. Xue, Z. Liao, Z. Liu, X. Wang, Y. Ning, Z.
+    Chen, X. Fu, J. Xie, Y. Sun, B. Gou, Q. Qi, Z. Meng, J. Yang, N. Zhang, X. Li, A. Shah, D.
+    Huynh, H. Li, Z. Yang, S. Cao, L. Jang, S. Zhou, J. Zhu, H. Sun, J. Weston, Y. Su, and Y. Wu 
+    Agent learning via early experience. arXiv preprint arXiv:2510.08558. Cited by: §1, §1, §2, §2.
+
+Appendix A Implementation Details
+
+A.1 Details of Training
+
+Hyperparameters for ALFWorld.
+
+All methods are configured with identical hyperparameters: the maximum prompt length is 2048
+tokens, and the maximum response length is 512 tokens. Each episode allows up to 50 environment
+steps. The learning rate is set to 1e-6 for the actor and 1e-5 for the critic (used only in PPO).
+We adopt a rule-based reward, assigning a reward of 10 for success and 0 for failure (Rmax=10R_{\
+text{max}}=10). To handle invalid actions generated by the agent, we apply a reward penalty of
+-0.1. For all group-based RL methods, we use a group size of 8 and sample 16 different groups per
+rollout, resulting in a total of 128 environments. In contrast, PPO uses 128 separate environments
+for rollouts. For GIGPO, the weighting coefficient ω\omega is fixed at 1 without further tuning,
+and the discount factor γ\gamma is set to 0.95. And we use the normalized version of GIGPO. The
+rollout temperature is set to 1.0, while the validation temperature is set to 0.4. The mini-batch
+size is 256 The history number is set to 2.
+
+Hyperparameters for WebShop.
+
+All methods are configured with identical hyperparameters: the maximum prompt length is 4096
+tokens, and the maximum response length is 512 tokens. Each episode is limited to 15 environment
+steps. The learning rate is 1e-6 for the actor and 1e-5 for the critic (used only in PPO). We adopt
+a rule-based reward, assigning a reward of 10 for success and 0 for failure. So the Rmax=10R_{\text
+{max}}=10. Invalid actions are penalized with a reward of -0.1. As with ALFWorld, all group-based
+RL methods use a group size of 8 and sample 16 groups per rollout, totaling 16×8=12816\times 8=128
+environments. PPO, on the other hand, uses 128 distinct environments for rollouts. For GIGPO, the
+weighting coefficient ω\omega is set to 1 without additional tuning, and the discount factor γ\
+gamma is set to 0.95. And we use the normalized version of GIGPO. The rollout temperature is set to
+1.0, while the validation temperature is set to 0.4. The mini-batch size is 64.
+
+Hyperparameters for Search-Augmented QA.
+
+The maximum prompt length is 4096 tokens, and the maximum response length is 512 tokens. The max
+turn is set to 4. The learning rate is 1e-6 for the actor. We adopt a rule-based reward, assigning
+a reward of 1 for success and 0 for failure. So the Rmax=1R_{\text{max}}=1. Invalid actions are
+penalized with a reward of -0.01. We set the train data size to 256 and use a group size of 5. For
+GIGPO, the weighting coefficient ω\omega is set to 1 without additional tuning, the discount factor
+γ\gamma is set to 0.95, and the similarity threshold is set to 0.9. Rollout and validation
+temperatures are set to 1.0 and 0.0, respectively. The mini-batch size is 512.
+
+Prompt Template for ALFWorld You are an expert agent operating in the ALFRED embodied Environment.
+Your task is to: {task_description}. Prior to this step, you have already taken {step_count} step
+(s). Below are the most recent {history_length} observations and the corresponding actions you
+took: {action_history}. You are now at step {current_step} and your current observation is: 
+{current_observation}. Your admissible actions of the current situation are: [{admissible_actions}
+]. Now it’s your turn to take an action. You should first reason step-by-step about the current
+situation. This reasoning process MUST be enclosed within <think> </think> tags. Once you’ve
+finished your reasoning, you should choose an admissible action for current step and present it
+within <action> </action> tags.
+
+Figure 7: The prompt template of ALFWorld agents.
+
+Prompt Template for WebShop You are an expert autonomous agent operating in the WebShop e-commerce
+environment. Your task is to: {task_description}. Prior to this step, you have already taken 
+{step_count} step(s). Below are the most recent {history_length} observations and the corresponding
+actions you took: {action_history}. You are now at step {current_step} and your current observation
+is: {current_observation}. Your admissible actions for the current situation are: [
+{available_actions}]. Now it’s your turn to take one action for the current step. You should first
+reason step-by-step about the current situation, then think carefully which admissible action best
+advances the shopping goal. This reasoning process MUST be enclosed within <think> </think> tags.
+Once you’ve finished your reasoning, you should choose an admissible action for current step and
+present it within <action> </action> tags.
+
+Figure 8: The prompt template of WebShop agents.
+
+Prompt Template for Search You are an expert agent tasked with answering the given question
+step-by-step. Your question: {task_description}. Prior to this step, you have already taken 
+{step_count} step(s). Below is the interaction history where <search> </search> wrapped your past
+search queries and <information> </information> wrapped the corresponding search results returned
+by the external search engine. History: {memory_context} Now it’s your turn to respond for the
+current step. You should first conduct reasoning process. This process MUST be enclosed within 
+<think> </think> tags. After completing your reasoning, choose only one of the following actions
+(do not perform both): (1) If you find you lack some knowledge, you can call a search engine to get
+more external information using format: <search> your query </search>. (2) If you have enough
+knowledge to answer the question confidently, provide your final answer within <answer> </answer>
+tags, without detailed illustrations. For example, <answer>Beijing</answer>.
+
+Figure 9: The prompt template of Search agents.
+
+A.2 Baseline Details
+
+  • •
+   
+    GPT-4o: A closed-source, large-scale LLM used as a baseline for multi-turn agentic tasks (
+    Achiam et al., 2023).
+
+  • •
+   
+    Gemini-2.5-Pro: Another closed-source LLM, comparable in scale and capability to GPT-4o (Team
+    et al., 2023).
+
+  • •
+   
+    ReAct: A prompting-based agent that integrates reasoning and acting in an interleaved
+    chain-of-thought framework Yao et al. (2023).
+
+  • •
+   
+    Reflexion: A prompting agent that incorporates self-reflection and iterative improvement over
+    generated outputs (Shinn et al., 2024).
+
+  • •
+   
+    PPO: Proximal Policy Optimization, a classic RL algorithm for policy learning (Schulman et al.,
+    2017).
+
+  • •
+   
+    RLOO: Reinforcement Learning with Offline Observations, a group-based RL approach that
+    estimates advantages without value networks (Kool et al., 2019; Ahmadian et al., 2024).
+
+  • •
+   
+    GRPO: Group-based RL with trajectory-level advantage estimation, designed to scale RL to
+    multi-step tasks (Shao et al., 2024).
+
+  • •
+   
+    GiGPO: Grouped Incremental GPO, a prior hierarchical RL method that performs group-wise
+    advantage estimation for LLM-based agents (Feng et al., 2025).
+
+A.3 Prompts
+
+The prompt templates used for the LLM agents are shown in Figure 7, Figure 8, and Figure 9. Each
+template is implemented using Python-style string formatting, where fields enclosed in curly braces
+({}) denote semantic slots that are instantiated at runtime via Python’s .format() function. For
+example, placeholders such as {task_description}, {step_count}, and {current_observation} are
+dynamically replaced with task-specific context. To provide the agent with temporal context, we
+additionally incorporate interaction history: we retain the two most recent history steps for
+ALFWorld and WebShop, and use the complete history for search-augmented question answering.
+
+Type     Method    ALFWorld                                                       WebShop
+                   Pick     Look     Clean    Heat     Cool     Pick2    All      Score    Succ.
+Qwen2.5-1.5B-Instruct
+RL       GRPO      86.5[    46.3[    79.0[    70.2[    69.1[    47.8[    70.0[    75.6[    60.6[
+Training           ±4.3]    ±8.4]    ±3.2]    ±2.5]    ±8.0]    ±5.8]    ±4.2]    ±3.8]    ±4.6]
+RL       GRPO w/   87.8[    59.3[    84.5[    73.7[    75.4[    69.6[    77.9[    83.8[    68.6[
+Training PaW       ±3.6]    ±8.9]    ±1.7]    ±4.3]    ±8.4]    ±3.5]    ±2.7]    ±2.1]    ±2.9]
+RL       GIGPO     95.3[    84.3[    87.7[    92.6[    79.8[    82.3[    87.6[    83.2[    66.2[
+Training           ±2.2]    ±4.6]    ±1.2]    ±7.0]    ±1.4]    ±6.1]    ±1.6]    ±1.9]    ±3.4]
+RL       GIGPO w/  95.3[    83.3[    91.8[    89.5[    89.1[    84.5[    90.4[    87.7[    75.3[
+Training PaW       ±4.5]    ±4.5]    ±6.0]    ±4.3]    ±0.3]    ±5.8]    ±1.3]    ±1.7]    ±3.2]
+Qwen2.5-7B-Instruct
+RL       GRPO      90.8[    66.1[    89.3[    74.7[    72.5[    64.7[    77.6[    75.4[    66.5[
+Training           ±5.1]    ±6.7]    ±5.4]    ±6.9]    ±5.4]    ±7.3]    ±5.2]    ±2.7]    ±3.6]
+RL       GRPO w/   90.4[    80.7[    86.8[    82.9[    76.5[    67.3[    80.6[    84.5[    70.5[
+Training PaW       ±6.8]    ±7.4]    ±6.8]    ±8.6]    ±2.6]    ±3.7]    ±3.1]    ±2.3]    ±2.9]
+RL       GIGPO     97.7[    82.7[    98.8[    83.7[    89.3[    79.2[    90.8[    85.0[    73.8[
+Training           ±1.6]    ±7.9]    ±1.6]    ±7.2]    ±8.2]    ±6.6]    ±1.3]    ±2.9]    ±3.2]
+RL       GIGPO w/  98.2[    85.6[    98.6[    84.5[    91.5[    84.3[    91.8[    87.6[    76.7[
+Training PaW       ±1.0]    ±6.2]    ±1.1]    ±7.6]    ±7.2]    ±6.8]    ±1.2]    ±2.4]    ±2.7]
+
+
+Table 5: Full performance on ALFWorld and WebShop with statistical stats. Results are averaged over
+3 random seeds. For ALFWorld, we report the average success rate (%) for each subtask as well as
+the overall result. For WebShop, we report both the average score and the average success rate (%).
+
+                                               
+(a) Training reward. (b) Policy-gradient loss. (c) Clipped update ratio.
+
+
+Figure 10: Policy-side training dynamics on WebShop. PaW improves the training reward over the GRPO
+baseline, while the policy-gradient loss and clipped update ratio remain broadly comparable. This
+suggests that the auxiliary world modeling objective improves learning without substantially
+changing the main policy-optimization dynamics.
+
+                                                   
+(a) Adaptive coefficient. (b) World modeling loss. (c) Clipped token ratio.
+
+
+Figure 11: PaW-side training dynamics. The reward-adaptive coefficient decreases as training reward
+improves, the world modeling loss trends downward, and the clipped token ratio reports how often
+the margin objective clips observation-token supervision.
+
+The <think> </think> block is used to elicit explicit step-by-step reasoning from the agent,
+encouraging chain-of-thought Wei et al. (2022) style deliberation. The <action> </action> block
+specifies the agent’s final action decision. For the search agent, reasoning traces are produced
+within <think> </think> tags, search queries are issued within <search> </search> tags, and final
+answers are provided within <anwser> </anwser> tags. Retrieved evidence from the retriever is
+supplied to the agent using <information> </information> tags.
+
+A.4 Noise-Gradient Analysis
+
+This section describes the diagnostic used for panel (c) of Figure 2. The goal is to measure how
+much of the world-model gradient budget is assigned to unpredictable WebShop observation tokens
+under CE and MAE losses. We run the diagnostic on WebShop with Qwen2.5-1.5B-Instruct. We randomly
+sample 100 WebShop search-result steps from rollout traces. For each sampled transition
+(𝒉t,𝒂t,𝒐t+1)(\bm{h}_{t},\bm{a}_{t},\bm{o}_{t+1}), we use the same serialization format as
+world-model training. The decision context 𝒉t\bm{h}_{t} and the generated action 𝒂t\bm{a}_{t} form
+the prefix, and the next observation 𝒐t+1\bm{o}_{t+1} is treated as the teacher-forced target. We
+only score tokens that belong to the next-observation span.
+
+For the ii-th target token in 𝒐t+1\bm{o}_{t+1}, we compute the model probability pt,i:=𝝅𝜽​(𝒐t+1(i)
+∣𝒉t,𝒂t,𝒐t+1(<i))p_{t,i}:=\bm{\pi_{\theta}}\!\left(\bm{o}_{t+1}^{(i)}\mid\bm{h}_{t},\bm{a}_{t},\bm
+{o}_{t+1}^{(<i)}\right), following the notation of Section 3.2. We then compare two token-level
+losses. The CE diagnostic uses ℓCE(i)=−log⁡pt,i\ell_{\mathrm{CE}}^{(i)}=-\log p_{t,i}, matching the
+unbounded WM CE objective in Equation 5. The MAE diagnostic uses ℓMAE(i)=1−pt,i\ell_{\mathrm{MAE}}^
+{(i)}=1-p_{t,i}, matching the bounded per-token term used by our Clipped MAE loss in Equation 8
+before applying the confidence mask mt,im_{t,i}. To compare gradient allocation rather than raw
+loss scale, we compute the target-logit gradient magnitude for each token, consistent with the
+parameter-gradient comparison in Equation 6. For CE this magnitude is 1−pt,i1-p_{t,i}. For MAE this
+magnitude is pt,i​(1−pt,i)p_{t,i}(1-p_{t,i}). We sum these magnitudes within each token category
+and normalize them by the total gradient magnitude over all scored next-observation tokens.
+
+We define noisy tokens using human-written WebShop rules. A token is labeled as noisy if its
+character span overlaps either a random product identifier or a brand string. Random product
+identifiers are matched with ASIN-style pattern B[0-9A-Z]{9}. Brand strings are matched as
+brand-like uppercase spans with at least four letters, optionally followed by digits. This
+threshold excludes structural markers such as SEP. All other next-observation tokens are labeled as
+meaningful for this diagnostic. When a word is split into multiple subword tokens, each subword
+inherits noisy label if its offset overlaps a noisy character span.
+
+This analysis is evaluation-only and does not update model parameters. It isolates the effect of
+the loss function on gradient allocation over the same sampled tokens. The resulting normalized
+shares show whether a loss over-allocates gradient to noisy WebShop surface strings.
+
+Appendix B Additional Experimental Results
+
+B.1 Full Results of ALFWorld and WebShop
+
+Table 5 shows the full results on ALFWorld and WebShop, including the statistical stats. Results
+are averaged over 3 random seeds. It shows that PaW consistently improves the performance over the
+base RL methods.
+
+B.2 Training Dynamics
+
+Figure 10 compares the policy-side dynamics. GRPO w/ PaW obtains better training reward than the
+GRPO baseline, indicating that the additional world-model supervision improves the learned policy
+during RL. At the same time, the policy-gradient loss and clipped update ratio are close to those
+of GRPO, suggesting that the improvement does not come from a large change in PPO-style update
+magnitude or clipping behavior.
+
+Figure 11 further analyzes the auxiliary world-model objective. The adaptive coefficient decreases
+during training, because higher-reward rollouts receive less world-model supervision under the
+reward-adaptive scaling rule. Meanwhile, the world-model loss decreases, showing that the shared
+policy model learns the next-observation prediction target from RL rollouts. The clipped token
+ratio tracks how many observation tokens are affected by the margin clipping mechanism, which keeps
+the auxiliary signal bounded as the world-model prediction improves.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

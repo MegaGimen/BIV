@@ -1,0 +1,1379 @@
+source: https://arxiv.org/html/2502.20186
+arxiv: https://arxiv.org/abs/2502.20186
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Contribution
+ 3. 2 Related Work
+ 4. 3 Background Knowledge
+ 5. 4 Proposed Method
+     1. Step 1: Deriving Instruction Vector and Complex Vector
+     2. Step 2: Computing Layerwise Similarity
+     3. Step 3: Deriving Pure Vector
+     4. Step 4: Performing TA with Pure Vector
+ 6. 5 Evaluation
+     1. 5.1 Setup
+         1. Dataset
+         2. Model
+         3. Metric
+         4. Baseline
+     2. 5.2 Result
+         1. Task Learning
+         2. Task Forgetting
+ 7. 6 Discussion
+     1. Distribution of Important Layers for Target Tasks
+     2. Significant Impact from a Small Fraction of Layer Vectors
+ 8. 7 Conclusion
+ 9. References
+10. A Appendix
+     1. A.1 Models Used in Experiments
+         1. A.1.1 Task Learning
+         2. A.1.2 Task Forgetting
+     2. A.2 Results with Different Hyperparameters on Gemma-2-9b
+         1. DARE.
+         2. TIES.
+         3. DARE + TIES.
+     3. A.3 Results with Different Hyperparameters on Llama-3-8B
+         1. DARE.
+         2. TIES.
+         3. DARE+TIES.
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2502.20186v1 [cs.CL] 27 Feb 2025
+
+Layer-Aware Task Arithmetic: Disentangling Task-Specific and Instruction-Following Knowledge
+
+Yan-Lun Chen^*, Yi-Ru Wei^*, Chia-Yi Hsu^*, Chia-Mu Yu^*, Chun-Ying Huang^*, Ying-Dar Lin^*    
+Yu-Sung Wu^* and Wei-Bin Lee^* National Yang Ming Chiao Tung University Affiliation:  Hon Hai
+Research Institute
+
+Abstract
+
+Large language models (LLMs) demonstrate strong task-specific capabilities through fine-tuning, but
+merging multiple fine-tuned models often leads to degraded performance due to overlapping
+instruction-following components. Task Arithmetic (TA), which combines task vectors derived from
+fine-tuning, enables multi-task learning and task forgetting but struggles to isolate task-specific
+knowledge from general instruction-following behavior. To address this, we propose Layer-Aware Task
+Arithmetic (LATA), a novel approach that assigns layer-specific weights to task vectors based on
+their alignment with instruction-following or task-specific components. By amplifying task-relevant
+layers and attenuating instruction-following layers, LATA improves task learning and forgetting
+performance while preserving overall model utility. Experiments on multiple benchmarks, including
+WikiText-2, GSM8K, and HumanEval, demonstrate that LATA outperforms existing methods in both
+multi-task learning and selective task forgetting, achieving higher task accuracy and alignment
+with minimal degradation in output quality. Our findings highlight the importance of layer-wise
+analysis in disentangling task-specific and general-purpose knowledge, offering a robust framework
+for efficient model merging and editing.
+
+1 Introduction
+
+Existing large language models (LLMs) demonstrate robust conversational abilities but often require
+fine-tuning on specialized datasets for optimal task performance. Model merging combines multiple
+fine-tuned models into a single multi-task system. A common approach is task arithmetic (TA)
+Ilharco et al. (2023), which adds or subtracts parameter differences (task vectors) obtained before
+and after fine-tuning. By manipulating these vectors, TA enables a model to gain or discard
+specific task capabilities.
+
+Models fine-tuned for specific tasks typically stem from instruction-following LLMs Dodge et al.
+(2020). During fine-tuning, instruction-following behavior is further reinforced alongside the
+target task capability (Figure 1(a)). Consequently, each task vector encodes both
+instruction-following and task-specific components. Merging multiple task vectors via TA can
+introduce overlapping instruction-following components, leading to worse utility in the merged
+model (Figure 1(b)) and degrading overall output quality. Moreover, overlapping parameters across
+different tasks may lower performance on individual tasks when tasks are merged together.
+
+To mitigate negative effects from overlapping instruction-following components, one must discard
+those portions of the task vectors and preserve only the segments that emphasize the target task.
+However, effectively isolating task-oriented segments remains an open challenge.
+
+In TA, the direction of a task vector determines how the target model’s capabilities shift. We can
+view the full vector as a collection of layer-specific vectors, one per layer. Comparing each
+layer’s vector with that of an instruction-following model reveals whether it focuses on
+instruction-following (high similarity) or on the specific task (low similarity).
+
+Based on this observation, we propose Layer-Aware Task Arithmetic (LATA), which assigns different
+weights to each layer of the task vector. Layers aligned with the target task receive larger
+weights, amplifying their effect on the final model, while layers emphasizing instruction-following
+receive smaller weights (or are disregarded) to reduce negative impact.
+
+Our experiments show that LATA not only preserves output quality in task learning but also achieves
+better overall performance on each task than existing approaches. In task forgetting (the
+subtractive operation in TA), LATA likewise demonstrates strong effectiveness, selectively removing
+capabilities with minimal overall degradation.
+
+Contribution
+
+We introduce LATA, an approach to selectively amplify task-specific segments within a task vector
+and suppress overlapping instruction-following components. LATA preserves the merged model’s
+quality and achieves higher performance on multiple tasks compared to previous methods. LATA also
+excels at selectively removing undesired capabilities, incurring minimal harm to the model’s
+remaining skills.
+
+Refer to caption
+(a) Task vectors encode both instruction-following and task-specific capabilities.
+
+Refer to caption
+(b) Overlapping instruction-following components degrade merged model performance.
+
+
+Figure 1: Challenges in task arithmetic, highlighting interference between instruction-following
+and task-specific components.
+
+2 Related Work
+
+Combining model capabilities without additional training has attracted growing attention. Model
+merging fuses weights of separately fine-tuned models for multi-task learning Choi et al. (2024),
+and simple averaging can improve accuracy and robustness Wortsman et al. (2022). TIES Yadav et al.
+(2023) resets negligible changes to address sign conflicts, reducing performance drops;
+Delta-sparsification (DARE) Yu et al. (2024) discards up to 99% of fine-tuning deltas to merge
+multiple homologous models. Most research aims to minimize utility loss of merged LLMs Matena and
+Raffel (2022); Jin et al. (2023); Zhou et al. (2024); Du et al. (2024); Lu et al. (2024); Dai
+et al. (2025); Lai et al. (2025), while Yang et al. (2024b); Yang et al. (2024a); Bowen et al.
+(2024); Gargiulo et al. (2025) explore merging computer vision models using key parts of task
+vectors.
+
+An alternative line of research, task arithmetic (TA), views tasks as weight update vectors
+composed via vector operations. Ilharco et al. (2023) define a task vector as the difference
+between a fine-tuned model and its base, enabling multiple tasks to be learned simultaneously and
+new tasks to be inferred without retraining. Negating a task vector selectively unlearns a specific
+task with minimal impact on others, implying that model weights shift independently per task. TA
+has been considered in fine-tuning (Zhang et al., 2023; Choi et al., 2024) and alignment (Zhao
+et al., 2024; Li et al., 2025; Hazra et al., 2024) contexts.
+
+In this paper, we focus on TA for both task learning and forgetting. Existing methods generally
+merge or edit entire models without distinguishing which layers encode task-specific versus general
+knowledge. In contrast, our proposed LATA performs a layer-wise analysis to separate generic
+utility from task-specific effects, enabling selective amplification or removal of tasks while
+preserving overall performance.
+
+3 Background Knowledge
+
+Given θpre\theta_{\text{pre}} as the weights of a pre-trained LLM and θft\theta_{\text{ft}} as the
+parameters of the LLM fine-tuned for a target task, TA Ilharco et al. (2023) proposes the following
+formula to obtain the task vector τ\tau:
+
+ τ=θft−θpre\displaystyle\tau=\theta_{\text{ft}}-\theta_{\text{pre}}  (1)
+
+where τ\tau represents the task vector for the target task, indicating the model’s capability to
+perform the target task.
+
+TA further proposes that task vectors for different target tasks can be added to a single model,
+enabling the model to simultaneously perform multiple target tasks. This achieves the effect of 
+task learning:
+
+ θmerged=θtarget+∑i=1tλi​τi\displaystyle\theta_{\text{merged}}=\theta_{\text{target}}+\sum_{i=  (2)
+ 1}^{t}\lambda_{i}\tau_{i}
+
+where tt is the total number of target tasks, λi\lambda_{i} is a scaling coefficient for the
+vector, θtarget\theta_{\text{target}} is the original parameters of the target model, and θmerged\
+theta_{\text{merged}} is the model after merging via TA. The merged model can simultaneously
+improve its performance on multiple target tasks.
+
+On the other hand, in the task forgetting, the task vector can also be used to remove the model’s
+ability for specific tasks:
+
+ θunable=θable−λ​τ\displaystyle\theta_{\text{unable}}=\theta_{\text{able}}-\lambda\tau  (3)
+
+Here, τ\tau represents the task vector for the task to be removed. After subtracting the task
+vector, the model’s performance on the removed task will decrease.
+
+Refer to caption
+Figure 2: The difference between instruction, complex and task vector. In LATA, we emphasize
+extracting and applying more green vectors that positively impact the target task, while minimizing
+red vectors that could degrade the merged model’s utility.
+
+Refer to caption
+Figure 3: Method for identifying important layers: We compute the cosine similarity of each layer
+vector between the complex vector and the instruction vector. Layers with lower similarity are less
+related to instruction-following and likely enhance the target task, so we strengthen them.
+Conversely, layers with higher similarity align more with instruction-following and have lower task
+relevance, so we attenuate them to reduce their impact on utility.
+
+4 Proposed Method
+
+Here, we present our proposed method, Layer-Aware Task Arithmetic (LATA). First, we define a base
+model as a model that does not possess instruction-following capabilities, such as Llama-3-8B
+Grattafiori et al. (2024). We also define a pre-trained model as a model with instruction-following
+capabilities, such as Llama-3-8B-Instruct Grattafiori et al. (2024). Moreover, for multiple target
+tasks, we obtain models that are fine-tuned from the pre-trained model for each specific task,
+resulting in models tailored to their respective tasks. We refer to these models as fine-tuned
+models, which are derived from the pre-trained model through fine-tuning. LATA consists of the
+following four steps.
+
+Step 1: Deriving Instruction Vector and Complex Vector
+
+We define the instruction vector by subtracting the base model’s parameters from the pre-trained
+model’s parameters:
+
+ τinstr=θpre−θbase.\displaystyle\tau_{\text{instr}}=\theta_{\text{pre}}-\theta_{\text{base}}.  (4)
+
+This captures the instruction-following capability. We then define the complex vector by
+subtracting the base model’s parameters from those of each fine-tuned model:
+
+ τcomp=θft−θbase.\displaystyle\tau_{\text{comp}}=\theta_{\text{ft}}-\theta_{\text{base}}.  (5)
+
+This vector reflects both instruction-following and the target task capability. Figure 2 shows how
+we obtain the instruction and complex vectors.
+
+Step 2: Computing Layerwise Similarity
+
+We split the instruction and complex vectors into layer vectors, with each layer’s parameters
+forming a small vector. Thus, the complete task vector is τ={τ1,τ2,…,τL}\tau=\{\tau^{1},\tau^{2},\
+dots,\tau^{L}\}, where LL is the number of layers.
+
+To isolate target-task elements in the complex vector from instruction-following elements, we
+compute the cosine similarity between the instruction and complex vectors at each layer:
+
+ cos⁡(τcompi,τinstri),0≤i<L.\displaystyle\cos(\tau^{i}_{\text{comp}},\tau^{i}_{\text{instr}}),  (6)
+ \quad 0\leq i<L.
+
+Figure 3 illustrates that layers showing higher similarity primarily capture instruction-following
+capabilities. Assigning smaller weights to these layers during TA reduces their impact on the
+merged model, preserving instruction-following quality. In contrast, layers with lower similarity
+have less effect on instruction following, so we assign them greater weights to boost target-task
+performance while maintaining overall utility.
+
+Step 3: Deriving Pure Vector
+
+We obtain the target-task vector τ\tau by subtracting the pre-trained model’s parameters from the
+fine-tuned model’s parameters:
+
+ τ=θft−θpre.\displaystyle\tau=\theta_{\text{ft}}-\theta_{\text{pre}}.  (7)
+
+Next, we split τ\tau into layer vectors and compute each layer’s cosine similarity to the
+instruction and complex vectors. Layers with higher similarity receive smaller weights, and those
+with lower similarity receive larger weights. The resulting weighted vector is called the pure
+vector because it preserves the task’s core functionality. We propose three approaches to obtain
+this pure vector τ′\tau^{\prime}.
+
+ 1. 1.
+   
+    Linear-Drop-by-Rank: We rank each layer by its cosine similarity between the complex and
+    instruction vectors, then assign weights from 0 to 1 based on rank:
+
+     τ′={τi′∣τi′=riLτi, 1≤ri≤L}\displaystyle\tau^{\prime}=\{\tau^{i^{\prime}}\mid\tau^{i^{\     (8)
+     prime}}=\tfrac{r_{i}}{L}\,\tau^{i},\;1\leq r_{i}\leq L\}
+
+    Here, rir_{i} is the rank, and higher ranks receive larger weights, indicating greater emphasis
+    on the target task.
+
+ 2. 2.
+   
+    Logarithmic-Drop-by-Rank: Similar to Linear-Drop-by-Rank, but because of the correlation
+    between layers, we use a logarithmic curve:
+
+     τ′={τi′∣τi′=logL(ri)τi, 1≤ri≤L}.\displaystyle\tau^{\prime}=\{\tau^{i^{\prime}}\mid\tau^{i  (9)
+     ^{\prime}}=\log_{L}(r_{i})\,\tau^{i},\;1\leq r_{i}\leq L\}.
+
+    This reduces weight differences among higher-ranked layers, better reflecting inter-layer
+    correlations in some architectures.
+
+ 3. 3.
+   
+    Drop-with-Threshold: We set a threshold σ\sigma. If the cosine similarity of a layer exceeds σ\
+    sigma, that layer’s vector is dropped (set to zero); otherwise, it is kept: τ′={τi′|τi′=
+    {τi,cos⁡(τcompi,τinstri)<σ0,cos⁡(τcompi,τinstri)≥σ}\displaystyle\tau^{\prime}=\begin{Bmatrix}\
+    tau^{i^{\prime}}{\Big|}\tau^{i^{\prime}}=\begin{cases}\tau^{i},&\cos(\tau^{i}_{\text{comp}},\
+    tau^{i}_{\text{instr}})<\sigma\\ 0,&\cos(\tau^{i}_{\text{comp}},\tau^{i}_{\text{instr}})\geq\
+    sigma\end{cases}\end{Bmatrix} (10) This approach is useful when only a small subset of layers
+    significantly affects the target task. By focusing on these layers, we enhance task
+    performance.
+
+Step 4: Performing TA with Pure Vector
+
+Through LATA, we can obtain multiple distinct pure vectors for different target tasks. These
+vectors are then added to a target model via TA:
+
+ θmerged′=θtarget+∑i=1tλi​τi′,\displaystyle\theta^{\prime}_{\text{merged}}=\theta_{\text       (11)
+ {target}}+\sum_{i=1}^{t}\lambda_{i}\tau_{i}^{\prime},
+
+where λi\lambda_{i} is the scaling coefficient for each pure vector τi′\tau_{i}^{\prime}. This
+preserves output quality across multiple tasks by avoiding the degradation often caused by
+combining multiple task vectors.
+
+Similarly, these pure vectors can be used to remove specific capabilities:
+
+ θunable′=θable−λ′​τ′,\displaystyle\theta^{\prime}_{\text{unable}}=\theta_{\text{able}}-\      (12)
+ lambda^{\prime}\tau^{\prime},
+
+where λ′\lambda^{\prime} is the scaling coefficient for the pure vector τ′\tau^{\prime}. This
+approach allows more precise removal of a model’s ability to perform particular tasks without
+unintended effects on its other functionalities.
+
+5 Evaluation
+
+We conduct two experiments. The first is the task learning scenario (see Section 2), merging three
+target tasks (unalignment, math, and code) into a single model via TA’s additive operation. The
+second is the task forgetting scenario (see Section 2), using TA’s subtractive operation to reduce
+harmful content and improve alignment Ilharco et al. (2023); Bhardwaj et al. (2024).
+
+All experiments were conducted on an NVIDIA H200 GPU with 141GB of memory and dual Intel® Xeon®
+Platinum 8480C processors (112 cores, 2.00–3.80 GHz).
+
+5.1 Setup
+
+Dataset
+
+For task learning, we use WikiText-2 Merity et al. (2017) to evaluate the utility of the merged
+model’s outputs. For the unalignment (UA) task, we adopt the dataset designed by Qi et al. (2024),
+which includes 11 harmful categories defined in the usage policies of OpenAI and Llama 2, each
+category containing 30 harmful questions. We use GSM8K Cobbe et al. (2021) to assess the model’s
+math capability. For code generation, we employ HumanEval Chen et al. (2021) as our evaluation
+metric.
+
+For task forgetting, we also used the same question dataset Qi et al. (2024) of 11 harmful
+categories from the UA (unalignment) task for model testing. Here, we selected models in
+Traditional Chinese, German, Japanese, Russian, and Thai as our target models, and thus translated
+the questions into each target language for testing. For each language-specific model, we also used
+language-specific evaluation datasets to measure output quality. We employed TMMLU+ Tam et al.
+(2024) to evaluate the Traditional Chinese model; JAQKET_v2 Suzuki et al. (2020), JSQuAD, and
+JCommonsenseQA Kurihara et al. (2022) for the Japanese model; German / Russian SQuAD Artetxe et al.
+(2020), TruthfulQA Lai et al. (2023), and NLI Conneau et al. (2018) for the German and Russian
+models, respectively; and Thai SQuAD Artetxe et al. (2020) and NLI Conneau et al. (2018) for the
+Thai model.
+
+Model
+
+We used Gemma-2-9b Riviere et al. (2024) and Llama-3-8B Grattafiori et al. (2024) to evaluate LATA,
+with both models serving as base models and Gemma-2-9B-it and Llama-3-8B-Instruct as pre-trained or
+target models. Table 1 presents the fine-tuned models for task learning. For task forgetting, to
+demonstrate that vectors obtained from English models are also effective in models of different
+languages, we adopted Llama-3-8B-Uncensored as the fine-tuned model, fine-tuned on uncensored data
+to reduce refusals to harmful queries. In addition, five language-specific versions, trained on
+their respective target languages but not heavily aligned, were used as target models listed in
+Table 2. More details of each model used for task learning/forgetting are provided in Appendix A.1.
+
+Architecture Gemma-2-9b Llama-3-8b UA gemma-2-9b-it-abliterated DevsDoCode/LLama-3-8b-Uncensored 
+Math kyungeun/gemma-2-9b-it-mathinstruct TIGER-Lab/MAmmoTH2-8B-Plus Code TeamDelta/gemma_coder_9b 
+budecosystem/code-millenials-8b
+
+
+Table 1: Fine-tuned models for task learning.
+
+   Language               Target model
+Chinese (zh-tw) Llama3-TAIDE-LX-8B-Chat-Alpha1
+Japanese        Llama3-DiscoLeo-Instruct-8B-v0.1
+German          Llama-3-ELYZA-JP-8B
+Russian         saiga_llama3_8b
+Thai            llama-3-typhoon-v1.5-8b-instruct
+
+
+Table 2: Target models for task forgetting.
+
+Metric
+
+We use the following metrics for evaluation.
+
+ 1. 1.
+   
+    Utility We use WikiText-2 Benchmark^1^1 1 https://github.com/EleutherAI/lm-evaluation-harness
+    Merity et al. (2017) to compute the perplexity of the merged model to examine the issue of
+    quality degradation in the model’s output. For models in different languages, we use different
+    metrics to evaluate their capabilities:
+
+     1. (a)
+       
+        Traditional Chinese We use TMMLU+^1 for evaluation. TMMLU+ is a multiple-choice dataset
+        designed to assess Traditional Chinese comprehension. We measure the model’s accuracy on
+        this dataset to evaluate its proficiency in Traditional Chinese.
+
+     2. (b)
+       
+        Japanese We evaluate the model using exact-match score for JAQKET_v2^1 and JSQuAD^1, and
+        accuracy for JCommonsenseQA^1. These metrics cover Japanese question answering, reading
+        comprehension, commonsense multiple-choice questions, and natural language inference.
+
+     3. (c)
+       
+        German, Russian, and Thai We separately use the German, Russian, and Thai versions of SQuAD
+        ^1 F1-score and NLI ^1 accuracy for evaluation. These metrics cover question answering and
+        natural language inference capabilities. For the German and Russian models, we also employ
+        the respective language versions of TruthfulQA^1 accuracy to assess their
+        question-answering performance.
+
+ 2. 2.
+   
+    Unalignment (UA) We use GPT-4 OpenAI et al. (2024) to score the risk level of the model’s
+    output (on a scale of 1 to 5, where higher scores indicate more unsafe outputs) Qi et al.
+    (2024).
+
+ 3. 3.
+   
+    Math We evaluate the model’s performance on the GSM8K^1 Cobbe et al. (2021) dataset using
+    zero-shot accuracy.
+
+ 4. 4.
+   
+    Code We assess the model’s ability to generate code using pass@1 on the HumanEval benchmark
+    Chen et al. (2021).
+
+Baseline
+
+We consider the ordinary TA Ilharco et al. (2023), TIES Yadav et al. (2023), and DARE Yu et al.
+(2024) as baseline methods in task learning since these are all primarily based on TA, designed for
+LLMs, and do not require additional data. For task forgetting, we also consider TA, DARE, and
+Safety Arithmetic Hazra et al. (2024). TA has been described in Section 3. TIES reduces
+interference by retaining only the top k×100%k\times 100\% of parameters (by magnitude) in the task
+vector. DARE tackles parameter interference by randomly dropping p×100%p\times 100\% of the
+parameters in the task vector. Safety Arithmetic first uses λ\lambda for harm direction removal,
+then applies α\alpha to add the in-context vector into the model to enhance alignment. We show the
+configuration of each baseline below.
+
+  • •
+   
+    TA: We follow the description in Section 3 to implement TA. We set the scaling coefficient λ\
+    lambda as 0.50.5 (and 1.01.0) in task learning and 0.80.8 in task forgetting. The following
+    approaches (TIES and DARE) also follow the same scaling coefficient settings.
+
+  • •
+   
+    TIES: We retain the top 0.7×100%0.7\times 100\% of parameters (by magnitude) in the task vector
+    (k=0.7k=0.7).
+
+  • •
+   
+    DARE: We set the drop rate pp to 0.3 in both task learning and task forgetting. Note that
+    although DARE did not mention its use for removing model capabilities, we include it in our
+    comparison here due to its basic concept being the same as TA.
+
+  • •
+   
+    DARE+TIES: p=0.1p=0.1 and k=0.9k=0.9.
+
+  • •
+   
+    Safety Arithmetic To maintain the generating capabilities of various language models, we set λ=
+    0.5\lambda=0.5, α=0.12\alpha=0.12 for Chinese, Russian, and Thai models, λ=0.3\lambda=0.3, α=
+    0.12\alpha=0.12 for German model, and λ=0.3\lambda=0.3, α=0.08\alpha=0.08 for Japanese model.
+
+    Merged       Merging   Utility               UA              Math            Code
+    Tasks        Method    WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                           downarrow)            uparrow)        uparrow)        uparrow)
+
+                TA         11.4631               3.7091          0.8211          -
+                DARE       11.6558               3.8000          0.8143          -
+UA + Math       TIES       12.3577               3.3303          0.8112          -
+                DARE +     12.7110               3.3030          0.8249          -
+                TIES
+                LATA       10.2726               3.8879          0.8408          -
+                (Ours)
+                TA         10.3444               -               0.8347          0.6463
+                DARE       12.4347               -               0.8294          0.6341
+Math + Code     TIES       12.3455               -               0.8279          0.6524
+                DARE +     10.4208               -               0.8287          0.6341
+                TIES
+                LATA       10.2831               -               0.8461          0.6585
+                (Ours)
+                TA         12.3533               3.7485          -               0.4878
+                DARE       12.6539               3.7758          -               0.5183
+UA + Code       TIES       12.5680               3.7879          -               0.4878
+                DARE +     12.9077               3.5848          -               0.5000
+                TIES
+                LATA       10.9101               3.8455          -               0.4756
+                (Ours)
+                TA         11.8785               3.7576          0.8241          0.6159
+                DARE       12.3247               3.7152          0.8052          0.6341
+UA + Math +     TIES       15.7654               2.8727          0.7870          0.5976
+Code
+                DARE +     16.9879               2.8061          0.7627          0.5793
+                TIES
+                LATA       10.4298               3.7939          0.8431          0.6280
+                (Ours)
+
+
+Table 3: The performance of LATA compared with TA, DARE, TIES, and DARE+TIES (TIES applied after
+DARE) under Gemma-2-9b is shown for various combinations of UA, Math, and Code. We use λ=1.5\lambda
+=1.5 for UA and λ=0.5\lambda=0.5 for Math and Code.
+
+    Merged         Merging     Utility              UA             Math           Code
+    Tasks          Method      WikiText-2(↓\        GPT-4(↑\       GSM8K(↑\       HumanEval(↑\
+                               downarrow)           uparrow)       uparrow)       uparrow)
+
+               LATA + TIES     10.2724              3.8848         0.8431         -
+UA + Math      LATA + DARE     10.2936              3.8333         0.8340         -
+               LATA + DARE +   10.2784              3.9152         0.8324         -
+               TIES
+               LATA + TIES     10.3029              -              0.8491         0.6402
+Math + Code    LATA + DARE     10.3150              -              0.8438         0.6463
+               LATA + DARE +   10.3046              -              0.8408         0.6524
+               TIES
+               LATA + TIES     10.9103              3.7970         -              0.4573
+UA + Code      LATA + DARE     10.9097              3.8394         -              0.4024
+               LATA + DARE +   12.9204              3.7788         -              0.4512
+               TIES
+               LATA + TIES     10.5050              3.7061         0.8431         0.6341
+UA + Math +    LATA + DARE     10.5219              3.7879         0.8408         0.6341
+Code
+               LATA + DARE +   10.5137              3.7061         0.8393         0.6341
+               TIES
+
+
+Table 4: Results of Combining LATA with TIES, DARE, and DARE + TIES. We use λ=1.5\lambda=1.5 for
+UA, λ=0.5\lambda=0.5 for Math and Code. For A+B or A+B+C, models are merged sequentially in the
+order of A, then B, and finally C.
+
+    Merged       Merging   Utility               UA              Math            Code
+    Tasks        Method    WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                           downarrow)            uparrow)        uparrow)        uparrow)
+
+                TA         10.0031               1.6212          0.8355          -
+                DARE       10.0146               1.5909          0.8324          -
+UA + Math       TIES       10.0167               1.5636          0.8385          -
+                DARE +     10.0461               1.5818          0.8302          -
+                TIES
+                LATA       10.0667               1.3455          0.8552          -
+                (Ours)
+                TA         10.8258               1.6394          -               0.4390
+                DARE       10.8740               1.7061          -               0.4390
+UA + Code       TIES       11.8583               1.5121          -               0.4329
+                DARE +     10.8553               1.6121          -               0.4512
+                TIES
+                LATA       10.6848               1.3848          -               0.3902
+                (Ours)
+                TA         10.3483               1.7515          0.8431          0.6463
+                DARE       10.3804               1.6394          0.8294          0.6463
+UA + Math +     TIES       10.3994               1.7939          0.8317          0.6585
+Code
+                DARE +     10.4147               1.8091          0.8309          0.6524
+                TIES
+                LATA       10.2860               1.4152          0.8514          0.6585
+                (Ours)
+
+
+Table 5: Results of task learning on Gemma-2-9b. Here, we merge models with λ=0.5\lambda=0.5 for
+all tasks. Since the settings and results of "Math + Code" are identical to those in Table 3, we do
+not repeat them here.
+
+    Merged       Merging   Utility               UA              Math            Code
+    Tasks        Method    WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                           downarrow)            uparrow)        uparrow)        uparrow)
+
+                TA         10.7850               3.9758          0.7377          -
+                DARE       10.8753               3.9424          0.7437          -
+UA + Math       TIES       10.7638               3.3606          0.7475          -
+                DARE +     10.8560               3.6424          0.7445          -
+                TIES
+                LATA       10.2638               2.2909          0.8158          -
+                (Ours)
+                TA         12.1416               -               0.7248          0.5793
+                DARE       12.4347               -               0.7111          0.5305
+Math + Code     TIES       12.3455               -               0.7165          0.5366
+                DARE +     12.5877               -               0.6914          0.5061
+                TIES
+                LATA       11.0208               -               0.8317          0.6280
+                (Ours)
+                TA         11.9674               3.8545          -               0.3171
+                DARE       12.1404               3.8394          -               0.3537
+UA + Code       TIES       11.9742               3.3545          -               0.2866
+                DARE +     12.0392               3.5061          -               0.2866
+                TIES
+                LATA       11.2949               2.5667          -               0.3293
+                (Ours)
+                TA         12.2611               3.6364          0.7172          0.5671
+                DARE       12.5596               3.6939          0.7005          0.5061
+UA + Math +     TIES       12.5602               3.5061          0.7104          0.5366
+Code
+                DARE +     12.8658               3.4788          0.6914          0.5122
+                TIES
+                LATA       11.0486               2.6394          0.8271          0.6280
+                (Ours)
+
+
+Table 6: Results of task learning on Gemma-2-9b. Here, we merge models with λ=1.0\lambda=1.0 for
+all tasks.
+
+    Merged       Merging   Utility               UA              Math            Code
+    Tasks        Method    WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                           downarrow)            uparrow)        uparrow)        uparrow)
+
+                TA         9.0025                3.6303          0.8089          -
+                DARE       9.0559                3.5606          0.8074          -
+UA + Math       TIES       9.1528                3.3788          0.8036          -
+                DARE +     9.0055                3.5515          0.7923          -
+                TIES
+                LATA       9.3160                3.7667          0.7847          -
+                (Ours)
+                TA         10.0648               -               0.6664          0.3415
+                DARE       10.1674               -               0.6558          0.3415
+Math + Code     TIES       10.0103               -               0.6914          0.3293
+                DARE +     10.2170               -               0.6778          0.2927
+                TIES
+                LATA       9.9947                -               0.7491          0.2439
+                (Ours)
+                TA         10.4806               3.7879          -               0.2317
+                DARE       10.4840               3.7273          -               0.2256
+UA + Code       TIES       10.2491               3.5667          -               0.2256
+                DARE +     10.5172               3.6606          -               0.1951
+                TIES
+                LATA       10.4579               3.5030          -               0.2500
+                (Ours)
+                TA         9.9398                3.6333          0.6626          0.2987
+                DARE       10.0415               3.8000          0.6732          0.3171
+UA + Math +     TIES       9.9066                3.5030          0.6793          0.3171
+Code
+                DARE +     10.1180               3.6727          0.6634          0.3537
+                TIES
+                LATA       9.9057                3.7939          0.7316          0.2378
+                (Ours)
+
+
+Table 7: Results of task learning on Llama-3-8b. Here, we merge models with λ=0.5\lambda=0.5 for
+all tasks.
+
+5.2 Result
+
+Task Learning
+
+We evaluate LATA on Gemma-2-9b (Linear-Drop-by-Rank) and Llama-3-8B (Logarithmic-Drop-by-Rank) with
+scaling coefficients set to 0.50.5 and 1.01.0. Table 3 shows results under Gemma-2-9b. Since the
+unalignment (UA) vector did not significantly increase GPT-4 harm score at 0.5 or 1.0, we use a
+coefficient of 1.5 for UA and 0.5 for the other two tasks. Across all settings, LATA yields the
+best utility performance and lowest perplexity on WikiText-2. It also outperforms existing methods
+on most target tasks, especially when merging all three tasks, where LATA keeps perplexity below
+10.5 while all others exceed 11.5.
+
+Compared to the Table 3, where the scaling coefficient λ\lambda’s for different tasks are
+particularly set, Tables 5 and 6 show results for coefficients 0.5 and 1.0. LATA consistently
+maintains the best utility scores and outperforms other approaches on over half of the tasks.
+Although performance in utility, math, and code slightly declines at 1.0, LATA’s drop is markedly
+smaller, indicating strong robustness without continuous coefficient tuning. On the other hand, to
+show the influences of different hyperparameters of each baseline, we perform the results in
+Appendix A.2.
+
+We also investigate whether LATA can enhance DARE and TIES. Table 4 shows that combining LATA with
+these methods often yields superior utility. However, LATA+DARE+TIES typically underperforms
+LATA+DARE or LATA+TIES alone, mirroring the observation that DATA+TIES is weaker than DARE or TIES.
+Moreover, in most cases, these three-method combinations in Table 4 are worse than LATA alone
+(Table 3), as TIES and DARE may zero out crucial layer vectors selected by LATA. Hence, using LATA
+by itself remains the best choice.
+
+Table 7 presents results under Llama-3-8B and additional results with different hyperparameters for
+each baseline can be found in Appendix A.3. Owing to its smaller size, we adopt
+Logarithmic-Drop-by-Rank to account for higher interdependence among layers. LATA still sustains
+superior overall utility while achieving competitive or best scores in several tasks. This
+demonstrates LATA’s effectiveness across different architectures. In summary, LATA consistently
+shows clear advantages in merging multiple models.
+
+Refer to caption
+(a) Chinese model’s utility
+
+Refer to caption
+(b) Chinese model’s toxicity
+
+Refer to caption
+(c) Japanese model’s utility
+
+Refer to caption
+(d) Japanese model’s toxicity
+
+Refer to caption
+(e) German model’s utility
+
+Refer to caption
+(f) German model’s toxicity
+
+Refer to caption
+(g) Russian model’s utility
+
+Refer to caption
+(h) Russian model’s toxicity
+
+Refer to caption
+(i) Thai model’s utility
+
+Refer to caption
+(j) Thai model’s toxicity
+
+
+Figure 4: Result of task forgetting
+
+Task Forgetting
+
+We set the scaling coefficient λ\lambda to 1.01.0 and use Drop-with-Threshold at the threshold σ\
+sigma of 0.950.95 (see more discussion in Section 6). Figure 4 shows that applying TA’s subtractive
+operation to reduce harmful content substantially improves alignment. LATA consistently outperforms
+existing methods, reducing GPT-4 harm scores below 2 for all tested languages, notably from 3.60 to
+2.57 in German. Meanwhile, utility remains on par with the original model. These results suggest
+LATA precisely targets task vectors for removal and, in some cases (see Section 6), adjusting a
+minimal subset of parameters is sufficient to eliminate specific capabilities.
+
+6 Discussion
+
+Distribution of Important Layers for Target Tasks
+
+Figure 5 shows layer-wise similarity rankings between the three target tasks’ complex vectors for
+Gemma-2-9b and the instruction vector. The vertical axis is the similarity ranking, and the
+horizontal axis is the layer index. Layers with lower similarity (thus more impact on the target
+task) generally appear after layer 20, especially between layers 26 and 30. We hypothesize that
+earlier layers focus more on processing the input instructions, making them closer to the
+instruction vector and less crucial to the target task. Conversely, later layers generate outputs
+based on the earlier layers’ interpretations, causing parameter changes there to have greater
+impact on the target task and thus lower similarity with the instruction vector.
+
+Another notable observation is the significant overlap in similarity rankings for math and code
+tasks. We suspect a strong intrinsic similarity between these two tasks, reflected in our
+experiments: when merging them simultaneously (math + code, UA + math + code), both tasks
+outperform their single-task scenarios (UA + math, UA + code), particularly for code. This suggests
+that when task vectors share substantial similarity, merging them concurrently can further enhance
+the resulting model’s performance on each individual task.
+
+Refer to caption
+Figure 5: The graph illustrates the similarity rankings among layer vectors, with the x-axis
+representing the layer number and the y-axis indicating the similarity rank.
+
+Significant Impact from a Small Fraction of Layer Vectors
+
+In our task forgetting experiment, we set the threshold σ\sigma to 0.950.95, meaning that layer
+vectors with similarities above 0.950.95 were discarded. We arrived at this threshold because we
+observed extremely high similarity between the complex and instruction vectors for each layer, with
+only a handful of layer vectors showing similarity below 0.90.9. Even with the threshold fixed at
+0.950.95, only about 10%10\% of the layer vectors were retained as pure vectors, while the
+remaining 90%90\% had similarities greater than 0.95. Under the DARE concept, discarding 90%90\% of
+the vectors would ordinarily require rescaling the remaining 10%10\% by a factor of 11−0.9\frac{1}
+{1-0.9} (i.e., 10×10\times). However, we merely applied λ=1.0\lambda=1.0 to slightly increase these
+vectors, already achieving performance surpassing that of the original TA method. This finding
+indicates that a complete task vector indeed contains a subset of parameters that are highly
+critical to the target task, while a substantial portion is less significant. LATA successfully
+isolates these crucial and non-crucial segments from the task vector.
+
+7 Conclusion
+
+In this work, we introduced a novel approach (LATA) to TA, demonstrating its effectiveness in
+merging and fine-tuning LLMs across diverse tasks. LATA leverages dynamic task representations to
+achieve improved alignment and utility without compromising model performance. Through extensive
+experiments on benchmark datasets such as WikiText-2, GSM8K, and HumanEval, we showed that our
+approach consistently outperforms existing methods like DARE and TIES in balancing task-specific
+performance and generalization. Notably, our framework enables efficient model merging while
+mitigating interference between tasks, as evidenced by superior results in multi-task scenarios.
+Our findings highlight the potential of TA as a scalable and adaptable solution for optimizing LLMs
+in multi-task and cross-lingual settings.
+
+Limitations
+
+LATA relies on task arithmetic, so all models must share the same architecture (identical hidden
+dimensions and layer structures), which limits cross-family applications. Moreover, improper
+scaling coefficients of task vectors (λ\lambda) can lead to instability, potentially degrading
+model performance or causing catastrophic forgetting.
+
+References
+
+  • Artetxe et al. (2020) Mikel Artetxe, Sebastian Ruder, and Dani Yogatama. 2020. On the
+    cross-lingual transferability of monolingual representations. In Proceedings of the 58th Annual
+    Meeting of the Association for Computational Linguistics. Association for Computational
+    Linguistics.
+  • Bhardwaj et al. (2024) Rishabh Bhardwaj, Duc Anh Do, and Soujanya Poria. 2024. Language models
+    are Homer simpson! safety re-alignment of fine-tuned language models through task arithmetic. 
+    In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics
+    (Volume 1: Long Papers), pages 14138–14149, Bangkok, Thailand. Association for Computational
+    Linguistics.
+  • Bowen et al. (2024) Tian Bowen, Lai Songning, Wu Jiemin, Shuai Zhihao, Ge Shiming, and Yue
+    Yutao. 2024. Beyond task vectors: Selective task arithmetic based on importance metrics.
+  • Chen et al. (2021) Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira
+    Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. 2021. 
+    Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374.
+  • Choi et al. (2024) Jiho Choi, Donggyun Kim, Chanhyuk Lee, and Seunghoon Hong. 2024. Revisiting
+    weight averaging for model merging. arXiv preprint arXiv:2412.12153.
+  • Cobbe et al. (2021) Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun,
+    Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher
+    Hesse, and John Schulman. 2021. Training verifiers to solve math word problems. ArXiv, abs/
+    2110.14168.
+  • Conneau et al. (2018) Alexis Conneau, Ruty Rinott, Guillaume Lample, Adina Williams, Samuel
+    Bowman, Holger Schwenk, and Veselin Stoyanov. 2018. XNLI: Evaluating cross-lingual sentence
+    representations. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language
+    Processing, pages 2475–2485, Brussels, Belgium. Association for Computational Linguistics.
+  • Dai et al. (2025) Rui Dai, Sile Hu, Xu Shen, Yonggang Zhang, Xinmei Tian, and Jieping Ye. 2025.
+    Leveraging submodule linearity enhances task arithmetic performance in LLMs. In The Thirteenth
+    International Conference on Learning Representations (ICLR).
+  • Dodge et al. (2020) Jesse Dodge, Gabriel Ilharco, Roy Schwartz, Ali Farhadi, Hannaneh
+    Hajishirzi, and Noah Smith. 2020. Fine-tuning pretrained language models: Weight
+    initializations, data orders, and early stopping. arXiv preprint arXiv:2002.06305.
+  • Du et al. (2024) Guodong Du, Junlin Lee, Jing Li, Runhua Jiang, Yifei Guo, Shuyang Yu, Hanting
+    Liu, Sim Kuan Goh, Ho-Kin Tang, Daojing He, and Min Zhang. 2024. Parameter competition
+    balancing for model merging. In The Thirty-eighth Annual Conference on Neural Information
+    Processing Systems (NeurIPS).
+  • Gargiulo et al. (2025) Antonio Andrea Gargiulo, Donato Crisostomi, Maria Sofia Bucarelli,
+    Simone Scardapane, Fabrizio Silvestri, and Emanuele Rodolà. 2025. Task singular vectors:
+    Reducing task interference in model merging.
+  • Goddard et al. (2024) Charles Goddard, Shamane Siriwardhana, Malikeh Ehghaghi, Luke Meyers,
+    Vladimir Karpukhin, Brian Benedict, Mark McQuade, and Jacob Solawetz. 2024. Arcee’s MergeKit: A
+    toolkit for merging large language models. In Proceedings of the 2024 Conference on Empirical
+    Methods in Natural Language Processing: Industry Track, pages 477–485, Miami, Florida, US.
+    Association for Computational Linguistics.
+  • Grattafiori et al. (2024) Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey,
+    Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, Amy
+    Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar,
+    Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, Aurelien Rodriguez, Austen Gregerson,
+    Ava Spataru, Baptiste Roziere, Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux,
+    Chaya Nayak, Chloe Bi, Chris Marra, Chris McConnell, Christian Keller, Christophe Touret,
+    Chunyang Wu, Corinne Wong, Cristian Canton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel
+    Song, Danielle Pintz, Danny Livshits, Danny Wyatt, David Esiobu, Dhruv Choudhary, Dhruv
+    Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab AlBadawy, Elina
+    Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Francisco Guzmán, Frank Zhang,
+    Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Govind Thattai, Graeme Nail, Gregoire
+    Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu, Hugo Touvron,
+    Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann, Ishan Misra, Ivan Evtimov, Jack Zhang,
+    Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer
+    van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang,
+    Jiawen Liu, Jie Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua
+    Johnstun, Joshua Saxe, Junteng Jia, Kalyan Vasuden Alwala, Karthik Prasad, Kartikeya Upasani,
+    Kate Plawiak, Ke Li, Kenneth Heafield, Kevin Stone, Khalid El-Arini, Krithika Iyer, Kshitiz
+    Malik, Kuenley Chiu, Kunal Bhalla, Kushal Lakhotia, Lauren Rantala-Yeary, Laurens van der
+    Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis Martin, Lovish Madaan, Lubo Malo, Lukas
+    Blecher, Lukas Landzaat, Luke de Oliveira, Madeline Muzzi, Mahesh Pasupuleti, Mannat Singh,
+    Manohar Paluri, Marcin Kardas, Maria Tsimpoukelli, Mathew Oldham, Mathieu Rita, Maya Pavlova,
+    Melanie Kambadur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal, Narjes
+    Torabi, Nikolay Bashlykov, Nikolay Bogoychev, Niladri Chatterji, Ning Zhang, Olivier Duchenne,
+    Onur Çelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasic, Peter Weng, Prajjwal
+    Bhargava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing He, Qingxiao Dong,
+    Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Silveira Cabral, Robert Stojnic,
+    Roberta Raileanu, Rohan Maheswari, Rohit Girdhar, Rohit Patel, Romain Sauvestre, Ronnie
+    Polidoro, Roshan Sumbaly, Ross Taylor, Ruan Silva, Rui Hou, Rui Wang, Saghar Hosseini, Sahana
+    Chennabasappa, Sanjay Singh, Sean Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan
+    Narang, Sharath Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon
+    Vandenhende, Soumya Batra, Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan,
+    Sydney Borodinsky, Tamar Herman, Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom,
+    Tobias Speckbacher, Todor Mihaylov, Tong Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor Gupta,
+    Vignesh Ramanathan, Viktor Kerkez, Vincent Gonguet, Virginie Do, Vish Vogeti, Vítor Albiero,
+    Vladan Petrovic, Weiwei Chu, Wenhan Xiong, Wenyin Fu, Whitney Meers, Xavier Martinet, Xiaodong
+    Wang, Xiaofang Wang, Xiaoqing Ellen Tan, Xide Xia, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle
+    Goldschlag, Yashesh Gaur, Yasmine Babaei, Yi Wen, Yiwen Song, Yuchen Zhang, Yue Li, Yuning Mao,
+    Zacharie Delpierre Coudert, Zheng Yan, Zhengxing Chen, Zoe Papakipos, Aaditya Singh, Aayushi
+    Srivastava, Abha Jain, Adam Kelsey, Adam Shajnfeld, Adithya Gangidi, Adolfo Victoria, Ahuva
+    Goldstand, Ajay Menon, Ajay Sharma, Alex Boesenberg, Alexei Baevski, Allie Feinstein, Amanda
+    Kallet, Amit Sangani, Amos Teo, Anam Yunus, Andrei Lupu, Andres Alvarado, Andrew Caples, Andrew
+    Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit Ramchandani, Annie Dong, Annie Franco, Anuj
+    Goyal, Aparajita Saraf, Arkabandhu Chowdhury, Ashley Gabriel, Ashwin Bharambe, Assaf Eisenman,
+    Azadeh Yazdan, Beau James, Ben Maurer, Benjamin Leonhardi, Bernie Huang, Beth Loyd, Beto De
+    Paola, Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Brandon
+    Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton, Catalina
+    Mejia, Ce Liu, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang Chu, Chris Cai,
+    Chris Tindal, Christoph Feichtenhofer, Cynthia Gao, Damon Civin, Dana Beaty, Daniel Kreymer,
+    Daniel Li, David Adkins, David Xu, Davide Testuggine, Delia David, Devi Parikh, Diana
+    Liskovich, Didem Foss, Dingkang Wang, Duc Le, Dustin Holland, Edward Dowling, Eissa Jamil,
+    Elaine Montgomery, Eleonora Presani, Emily Hahn, Emily Wood, Eric-Tuan Le, Erik Brinkman,
+    Esteban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun, Felix Kreuk, Feng Tian, Filippos
+    Kokkinos, Firat Ozgenel, Francesco Caggioni, Frank Kanayet, Frank Seide, Gabriela Medina
+    Florez, Gabriella Schwarz, Gada Badeer, Georgia Swee, Gil Halpern, Grant Herman, Grigory Sizov,
+    Guangyi, Zhang, Guna Lakshminarayanan, Hakan Inan, Hamid Shojanazeri, Han Zou, Hannah Wang,
+    Hanwen Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter Goldman,
+    Hongyuan Zhan, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Ilias Leontiadis, Irina-Elena
+    Veliche, Itai Gat, Jake Weissman, James Geboski, James Kohli, Janice Lam, Japhet Asher,
+    Jean-Baptiste Gaya, Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny Zhen, Jeremy Reizenstein,
+    Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Yang, Joe Cummings, Jon Carvill, Jon Shepard,
+    Jonathan McPhie, Jonathan Torres, Josh Ginsburg, Junjie Wang, Kai Wu, Kam Hou U, Karan Saxena,
+    Kartikay Khandelwal, Katayoun Zand, Kathy Matosich, Kaushik Veeraraghavan, Kelly Michelena,
+    Keqian Li, Kiran Jagadeesh, Kun Huang, Kunal Chawla, Kyle Huang, Lailin Chen, Lakshya Garg,
+    Lavender A, Leandro Silva, Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Yu, Liron Moshkovich,
+    Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish Bhatt, Martynas Mankus, Matan Hasson,
+    Matthew Lennie, Matthias Reso, Maxim Groshev, Maxim Naumov, Maya Lathi, Meghan Keneally, Miao
+    Liu, Michael L. Seltzer, Michal Valko, Michelle Restrepo, Mihir Patel, Mik Vyatskov, Mikayel
+    Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Hermoso, Mo Metanat, Mohammad
+    Rastegari, Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha White, Navyata Bawa,
+    Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikhil Mehta, Nikolay Pavlovich Laptev, Ning Dong,
+    Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin Kent, Parth
+    Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager, Pierre Roux, Piotr Dollar,
+    Polina Zvyagina, Prashant Ratanchandani, Pritish Yuvraj, Qian Liang, Rachad Alao, Rachel
+    Rodriguez, Rafi Ayub, Raghotham Murthy, Raghu Nayani, Rahul Mitra, Rangaprabhu Parthasarathy,
+    Raymond Li, Rebekkah Hogan, Robin Battey, Rocky Wang, Russ Howes, Ruty Rinott, Sachin Mehta,
+    Sachin Siby, Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha
+    Sidorov, Satadru Pan, Saurabh Mahajan, Saurabh Verma, Seiji Yamamoto, Sharadh Ramaswamy, Shaun
+    Lindsay, Shaun Lindsay, Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shishir Patil, Shiva
+    Shankar, Shuqiang Zhang, Shuqiang Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith
+    Chintala, Stephanie Max, Stephen Chen, Steve Kehoe, Steve Satterfield, Sudarshan Govindaprasad,
+    Sumit Gupta, Summer Deng, Sungmin Cho, Sunny Virk, Suraj Subramanian, Sy Choudhury, Sydney
+    Goldman, Tal Remez, Tamar Glaser, Tamara Best, Thilo Koehler, Thomas Robinson, Tianhe Li,
+    Tianjun Zhang, Tim Matthews, Timothy Chou, Tzook Shaked, Varun Vontimitta, Victoria Ajayi,
+    Victoria Montanez, Vijai Mohan, Vinay Satish Kumar, Vishal Mangla, Vlad Ionescu, Vlad Poenaru,
+    Vlad Tiberiu Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang, Wenwen Jiang, Wes Bouaziz, Will
+    Constable, Xiaocheng Tang, Xiaojian Wu, Xiaolan Wang, Xilun Wu, Xinbo Gao, Yaniv Kleinman,
+    Yanjun Chen, Ye Hu, Ye Jia, Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin Nam,
+    Yu, Wang, Yu Zhao, Yuchen Hao, Yundi Qian, Yunlu Li, Yuzi He, Zach Rait, Zachary DeVito, Zef
+    Rosnbrick, Zhaoduo Wen, Zhenyu Yang, Zhiwei Zhao, and Zhiyu Ma. 2024. The llama 3 herd of
+    models.
+  • Hammoud et al. (2024) Hasan Abed Al Kader Hammoud, Umberto Michieli, Fabio Pizzati, Philip
+    Torr, Adel Bibi, Bernard Ghanem, and Mete Ozay. 2024. Model merging and safety alignment: One
+    bad model spoils the bunch. In Findings of the Association for Computational Linguistics: EMNLP
+    2024, pages 13033–13046, Miami, Florida, USA. Association for Computational Linguistics.
+  • Hazra et al. (2024) Rima Hazra, Sayan Layek, Somnath Banerjee, and Soujanya Poria. 2024. Safety
+    arithmetic: A framework for test-time safety alignment of language models by steering
+    parameters and activations. In Proceedings of the 2024 Conference on Empirical Methods in
+    Natural Language Processing, pages 21759–21776, Miami, Florida, USA. Association for
+    Computational Linguistics.
+  • Hirakawa et al. (2024) Masato Hirakawa, Shintaro Horie, Tomoaki Nakamura, Daisuke Oba, Sam
+    Passaglia, and Akira Sasaki. 2024. elyza/llama-3-elyza-jp-8b.
+  • Hsu et al. (2024) Chia-Yi Hsu, Yu-Lin Tsai, Chih-Hsun Lin, Pin-Yu Chen, Chia-Mu Yu, and
+    Chun-Ying Huang. 2024. Safe loRA: The silver lining of reducing safety risks when finetuning
+    large language models. In The Thirty-eighth Annual Conference on Neural Information Processing
+    Systems.
+  • Huang et al. (2024) Shih-Cheng Huang, Pin-Zu Li, Yu-chi Hsu, Kuang-Ming Chen, Yu Tung Lin,
+    Shih-Kai Hsiao, Richard Tsai, and Hung-yi Lee. 2024. Chat vector: A simple approach to equip
+    LLMs with instruction following and model alignment in new languages. In Proceedings of the
+    62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers),
+    pages 10943–10959, Bangkok, Thailand. Association for Computational Linguistics.
+  • Ilharco et al. (2023) Gabriel Ilharco, Marco Tulio Ribeiro, Mitchell Wortsman, Suchin
+    Gururangan, Ludwig Schmidt, Hannaneh Hajishirzi, and Ali Farhadi. 2023. Editing models with
+    task arithmetic. In Proceedings of the 11th International Conference on Learning
+    Representations (ICLR).
+  • Jin et al. (2023) Xisen Jin, Xiang Ren, Daniel Preotiuc-Pietro, and Pengxiang Cheng. 2023. 
+    Dataless knowledge fusion by merging weights of language models. In The Eleventh International
+    Conference on Learning Representations.
+  • Kurihara et al. (2022) Kentaro Kurihara, Daisuke Kawahara, and Tomohide Shibata. 2022. JGLUE:
+    Japanese general language understanding evaluation. In Proceedings of the Thirteenth Language
+    Resources and Evaluation Conference, pages 2957–2966, Marseille, France. European Language
+    Resources Association.
+  • Lai et al. (2025) Kunfeng Lai, Zhenheng Tang, Xinglin Pan, Peijie Dong, Xiang Liu, Haolan Chen,
+    Li Shen, Bo Li, and Xiaowen Chu. 2025. Mediator: Memory-efficient llm merging with less
+    parameter conflicts and uncertainty based routing.
+  • Lai et al. (2023) Viet Lai, Chien Nguyen, Nghia Ngo, Thuat Nguyen, Franck Dernoncourt, Ryan
+    Rossi, and Thien Nguyen. 2023. Okapi: Instruction-tuned large language models in multiple
+    languages with reinforcement learning from human feedback. In Proceedings of the 2023
+    Conference on Empirical Methods in Natural Language Processing: System Demonstrations, pages
+    318–327, Singapore. Association for Computational Linguistics.
+  • Li et al. (2025) Shen Li, Liuyi Yao, Lan Zhang, and Yaliang Li. 2025. Safety layers in aligned
+    large language models: The key to LLM security. In The Thirteenth International Conference on
+    Learning Representations.
+  • Lu et al. (2024) Zhenyi Lu, Chenghao Fan, Wei Wei, Xiaoye Qu, Dangyang Chen, and Yu Cheng.
+    2024. Twin-merging: Dynamic integration of modular expertise in model merging. In Advances in
+    Neural Information Processing Systems (NeurIPS).
+  • Matena and Raffel (2022) Michael S. Matena and Colin A. Raffel. 2022. Merging models with
+    fisher-weighted averaging. In Advances in Neural Information Processing Systems (NeurIPS).
+  • Merity et al. (2017) Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2017. 
+    Pointer sentinel mixture models. In International Conference on Learning Representations.
+  • OpenAI et al. (2024) OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge
+    Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat,
+    Red Avila, Igor Babuschkin, Suchir Balaji, Valerie Balcom, Paul Baltescu, Haiming Bao, Mohammad
+    Bavarian, Jeff Belgum, Irwan Bello, Jake Berdine, Gabriel Bernadett-Shapiro, Christopher
+    Berner, Lenny Bogdonoff, Oleg Boiko, Madelaine Boyd, Anna-Luisa Brakman, Greg Brockman, Tim
+    Brooks, Miles Brundage, Kevin Button, Trevor Cai, Rosie Campbell, Andrew Cann, Brittany Carey,
+    Chelsea Carlson, Rory Carmichael, Brooke Chan, Che Chang, Fotis Chantzis, Derek Chen, Sully
+    Chen, Ruby Chen, Jason Chen, Mark Chen, Ben Chess, Chester Cho, Casey Chu, Hyung Won Chung,
+    Dave Cummings, Jeremiah Currier, Yunxing Dai, Cory Decareaux, Thomas Degry, Noah Deutsch,
+    Damien Deville, Arka Dhar, David Dohan, Steve Dowling, Sheila Dunning, Adrien Ecoffet, Atty
+    Eleti, Tyna Eloundou, David Farhi, Liam Fedus, Niko Felix, Simón Posada Fishman, Juston Forte,
+    Isabella Fulford, Leo Gao, Elie Georges, Christian Gibson, Vik Goel, Tarun Gogineni, Gabriel
+    Goh, Rapha Gontijo-Lopes, Jonathan Gordon, Morgan Grafstein, Scott Gray, Ryan Greene, Joshua
+    Gross, Shixiang Shane Gu, Yufei Guo, Chris Hallacy, Jesse Han, Jeff Harris, Yuchen He, Mike
+    Heaton, Johannes Heidecke, Chris Hesse, Alan Hickey, Wade Hickey, Peter Hoeschele, Brandon
+    Houghton, Kenny Hsu, Shengli Hu, Xin Hu, Joost Huizinga, Shantanu Jain, Shawn Jain, Joanne
+    Jang, Angela Jiang, Roger Jiang, Haozhun Jin, Denny Jin, Shino Jomoto, Billie Jonn, Heewoo Jun,
+    Tomer Kaftan, Łukasz Kaiser, Ali Kamali, Ingmar Kanitscheider, Nitish Shirish Keskar, Tabarak
+    Khan, Logan Kilpatrick, Jong Wook Kim, Christina Kim, Yongjik Kim, Jan Hendrik Kirchner, Jamie
+    Kiros, Matt Knight, Daniel Kokotajlo, Łukasz Kondraciuk, Andrew Kondrich, Aris Konstantinidis,
+    Kyle Kosic, Gretchen Krueger, Vishal Kuo, Michael Lampe, Ikai Lan, Teddy Lee, Jan Leike, Jade
+    Leung, Daniel Levy, Chak Ming Li, Rachel Lim, Molly Lin, Stephanie Lin, Mateusz Litwin, Theresa
+    Lopez, Ryan Lowe, Patricia Lue, Anna Makanju, Kim Malfacini, Sam Manning, Todor Markov, Yaniv
+    Markovski, Bianca Martin, Katie Mayer, Andrew Mayne, Bob McGrew, Scott Mayer McKinney,
+    Christine McLeavey, Paul McMillan, Jake McNeil, David Medina, Aalok Mehta, Jacob Menick, Luke
+    Metz, Andrey Mishchenko, Pamela Mishkin, Vinnie Monaco, Evan Morikawa, Daniel Mossing, Tong Mu,
+    Mira Murati, Oleg Murk, David Mély, Ashvin Nair, Reiichiro Nakano, Rajeev Nayak, Arvind
+    Neelakantan, Richard Ngo, Hyeonwoo Noh, Long Ouyang, Cullen O’Keefe, Jakub Pachocki, Alex
+    Paino, Joe Palermo, Ashley Pantuliano, Giambattista Parascandolo, Joel Parish, Emy Parparita,
+    Alex Passos, Mikhail Pavlov, Andrew Peng, Adam Perelman, Filipe de Avila Belbute Peres, Michael
+    Petrov, Henrique Ponde de Oliveira Pinto, Michael, Pokorny, Michelle Pokrass, Vitchyr H. Pong,
+    Tolly Powell, Alethea Power, Boris Power, Elizabeth Proehl, Raul Puri, Alec Radford, Jack Rae,
+    Aditya Ramesh, Cameron Raymond, Francis Real, Kendra Rimbach, Carl Ross, Bob Rotsted, Henri
+    Roussez, Nick Ryder, Mario Saltarelli, Ted Sanders, Shibani Santurkar, Girish Sastry, Heather
+    Schmidt, David Schnurr, John Schulman, Daniel Selsam, Kyla Sheppard, Toki Sherbakov, Jessica
+    Shieh, Sarah Shoker, Pranav Shyam, Szymon Sidor, Eric Sigler, Maddie Simens, Jordan Sitkin,
+    Katarina Slama, Ian Sohl, Benjamin Sokolowsky, Yang Song, Natalie Staudacher, Felipe Petroski
+    Such, Natalie Summers, Ilya Sutskever, Jie Tang, Nikolas Tezak, Madeleine B. Thompson, Phil
+    Tillet, Amin Tootoonchian, Elizabeth Tseng, Preston Tuggle, Nick Turley, Jerry Tworek, Juan
+    Felipe Cerón Uribe, Andrea Vallone, Arun Vijayvergiya, Chelsea Voss, Carroll Wainwright,
+    Justin Jay Wang, Alvin Wang, Ben Wang, Jonathan Ward, Jason Wei, CJ Weinmann, Akila Welihinda,
+    Peter Welinder, Jiayi Weng, Lilian Weng, Matt Wiethoff, Dave Willner, Clemens Winter, Samuel
+    Wolrich, Hannah Wong, Lauren Workman, Sherwin Wu, Jeff Wu, Michael Wu, Kai Xiao, Tao Xu, Sarah
+    Yoo, Kevin Yu, Qiming Yuan, Wojciech Zaremba, Rowan Zellers, Chong Zhang, Marvin Zhang,
+    Shengjia Zhao, Tianhao Zheng, Juntang Zhuang, William Zhuk, and Barret Zoph. 2024. Gpt-4
+    technical report.
+  • Pipatanakul et al. (2023) Kunat Pipatanakul, Phatrasek Jirabovonvisut, Potsawee Manakul,
+    Sittipong Sripaisarnmongkol, Ruangsak Patomwong, Pathomporn Chokchainant, and Kasima
+    Tharnpipitchai. 2023. Typhoon: Thai large language models. arXiv preprint arXiv:2312.13951.
+  • Qi et al. (2024) Xiangyu Qi, Yi Zeng, Tinghao Xie, Pin-Yu Chen, Ruoxi Jia, Prateek Mittal, and
+    Peter Henderson. 2024. Fine-tuning aligned language models compromises safety, even when users
+    do not intend to! In The Twelfth International Conference on Learning Representations.
+  • Riviere et al. (2024) Morgane Riviere, Shreya Pathak, Pier Giuseppe Sessa, Cassidy Hardin,
+    Surya Bhupatiraju, Léonard Hussenot, Thomas Mesnard, Bobak Shahriari, Alexandre Ramé, Johan
+    Ferret, Peter Liu, Pouya Tafti, Abe Friesen, Michelle Casbon, Sabela Ramos, Ravin Kumar,
+    Charline Le Lan, Sammy Jerome, Anton Tsitsulin, Nino Vieillard, Piotr Stanczyk, Sertan Girgin,
+    Nikola Momchev, Matt Hoffman, Shantanu Thakoor, Jean-Bastien Grill, Behnam Neyshabur, Olivier
+    Bachem, Alanna Walton, Aliaksei Severyn, Alicia Parrish, Aliya Ahmad, Allen Hutchison, Alvin
+    Abdagic, Amanda Carl, Amy Shen, Andy Brock, Andy Coenen, Anthony Laforge, Antonia Paterson, Ben
+    Bastian, Bilal Piot, Bo Wu, Brandon Royal, Charlie Chen, Chintu Kumar, Chris Perry, Chris
+    Welty, Christopher A. Choquette-Choo, Danila Sinopalnikov, David Weinberger, Dimple Vijaykumar,
+    Dominika Rogozińska, Dustin Herbison, Elisa Bandy, Emma Wang, Eric Noland, Erica Moreira, Evan
+    Senter, Evgenii Eltyshev, Francesco Visin, Gabriel Rasskin, Gary Wei, Glenn Cameron, Gus
+    Martins, Hadi Hashemi, Hanna Klimczak-Plucińska, Harleen Batra, Harsh Dhand, Ivan Nardini,
+    Jacinda Mein, Jack Zhou, James Svensson, Jeff Stanway, Jetha Chan, Jin Peng Zhou, Joana
+    Carrasqueira, Joana Iljazi, Jocelyn Becker, Joe Fernandez, Joost van Amersfoort, Josh Gordon,
+    Josh Lipschultz, Josh Newlan, Ju yeong Ji, Kareem Mohamed, Kartikeya Badola, Kat Black, Katie
+    Millican, Keelin McDonell, Kelvin Nguyen, Kiranbir Sodhia, Kish Greene, Lars Lowe Sjoesund,
+    Lauren Usui, Laurent Sifre, Lena Heuermann, Leticia Lago, Lilly McNealus, Livio Baldini Soares,
+    Logan Kilpatrick, Lucas Dixon, Luciano Martins, Machel Reid, Manvinder Singh, Mark Iverson,
+    Martin Görner, Mat Velloso, Mateo Wirth, Matt Davidow, Matt Miller, Matthew Rahtz, Matthew
+    Watson, Meg Risdal, Mehran Kazemi, Michael Moynihan, Ming Zhang, Minsuk Kahng, Minwoo Park,
+    Mofi Rahman, Mohit Khatwani, Natalie Dao, Nenshad Bardoliwalla, Nesh Devanathan, Neta Dumai,
+    Nilay Chauhan, Oscar Wahltinez, Pankil Botarda, Parker Barnes, Paul Barham, Paul Michel,
+    Pengchong Jin, Petko Georgiev, Phil Culliton, Pradeep Kuppala, Ramona Comanescu, Ramona Merhej,
+    Reena Jana, Reza Ardeshir Rokni, Rishabh Agarwal, Ryan Mullins, Samaneh Saadat, Sara Mc Carthy,
+    Sarah Cogan, Sarah Perrin, Sébastien M. R. Arnold, Sebastian Krause, Shengyang Dai, Shruti
+    Garg, Shruti Sheth, Sue Ronstrom, Susan Chan, Timothy Jordan, Ting Yu, Tom Eccles, Tom
+    Hennigan, Tomas Kocisky, Tulsee Doshi, Vihan Jain, Vikas Yadav, Vilobh Meshram, Vishal
+    Dharmadhikari, Warren Barkley, Wei Wei, Wenming Ye, Woohyun Han, Woosuk Kwon, Xiang Xu, Zhe
+    Shen, Zhitao Gong, Zichuan Wei, Victor Cotruta, Phoebe Kirk, Anand Rao, Minh Giang, Ludovic
+    Peran, Tris Warkentin, Eli Collins, Joelle Barral, Zoubin Ghahramani, Raia Hadsell, D. Sculley,
+    Jeanine Banks, Anca Dragan, Slav Petrov, Oriol Vinyals, Jeff Dean, Demis Hassabis, Koray
+    Kavukcuoglu, Clement Farabet, Elena Buchatskaya, Sebastian Borgeaud, Noah Fiedel, Armand
+    Joulin, Kathleen Kenealy, Robert Dadashi, and Alek Andreev. 2024. Gemma 2: Improving open
+    language models at a practical size.
+  • Suzuki et al. (2020) Masatoshi Suzuki, Jun Suzuki, Koji Matsuda, Kyosuke Nishida, and Naoya
+    Inoue. 2020. JAQKET: Construction of a japanese QA dataset on the subject of quizzes. In
+    Proceedings of the Annual Meeting of the Association for Natural Language Processing,
+    volume 26, pages 237–240.
+  • Tam et al. (2024) Zhi Rui Tam, Ya Ting Pai, Yen-Wei Lee, Hong-Han Shuai, Jun-Da Chen, Wei Min
+    Chu, and Sega Cheng. 2024. TMMLU+: An improved traditional chinese evaluation suite for
+    foundation models. In First Conference on Language Modeling.
+  • Wang et al. (2024) Jiongxiao Wang, Jiazhao Li, Yiquan Li, Xiangyu Qi, Junjie Hu, Yixuan Li,
+    Patrick McDaniel, Muhao Chen, Bo Li, and Chaowei Xiao. 2024. Backdooralign: Mitigating
+    fine-tuning based jailbreak attack with backdoor enhanced safety alignment. In The
+    Thirty-eighth Annual Conference on Neural Information Processing Systems.
+  • Wortsman et al. (2022) Mitchell Wortsman, Gabriel Ilharco, Samir Ya Gadre, Rebecca Roelofs,
+    Raphael Gontijo-Lopes, Ari S. Morcos, Hongseok Namkoong, Ali Farhadi, Yair Carmon, Simon
+    Kornblith, and Ludwig Schmidt. 2022. Model soups: averaging weights of multiple fine-tuned
+    models improves accuracy without increasing inference time. In Proceedings of the 39th
+    International Conference on Machine Learning, pages 23965–23998. PMLR.
+  • Yadav et al. (2023) Prateek Yadav, Derek Tam, Leshem Choshen, Colin Raffel, and Mohit Bansal.
+    2023. Ties-merging: Resolving interference when merging models. In Advances in Neural
+    Information Processing Systems (NeurIPS).
+  • Yang et al. (2024a) Enneng Yang, Li Shen, Zhenyi Wang, Guibing Guo, Xiaojun Chen, Xingwei Wang,
+    and Dacheng Tao. 2024a. Representation surgery for multi-task model merging. In Forty-first
+    International Conference on Machine Learning.
+  • Yang et al. (2024b) Enneng Yang, Zhenyi Wang, Li Shen, Shiwei Liu, Guibing Guo, Xingwei Wang,
+    and Dacheng Tao. 2024b. Adamerging: Adaptive model merging for multi-task learning. In The
+    Twelfth International Conference on Learning Representations.
+  • Yu et al. (2024) Le Yu, Bowen Yu, Haiyang Yu, Fei Huang, and Yongbin Li. 2024. Language models
+    are super mario: Absorbing abilities from homologous models as a free lunch. In Proceedings of
+    the 41st International Conference on Machine Learning (ICML).
+  • Yue et al. (2024) Xiang Yue, Tuney Zheng, Ge Zhang, and Wenhu Chen. 2024. Mammoth2: Scaling
+    instructions from the web. arXiv preprint arXiv:2405.03548.
+  • Zhang et al. (2023) Jinghan Zhang, Shiqi Chen, Junteng Liu, and Junxian He. 2023. Composing
+    parameter-efficient modules with arithmetic operation. In Thirty-seventh Conference on Neural
+    Information Processing Systems.
+  • Zhao et al. (2024) Wei Zhao, Zhe Li, Yige Li, Ye Zhang, and Jun Sun. 2024. Defending large
+    language models against jailbreak attacks via layer-specific editing. In Findings of the
+    Association for Computational Linguistics: EMNLP 2024, pages 5094–5109, Miami, Florida, USA.
+    Association for Computational Linguistics.
+  • Zhou et al. (2024) Yuyan Zhou, Liang Song, Bingning Wang, and Weipeng Chen. 2024. MetaGPT:
+    Merging large language models using model exclusive task arithmetic. In Proceedings of the 2024
+    Conference on Empirical Methods in Natural Language Processing, pages 1711–1724, Miami,
+    Florida, USA. Association for Computational Linguistics.
+
+Appendix A Appendix
+
+A.1 Models Used in Experiments
+
+A.1.1 Task Learning
+
+We show more details of models used for task learning when the model structure is Gemma-2-9b.
+Base Model: gemma-2-9b^2^2 2 https://huggingface.co/google/gemma-2-9b
+Pre-Trained / Target Model: gemma-2-9b-it^3^3 3 https://huggingface.co/google/gemma-2-9b-it
+Fine-Tuned Models:
+UA: gemma-2-9b-it-abliterated^4^4 4 https://huggingface.co/IlyaGusev/gemma-2-9b-it-abliterated
+Math: gemma-2-9b-it-mathinstruct^5^5 5 https://huggingface.co/kyungeun/gemma-2-9b-it-mathinstruct
+Code: gemma_coder_9b^6^6 6 https://huggingface.co/TeamDelta/gemma_coder_9b
+
+We show more details of models used for task learning when the model structure is Llama-3-8B.
+Base Model: Meta-Llama-3-8B^7^7 7 https://huggingface.co/meta-llama/Meta-Llama-3-8B
+Pre-Trained / Target Model: Meta-Llama-3-8B-Instruct^8^8 8 https://huggingface.co/meta-llama/
+Meta-Llama-3-8B-Instruct
+Fine-Tuned Models:
+UA: LLama-3-8b-Uncensored^9^9 9 https://huggingface.co/DevsDoCode/LLama-3-8b-Uncensored
+Math: MAmmoTH2-8B-Plus^10^10 10 https://huggingface.co/TIGER-Lab/MAmmoTH2-8B-Plus
+Code: code-millenials-8b^11^11 11 https://huggingface.co/budecosystem/code-millenials-8b
+
+A.1.2 Task Forgetting
+
+We show more details of models used for task forgetting.
+Base Model: Meta-Llama-3-8B^7
+Pre-Trained Model: Meta-Llama-3-8B-Instruct^8
+Fine-Tuned Models: LLama-3-8b-Uncensored^9
+Target Models:
+Traditional Chinese: Llama3-TAIDE-LX-8B-Chat-Alpha1^12^12 12 https://huggingface.co/taide/
+Llama3-TAIDE-LX-8B-Chat-Alpha1
+German: Llama3-DiscoLeo-Instruct-8B-v0.1^13^13 13 https://huggingface.co/DiscoResearch/
+Llama3-DiscoLeo-Instruct-8B-v0.1
+Japanese: Llama-3-ELYZA-JP-8B^14^14 14 https://huggingface.co/elyza/Llama-3-ELYZA-JP-8B
+Russian: saiga_llama3_8b^15^15 15 https://huggingface.co/IlyaGusev/saiga_llama3_8b
+Thai: llama-3-typhoon-v1.5-8b-instruct_8b^16^16 16 https://huggingface.co/scb10x/
+llama-3-typhoon-v1.5-8b-instruct
+
+A.2 Results with Different Hyperparameters on Gemma-2-9b
+
+In this section, we show different hyperparameters of DARE, TIES, and DARE+TIES across different
+scaling coefficients on Gemma-2-9b. The results explain why the hyperparameters we used in the main
+text are the most effective for all baselines.
+
+DARE.
+
+Table 8 follows the same settings as Table 5 while demonstrating the performance with varying drop
+rates. DARE achieves better results when the drop rate is 0.3.
+
+     Merged      Drop Utility                UA               Math             Code
+     Tasks       Rate WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\uparrow)
+                      downarrow)
+
+                 0.3  10.0146                1.5909           0.8324           -
+UA + Math        0.6  10.0979                1.6333           0.8241           -
+                 0.9  10.5492                1.6242           0.8112           -
+                 0.3  10.4055                -                0.8294           0.6341
+Math + Code      0.6  10.4918                -                0.8393           0.6220
+                 0.9  11.4782                -                0.7703           0.5671
+                 0.3  10.8740                1.7061           -                0.4390
+UA + Code        0.6  10.9795                1.6818           -                0.4634
+                 0.9  11.3437                1.8303           -                0.5366
+                 0.3  10.3804                1.6394           0.8294           0.6463
+UA + Math + Code 0.6  10.4883                1.7091           0.8249           0.6280
+                 0.9  11.6337                1.8636           0.7453           0.5305
+
+
+Table 8: Results of task learning with DARE under Gemma-2-9b. All scaling coefficients here are set
+as 0.50.5.
+
+On the other hand, we also consider different values of scaling coefficients. Following the
+settings of Table 6, in Table 9, we show the performance of DARE with different drop rates and the
+coefficient fixed at 1.0. Overall, compared with Table 6, we obtain the best result for DARE when
+the drop rate is set to 0.3. This is why we choose these parameters in Table 5 and  6.
+
+     Merged      Drop Utility                UA               Math             Code
+     Tasks       Rate WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\uparrow)
+                      downarrow)
+
+                 0.3  10.8753                3.9424           0.7437           -
+UA + Math        0.6  11.2912                3.8515           0.7036           -
+                 0.9  15.3662                3.7636           0.4594           -
+                 0.3  12.4347                -                0.7111           0.5305
+Math + Code      0.6  13.2541                -                0.6626           0.4329
+                 0.9  49.7530                -                0.0205           0.0183
+                 0.3  12.1404                3.8394           -                0.3537
+UA + Code        0.6  12.3582                3.7697           -                0.3354
+                 0.9  16.0632                3.3121           -                0.3171
+                 0.3  12.5596                3.6939           0.7005           0.5061
+UA + Math + Code 0.6  13.5538                3.6061           0.6262           0.3902
+                 0.9  61.5858                ✕                0.0091           0.0183
+
+
+Table 9: Results of task learning with DARE under Gemma-2-9b. All scaling coefficients here are set
+as 1.01.0. The cross sign indicates that the model can only generate gibberish.
+
+TIES.
+
+In Table 10, we follow the same settings with Table 5, but show more results for different kk of
+TIES. TIES obtain better utilities across different combinations of task merging when k=0.7k=0.7.
+
+     Merged             Utility                UA               Math             Code
+     Tasks       Top kk WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\
+                        downarrow)                                               uparrow)
+
+                 0.5    10.0067                1.5394           0.8347           -
+UA + Math        0.7    10.0167                1.5636           0.8385           -
+                 0.9    10.0267                1.5788           0.8340           -
+                 0.5    10.3486                -                0.8317           0.6707
+Math + Code      0.7    10.3763                -                0.8279           0.6524
+                 0.9    11.3946                -                0.8309           0.6524
+                 0.5    10.8511                1.5455           -                0.4451
+UA + Code        0.7    10.8583                1.5121           -                0.4329
+                 0.9    10.8495                1.5455           -                0.4390
+                 0.5    10.3727                1.6515           0.8264           0.6585
+UA + Math + Code 0.7    10.3994                1.7939           0.8317           0.6585
+                 0.9    10.4196                1.8636           0.8309           0.6463
+
+
+Table 10: Results of task learning with TIES under Gemma-2-9b. All scaling coefficients here are
+set as 0.50.5.
+
+Apart from the hyperparameter of TIES, we also take the scaling coefficient into account.
+Therefore, Table 11 uses the same settings as Table 6, with the only difference being the top kk.
+In comparison with Table 6, the results are better when kk is 0.7. Therefore, the proper
+hyperparameters of TIES are setting kk as 0.7.
+
+     Merged             Utility                UA               Math             Code
+     Tasks       Top kk WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\
+                        downarrow)                                               uparrow)
+
+                 0.5    10.6077                3.3455           0.7635           -
+UA + Math        0.7    10.7638                3.3606           0.7475           -
+                 0.9    10.8087                3.5394           0.7362           -
+                 0.5    11.9588                -                0.7460           0.5732
+Math + Code      0.7    12.3455                -                0.7165           0.5366
+                 0.9    12.5847                -                0.6892           0.5427
+                 0.5    11.8724                3.4182           -                0.3049
+UA + Code        0.7    11.9742                3.3545           -                0.2866
+                 0.9    11.9892                3.4455           -                0.2927
+                 0.5    12.1112                3.3848           0.7263           0.5732
+UA + Math + Code 0.7    12.5602                3.5061           0.7104           0.5366
+                 0.9    12.8162                3.5727           0.6907           0.5244
+
+
+Table 11: Results of task learning with TIES under Gemma-2-9b. All scaling coefficients here are
+set as 1.01.0.
+
+DARE + TIES.
+
+Here, we show more different hyperparameter combinations of DARE+TIES with the scaling coefficient
+set to 0.5 in Table 12. Across different tasks, the results with (pp, kk) = (0.1, 0.9) outperform
+other settings. These are the parameters we use in the main text as well.
+
+    Merged      Drop Rate   Utility               UA              Math            Code
+    Tasks       pp          WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                / Top kk    downarrow)            uparrow)        uparrow)        uparrow)
+
+                0.7 / 0.3   10.1749               1.6000          0.8127          -
+UA + Math       0.4 / 0.6   10.0813               1.5545          0.8332          -
+                0.1 / 0.9   10.0461               1.5818          0.8302          -
+                0.7 / 0.3   10.7264               -               0.8173          0.6341
+Math + Code     0.4 / 0.6   10.4415               -               0.8294          0.6524
+                0.1 / 0.9   10.4208               -               0.8287          0.6341
+                0.7 / 0.3   10.9549               1.6091          -               0.4329
+UA + Code       0.4 / 0.6   10.8592               1.6030          -               0.4512
+                0.1 / 0.9   10.8553               1.6121          -               0.4512
+                0.7 / 0.3   10.7478               1.7333          0.8089          0.6280
+UA + Math +     0.4 / 0.6   10.4725               1.7727          0.8279          0.6646
+Code
+                0.1 / 0.9   10.4147               1.8091          0.8309          0.6524
+
+
+Table 12: Results of task learning with DARE + TIES under Gemma-2-9b. All scaling coefficients here
+are set as 0.50.5.
+
+A.3 Results with Different Hyperparameters on Llama-3-8B
+
+In this section, we present various hyperparameters for DARE, TIES, and DARE+TIES on Llama-3-8B.
+The results demonstrate why the hyperparameters chosen in the main text are the most optimal across
+all baselines.
+
+DARE.
+
+In the main text, we show the results of DARE when the drop rate is 0.3 and the scaling coefficient
+is 0.5 on the Llama-3-8B model. Table 13 presents additional results of DARE using different drop
+rate settings. However, Table 13 demonstrates that DARE can get the best result when the drop rate
+is set as 0.3.
+
+     Merged      Drop Utility                UA               Math             Code
+     Tasks       Rate WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\uparrow)
+                      downarrow)
+
+                 0.3  9.0559                 3.5606           0.8074           -
+UA + Math        0.6  9.2150                 3.6576           0.7900           -
+                 0.9  10.3136                3.3394           0.7195           -
+                 0.3  10.1674                -                0.6558           0.3415
+Math + Code      0.6  10.5052                -                0.6626           0.2195
+                 0.9  14.0010                -                0.4814           0.1707
+                 0.3  10.4840                3.7273           -                0.2256
+UA + Code        0.6  10.6566                3.6303           -                0.1463
+                 0.9  11.6871                3.7939           -                0.1646
+                 0.3  10.0415                3.8000           0.6732           0.3171
+UA + Math + Code 0.6  10.2933                3.5061           0.6467           0.2866
+                 0.9  13.3988                3.9152           0.4723           0.1159
+
+
+Table 13: Results of task learning with DARE under Llama-3-8B. All scaling coefficients here are
+set as 0.50.5.
+
+TIES.
+
+Fixing the scaling coefficient at 0.5, we conduct more experiments of TIES on Llama-3-8B for
+different values of kk, and results are shown in Table 14. Most of results with k=7k=7 surpass the
+other values of kk.
+
+     Merged             Utility                UA               Math             Code
+     Tasks       Top kk WikiText-2(↓\          GPT-4(↑\uparrow) GSM8K(↑\uparrow) HumanEval(↑\
+                        downarrow)                                               uparrow)
+
+                 0.5    9.1528                 3.3788           0.8036           -
+UA + Math        0.7    9.0490                 3.4909           0.8089           -
+                 0.9    9.0009                 3.6636           0.7983           -
+                 0.5    10.0103                -                0.6914           0.3293
+Math + Code      0.7    10.1618                -                0.6831           0.3354
+                 0.9    10.2093                -                0.6732           0.3232
+                 0.5    10.2491                3.5667           -                0.2256
+UA + Code        0.7    10.4020                3.6818           -                0.1646
+                 0.9    10.5076                3.6727           -                0.1707
+                 0.5    9.9066                 3.5030           0.6793           0.3171
+UA + Math + Code 0.7    10.0566                3.5697           0.6694           0.2622
+                 0.9    10.1106                3.5818           0.6535           0.3171
+
+
+Table 14: Results of task learning with TIES under Llama-3-8B. All scaling coefficients here are
+set as 0.50.5.
+
+DARE+TIES.
+
+We run more experiments of DARE+TIES on Llama-3-8B to show the impacts of different combinations of
+the drop rate and top kk. Table 15 shows the results, with (p, k) = (0.1, 0.9) achieving the best
+performance in most cases. This indicates that the parameters we use in the main text are the most
+favorable for this method.
+
+    Merged      Drop Rate   Utility               UA              Math            Code
+    Tasks       pp          WikiText-2(↓\         GPT-4(↑\        GSM8K(↑\        HumanEval(↑\
+                / Top kk    downarrow)            uparrow)        uparrow)        uparrow)
+
+                0.7 / 0.3   9.3173                3.7091          0.7983          -
+UA + Math       0.4 / 0.6   9.0607                3.5471          0.7945          -
+                0.1 / 0.9   9.0055                3.5515          0.7923          -
+                0.7 / 0.3   10.8194               -               0.6391          0.2683
+Math + Code     0.4 / 0.6   10.3354               -               0.6520          0.3293
+                0.1 / 0.9   10.2170               -               0.6778          0.2927
+                0.7 / 0.3   10.8128               3.6030          -               0.0976
+UA + Code       0.4 / 0.6   10.5554               3.7242          -               0.2256
+                0.1 / 0.9   10.5172               3.6606          -               0.1951
+                0.7 / 0.3   10.7319               3.8182          0.6224          0.3232
+UA + Math +     0.4 / 0.6   10.2063               3.6303          0.6535          0.3293
+Code
+                0.1 / 0.9   10.1180               3.6727          0.6634          0.3537
+
+
+Table 15: Results of task learning with DARE + TIES under Llama-3-8B. All scaling coefficients here
+are set as 0.50.5.
+
+1812291640341714
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

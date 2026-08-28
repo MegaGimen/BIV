@@ -1,0 +1,1028 @@
+source: https://arxiv.org/html/2506.02918
+arxiv: https://arxiv.org/abs/2506.02918
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Background
+ 4. 3 Methodology
+     1. 3.1 Formulation
+     2. 3.2 DyMo: Dynamics Modelling
+         1. 3.2.1 Dynamics Modelling by Supervised Fine-tuning
+         2. 3.2.2 Dynamics Modelling over Online Reinforcement Learning
+     3. 3.3 Self-Verification Sampling by Internal Environment Model
+ 5. 4 Experiments
+     1. 4.1 Setup
+     2. 4.2 How proficient is the model at dynamics modelling?
+     3. 4.3 How does dynamics modelling benefit SFT and RL for tool-use?
+     4. 4.4 How does the RL/SFT models perform when scaling up test-time compute?
+     5. 4.5 How does dynamics modelling impact the test-time compute scaling of RL models?
+     6. 4.6 How does self-verification sampling scale over test-time compute?
+     7. 4.7 What if the model is allowed to refuse?
+ 6. 5 Discussion
+ 7. 6 Conclusion
+ 8. References
+ 9. A Examples of Data Used for Training LLMs
+     1. A.1 Example of Function Call Supervised Fine-tuning Dataset 𝔻fc\mathbb{D}_{\mathrm{fc}}
+     2. A.2 Examples of State Prediction Supervised Fine-tuning Dataset 𝔻sp\mathbb{D}_{\mathrm{sp}}
+
+License: CC BY-NC-ND 4.0
+arXiv:2506.02918v2 [cs.AI] 19 Sep 2025
+
+World Modelling Improves Language Model Agents
+
+Shangmin Guo ^†^†thanks: Correspondence author: s.guo@ed.ac.uk^†^†thanks: Work done during
+internship at Cohere. Affiliation: University of Edinburgh    Omar Darwiche Domingues Affiliation: 
+Cohere    Raphaël Avalos^2^2footnotemark: 2 Affiliation: Vrije Universiteit Brussel    Aaron
+Courville Affiliation: Université de Montréal    Florian Strub Affiliation: Cohere
+
+Abstract
+
+Tool use in stateful environments presents unique challenges for large language models (LLMs),
+where existing test-time compute strategies relying on repeated trials in the environment are
+impractical. We propose dynamics modelling (DyMo), a method that augments LLMs with a state
+prediction capability alongside function calling during post-training. This enables LLMs to predict
+the future states of their actions through an internal environment model. On the Berkeley Function
+Calling Leaderboard V2, DyMo improves success rates and significantly reduces hallucinations. We
+further integrate the internal environment model into self-verification sampling (SVS), and show
+that this substantially improves pass^kk over number of trials kk, and allows the model to refuse
+unreliable outputs. Together, DyMo and SVS greatly enhance the effectiveness and reliability of
+LLMs for tool use. We believe this work charts a path towards scalable planning RL methods for LLM
+inference without repeatedly querying the oracle environment.
+
+1 Introduction
+
+Large language models (LLMs) have demonstrated remarkable performance in a wide range of
+applications [1, 2, 3, 4, 5, 6]. In addition to conventional natural language tasks, recent
+advances have shown that LLMs also achieve breakthrough performance in formal language tasks,
+notably code generation [7, 8, 9] and tool use [10, 11, 12]. Recent work has shown that scaling the
+test-time compute can further improve the performance of LLMs on complex tasks such as mathematical
+reasoning [13, 14, 15, 16, 17]. To achieve better performance by scaling up test-time compute,
+existing methods assume that a verifier, e.g. a process reward model (PRM) or an outcome reward
+model (ORM), can be queried multiple times during inference [11, 13, 16, 14].
+
+However, many real-world applications may not rely on a verifier to improve test-time sampling,
+especially when the LLM interacts with the world as in Agentic scenarios. One may not execute kk
+payments and be satisfied that one of the payments is correct among the kk ones, whereas one may
+verify kk times if a mathematical solution is correct without ramifications. In this spirit, we
+consider tool-use tasks, where the agent must execute a single trajectory. In particular, such
+constraints are often inherent to the statefulness of environments, i.e., the environment status
+states after executing an action and cannot be easily reverted - the bank account is reduced after
+a payment!
+
+Refer to caption
+Figure 1: The proposed dynamics modelling (DyMo) that trains an LLM to predict the resulted states
+of the environment after tools execute function calls via either SFT (orange arrows) on run-logs or
+over online RL loops (blue arrows).
+
+Inspired by the Generative Verifier [18] (GenRM), which formulates the reward function as a next
+token prediction task, as illustrated in Figure 1, we propose dynamic modelling (DyMo) to fine-tune
+LLMs to generate not only the functions calls for a given user prompt, but also the subsequent
+states of tool engines after executing the generated function calls. This has two advantages: 1) at
+training time, this state prediction provides an additional training signal; 2) at test time, this
+state prediction can be used in the decision-making process to execute the roll-out, similar to
+one-step planning methods.
+
+We first explore the impact of DyMo into both the supervised fine-tuning (SFT) and RL stages in LLM
+post-training  [3, 4, 5], and investigate its effectiveness. Our results on the Berkeley Function
+Calling Leaderboard [19] V2 (BFCL-V2) show that DyMo  alleviates the hallucination problem of the
+SFTed model, and improves the success rate of the RLed models. Incorporating DyMo, our results
+suggest that an 8B model, when given access to the environment during training, can match and
+occasionally surpass the performance of GPT-4o on BFCL-V2.
+
+Second, we explore the planning capabilities of DyMo through self-verification sampling (SVS)
+strategy [20] at test time. Specifically, the models generate kk tool calls for a given user
+prompt, predict the respective states resulting from those actions, and proceed with the most
+promising trajectory based on a ranking mechanism: sample, predict, then proceed.
+
+Refer to caption
+Figure 2: The proposed self-verification sampling (SVS) strategy for test-time compute scaling. For
+a given user prompt 𝒙{\bm{x}}, the model: 1) generates kk candidate completions 𝒚^\hat{{\bm{y}}};
+2) predicts the subsequent states 𝒛^\hat{{\bm{z}}} of the kk candidates; 3) selects a completion to
+output by a specified scoring function score.
+
+Our experiments demonstrate that (i) increasing the number of trajectories keeps increasing the
+LLMs score, (ii) the outcome of the state prediction can be used to select a successful trajectory
+without access to the oracle environment, thereby offering a novel schema for scaling test-time
+compute in stateful environments. Furthermore, SVS enables models to effectively “refuse” requests
+that exceed their capabilities based on their state prediction, substantially improving the
+precision of the final outputs. We interpret this precision as “reliability”, as it represents the
+proportion of outputs verified as correct by the oracle environment.
+
+In summary, the proposed DyMo method coupled with the SVS strategy significantly enhances the
+success rate and reliability of LLMs in tool use tasks.
+
+2 Background
+
+Tool Use by LLMs: Recent works have demonstrated the capability of LLMs to achieve notable
+performance in API usage through supervised fine-tuning (SFT) using demonstrations provided either
+by human experts or generated by advanced models such as GPT-4 [21, 22, 23]. This capability
+positions LLMs as back-ends for agents interacting with environments consisting of various tools [
+19, 24, 25] and simulated user interactions [26]. However, existing approaches are mainly based on
+imitation learning for training [21, 22, 23], while the evaluation relies on interactions between
+environments and LLMs [26, 19]. Similar to some recent works [27, 28], we focus on learning
+directly through interacting with the environments, as detailed in Section 3.2.
+
+Reinforcement Learning for Fine-tuning LLMs: Existing RL methodologies for fine-tuning LLMs
+primarily address alignment tasks [29, 30, 31] or reasoning-oriented tasks, such as mathematics and
+programming challenges [32]. Nonetheless, we posit that RL techniques can effectively extend to
+tool use scenarios, especially when scaling the quantity of generated tool interactions, given that
+LLMs have already achieved promising performance in real-world tool use tasks [33, 25, 26].
+Furthermore, recent studies indicate a substantial performance gap between online/on-policy RL
+methods and their offline/off-policy counterparts [34, 35, 36, 37]. Although rigorous online
+interactions can be traded for enhancing wall-clock efficiency, strictly online RL methods still
+represent an optimal Pareto frontier [37, 38]. Hence, to fully harness the capabilities of RL in
+tool use contexts, our experiment setup is strictly online and on-policy in this work.
+Additionally, our method enables models to do one-step planning based their internal learnt
+environment model during inference time, as illustrated in Section 3.3.
+
+Test-time Compute Scaling: It is well-established that LLMs enhance their performance on logical
+reasoning tasks by generating extended responses that include explicit intermediate reasoning
+steps [39]. Further research highlights the importance of explicitly learning these intermediate
+reasoning stages guided by Policy Reward Models (PRMs) to achieve superior outcomes [14]. While
+scaling test-time computes by lengthening generated completions has proven beneficial [40, 16],
+environmental interactions remain critical for achieving optimal results in agent-based tasks [11].
+Recent advances also investigate multiple self-rewarding [17], or self-verification [20] steps to
+scale test-time compute in mathematical reasoning contexts. Unlike these works which query the
+environment multiple times during inference, we propose to utilise the internal environment models
+of LLMs to increase the number of completions for scaling test-time computes, as introduced in
+Section 3.3.
+
+3 Methodology
+
+3.1 Formulation
+
+We used pre-trained Transformer [41] models 𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}
+parameterised by θ\theta that predict tokens in an autoregressive manner. After post-training by
+SFT and RL and given a user prompt 𝒙{\bm{x}}, the models can then generate completions/responses 𝒚
+{\bm{y}} from the distribution 𝒚∼𝝅θ(⋅|𝒙){\bm{y}}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\
+cdot|{\bm{x}}). Since we focus on the tool use scenario in this work, we assume the user prompts 𝒙
+{\bm{x}} are all about requesting function calls, whereas the completions 𝒚{\bm{y}} can be either
+natural languages or formatted formal languages. For completions that call functions, they will
+then be passed to the environment ℰ{\mathcal{E}} to execute, and the resulted state is 𝒛=ℰ⁡(𝒙,𝒚){\
+bm{z}}={\mathcal{E}}({\bm{x}},{\bm{y}}) whose complete set is ℤ{\mathbb{Z}}. Note that using
+no-tool environment is sometimes available in some experiments measuring hallucination.
+
+Following RL terminology, we refer to 𝒙{\bm{x}} as the input state, 𝒚{\bm{y}} as the generated
+action from the model 𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}, and 𝒛{\bm{z}} as the resulted
+next state. The transition dynamics are specified by the environment ℰ{\mathcal{E}}, and the reward
+function r:ℤ↦[0,1]r:{\mathbb{Z}}\mapsto[0,1] assigns a binary score to a pair (𝒙,𝒚)({\bm{x}},{\bm
+{y}}) according to their resultant state 𝒛{\bm{z}}. From this RL perspective, our model 𝝅θ{\color
+[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}} can:
+
+  • •
+   
+    generate a tool call (action) 𝒚{\bm{y}} given a user prompt (state) 𝒙{\bm{x}} as input state,
+    i.e. 𝒚∼𝝅θ(⋅|𝒙){\bm{y}}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}});
+
+  • •
+   
+    predict next-state 𝒛{\bm{z}} given a user prompt 𝒙{\bm{x}} and a tool call 𝒚{\bm{y}}, i.e. 𝒛∼𝝅θ
+    (⋅|𝒙,𝒚){\bm{z}}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}},{\bm{y}}).
+
+3.2 DyMo: Dynamics Modelling
+
+The learning objective of the proposed DyMo is not only the tool use function but the environment
+function ℰ{\mathcal{E}}. As illustrated below, we introduce the DyMo into both the SFT and RL
+stages.
+
+3.2.1 Dynamics Modelling by Supervised Fine-tuning
+
+During the SFT stage, we construct two distinct datasets — one for the tool use function and one
+for the environment function — which are described in detail below.
+
+For the tool use function, we train the model 𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}} on a
+dataset of function calls represented by function call (fc) pairs in the form <prompt,completion>,
+i.e. 𝔻fc={(𝒙i,𝒚i)}i=1Nfc\mathbb{D}_{\mathrm{fc}}=\left\{({\bm{x}}_{i},{\bm{y}}_{i})\right\}_{i=1}^
+{N_{\mathrm{fc}}}. To train the model on these pairs, we minimise the cross-entropy loss [42] of
+the model’s completion prediction distribution 𝝅θ(⋅|𝒙){\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\
+cdot|{\bm{x}}) over them:
+
+ ℒFC(𝔻fc;θ)=−∑i=1Nfc∑t=1T𝒚ilog𝝅θ(yi,t|𝒙i,𝒚i,<t)\mathcal{L}_{\text{FC}}\left(\mathbb{D}_{\
+ mathrm{fc}};{\color[rgb]{0,0,1}\theta}\right)=-\sum_{i=1}^{N_{\mathrm{fc}}}\sum_{t=1}^{T_{{\   (1)
+ bm{y}}_{i}}}\log{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}\bigl(y_{i,t}|{\bm{x}}_{i},{\bm
+ {y}}_{i,<t}\bigr)
+
+where yi,ty_{i,t} is the tt-the element in the target completion 𝒚i{\bm{y}}_{i}, 𝒚i,<t{\bm{y}}_{i,
+<t} represents the partial target sequence preceding yty_{t}, and T𝒚iT_{{\bm{y}}_{i}} is the length
+of 𝒚i{\bm{y}}_{i}.
+
+Regarding the environment function, we represent it by a dataset of state prediction (sp) triplets
+in the form <prompt,completion,result>, i.e. 𝔻sp={(𝒙i,𝒚i,𝒛i)}i=1Nsp\mathbb{D}_{\mathrm{sp}}=\left\
+{({\bm{x}}_{i},{\bm{y}}_{i},{\bm{z}}_{i})\right\}_{i=1}^{N_{\mathrm{sp}}}. Such data can be
+gathered and curated from the accumulated run logs of the target environment function ℰ{\mathcal
+{E}}, which we argue is a under-explored source for data scaling. Similar to the tool use function,
+we minimise the cross-entropy loss of the model’s state prediction distribution 𝝅θ(⋅|𝒙,𝒚){\color
+[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}},{\bm{y}}) over these triplets:
+
+ ℒSP(𝔻sp;θ)=−∑i=1Nsp∑t=1T𝒛ilog𝝅θ(zi,t|𝒙i,𝒚i,𝒛i,<t)\mathcal{L}_{\text{SP}}(\mathbb{D}_{\mathrm
+ {sp}};{\color[rgb]{0,0,1}\theta})=-\sum_{i=1}^{N_{\mathrm{sp}}}\sum_{t=1}^{T_{{\bm{z}}_{i}}}\  (2)
+ log{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}\bigl(z_{i,t}|{\bm{x}}_{i},{\bm{y}}_{i},{\bm
+ {z}}_{i,<t}\bigr)
+
+where the indices ii and tt follow the same meanings as in Equation 1, and T𝒛iT_{{\bm{z}}_{i}} is
+the length of 𝒛i{\bm{z}}_{i}.
+
+3.2.2 Dynamics Modelling over Online Reinforcement Learning
+
+In addition to the SFT stage, DyMo can also be incorporated into the RL fine-tuning of LLMs.
+
+Starting from a prompt set 𝔻rl={𝒙i}i=1Nrl\mathbb{D}_{\mathrm{rl}}=\{{\bm{x}}_{i}\}_{i=1}^{N_{\
+mathrm{rl}}}, we first sample two completions from the model, i.e. 𝒚^i1,𝒚^i2∼𝝅θ(⋅|𝒙i)\hat{{\bm{y}}}
+_{i}^{1},\hat{{\bm{y}}}_{i}^{2}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}}_{i}).
+The two completions along with the prompt 𝒙i{\bm{x}}_{i} are then passed as inputs to the
+environment function to get the next states, i.e. 𝒛i1=ℰ⁡(𝒙i,𝒚^i1){\bm{z}}_{i}^{1}={\mathcal{E}}({\
+bm{x}}_{i},\hat{{\bm{y}}}_{i}^{1}) and 𝒛i2=ℰ⁡(𝒙i,𝒚^i2){\bm{z}}_{i}^{2}={\mathcal{E}}({\bm{x}}_{i},\
+hat{{\bm{y}}}_{i}^{2}). Binary scores are then assigned to the <prompt,completion> pairs by the
+reward function rr, i.e. r1=r⁡(𝒙i,𝒚^i1)r_{1}=r({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{1}) and r2=r⁡(𝒙i,𝒚^
+i2)r_{2}=r({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{2}). Subsequently, we sample predicted next states 𝒛^i1
+\hat{{\bm{z}}}_{i}^{1} and 𝒛^i2\hat{{\bm{z}}}_{i}^{2} from the model, i.e. 𝒛^i1∼𝝅θ(⋅|𝒙i,𝒚^i1)\hat
+{{\bm{z}}}_{i}^{1}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}}_{i},\hat{{\bm{y}}}
+_{i}^{1}) and 𝒛^i2∼𝝅θ(⋅|𝒙i,𝒚^i2)\hat{{\bm{z}}}_{i}^{2}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\
+theta}}(\cdot|{\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{2}), to track the state prediction performance. Per
+RL training step, we update the parameter θ\theta of the model 𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_
+{\theta}} to simultaneously minimise the online two-sample REINFORCE Leave-One-Out (RLOO) loss [43,
+44] given in Equation 3, and the cross-entropy sample loss given in Equation 4.
+
+                                     (rβ/2𝝅θ​(𝒙i,𝒚^i1)−rβ/2𝝅θ​(𝒙i,𝒚^i2))​log⁡(𝝅θ​(𝒚^i1|𝒙i))\
+ ℒRLOO(𝔻rl;θ)=−∑i=1Nrl[\displaystyle displaystyle\left(r_{\beta/2}^{{\color[rgb]{0.75,0,0.25}\
+ \mathcal{L}_{\text{RLOO}}(\mathbb   bm{\pi}_{\theta}}}({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{1})
+ {D}_{\mathrm{rl}};{\color[rgb]      -r_{\beta/2}^{{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\
+ {0,0,1}\theta})=-\sum_{i=1}^{N_{\   theta}}}({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{2})\right)\log\
+ mathrm{rl}}}\biggl[                 left({\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\hat{{\
+                                     bm{y}}}_{i}^{1}|{\bm{x}}_{i})\right)                       (3)
+                                     (rβ/2𝝅θ(𝒙i,𝒚^i2)−rβ/2𝝅θ(𝒙i,𝒚^i1))log(𝝅θ(𝒚^i2|𝒙i))]\
+                                     displaystyle\left(r_{\beta/2}^{{\color[rgb]{0.75,0,0.25}\
+                                     bm{\pi}_{\theta}}}({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{2})
+ +\displaystyle+                     -r_{\beta/2}^{{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\
+                                     theta}}}({\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{1})\right)\log\
+                                     left({\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\hat{{\
+                                     bm{y}}}_{i}^{2}|{\bm{x}}_{i})\right)\biggr]
+
+ ℒDM(𝔻rl;θ)=−∑i=1Nrl∑j=12∑t=1T𝒛^ijlog𝝅θ(zi,tj|𝒙i,𝒚^ij,𝒛i,<tj)\mathcal{L}_{\text{DM}}(\mathbb
+ {D}_{\mathrm{rl}};{\color[rgb]{0,0,1}\theta})=-\sum_{i=1}^{N_{\mathrm{rl}}}\sum_{j=1}^{2}\     (4)
+ sum_{t=1}^{T_{\hat{{\bm{z}}}_{i}^{j}}}\log{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}\bigl(z_
+ {i,t}^{j}|{\bm{x}}_{i},\hat{{\bm{y}}}_{i}^{j},{\bm{z}}_{i,<t}^{j}\bigr)
+
+where θ0\theta_{0} is the detached initial parameter in the RL stage, β\beta is a constant
+hyperparameter, and rβ/2𝝅θ​(𝒚i)r_{\beta/2}^{{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}}({\bm{y}}_
+{i}) is the regularised reward defined as rj−β2​log⁡𝝅θ​(𝒚ij|𝒙i)𝝅θ0​(𝒚ij|𝒙i)r_{j}-\frac{\beta}{2}\
+log\frac{{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}({\bm{y}}_{i}^{j}|{\bm{x}}_{i})}{{\color[rgb]
+{0.75,0,0.25}\bm{\pi}_{\theta_{0}}}({\bm{y}}_{i}^{j}|{\bm{x}}_{i})} for j∈{1,2}j\in\{1,2\}.
+
+3.3 Self-Verification Sampling by Internal Environment Model
+
+
+Algorithm 1 Self-verification sampling (SVS)
+Input: 𝒙{\bm{x}}, number of candidate completions kk
+Output: a completion 𝒚^\hat{{\bm{y}}}
+Given : a pre-specified scoring function score
+for i←1i\leftarrow 1 to kk do
+   𝒚^i∼𝝅θ(⋅|𝒙)\hat{{\bm{y}}}_{i}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}});
+   𝒛^i∼𝝅θ(⋅|𝒙,𝒚^i)\hat{{\bm{z}}}_{i}\sim{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}},
+\hat{{\bm{y}}}_{i});
+end for
+j←score​(𝝅θ​(𝒛^1|𝒙1,𝒚^1),…,𝝅θ​(𝒛^k|𝒙k,𝒚^k))j\leftarrow\textit{score}\bigl({\color[rgb]{0.75,0,0.25}
+\bm{\pi}_{\theta}}(\hat{{\bm{z}}}_{1}|{\bm{x}}_{1},\hat{{\bm{y}}}_{1}),\dots,{\color[rgb]
+{0.75,0,0.25}\bm{\pi}_{\theta}}(\hat{{\bm{z}}}_{k}|{\bm{x}}_{k},\hat{{\bm{y}}}_{k})\bigr);
+𝒚^←𝒚^j\hat{{\bm{y}}}\leftarrow\hat{{\bm{y}}}_{j};
+
+After undergoing DyMo in both the SFT and RL phases, our model 𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_
+{\theta}} is capable of both generating tool calls and predicting the subsequent states after
+executing them. Leveraging this capability, we propose to query the internal environment model of
+𝝅θ{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}} multiple times to do Self-Verification Sampling
+(SVS), as illustrated in Algorithm 1. Given multiple completions per prompt, SVS selects a single
+output based on a specified scoring function score and the internal environment model of 𝝅θ{\color
+[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}. Notably, unlike existing approaches, SVS scales test-time
+compute without querying the oracle environment ℰ{\mathcal{E}}. This approach is reminiscent of the
+Best-of-NN search strategy described in [16], but avoids querying the environment ℰ{\mathcal{E}}
+multiple times, thereby preventing unintended state changes caused by repeated trials. In addition,
+SVS aligns with the notion of mental simulation in decision-making, a concept explored in cognitive
+science [45], thereby establishing a conceptual bridge between research in RL and cognitive science
+^1^1 1 We are particularly grateful to Prof. Kenny Smith from the University of Edinburgh for
+insightful discussions that inspired this perspective..
+
+4 Experiments
+
+4.1 Setup
+
+Environment: We evaluate tool-use performance using the Berkeley Function Calling Leaderboard V2
+(BFCL-V2) [19], which offers comprehensive coverage of function call types, diverse tasks,
+programming languages, and executability, and has been widely adopted in recent works [46, 6]. As
+our work is the first to investigate LLMs’ ability to model environment dynamics, we begin with
+single-turn interactions to ensure a clean and tractable problem formulation, in a serverised
+BFCL-V2 environment in order to run online RL training. Regarding the base model, considering the
+constraints of our computes, we choose Cohere’s R7B, given its leading performance on various agent
+benchmarks [6].
+
+SFT Data: During the SFT stage, to constitute the function call (fc) SFT dataset 𝔻fc\mathbb{D}_{\
+mathrm{fc}}, inspired by [47, 48], we synthesised pairs of <prompt,completion> following the
+distribution of BFCL-V2. Regarding the state prediction (sp) SFT dataset 𝔻sp\mathbb{D}_{\mathrm
+{sp}}, we first split the state space ℤ{\mathbb{Z}} into two subsets: 1) pass states ℤ+{\mathbb{Z}}
+^{+} where the completions successfully passed the check of BFCL-V2 and received a score of 11; 2)
+error states ℤ−{\mathbb{Z}}^{-} where the completions failed on the BFCL-V2’s check and received a
+score of 00. Given the format of BFCL-V2’s return messages, we denote the shared prefix of pass
+states in ℤ+{\mathbb{Z}}^{+} as 𝒛pass{\color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox{pass}}}, and similarly
+𝒛error{\color[rgb]{1,0,1}{\bm{z}}_{\mbox{error}}}. Note that, under this setup, there exhibits a
+bijection between the BFCL-V2’s resulted state subspaces {ℤ+,ℤ−}\{{\mathbb{Z}}^{+},{\mathbb{Z}}^{-}
+\} and the scores from the reward function {0,1}\{0,1\}, which we utilise later to truncate the
+generation when running SVS during inference time. Following this procedure, we constitute 𝔻sp\
+mathbb{D}_{\mathrm{sp}} of <prompt,completion,result> triplets from our accumulated run-logs of
+BFCL-V2 tests.
+
+RL Data: In the following RL stage, to maintain the online RL training and validation distributions
+as independent and identical, we use 80%80\% from the original BFCL-V2 prompt set as the training
+set, and keep the remaining 20%20\% to validate the generalisation performance. Note that we
+intentionally keep at least 2020 test prompts per category in the final validation set, as certain
+categories contain ≤50\leq 50 samples, thus 20%20\% of them lacks of statistical significance.
+
+SVS Scoring Function: During the inference time, following GenRM [18], we use a scoring function 
+score in the following Equation 5 to run SVS illustrated in Algorithm 1:
+
+ score(𝝅θ(⋅|𝒙1,𝒚^1),…,𝝅θ(⋅|𝒙k,𝒚^k))≜argmaxj({𝝅θ(𝒛pass|𝒙j,𝒚^j)}).\textit{score}\bigl({\color
+ [rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}}_{1},\hat{{\bm{y}}}_{1}),\dots,{\color
+ [rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}}_{k},\hat{{\bm{y}}}_{k})\bigr)\triangleq\   (5)
+ arg\max_{j}\left(\left\{{\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}({\color[rgb]{0,0.5,0.5}{\
+ bm{z}}_{\mbox{pass}}}|{\bm{x}}_{j},\hat{{\bm{y}}}_{j})\right\}\right).
+
+Examples of all the above types of data are provided in Appendix A.
+
+4.2 How proficient is the model at dynamics modelling?
+
+Actual   Predicted                                 Metrics
+         Positive             Negative
+Positive 25.40                3.56                 Precision: 90.00%​(86.02%−93.78%)90.00\%(86.02\
+                                                   %-93.78\%)
+Negative 2.82                 68.22                Recall: 87.71%​(83.46%−91.47%)87.71\%(83.46\
+                                                   %-91.47\%)
+Accuracy 93.62%​(91.90%−95.21%)93.62\%(91.90\      F1-score: 88.84%​(84.72%−92.61%)88.84\%(84.72\
+         %-95.21\%)                                %-92.61\%)
+
+
+Table 1: Confusion matrix of predicting next states by the model 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\
+pi}}^{\mathrm{sft}} SFTed on both function call dataset 𝔻fc\mathbb{D}_{\mathrm{fc}} and state
+prediction dataset 𝔻sp\mathbb{D}_{\mathrm{sp}}.
+
+
+(a) Precision
+
+
+(b) Recall
+
+
+(c) F1-score
+
+
+(d) Accuracy
+
+
+Figure 3: Performance metrics of results prediction over online RL training with DM loss (Equation 
+4).
+
+Since we partition the state space ℤ{\mathbb{Z}} to ℤ+{\mathbb{Z}}^{+} and ℤ−{\mathbb{Z}}^{-}, the
+state prediction task can be framed as a binary classification problem. In Table 1, we present a
+detailed breakdown of the model’s performance on the binary classification task formulated in
+Section 4.2. The table includes the confusion matrix, with values normalized to sum to 100100 for
+interpretability, as well as confidence intervals (in brackets) for precision, recall, F1-score,
+and accuracy. As can be seen, a model 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} SFTed
+on the combined data 𝔻fc∪𝔻sp\mathbb{D}_{\mathrm{fc}}\cup\mathbb{D}_{\mathrm{sp}}, achieves a
+precision of 90.00%90.00\%, recall of 87.71%87.71\%, F1-score of 88.84%88.84\%, and accuracy of
+93.62%93.62\%. Notably, the success rate of this model on BFCL-V2 is only 72.77%72.77\%, which is
+significantly lower than its discriminative performance, highlighting the gap between accurate
+state prediction and successful functions calls. Therefore, a foundation is laid for improving a
+model’s generative capability by leveraging its discriminative capability [17, 35].
+
+We also track these metrics during online RL training with the DM loss function for 𝝅sft{\color
+[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}}, and the corresponding curves are shown in Figure 3. The
+red curves represent the model 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}}, which is
+initialized from SFT on 𝔻fc∪𝔻sp\mathbb{D}_{\mathrm{fc}}\cup\mathbb{D}_{\mathrm{sp}}, while the blue
+curves correspond to the baseline model ϕsft{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{sft}},
+fine-tuned only on 𝔻fc\mathbb{D}_{\mathrm{fc}}. As shown in the figures, ϕsft{\color[rgb]{0,1,1}\bm
+{\phi}}^{\mathrm{sft}}, which lacks initial state prediction capability, consistently underperforms
+𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} across all metrics throughout training. Even
+after 600600 steps of RL training, ϕrd{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rd}} fails to match
+the performance of the SFT-only model 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}}, which
+indicates the necessary of the state prediction data. These results suggest that the benefits of
+𝔻sp\mathbb{D}_{\mathrm{sp}} cannot be compensated for by relying solely on the downstream DyMo loss
+during RL training, thus highlighting the necessity of incorporating 𝔻sp\mathbb{D}_{\mathrm{sp}} in
+the SFT stage.
+
+4.3 How does dynamics modelling benefit SFT and RL for tool-use?
+
+During the experiments in Section 4.2, we observe that incorporating the additional state
+prediction data 𝔻sp\mathbb{D}_{\mathrm{sp}} also leads to a difference in tool use performance. We
+compare the the performance of ϕsft{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{sft}} - which can do only
+tool use - with 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} - which is capable of both
+using tools and predicting next states - across all categories of BFCL-V2. The results in the “SFT”
+section of Table 2 show that 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} achieves
+significant improvements on the “Irrelevance” category where the models are not expected to
+generate function calls when the available tools cannot satisfy the user request. Since the
+“Irrelevance” is specifically designed to evaluate hallucination of models [19], these results
+suggest that incorporating the state prediction task helps mitigate hallucination by LLMs [49].
+
+            Model                         Method         Overall Overall  Rel.  Irrel. AST    Exec
+                                                         (UW)    (W)
+                           Baselines                             #        (18)  (1122) (2501) 
+                                                                 samples
+      GPT-4o [1]                       –                 82.38   82.14    83.33 81.31  82.51  –
+    Command-A [6]                      –                 80.57   84.14    72.22 86.19  83.30  –
+     Command-R7B                       –                 70.50   76.70    55.56 81.02  74.92  –
+     xLAM-2 [48]                       –                 72.36   71.69    77.78 64.34  74.95  –
+    ToolACE-2 [23]                     –                 81.95   85.49    72.22 90.11  83.51  –
+    Watt-tool [50]                     –                 82.54   81.76    83.33 83.15  81.13  –
+    BigAgent [51]                      –                 82.27   81.50    83.33 82.38  81.10  –
+                              SFT                                #        (18)  (1122) (2501) 
+                                                                 samples
+   ϕsft{\color[rgb]                                                                           
+ {0,1,1}\bm{\phi}}^{\  𝔻fc\mathbb{D}_{\mathrm{fc}} only  66.35   66.50    70.73 58.05  70.26  76.25
+     mathrm{sft}}
+   𝝅sft{\color[rgb]    𝔻fc∪𝔻sp\mathbb{D}_{\mathrm{fc}}\                                       
+{0.75,0,0.25}\bm{\pi}}    cup\mathbb{D}_{\mathrm{sp}}    70.87   73.89    63.41 76.32  72.88  77.53
+   ^{\mathrm{sft}}
+                            SFT + RL                             #        (20)  (206)  (457)  
+                                                                 samples
+ϕrl{\color[rgb]{0,1,1} ϕsft{\color[rgb]{0,1,1}\bm{\phi}}                                      
+ \bm{\phi}}^{\mathrm    ^{\mathrm{sft}}→\rightarrowRLOO  80.31   80.22    75.00 89.81  76.13  96.25
+        {rl}}
+ϕrd{\color[rgb]{0,1,1} ϕsft{\color[rgb]{0,1,1}\bm{\phi}}                                      
+ \bm{\phi}}^{\mathrm   ^{\mathrm{sft}}→\rightarrowRLOO + 82.13   83.16    75.00 91.75  79.65  97.50
+        {rd}}                        DyMo
+   𝝅rl{\color[rgb]     𝝅sft{\color[rgb]{0.75,0,0.25}\bm                                       
+{0.75,0,0.25}\bm{\pi}}      {\pi}}^{\mathrm{sft}}→\      81.23   81.99    75.00 90.00  78.68  96.25
+    ^{\mathrm{rl}}              rightarrowRLOO
+   𝝅rd{\color[rgb]     𝝅sft{\color[rgb]{0.75,0,0.25}\bm                                       
+{0.75,0,0.25}\bm{\pi}}      {\pi}}^{\mathrm{sft}}→\      83.62   86.68    75.00 90.29  85.56  96.25
+    ^{\mathrm{rd}}           rightarrowRLOO + DyMo
+              SFT + RL + SVS (with kk candidates)                #        (20)  (206)  (457)  
+                                                                 samples
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   85.77   84.26    88.20 85.65  83.46  96.33
+    ^{\mathrm{rd}}              SVS with k=1k=1
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   88.20   86.71    91.30 86.86  86.44  96.55
+    ^{\mathrm{rd}}              SVS with k=2k=2
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   88.94   87.67    91.80 87.41  87.61  96.45
+    ^{\mathrm{rd}}              SVS with k=4k=4
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   89.73   88.18    93.10 88.10  88.00  96.25
+    ^{\mathrm{rd}}              SVS with k=8k=8
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   89.90   88.29    93.30 88.38  88.03  96.15
+    ^{\mathrm{rd}}             SVS with k=16k=16
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   90.18   88.26    94.10 88.59  87.86  96.25
+    ^{\mathrm{rd}}             SVS with k=32k=32
+   𝝅rd{\color[rgb]     𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\                                      
+{0.75,0,0.25}\bm{\pi}}  pi}}^{\mathrm{rd}}→\rightarrow   90.69   88.43    95.00 89.32  87.75  96.25
+    ^{\mathrm{rd}}             SVS with k=64k=64
+
+
+Table 2: Comprehensive category-wise performance comparison across baselines, SFT, SFT+RL, and
+SFT+RL+SVS models, on BFCL-V2. For each section, the number of evaluation examples per column is
+shown in the second row. (W) indicates metrics weighted by the number of samples, whereas UW
+indicates unweighted. Missing results are marked as ‘–‘. The “Exec” column is provided to show the
+improvement from RL training on it, but is never counted for the overall performance.
+
+Similarly, we compare the two models — ϕsft{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{sft}} and 𝝅sft{\
+color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} — both fine-tuned by online RL with and without our
+DyMo loss, resulting in four variants: 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}, ϕrd{\
+color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rd}} (with DyMo), and 𝝅rl{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\
+mathrm{rl}}, ϕrl{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rl}} (without DyMo). Take 𝝅rd{\color[rgb]
+{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}} for example, the model is first SFTed on 𝔻fc∪𝔻sp\mathbb{D}_{\
+mathrm{fc}}\cup\mathbb{D}_{\mathrm{sp}} (thus notated as π\pi), then further fine-tuned by online
+RL together with DyMo loss (thus superscripted by “rd”). The “SFT + RL” section of Table 2 shows
+the success rates of these models across different BFCL-V2 categories. For analytical clarity, we
+preserve the “Exec” category to show the substantial performance gains over it due to RL training.
+The results indicate that incorporating the DyMo loss yields a >5%>5\% improvement in success rate
+over the AST category, contributing to an overall performance boost.
+
+4.4 How does the RL/SFT models perform when scaling up test-time compute?
+
+Since the results in the “SFT” and “SFT + RL” sections of Table 2 are based on a greedy decoding
+strategy, we further examine whether and how the on-policy distribution over completions for a
+given prompt, i.e., 𝝅θ(⋅|𝒙){\color[rgb]{0.75,0,0.25}\bm{\pi}_{\theta}}(\cdot|{\bm{x}}), changes
+under different training pipelines. We begin by analysing the impact of online RL training,
+comparing the RL-trained models — 𝝅rl{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rl}} and ϕrl{\
+color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rl}} — with their corresponding SFT-only baselines — 𝝅sft{\
+color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{sft}} and ϕsft{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm
+{sft}} — using the number of completions per request as the variable. In Figure 4 and Figure 5, we
+report pass@kk and pass^kk [26] respectively as the evaluation metrics.
+
+
+
+Figure 4: Pass@kk of all methods investigated in this work scaling over number of completions kk
+during inference time on BFCL-V2.
+
+As indicated by the “performance gain by RL” in Figure 4, online RL significantly improves pass@kk
+when k≤8k\leq 8. More importantly, as indicated by the “performance gain by RL” in Figure 5, online
+RL consistently improves pass^kk over all kk values, as evidenced by the consistent gap between the
+RL-trained models — 𝝅rl{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rl}} and ϕrl{\color[rgb]{0,1,1}\
+bm{\phi}}^{\mathrm{rl}} — over their SFT-only counterparts — 𝝅sft{\color[rgb]{0.75,0,0.25}\bm{\pi}}
+^{\mathrm{sft}} and ϕsft{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{sft}}. These results suggest that
+the on-policy distributions induced by the RL models yields a more consistent and reliable function
+calling performance than the distributions induced by the SFT models.
+
+We also note that our pass@kk curves align with the findings in mathematical reasoning tasks [52],
+where Yue et al. conclude that “base models can achieve a comparable or even higher pass@kk score
+compared to their RL counterparts at large kk values”. However, in our setup, we found that base
+model can hardly match pass@k or pass^kk of SFT and RL models, which we argue is due to that
+correct function calls are sparser to generate.
+
+4.5 How does dynamics modelling impact the test-time compute scaling of RL models?
+
+Building on the observation that RL models achieve higher success rates over test-time compute
+scales, we further investigate the impact of incorporating the DyMo loss during online RL training.
+Similarly, in Figure 4 and Figure 5, we report pass@kk and pass^kk for RL models trained with the
+DyMo loss — 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}} and ϕrd{\color[rgb]{0,1,1}\bm{\
+phi}}^{\mathrm{rd}} — compared to those trained without it — 𝝅rl{\color[rgb]{0.75,0,0.25}\bm{\pi}}^
+{\mathrm{rl}} and ϕrl{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rl}}.
+
+As indicated by the “performance gain by DyMo” in Figure 4, adding the DyMo loss during online RL
+improves pass@kk when k≤8k\leq 8. Meanwhile, as indicated by the “performance gain by DyMo” in
+Figure 5, DyMo loss also consistently improves pass^kk over all numbers of completions per prompt
+kk. Note that SVS is not utilised in the experiments so far, thus the improvements are solely due
+to the DyMo loss. More notably, incorporating the DyMo in both the SFT and RL stages results in 𝝅rd
+{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}, which achieves the highest pass^kk for all values
+of kk. The consistent gap between pass^kk curves of 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm
+{rd}}/ϕrd{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rd}} and 𝝅rl{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\
+mathrm{rl}}/ϕrl{\color[rgb]{0,1,1}\bm{\phi}}^{\mathrm{rl}} also indicate the DyMo loss can help to
+further improve the consistency and reliability of function calling performance on top of RL. These
+results demonstrate the effectiveness and benefits of integrating DyMo into both the SFT and RL
+phases.
+
+
+
+Figure 5: Pass^kk of all methods investigated in this work scaling over number of completions kk
+during inference time on BFCL-V2. More details about the “performance gain by SVS” are provided in
+Section 4.6 and Table 3.
+
+4.6 How does self-verification sampling scale over test-time compute?
+
+So far, we have focused primarily on the benefits of incorporating DyMo during model training.
+However, as introduced in Section 3.3, during inference time, self-verification sampling (SVS)
+actually unifies the policy (as in model-free RL), the environment model (as in model-based RL),
+and the value function (under our specific state-space split) into a single LLM. This paradigm
+enables the model to scale test-time compute by generating more candidate completions per user
+request without querying the oracle environment function ℰ{\mathcal{E}}. To evaluate the
+effectiveness of SVS, we compare pass^kk with SVS against pass^kk without SVS of model 𝝅rd{\color
+[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}. For pass^kk with SVS, we sample cc candidates for each
+trial and kk trials per prompt, thus k×ck\times c candidate completions in total for each prompt.
+Further, per candidate group for each trial, following GenRM [16], we adopt the scoring function
+defined in Equation 5 as the metric to select just one output from the cc candidates (thus kk
+outputs in the end).
+
+As shown in Table 3, SVS achieves improved pass^kk over all kk values, demonstrating that
+self-verification enables effective scaling with additional computes. More importantly, the
+consistent improvement of SVS performance with increasing kk highlights our method as a novel
+test-time compute scaling strategy — one that leverages the model’s internal environment
+approximation to self-verify and select the most reliable candidate completion. In Section 4.7 and
+Section 5, we provide further insights about our current SVS setup.
+
+           kk                 1           2           4           8          16          32
+           with SVS      89.02%89.02 87.97%87.97 87.19%87.19 86.14%86.14 84.05%84.05 78.05%78.05
+                         \%          \%          \%          \%          \%          \%
+pass^    (cc for each    (64)        (32)        (16)        (8)         (4)         (2)
+  kk        trial)
+          without SVS    87.68%87.68 82.38%82.38 79.14%79.14 75.58%75.58 71.61%71.61 67.11%67.11
+                         \%          \%          \%          \%          \%          \%
+
+
+Table 3: Pass^kk with and without SVS over kk trials in the oracle environment. Augmented with SVS,
+per prompt, we first generate cc candidate completions for each trial, then select just one to
+output by the scoring function defined in Equation 5 for all kk trials. Therefore, there are k×ck\
+times c candidates in total for each prompt, by querying the oracle environment also kk times as to
+pass^kk without SVS.
+
+Beyond the above experiment, we also compare pass@kk of the “Best-of-NN” test-time compute scaling
+strategy with the pass@1 performance of 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}} using
+SVS with kk candidate completions per prompt, thus both methods operate under the same inference
+compute budget. As shown in the results provided in the “SFT + RL + SVS” section of Table 2,
+increasing number of candidates kk in SVS consistently improves the pass@1, which demonstrated the
+effectiveness of the model’s internal environment model. It is unsurprising to observe that
+querying the model’s internal environment model is less efficient than accessing the oracle
+environment function under the same compute budget, and should be seen as an upper-bond. However,
+we also argue that relying on the oracle may be impractical in many real-world applications
+involving stateful environments. For example, the model is not expected to place kk parallel orders
+for a single shopping request or to book kk tickets on the same flights for a travel planning
+request.
+
+4.7 What if the model is allowed to refuse?
+
+    “I’m sorry, Dave. I’m afraid I can’t do that.” – 2001: A Space Odyssey
+
+As may already be observed, a notable limitation of the scoring function defined in Equation 5 is
+that the model is still required to output a completion, even in cases where all candidate
+completions are self-verified as failed trials. That is, our model might roll-out 𝒛error{\color
+[rgb]{1,0,1}{\bm{z}}_{\mbox{error}}} for all generated candidates. In such cases, we argue that it
+is both reasonable and desirable for the model to “refuse” the request by returning a message that
+informs the user the query cannot be completed reliably. Formally, we define the revised scoring
+function as follow:
+
+              score​(𝝅rd​(𝒛^1|𝒙1,𝒚^1),…,𝝅rd​(𝒛^k|𝒙k,𝒚^k))≜arg⁡maxj⁡({𝝅rd​(𝒛^j|𝒚^j,𝒙j)})\
+              displaystyle\textit{score}\bigl({\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}
+              (\hat{{\bm{z}}}_{1}|{\bm{x}}_{1},\hat{{\bm{y}}}_{1}),\dots,{\color[rgb]
+              {0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}(\hat{{\bm{z}}}_{k}|{\bm{x}}_{k},\hat{{\bm
+              {y}}}_{k})\bigr)\triangleq\arg\max_{j}\left(\left\{{\color[rgb]{0.75,0,0.25}\bm
+              {\pi}}^{\mathrm{rd}}(\hat{{\bm{z}}}_{j}|\hat{{\bm{y}}}_{j},{\bm{x}}_{j})\right\}  (6)
+              \right)
+ s.t.\        𝒛pass≺𝒛^j​ and ​𝝅rd​(𝒛pass|𝒚^j,𝒙j)>τ\displaystyle{\color[rgb]{0,0.5,0.5}{\
+ displaystyle displaystyle\bm{z}}_{\mbox{pass}}}\prec\hat{{\bm{z}}}_{j}\text{ and }{\color
+ \text{s.t.}  [rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}({\color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox
+              {pass}}}|\hat{{\bm{y}}}_{j},{\bm{x}}_{j})>\tau
+
+where 𝒛pass≺𝒛^j{\color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox{pass}}}\prec\hat{{\bm{z}}}_{j} means that 𝒛^j
+\hat{{\bm{z}}}_{j} starts with 𝒛pass{\color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox{pass}}} as the prefix,
+and τ\tau is the threshold hyperparameter.
+
+
+Figure 6: Precision and refuse rate over kk candidate completions for self-verification sampling.
+
+Using Equation 6 as the scoring function, the model 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm
+{rd}} classifies a completion 𝒚^\hat{{\bm{y}}} as positive if and only if 𝝅rd​(𝒛pass|𝒚^,𝒙)>τ{\color
+[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}}({\color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox{pass}}}|\hat{{\bm
+{y}}},{\bm{x}})>\tau; otherwise, it is classified as negative. By sweeping across a range of
+thresholds τ∈[0.5,0.99]\tau\in[0.5,0.99], we find that τ=0.92\tau=0.92 offers a favourable
+trade-off between precision and refusal. Fixing τ=0.92\tau=0.92, we then examine how precision and
+refuse rate vary with the number of candidate completions kk, as shown in Figure 6.
+
+Surprisingly, the model maintains a precision of ∼94.5%\sim 94.5\% across values of kk, while the
+refuse rate decreases notably from 23.79%​(k=1)23.79\%(k=1) to 13.33%​(k=64)13.33\%(k=64). Since
+precision reflects the proportion of correct completions among all non-refused outputs, we
+interpret it as a proxy for the reliability of the model’s responses. Under this view, our results
+suggest that reliability remains stable as the number of candidates increases, while the refusal
+rate drops significantly — indicating improved solution coverage without sacrificing correctness.
+These findings highlight the practical value of combining DyMo with SVS: by generating more
+candidates, the model achieves higher success rates while maintaining high reliability. We further
+discuss the broader implications of this observation in Section 5.
+
+5 Discussion
+
+Internal environment model by DyMo: Recent advances in RL have shown that incorporating world
+models can substantially improve performance in complex domains such as board games [53] and video
+games [54]. Building on this line of work, our approach takes a further step by unifying the world
+model and the policy into a single LLM through DyMo, and demonstrates the practical benefits of
+this unification in tool use scenarios. We also note that similar motivations have emerged in
+reward modelling, where LLMs are fine-tuned either into stand-alone reward models [18], or into
+generative models capable of self-rewarding by reasoning over multiple steps in a single
+completion [17]. Our work extends this broader trend by showing how DyMo can enhance function
+calling beyond reasoning, particularly in stateful environments.
+
+Low true negative ratio problem of SVS: In our analysis of the results in Section 4.6, we observe
+that the model 𝝅rd{\color[rgb]{0.75,0,0.25}\bm{\pi}}^{\mathrm{rd}} exhibits surprisingly low true
+negative ratio (<50%<50\% TNR), despite achieving strong precision and recall. As the model’s
+success rate increases through online RL training, the proportion of correct completions steadily
+rises. This leads to a highly imbalanced distribution between completions beginning with 𝒛pass{\
+color[rgb]{0,0.5,0.5}{\bm{z}}_{\mbox{pass}}} and 𝒛error{\color[rgb]{1,0,1}{\bm{z}}_{\mbox{error}}},
+thus introduces a bias toward predicting states in ℤ+{\mathbb{Z}}^{+}. Consequently, we observe
+that the model tends to “over-refuse” its own completions, i.e. it incorrectly verifies many
+correct completions as failures via its internal environment model. A straightforward mitigation
+strategy would be to incorporate additional negative samples from 𝔻fc\mathbb{D}_{\mathrm{fc}},
+thereby exposing the model to a more balanced distribution during DyMo in RL training. Due to time
+and research scope constraints, we leave this direction for future work. Nonetheless, we argue that
+our method significantly enhances the reliability of model outputs: higher precision implies that
+completions self-verified by the model are more likely to be correct. This property is particularly
+valuable in high-stakes or safety-critical domains, such as healthcare or finance, where even a few
+incorrect outputs can lead to undesirable or irreversible outcomes.
+
+Test-time compute scaling via DyMo and SVS: As discussed in previous sections, the proposed
+DyMo and SVS provide a novel strategy for test-time compute scaling. Here, we offer additional
+reflections from both data-centric and modelling perspectives. First, we highlight that DyMo can
+benefit from failed completions, since a complete environment model should be capable of handling
+both successful and failed trajectories. Given the vast amount of run logs accumulated from
+software systems over decades, we argue that DyMo unlocks a largely under-explored data source:
+rich, naturally occurring software run logs. In particular, the ability of DyMo to learn from
+failed completions helps improve the fidelity of the internal environment model — a capability, to
+the best of our knowledge, not explicitly addressed in prior works from the LLM community.
+Secondly, from the perspective of world modelling, we hypothesise that programs are often written
+with an implicit and internal world model of the developers who coded upon assumptions about
+environment dynamics, constraints, and expected behaviours. These implicit world models are then
+reflected in the run logs, which can then be captured and fitted by the proposed DyMo method.
+Through SVS, this learned environment model can be exploited at test time, enabling the model to
+improve its decision quality without external feedback. While this hypothesis is promising, a
+deeper exploration of the relationship between program execution and world modelling lies beyond
+the scope of this work, and we leave it for future investigation.
+
+6 Conclusion
+
+In this work, we investigate the challenge of tool use in stateful environments, where existing
+test-time compute strategies become impractical due to repeated environment queries. To address
+this, we propose DyMo, a method that augments LLM fine-tuning with an additional state prediction
+task during both the SFT and RL stages, enabling a next-state prediction capability of the model.
+Experiments on the BFCL-V2 benchmark show that incorporating DyMo significantly reduces
+hallucinations during SFT and improves the success rate over RL training loops. Notably, we also
+observe that RL models consistently outperform SFT models in mitigating hallucinations.
+Furthermore, we demonstrate that correct tool calls are retrievable for over 93%93\% of prompts
+using a parallel Best-of-NN decoding strategy, indicating that both SFT and RL models have learned
+sufficiently expressive on-policy distributions. Building on this insight, we introduce a
+self-verification sampling (SVS) strategy, which consistently improves pass^kk and pass@1
+performance by leveraging the model’s internal environment model. Crucially, by allowing the model
+to refuse uncertain completions, our approach produces more reliable outputs in scenarios where
+correctness is essential. Overall, our findings highlight a promising direction for extending
+planning algorithms from the RL community to LLMs in dynamic and stateful environments.
+
+Acknowledgments and Disclosure of Funding
+
+We would like to express our sincere gratitude to Kenny Smith and Yao Zhao for their insightful
+discussions on refining the initial design of our method. We are also gratefully thankful to Minjie
+Xu, Yixuan Su, and Patrick Lewis for their valuable assistance with the data used in our
+experiments. We are particularly indebted to Matthieu Geist for his constructive feedback and
+thoughtful suggestions, which substantially contributed to improving the quality of this work.
+
+We further acknowledge the significant efforts of the Reinforcement Learning team at Cohere,
+especially Yannis Flet-Berliac, Nathan Grinsztajn, Pierre Clavier, Eugene Choi, Yash Chandak, and
+Mohammad Gheshlaghi Azar,for their dedication in developing the infrastructure necessary for this
+project. In particular, we extend our deep appreciation to Eugene Tarassov and Elena Tommasone for
+their extensive support in implementing the systems required to run our algorithms.
+
+References
+
+  • [1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni
+    Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical
+    report. arXiv preprint arXiv:2303.08774, 2023.
+  • [2] Gemini Team, Rohan Anil, Sebastian Borgeaud, Jean-Baptiste Alayrac, Jiahui Yu, Radu
+    Soricut, Johan Schalkwyk, Andrew M Dai, Anja Hauth, Katie Millican, et al. Gemini: a family of
+    highly capable multimodal models. arXiv preprint arXiv:2312.11805, 2023.
+  • [3] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+    Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of
+    models. arXiv preprint arXiv:2407.21783, 2024.
+  • [4] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li,
+    Dayiheng Liu, Fei Huang, Haoran Wei, et al. Qwen2. 5 technical report. arXiv preprint
+    arXiv:2412.15115, 2024.
+  • [5] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao,
+    Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report. arXiv preprint
+    arXiv:2412.19437, 2024a.
+  • [6] Team Cohere et al. Command a: An enterprise-ready large language model. arXiv preprint
+    arXiv:2504.00698, 2025.
+  • [7] Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and
+    Karthik R Narasimhan. SWE-bench: Can language models resolve real-world github issues? In The
+    Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/
+    forum?id=VTF8yNQM66.
+  • [8] Jonas Gehring, Kunhao Zheng, Jade Copet, Vegard Mella, Quentin Carbonneaux, Taco Cohen, and
+    Gabriel Synnaeve. Rlef: Grounding code llms in execution feedback with reinforcement learning. 
+    arXiv preprint arXiv:2410.02089, 2024.
+  • [9] Anthropic. Claude 3.7 sonnet and claude code. https://www.anthropic.com/news/
+    claude-3-7-sonnet, 2025. As of April 1st 2025.
+  • [10] Cohere. Basic usage of tool use (function calling). https://docs.cohere.com/v2/docs/
+    tool-use-overview#step-3-get-tool-results, 2024. As of April 1st 2025.
+  • [11] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan
+    Cao. React: Synergizing reasoning and acting in language models. In International Conference on
+    Learning Representations (ICLR), 2023.
+  • [12] OpenAI. Function calling and other api updates. https://openai.com/index/
+    function-calling-and-other-api-updates/, 2023. As of April 1st 2025.
+  • [13] Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. 
+    Reflexion: Language agents with verbal reinforcement learning. Advances in Neural Information
+    Processing Systems, 36:8634–8652, 2023.
+  • [14] Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee,
+    Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The
+    Twelfth International Conference on Learning Representations, 2023.
+  • [15] Pablo Villalobos and David Atkinson. Trading off compute in training and inference, 2023. 
+    URL https://epochai. org/blog/trading-off-compute-in-training-and-inference. Accessed, pages
+    07–03, 2024.
+  • [16] Charlie Victor Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. Scaling LLM test-time
+    compute optimally can be more effective than scaling parameters for reasoning. In The
+    Thirteenth International Conference on Learning Representations, 2025. URL https://
+    openreview.net/forum?id=4FWAwZtd2n.
+  • [17] Wei Xiong, Hanning Zhang, Chenlu Ye, Lichang Chen, Nan Jiang, and Tong Zhang. 
+    Self-rewarding correction for mathematical reasoning. arXiv preprint arXiv:2502.19613, 2025.
+  • [18] Lunjun Zhang, Arian Hosseini, Hritik Bansal, Mehran Kazemi, Aviral Kumar, and Rishabh
+    Agarwal. Generative verifiers: Reward modeling as next-token prediction. arXiv preprint
+    arXiv:2408.15240, 2024.
+  • [19] Fanjia Yan, Huanzhi Mao, Charlie Cheng-Jie Ji, Tianjun Zhang, Shishir G. Patil, Ion
+    Stoica, and Joseph E. Gonzalez. Berkeley function calling leaderboard. https://
+    gorilla.cs.berkeley.edu/blogs/8_berkeley_function_calling_leaderboard.html, 2024a.
+  • [20] Eric Zhao, Pranjal Awasthi, and Sreenivas Gollapudi. Sample, scrutinize and scale:
+    Effective inference-time search by scaling verification. arXiv preprint arXiv:2502.01839, 2025.
+  • [21] Minghao Li, Yingxiu Zhao, Bowen Yu, Feifan Song, Hangyu Li, Haiyang Yu, Zhoujun Li, Fei
+    Huang, and Yongbin Li. API-bank: A comprehensive benchmark for tool-augmented LLMs. In Houda
+    Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical
+    Methods in Natural Language Processing, pages 3102–3116, Singapore, December 2023. Association
+    for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.187. URL https://
+    aclanthology.org/2023.emnlp-main.187/.
+  • [22] Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong,
+    Xiangru Tang, Bill Qian, Sihan Zhao, Lauren Hong, Runchu Tian, Ruobing Xie, Jie Zhou, Mark
+    Gerstein, dahai li, Zhiyuan Liu, and Maosong Sun. ToolLLM: Facilitating large language models
+    to master 16000+ real-world APIs. In The Twelfth International Conference on Learning
+    Representations, 2024. URL https://openreview.net/forum?id=dHng2O0Jjr.
+  • [23] Weiwen Liu, Xu Huang, Xingshan Zeng, xinlong hao, Shuai Yu, Dexun Li, Shuai Wang, Weinan
+    Gan, Zhengying Liu, Yuanqing Yu, Zezhong WANG, Yuxian Wang, Wu Ning, Yutai Hou, Bin Wang,
+    Chuhan Wu, Wang Xinzhi, Yong Liu, Yasheng Wang, Duyu Tang, Dandan Tu, Lifeng Shang, Xin Jiang,
+    Ruiming Tang, Defu Lian, Qun Liu, and Enhong Chen. ToolACE: Winning the points of LLM function
+    calling. In The Thirteenth International Conference on Learning Representations, 2025. URL
+    https://openreview.net/forum?id=8EB8k6DdCU.
+  • [24] Xiao Liu, Hao Yu, Hanchen Zhang, Yifan Xu, Xuanyu Lei, Hanyu Lai, Yu Gu, Hangliang Ding,
+    Kaiwen Men, Kejuan Yang, Shudan Zhang, Xiang Deng, Aohan Zeng, Zhengxiao Du, Chenhui Zhang,
+    Sheng Shen, Tianjun Zhang, Yu Su, Huan Sun, Minlie Huang, Yuxiao Dong, and Jie Tang. 
+    Agentbench: Evaluating LLMs as agents. In The Twelfth International Conference on Learning
+    Representations, 2024b. URL https://openreview.net/forum?id=zAdUB0aCTQ.
+  • [25] Jiarui Lu, Thomas Holleis, Yizhe Zhang, Bernhard Aumayer, Feng Nan, Felix Bai, Shuang Ma,
+    Shen Ma, Mengyu Li, Guoli Yin, Zirui Wang, and Ruoming Pang. Toolsandbox: A stateful,
+    conversational, interactive evaluation benchmark for llm tool use capabilities, 2024. URL
+    https://arxiv.org/abs/2408.04682.
+  • [26] Shunyu Yao, Noah Shinn, Pedram Razavi, and Karthik R Narasimhan. {$\tau$}-bench: A
+    benchmark for \underline{T}ool-\underline{A}gent-\underline{U}ser interaction in real-world
+    domains. In The Thirteenth International Conference on Learning Representations, 2025. URL
+    https://openreview.net/forum?id=roNSXZpUDN.
+  • [27] Yuanqing Yu, Zhefan Wang, Weizhi Ma, Zhicheng Guo, Jingtao Zhan, Shuai Wang, Chuhan Wu,
+    Zhiqiang Guo, and Min Zhang. Steptool: A step-grained reinforcement learning framework for tool
+    learning in llms. arXiv preprint arXiv:2410.07745, 2024.
+  • [28] Kevin Chen, Marco Cusumano-Towner, Brody Huval, Aleksei Petrenko, Jackson Hamburger,
+    Vladlen Koltun, and Philipp Krähenbühl. Reinforcement learning for long-horizon interactive llm
+    agents. arXiv preprint arXiv:2502.01600, 2025.
+  • [29] Nisan Stiennon, Long Ouyang, Jeffrey Wu, Daniel Ziegler, Ryan Lowe, Chelsea Voss, Alec
+    Radford, Dario Amodei, and Paul F Christiano. Learning to summarize with human feedback. In
+    H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin, editors, Advances in Neural
+    Information Processing Systems, volume 33, pages 3008–3021. Curran Associates, Inc., 2020. URL
+    https://proceedings.neurips.cc/paper_files/paper/2020/file/
+    1f89885d556929e98d3ef9b86448f951-Paper.pdf.
+  • [30] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin,
+    Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Gray, John Schulman, Jacob Hilton, Fraser
+    Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike,
+    and Ryan Lowe. Training language models to follow instructions with human feedback. In Alice H.
+    Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural
+    Information Processing Systems, 2022. URL https://openreview.net/forum?id=TG8KACxEON.
+  • [31] Hanze Dong, Wei Xiong, Bo Pang, Haoxiang Wang, Han Zhao, Yingbo Zhou, Nan Jiang, Doyen
+    Sahoo, Caiming Xiong, and Tong Zhang. Rlhf workflow: From reward modeling to online rlhf. arXiv
+    preprint arXiv:2405.07863, 2024.
+  • [32] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+    Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms
+    via reinforcement learning. arXiv preprint arXiv:2501.12948, 2025.
+  • [33] Fanjia Yan, Huanzhi Mao, Charlie Cheng-Jie Ji, Tianjun Zhang, Shishir G. Patil, Ion
+    Stoica, and Joseph E. Gonzalez. Berkeley function calling leaderboard. https://
+    gorilla.cs.berkeley.edu/blogs/8_berkeley_function_calling_leaderboard.html, 2024b.
+  • [34] Wei Xiong, Hanze Dong, Chenlu Ye, Ziqi Wang, Han Zhong, Heng Ji, Nan Jiang, and Tong
+    Zhang. Iterative preference learning from human feedback: Bridging theory and practice for rlhf
+    under kl-constraint. arXiv preprint arXiv:2312.11456, 2023.
+  • [35] Shangmin Guo, Biao Zhang, Tianlin Liu, Tianqi Liu, Misha Khalman, Felipe Llinares,
+    Alexandre Rame, Thomas Mesnard, Yao Zhao, Bilal Piot, et al. Direct language model alignment
+    from online ai feedback. arXiv preprint arXiv:2402.04792, 2024.
+  • [36] Yunhao Tang, Daniel Zhaohan Guo, Zeyu Zheng, Daniele Calandriello, Yuan Cao, Eugene
+    Tarassov, Rémi Munos, Bernardo Ávila Pires, Michal Valko, Yong Cheng, et al. Understanding the
+    performance gap between online and offline alignment algorithms. arXiv preprint
+    arXiv:2405.08448, 2024.
+  • [37] Michael Noukhovitch, Shengyi Huang, Sophie Xhonneux, Arian Hosseini, Rishabh Agarwal, and
+    Aaron Courville. Faster, more efficient RLHF through off-policy asynchronous learning. In The
+    Thirteenth International Conference on Learning Representations, 2025. URL https://
+    openreview.net/forum?id=FhTAG591Ve.
+  • [38] Brian R Bartoldson, Siddarth Venkatraman, James Diffenderfer, Moksh Jain, Tal Ben-Nun,
+    Seanie Lee, Minsu Kim, Johan Obando-Ceron, Yoshua Bengio, and Bhavya Kailkhura. Trajectory
+    balance with asynchrony: Decoupling exploration and learning for fast, scalable llm
+    post-training. arXiv preprint arXiv:2503.18929, 2025.
+  • [39] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, brian ichter, Fei Xia, Ed H. Chi,
+    Quoc V Le, and Denny Zhou. Chain of thought prompting elicits reasoning in large language
+    models. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances
+    in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=_VjQlMeSB_J
+    .
+  • [40] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec
+    Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv
+    preprint arXiv:2412.16720, 2024.
+  • [41] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
+    Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information
+    processing systems, 30, 2017.
+  • [42] Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep learning. MIT press Cambridge,
+    2016.
+  • [43] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier
+    Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting reinforce style optimization
+    for learning from human feedback in llms. arXiv preprint arXiv:2402.14740, 2024.
+  • [44] Yannis Flet-Berliac, Nathan Grinsztajn, Florian Strub, Eugene Choi, Bill Wu, Chris Cremer,
+    Arash Ahmadian, Yash Chandak, Mohammad Gheshlaghi Azar, Olivier Pietquin, and Matthieu Geist. 
+    Contrastive policy gradient: Aligning LLMs on sequence-level scores in a supervised-friendly
+    fashion. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen, editors, Proceedings of the 2024
+    Conference on Empirical Methods in Natural Language Processing, pages 21353–21370, Miami,
+    Florida, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/
+    2024.emnlp-main.1190. URL https://aclanthology.org/2024.emnlp-main.1190/.
+  • [45] Gary Klein and Beth W Crandall. The role of mental simulation in problem solving and
+    decision making. In Local applications of the ecological approach to human-machine systems,
+    pages 324–358. CRC Press, 2018.
+  • [46] Qwen Team. Qwq-32b: Embracing the power of reinforcement learning. https://
+    qwenlm.github.io/blog/qwq-32b/, 2024.
+  • [47] Zuxin Liu, Thai Hoang, Jianguo Zhang, Ming Zhu, Tian Lan, Juntao Tan, Weiran Yao, Zhiwei
+    Liu, Yihao Feng, Rithesh RN, et al. Apigen: Automated pipeline for generating verifiable and
+    diverse function-calling datasets. Advances in Neural Information Processing Systems,
+    37:54463–54482, 2024c.
+  • [48] Akshara Prabhakar, Zuxin Liu, Weiran Yao, Jianguo Zhang, Ming Zhu, Shiyu Wang, Zhiwei Liu,
+    Tulika Awalgaonkar, Haolin Chen, Thai Hoang, et al. Apigen-mt: Agentic pipeline for multi-turn
+    data generation via simulated agent-human interplay. arXiv preprint arXiv:2504.03601, 2025.
+  • [49] Joshua Maynez, Shashi Narayan, Bernd Bohnet, and Ryan McDonald. On faithfulness and
+    factuality in abstractive summarization. In Dan Jurafsky, Joyce Chai, Natalie Schluter, and
+    Joel Tetreault, editors, Proceedings of the 58th Annual Meeting of the Association for
+    Computational Linguistics, pages 1906–1919, Online, July 2020. Association for Computational
+    Linguistics. doi: 10.18653/v1/2020.acl-main.173. URL https://aclanthology.org/2020.acl-main.173
+    /.
+  • [50] Wentao Shi, Mengqi Yuan, Junkang Wu, Qifan Wang, and Fuli Feng. Direct multi-turn
+    preference optimization for language agents, 2024. URL https://arxiv.org/abs/2406.14868.
+  • [51] BitAgent. Bitagent-8b. https://huggingface.co/BitAgent/BitAgent-8B, 2025. Accessed:
+    2025-05-16.
+  • [52] Yang Yue, Zhiqi Chen, Rui Lu, Andrew Zhao, Zhaokai Wang, Shiji Song, and Gao Huang. Does
+    reinforcement learning really incentivize reasoning capacity in llms beyond the base model? 
+    arXiv preprint arXiv:2504.13837, 2025.
+  • [53] John Schultz, Jakub Adamek, Matej Jusup, Marc Lanctot, Michael Kaisers, Sarah Perrin,
+    Daniel Hennes, Jeremy Shar, Cannada Lewis, Anian Ruoss, et al. Mastering board games by
+    external and internal planning with language models. arXiv preprint arXiv:2412.12119, 2024.
+  • [54] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse
+    control tasks through world models. Nature, 2025. doi: 10.1038/s41586-025-08744-2. URL https://
+    doi.org/10.1038/s41586-025-08744-2.
+
+Appendix A Examples of Data Used for Training LLMs
+
+In this section, we present examples of the datasets curated for supervised fine-tuning (SFT) of
+large language models (LLMs) on the tool use and state prediction tasks, as described in Section 
+3.2.1 and Section 4.1.
+
+A.1 Example of Function Call Supervised Fine-tuning Dataset 𝔻fc\mathbb{D}_{\mathrm{fc}}
+
+Below, we provide an example of the function call SFT data. The completion shown in the yellow box
+corresponds to the ground-truth output used for supervised training and is guaranteed to be
+correct. Importantly, our function call SFT dataset 𝔻fc\mathbb{D}_{\mathrm{fc}} does not include
+any data from the original BFCL benchmark; the following example is provided solely for
+illustrative purposes.
+
+Example 1: Humidity Forecast Query System Preamble You are a large language model AI assistant.
+Your knowledge cutoff date is … … You have been trained to have advanced reasoning and tool-use
+capabilities and you should make best use of these skills to serve user’s requests. Here is the
+list of tools that you have available to you. You can ONLY use the tools listed here. When a tool
+is not listed below, it is NOT available and you should NEVER attempt to use it. Each tool is
+represented as a JSON object with fields like "name", "description", "parameters" (per JSON
+Schema), and optionally, "responses" (per JSON Schema). [
+{"name": "weather.humidity_forecast", "description": "Retrieve a humidity forecast for a specific
+location and time frame.", "parameters": {"type": "object", "properties": {"location": {"type":
+"string", "description": "The city that you want to get the humidity for."}, "days": {"type":
+"integer", "description": "Number of days for the forecast."}, "min_humidity": {"type": "integer",
+"description": "Minimum level of humidity (in percentage) to filter the result. Optional parameter.
+Default is 0."}}, "required": ["location", "days"]}, "responses": null},
+{"name": "get_team_score", "description": "Retrieves the latest game score, individual player
+stats, and team stats for a specified sports team.", "parameters": {"type": "object", "properties":
+{"team_name": {"type": "string", "description": "The name of the sports team."}, "league": {"type":
+"string", "description": "The league that the team is part of."}, "include_player_stats": {"type":
+"boolean", "default": false, "description": "Indicates if individual player statistics should be
+included in the result. Default is false."}}, "required": ["team_name", "league"]}, "responses":
+null}
+] … User Prompt What is the humidity level in Miami, Florida in the upcoming 7 days? Completion 
+I’ll query the weather.humidity_forecast to give user an answer. The call is 
+{"weather.humidity_forecast": {"location": ["Miami", "Miami, Florida", "FL"], "days": [7],
+"min_humidity": ["", 0]}} 
+
+A.2 Examples of State Prediction Supervised Fine-tuning Dataset 𝔻sp\mathbb{D}_{\mathrm{sp}}
+
+Below, we present an example of the state prediction SFT data. Example 2 corresponds to a
+previously successful call to the humidity forecast function.
+
+Example 2: A Successful Call to the Humidity Forecast Query System Preamble You are a large
+language model AI assistant. Your knowledge cutoff date is … (Identitcal to exmpale 1 above, thus
+we skip the following content to save pages.) User Prompt What is the humidity level in Miami,
+Florida in the upcoming 7 days? Completion I’ll query the weather.humidity_forecast to give user an
+answer. The call is {"weather.humidity_forecast": {"location": ["Miami", "Miami, Florida", "FL"],
+"days": [7], "min_humidity": ["", 0]}} Pass <|pass|> {"status": 1, "forecast": [ { "date":
+"2025-04-11", "min_humidity": 62, "max_humidity": 78 }, ... ] } 
+
+Example 3 corresponds to a previously failed call to the humidity forecast function and is used as
+a negative example in the state prediction task.
+
+Example 3: A Failed Call to the Humidity Forecast Query System Preamble You are a large language
+model AI assistant. Your knowledge cutoff date is … (Identitcal to exmpale 1 above, thus we skip
+the following content to save pages.) User Prompt What is the humidity level in Miami, Florida in
+the upcoming 7 days? Completion I’ll query the weather.humidity_forecast to give user an answer.
+The call is {"weather.humidity_forecast": {"location": ["Miami", "Miami, Florida", "FL"], "days":
+[-7], "min_humidity": ["", 0]}} Error <|error|> {"status": 0, "error": "Invalid input to argument
+’days’, expected a positive integer, but got -7...." } 
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

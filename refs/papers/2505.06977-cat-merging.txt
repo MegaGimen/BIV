@@ -1,0 +1,1528 @@
+source: https://arxiv.org/html/2505.06977
+arxiv: https://arxiv.org/abs/2505.06977
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. 2.1 Traditional Multi-Task Learning
+     2. 2.2 Multi-Task Learning through Model Merging
+ 4. 3 Preliminary
+ 5. 4 Knowledge Conflict
+ 6. 5 Methodology
+     1. 5.1 Linear Weight Trimming
+     2. 5.2 Scaling Parameter Trimming
+     3. 5.3 Shifting Parameter Trimming
+ 7. 6 Experiments
+     1. 6.1 Settings
+     2. 6.2 Comparison Results
+     3. 6.3 Ablation Study
+     4. 6.4 Sensitivity Analysis
+     5. 6.5 Analysis of Knowledge Conflict
+ 8. 7 Conclusion
+ 9. 8 Impact Statement
+10. 9 Acknowledgments
+11. References
+12. A Theoretical Proofs
+     1. A.1 Proof of Lemma ()
+     2. A.2 Proof of Theorem 
+     3. A.3 Frobenius Norm Decomposition of Orthogonal Projection
+     4. A.4 Solution of Eq.(9)
+     5. A.5 Solution of Eq.(12)
+     6. A.6 Solution of Eq.(13)
+13. B Experiment Details
+     1. B.1 Environment
+     2. B.2 Datasets
+     3. B.3 Baselines.
+14. C Additional Experiments
+     1. C.1 Comparison on ViT-B/16
+     2. C.2 Comparing with Test-time Training based Methods
+     3. C.3 Generalization Comparison
+     4. C.4 Sensitivity Analysis
+     5. C.5 Analysis of Computational Complexity
+     6. C.6 Analysis of the Balance during Merging
+     7. C.7 Analysis of Knowledge Conflict
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2505.06977v2 [cs.AI] 14 May 2025
+
+CAT Merging:
+A Training-Free Approach for Resolving Conflicts in Model Merging
+
+Wenju Sun Affiliation: Key Laboratory of Big Data & Artificial Intelligence in Transportation
+(Ministry of Education), Beijing Jiaotong University, Beijing, China    Qingyong Li Affiliation: 
+Key Laboratory of Big Data & Artificial Intelligence in Transportation (Ministry of Education),
+Beijing Jiaotong University, Beijing, China Correspondence to: liqy@bjtu.edu.cn    Yangli-ao Geng 
+Affiliation: Key Laboratory of Big Data & Artificial Intelligence in Transportation (Ministry of
+Education), Beijing Jiaotong University, Beijing, China Correspondence to: gengyla@bjtu.edu.cn    
+Boyang Li Affiliation: College of Computing and Data Science, Nanyang Technological University,
+Singapore
+
+Abstract
+
+Multi-task model merging offers a promising paradigm for integrating multiple expert models into a
+unified model without additional training. Existing state-of-the-art techniques, such as Task
+Arithmetic and its variants, merge models by accumulating task vectors—the parameter differences
+between pretrained and finetuned models. However, task vector accumulation is often hindered by
+knowledge conflicts, leading to performance degradation. To address this challenge, we propose 
+Conflict-Aware Task Merging (CAT Merging), a novel training-free framework that selectively trims
+conflict-prone components from the task vectors. CAT Merging introduces several parameter-specific
+strategies, including projection for linear weights and masking for scaling and shifting parameters
+in normalization layers. Extensive experiments on vision, language, and vision-language tasks
+demonstrate that CAT Merging effectively suppresses knowledge conflicts, achieving average accuracy
+improvements of up to 2.5% (ViT-B/32) and 2.0% (ViT-L/14) over state-of-the-art methods.
+
+Keywords: 
+
+Model Merging, Multi-task Learning, Negative Transfer
+
+1 Introduction
+
+Fine-tuning pretrained foundation models has become a standard paradigm for addressing downstream
+applications (Brown et al., 2020). However, as the number of applications grows, managing and
+deploying numerous finetuned models introduces significant costs and operational complexity. To
+address this issue, multi-task model merging has emerged as a promising solution by consolidating
+multiple expert models into a single unified model without additional training (Matena & Raffel,
+2022).
+
+A notable advancement in model merging is Task Arithmetic (Ilharco et al., 2023b), which introduces
+the concept of task vectors—defined as the difference vector between pretrained and finetuned
+models in the parameter space. Task Arithmetic demonstrates that task-specific knowledge can be
+effectively integrated into the pretrained model through simple arithmetic operations, such as
+model merging by adding task vectors to the pretrained parameters. Despite its effectiveness, the
+technique is vulnerable to performance degradation caused by knowledge conflict (Sun et al., 2025;
+Ortiz-Jimenez et al., 2023), or the imbalance and contradiction among the accumulated task vectors.
+
+Refer to caption
+Figure 1: Illustration of merging two conflicting task vectors. While masking low-magnitude
+components (horizontal axis, Task 2) mitigates some interference, high-magnitude dimensions
+(vertical axis, Task 1) can still induce significant conflicts. In contrast, our proposed CAT
+Merging proactively identifies and trims high-conflict components, ensuring a more stable model
+merging.
+
+To address knowledge conflict, prior research has explored enhancing Task Arithmetic by trimming
+unimportant components within task vectors. One typical importance metric is the parameter
+magnitude. For instance, Ties-Merging (Yadav et al., 2023) trims small-magnitude elements in task
+vectors. PCBMerging (DU et al., 2024) refines this importance measure by considering inter-task
+correlations. Similarly, Twin-Merging (Lu et al., 2024) applies singular value decomposition to
+task vectors; leveraging singular values as the importance metric, it retains components
+corresponding to large singular values.
+
+Despite the significant progress made by magnitude-based methods, they often overlook the risk of
+merging high-magnitude components that may overwrite task-specific knowledge during integration. As
+illustrated in Figure 1, methods like Ties-Merging prioritize dimensions with larger magnitudes
+(e.g., the vertical axis in Task 1’s vector), which can unintentionally overwrite critical
+information from Task 2. This imbalance skews the merged model towards Task 1, substantially
+degrading performance on Task 2 and undermining the overall multi-task capability. In contrast, the
+low-magnitude horizontal axis associated with Task 2 carries valuable information while exerting
+minimal negative impact on Task 1’s performance. Trimming these components is therefore
+counterproductive. This example highlights the dual objectives of effective model merging: (1)
+suppressing conflicts where dominant knowledge from one task undermines the performance of others,
+and (2) preserving the unique and essential knowledge required by each task.
+
+Motivated by the dual objectives outlined above, we propose Conflict-Aware Task Merging (CAT
+Merging), a feature-centric framework that addresses knowledge conflicts by trimming conflict-prone
+components from task vectors. Specifically, we focus on feature-level conflicts by analyzing task
+vector components layer by layer. By adhering to the dual objectives above, CAT Merging involves
+tailored operations for different types of parameters: feature projection for linear weights, and
+masking for normalization scalers and shifts. These strategies ensure that CAT Merging effectively
+mitigates knowledge conflicts in a training-free manner, relying solely on a lightweight forward
+pass with few unlabeled exemplars. We evaluate CAT Merging on diverse visual, language, and
+visual-language datasets, demonstrating its superiority over state-of-the-art methods while
+maintaining robustness with limited exemplars.
+
+2 Related Work
+
+2.1 Traditional Multi-Task Learning
+
+Multi-task learning (MTL) seeks to enhance performance by transferring knowledge from related tasks
+(Zhang & Yang, 2022). In MTL, the major challenge is referred to as negative transfer (Liu et al.,
+2017; Zhang et al., 2023b), where the conflict knowledge among tasks results in degraded
+performance compared to training them independently. To address this, researchers have explored
+strategies such as sparsification (Ding et al., 2021; Sun et al., 2020; Liu et al., 2019a),
+modularization (Tang et al., 2020; Ma et al., 2018), and soft parameter sharing (Gao et al., 2020;
+Hazimeh et al., 2021). Others focus on the optimization process, such as dynamically weighting
+task-specific loss (Sener & Koltun, 2018; Liu et al., 2019a; Liu et al., 2022; Hu et al., 2023;
+Chen et al., 2022), resolving gradient direction conflicts (Chen et al., 2020; Liu et al., 2021;
+Javaloy & Valera, 2022; Navon et al., 2022; Guo et al., 2022), or preventing over-prioritization of
+certain tasks (Chen et al., 2018; He et al., 2022; Yang et al., 2023).
+
+2.2 Multi-Task Learning through Model Merging
+
+Model merging has emerged as a promising approach for integrating knowledge across different models
+without retraining. Early techniques like Stochastic Weight Averaging (SWA) (Izmailov et al., 2018)
+introduced weight averaging to enhance generalization during the final stages of training. This
+concept was further advanced by approaches like SWAD (Cha et al., 2021) and Ensemble of Averages
+(EoA) (Arpit et al., 2022). Additionally, Ilharco et al. (2023a) empirically demonstrate that
+parameter averaging can effectively combine knowledge from models trained on diverse tasks. Based
+on this, Fisher-Merging (Matena & Raffel, 2022) applies the Fisher information matrix (Fisher, 1925
+) to weigh the averaging process. Similarly, RegMean (Jin et al., 2023) formulates merging as an
+optimization problem: minimizing the distance between the merged model and individuals in the
+parameter space.
+
+As a milestone work, Task Arithmetic (Ilharco et al., 2023b) introduces the concept of ”task
+vectors”—parameter offsets of finetuned models from a pretrained model as the origin. By scaling
+and combining these vectors, Task Arithmetic effectively balances the task-general and
+task-specific knowledge and achieves notable enhancement in model merging. Building on this idea,
+Ties-Merging (Yadav et al., 2023) and PCBMerging (DU et al., 2024) enhance the process by removing
+components in task vectors with negligible magnitude. PEFT (Zhang et al., 2023a) and MoLE (Wu
+et al., 2024) integrate Task Arithmetic with LoRA modules (Hu et al., 2022) to enhance flexibility.
+Additionally, STA (Zhou et al., 2025) randomly shuffle network layers to eliminate knowledge
+conflict.
+
+Some advanced approaches incorporate test-time training techniques to further improve merging
+performance. AdaMerging (Yang et al., 2024b) trains layer-specific merging coefficients.
+Additionally, representation surgery (Yang et al., 2024a) and MoE router (Tang et al., 2024) train
+an extra adapter to align representations. Since test-time adaptation requires additional training
+and samples, their application may be limited. Therefore, this paper focuses on training-free model
+merging.
+
+3 Preliminary
+
+Notations. Let W0={W0l}l=1LW_{0}=\{W_{0}^{l}\}_{l=1}^{L} denote the parameters of a pretrained
+network with LL layers, where W0lW_{0}^{l} represents the parameters of layer ll. The network is
+finetuned independently on KK tasks using their respective datasets D1,…,DKD_{1},\dots,D_{K},
+yielding finetuned parameters W1,…,WKW_{1},\dots,W_{K}. For a given task kk, the task vector Tk=
+{Tkl}l=1LT_{k}=\{T_{k}^{l}\}_{l=1}^{L} is defined as the difference between the finetuned
+parameters WkW_{k} and the pretrained parameters W0W_{0}:
+
+ Tk=Wk−W0={Wkl−W0l}l=1L.T_{k}=W_{k}-W_{0}=\{W_{k}^{l}-W_{0}^{l}\}_{l=1}^{L}.  (1)
+
+The dimensions of W0lW_{0}^{l} and TklT_{k}^{l} vary depending on the parameter type in layer ll.
+Specifically, if W0lW_{0}^{l} represents the weights of a linear layer, then W0l,Tkl∈ℝdl×dl+1W_{0}^
+{l},T_{k}^{l}\in\mathbb{R}^{d_{l}\times d_{l+1}}, where dld_{l} and dl+1d_{l+1} are the input and
+output dimensions of the ll-th layer, respectively. For other parameters, such as element-wise
+scale or shift parameters (e.g., in layer normalization), W0l,Tkl∈ℝdlW_{0}^{l},T_{k}^{l}\in\mathbb
+{R}^{d_{l}}.
+
+Task Arithmetic. Our objective is to merge KK finetuned models {Wk}k=1K\{W_{k}\}_{k=1}^{K} into a
+single multi-task model WmtlW_{\text{mtl}} that performs well on all tasks. Task Arithmetic (
+Ilharco et al., 2023b) achieves this by simply adding task vectors to W0W_{0}:
+
+ Wmtl=W0+α​∑k=1KTk,W_{\text{mtl}}=W_{0}+\alpha\sum_{k=1}^{K}T_{k},  (2)
+
+where α>0\alpha>0 is a manual scaling factor (we set α=1\alpha=1 for notational simplicity).
+Despite its simplicity, this approach often suffers from knowledge conflicts when task vectors
+interfere, motivating our more refined trimming strategy.
+
+4 Knowledge Conflict
+
+Knowledge conflict (Sun et al., 2025) arises in model merging when task vectors are misaligned due
+to divergent magnitudes or directions. Direct aggregation, as employed in Task Arithmetic, often
+leads to performance degradation across tasks. We formally define knowledge conflict in Task
+Arithmetic as the increase in task-specific loss incurred by incorporating other task vectors. For
+a given task kk, associated with the loss function ℒk(.)\mathcal{L}_{k}(.), the conflict introduced
+by another task vector TiT_{i} (i≠ki\neq k) is quantified as:
+
+ Δ​ℒk|i=ℒk​(Wk+Ti)−ℒk​(Wk).\Delta\mathcal{L}_{k|i}=\mathcal{L}_{k}\left(W_{k}+T_{i}\right)-\    (3)
+ mathcal{L}_{k}\left(W_{k}\right).
+
+In deep neural networks, a task vector TiT_{i} can be separated into layers Ti={Ti1,…,TiL}T_{i}=\
+{T_{i}^{1},\dots,T_{i}^{L}\}, where the superscript denotes the layer index. The effect of a
+perturbation TiT_{i} propagates through the layers. Without loss of generality, we suppose all
+layers are sequentially stacked, i.e., the input to layer ll is the output of layer l−1l-1, where
+the ll-th layer feature on task kk, denoted as fkl(.)f_{k}^{l}(.), can be written as:
+
+ fkl​(Wk+Ti)=fkl​(fkl−1​(Wk+Ti),Wkl+Til).f_{k}^{l}(W_{k}+T_{i})=f_{k}^{l}(f_{k}^{l-1}(W_{k}+T_  (4)
+ {i});W_{k}^{l}+T_{i}^{l}).
+
+To isolate the local effect of TlT^{l}, we define:
+
+ f^kl​(Wk+Ti)=fkl​(fkl−1​(Wk),Wkl+Tkl),\hat{f}_{k}^{l}(W_{k}+T_{i})=f_{k}^{l}(f_{k}^{l-1}(W_    (5)
+ {k});W_{k}^{l}+T_{k}^{l}),
+
+where the input features are computed using only the unperturbed parameters {Wk1,…,Wkl−1}\{W_{k}^
+{1},\dots,W_{k}^{l-1}\}. This allows that the total feature shift at layer ll, Δ​fk|il=fkl​(Wk+Ti)
+−fkl​(Wk)\Delta f_{k|i}^{l}=f_{k}^{l}(W_{k}+T_{i})-f_{k}^{l}(W_{k}), can be controlled under mild
+Lipschitz assumption:
+
+Assumption 4.1 (Lipschitz Continuity of Network Layers).
+
+On the line segment between WkW_{k} and Wk+TiW_{k}+T_{i}, the function of layer ll, denoted as
+fklf_{k}^{l}, is γl\gamma_{l}-Lipschitz continuous with respect to its input (i.e., the output of
+layer l−1l-1).
+
+Lemma 4.2.
+
+By Assumption 4.1, we have:
+
+ ‖Δ​fk|il‖≤γl​‖Δ​fk|il−1‖+‖Δ​f^k|il‖,\displaystyle\|\Delta f^{l}_{k|i}\|\leq\gamma_{l}\|\Delta  (6)
+ f^{l-1}_{k|i}\|+\|\Delta\hat{f}_{k|i}^{l}\|,
+
+where Δ​f^k|il=f^kl​(Wk+Ti)−fkl​(Wk)\Delta\hat{f}_{k|i}^{l}=\hat{f}_{k}^{l}(W_{k}+T_{i})-f_{k}^{l}
+(W_{k}).
+
+Intuitively, Lemma (4.2) decomposes the feature shift at layer ll into (i) the propagated feature
+shift Δ​fk|il−1\Delta f_{k|i}^{l-1} from the previous layer and (ii) the layer-wise parameter
+perturbation Δ​f^k|il\Delta\hat{f}_{k|i}^{l} caused by TilT_{i}^{l}. We refer the reader to
+Section A.1 for the detailed proof.
+
+We further consider how perturbations in the features extracted from the network affect the
+task-specific loss and impose a continuity condition on the loss function:
+
+Assumption 4.3 (Lipschitz Continuity of Loss Function).
+
+On the line segment between WkW_{k} and Wk+TiW_{k}+T_{i}, the loss function ℒ\mathcal{L} is β\
+beta-Lipschitz continuous with respect to the final output of the network.
+
+Combining the above, we have
+
+Theorem 4.4 (An Upper Bound on Knowledge Conflict).
+
+Suppose that Assumptions 4.1 and 4.3 hold for any task kk and task vector TiT_{i}, the knowledge
+conflict follows
+
+ |Δ​ℒk|i|≤β​∑l=1L(∏m=l+1Lγm)​‖Δ​f^k|il‖.\displaystyle|\Delta\mathcal{L}_{k|i}|\leq\beta\sum_{l  (7)
+ =1}^{L}\Bigl(\prod_{m=l+1}^{L}\gamma_{m}\Bigr)\,\|\Delta\hat{f}_{k|i}^{l}\|.
+
+Theorem 4.4 suggests that to reduce the upper bound on knowledge conflict, we can directly minimize
+the layer-wise perturbations ‖Δ​f^k|il‖\|\Delta\hat{f}_{k|i}^{l}\| for each layer. The proof of
+Theorem 4.4 is provided in Section A.2. In the next section, we develop a practical merging
+algorithm to do so.
+
+5 Methodology
+
+As introduced in Section 4, our approach adopts a layer-wise strategy to analyze and mitigate
+knowledge conflict locally at each layer. Several existing methods attempt to reduce conflict by
+preserving components deemed important to each task. For example, Fisher Merging (Matena & Raffel,
+2022) utilizes the Fisher Information Matrix to retain task-important weights, while Ties Merging (
+Yadav et al., 2023) and PCB Merging (DU et al., 2024) prune low-magnitude parameters.
+
+Although suppressing unimportant parameters can reduce some conflicts, these approaches overlook a
+critical issue: high-magnitude parameters—often considered “important”—can themselves be major
+sources of knowledge conflict. These components may overpower others during merging, distorting or
+suppressing the feature representations vital to different tasks. As a result, even when
+low-magnitude parameters are pruned, significant knowledge conflict still exists, degenerating
+multi-task performance.
+
+In contrast to existing trimming techniques, we propose a method that explicitly balances two
+objectives: (1) minimizing interference between tasks and (2) preserving the knowledge encoded in
+task vectors. For each task kk, we define the task-specific transformation Φk\Phi_{k} that “trims”
+other task vectors in the same layer, i.e., TiT_{i} (i≠ki\neq k). The objective for Φk(.)\Phi_{k}
+(.) is to minimize the layer-wise knowledge conflict Δ​fk,il\Delta f_{k,i}^{l} while maintaining
+the representational integrity of TiT_{i}. Formally, considering all task vectors yields the
+following objective for Φk(.)\Phi_{k}(.):
+
+ minΦk∑i≠k\           ‖f^k​(Wk+Φk​(Ti))−fk​(Wk)‖2⏟Inter-task Knowledge Conflict Δ​f^k|il\
+ displaystyle\min_{\  displaystyle\underbrace{\left\|\hat{f}_{k}\Bigl(W_{k}+\Phi_{k}(T_{i})\
+ Phi_{k}}\sum_{i\neq  Bigr)-f_{k}(W_{k})\right\|^{2}}_{\text{Inter-task Knowledge Conflict $\
+ k}                   Delta\hat{f}^{l}_{k|i}$}}                                                 (8)
+                      +λ​‖f^i​(W0+Φk​(Ti))−fi​(Wi)‖2⏟Intra-task Knowledge Deviation,\
+                      displaystyle+\underbrace{\lambda\left\|\hat{f}_{i}(W_{0}+\Phi_{k}(T_
+                      {i}))-f_{i}(W_{i})\right\|^{2}}_{\text{Intra-task Knowledge Deviation}},
+
+where λ\lambda controls the trade-off between reducing conflict and preserving knowledge.
+
+Based on the computational rules of different parameter types, we design tailored trimming
+operations. Specifically, for modern transformer-based networks, the parameters can be broadly
+classified into three categories:
+
+  • •
+   
+    Weight parameters in linear layers, which involve matrix multiplication operations;
+
+  • •
+   
+    Scale parameters in normalization layers, which scale normalized features through element-wise
+    Hadamard products;
+
+  • •
+   
+    Shift parameters, which modify features through element-wise addition.
+
+Most parameters in modern architectures fall into these categories. Notably, convolutional weights
+are treated analogously to linear weights, since convolution can be expressed as a linear operation
+(Sun et al., 2023). Furthermore, complex modules such as attention blocks can be decomposed into
+multiple linear transformations—e.g., for query, key, and value projections—allowing the trimming
+strategy to be applied independently to each component. In the following section, we provide
+detailed layer-wise implementations of Φk(.)\Phi_{k}(.) tailored to each parameter type.
+
+5.1 Linear Weight Trimming
+
+Linear layers transform features via matrix multiplication. Given Xk∈ℝn×dlX_{k}\in\mathbb{R}^{n\
+times d_{l}} extracted by former layers {Wk1,…,Wkl−1}\{W_{k}^{1},\dots,W_{k}^{l-1}\}, the weight
+matrix W∈ℝdl×dl+1W\in\mathbb{R}^{d_{l}\times d_{l+1}} produce the output as follows:
+
+ f⁡(Xk,W)=Xk​W.f(X_{k};W)=X_{k}W.   (9)
+
+To mitigate knowledge conflicts at this layer, we aim to remove interfering components from other
+task vectors TiT_{i}. We introduce a removal basis Bk∈ℝdl+1×cB_{k}\in\mathbb{R}^{d_{l+1}\times c},
+representing a cc-dimensional core sub-parameter space for task kk. For any i≠ki\neq k, we define a
+projection operator Φk​(Ti)=Ti−Ti​Bk​Bk⊤\Phi_{k}(T_{i})=T_{i}-T_{i}B_{k}{B_{k}}^{\top} which
+discards components of TiT_{i} aligned with BkB_{k}, preserving task-specific knowledge while
+minimizing interference with task kk.
+
+Using the layer-wise loss from Eq. (8), we formulate the optimization objective for BkB_{k} as:
+
+  ∑i≠k‖Xk​(W0+Tk+Ti−Ti​Bk​Bk⊤)−Xk​(W0+Tk)‖F2\displaystyle\sum_{i\neq k}\left\|X_{k}\Bigl(W_
+  {0}\!+\!T_{k}\!+\!T_{i}\!-\!T_{i}B_{k}{B_{k}}^{\top}\Bigr)-X_{k}(W_{0}\!+\!T_{k})\right\|^
+  {2}_{F}
+  +λ∑i≠k‖Xi(W0+Ti−TiBkBk⊤)−Xi(W0+Ti)‖2F\displaystyle+\lambda\sum_{i\neq k}\left\|X_{i}(W_{0}   (10)
+  \!+\!T_{i}\!-\!T_{i}B_{k}{B_{k}}^{\top})-X_{i}(W_{0}\!+\!T_{i})\right\|^{2}_{F}
+  =∑i≠k(‖Xk​Ti−Xk​Ti​Bk​Bk⊤‖F2+λ​‖Xi​Ti​Bk​Bk⊤‖F2).\displaystyle=\sum_{i\neq k}\!\left(\left\
+  |X_{k}T_{i}\!-\!X_{k}T_{i}B_{k}{B_{k}}^{\top}\right\|^{2}_{F}\!\!+\!\lambda\left\|X_{i}T_
+  {i}B_{k}{B_{k}}^{\top}\right\|^{2}_{F}\right).
+
+Applying the identity ‖Xk​Ti‖F2=‖Xk​Ti​Bk​Bk⊤‖F2+‖Xk​Ti−Xk​Ti​Bk​Bk⊤‖F2\left\|X_{k}T_{i}\right\|^
+{2}_{F}=\left\|X_{k}T_{i}B_{k}{B_{k}}^{\top}\right\|^{2}_{F}+\left\|X_{k}T_{i}\!-\!X_{k}T_{i}B_{k}
+{B_{k}}^{\top}\right\|^{2}_{F} (see Appendix A.3 for the proof), we recast the objective as a
+maximization problem:
+
+ max⁡∑i≠kBk⁡(‖Xk​Ti​Bk​Bk⊤‖F2−λ​‖Xi​Ti​Bk​Bk⊤‖F2).\displaystyle\max_{B_{k}}\sum_{i\neq k}\!\
+ left(\left\|X_{k}T_{i}B_{k}{B_{k}}^{\top}\right\|^{2}_{F}\!-\!\lambda\left\|X_{i}T_{i}B_{k}   (11)
+ {B_{k}}^{\top}\right\|^{2}_{F}\right).
+
+The optimal removal basis BkB_{k} is constructed from the top-cc eigenvectors of the matrix:
+∑i≠kTi⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​Ti\sum_{i\neq k}{T_{i}}^{\top}({X_{k}}^{\top}X_{k}-\lambda{X_{i}}^{\top}
+X_{i}){T_{i}}, where the full derivation is provided in Appendix A.4. Here, cc is a manually
+defined dimensionality parameter. A higher value of cc corresponds to the removal of more
+information. In low-sample regimes, we recommend setting c=2c=2 or 33 to avoid noise introduction.
+
+5.2 Scaling Parameter Trimming
+
+Normalization layers are crucial for stabilizing the training of modern neural networks. Although
+normalization itself is a parameter-free operation, widely used layers such as batch normalization
+and layer normalization typically include an affine transformation, which consists of scale and
+shift parameters. In this section, we focus on merging the scale parameters across tasks. At a
+normalization layer ll, the scaler W∈ℝdlW\in\mathbb{R}^{d_{l}} performs element-wise multiplication
+on the normalized feature xk∈ℝdlx_{k}\in\mathbb{R}^{d_{l}}:
+
+ f⁡(xk,W)=xk∘W,f(x_{k};W)=x_{k}\circ W,   (12)
+
+where ∘\circ denotes element-wise (Hadamard) multiplication.
+
+To reduce interference at this layer, we introduce a binary removal mask mk∈{0,1}dlm_{k}\in\{0,1\}^
+{d_{l}} applied to task vectors TiT_{i} (i≠ki\neq k), such that the refined task vector Φk​(Ti)=
+Ti−Ti∘mk\Phi_{k}(T_{i})=T_{i}-T_{i}\circ m_{k} has minimal influence on task kk. Adapting the
+layer-wise loss from Eq. (8), we define the objective:
+
+  ∑i≠k∑xk‖xk∘(W0+Tk+Ti−Ti∘mk)−xk∘(W0+Tk)‖2\displaystyle\sum_{i\neq k}\sum_{x_{k}}\!\left\|\!
+  x_{k}\!\circ\!\Bigl(W_{0}\!+\!T_{k}\!+\!T_{i}\!-\!T_{i}\!\circ\!m_{k}\Bigr)\!-\!x_{k}\!\
+  circ\!(W_{0}\!+\!T_{k})\right\|^{2}
+  +λ∑xi‖xi∘(W0+Ti−Ti∘mk)−xi∘(W0+Ti)‖2\displaystyle+\!\lambda\sum_{x_{i}}\left\|x_{i}\!\circ\!
+  (W_{0}\!+\!T_{i}\!-\!T_{i}\!\circ\!m_{k})\!-\!x_{i}\!\circ\!(W_{0}\!+\!T_{i})\right\|^{2}    (13)
+  =∑i≠k(∑xk‖xk∘Ti−xk∘Ti∘mk‖2+λ​∑xi‖xi∘Ti∘mk‖2).\displaystyle=\!\sum_{i\neq k}\!\left(\!\sum_
+  {x_{k}}\!\left\|\!x_{k}\!\circ\!T_{i}\!-\!x_{k}\!\circ\!T_{i}\!\circ\!m_{k}\!\right\|^{2}\!
+  \!+\!\lambda\!\sum_{x_{i}}\!\left\|\!x_{i}\!\circ\!T_{i}\!\circ\!m_{k}\!\right\|^{2}\!\
+  right).
+
+Using the identity ‖xk∘Ti−xk∘Ti∘mk‖2+‖xk∘Ti∘mk‖2=‖xk∘Ti‖2\left\|x_{k}\circ T_{i}-x_{k}\circ T_{i}\
+circ m_{k}\right\|^{2}+\left\|x_{k}\circ T_{i}\circ m_{k}\right\|^{2}=\left\|x_{k}\circ T_{i}\right
+\|^{2}, we reformulate the problem as a maximization objective:
+
+ max⁡∑i≠kmk⁡(∑xk‖xk∘Ti∘mk‖2−λ​∑xi‖xi∘Ti∘mk‖2).\displaystyle\max_{m_{k}}\!\sum_{i\neq k}\!\
+ left(\sum_{x_{k}}\left\|x_{k}\!\circ\!T_{i}\!\circ\!m_{k}\right\|^{2}\!-\!\lambda\sum_{x_     (14)
+ {i}}\left\|x_{i}\!\circ\!T_{i}\!\circ\!m_{k}\right\|^{2}\right).
+
+This motivates selecting the top-cc dimensions in mkm_{k} corresponding to the largest components
+of the vector: ∑i≠k(∑xk(xk∘Ti)2−λ​∑xi(xi∘Ti)2)\sum_{i\neq k}\left(\sum_{x_{k}}(x_{k}\circ T_{i})^
+{2}-\lambda\sum_{x_{i}}(x_{i}\circ T_{i})^{2}\right), with remaining entries set to 0. The
+selection of cc is match the number of basis BkB_{k} used in the previous linear weight trimming to
+reduce noise from limited exemplars. Full mathematical derivations are provided in Appendix A.5.
+
+
+Algorithm 1 The model merging process
+
+Input: Pretrained model W0W_{0}; Task vectors {T1,…,TK}\{T_{1},\dots,T_{K}\}; Unlabeled
+exemplar-set {M1,…,MK}\{M_{1},\dots,M_{K}\}
+
+Output: Merged model WmtlW_{\text{mtl}}
+
+// Collecting the input features
+for k=1k=1 to KK do
+
+    2 Initialize task inputs: Xk1=MkX^{1}_{k}=M_{k}
+for l=1l=1 to LL do
+       3 Xkl+1=f⁡(Xkl,W0l+Tkl)X^{l+1}_{k}=f(X^{l}_{k};W_{0}^{l}+T_{k}^{l})
+5 // Compute basis or mask
+for k=1k=1 to KK; l=1l=1 to LL do
+    6 Φkl=arg⁡min⁡∑i≠kΦkl⁡‖fkl​(W0l+Tkl+Φkl​(Til))−fkl​(W0l+Tkl)‖2+λ​‖fil​(W0l+Φkl​(Til))−fil​
+(W0l+Til)‖2\Phi^{l}_{k}=\arg\min_{\Phi^{l}_{k}}\sum_{i\neq k}\\ \|f^{l}_{k}\Bigl(W^{l}_{0}+T^{l}_
+{k}+\Phi^{l}_{k}(T^{l}_{i})\Bigr)-f^{l}_{k}(W^{l}_{0}+T^{l}_{k})\|^{2}\\ +\lambda\|f^{l}_{i}(W^{l}_
+{0}+\Phi^{l}_{k}(T^{l}_{i}))-f^{l}_{i}(W^{l}_{0}+T^{l}_{i})\|^{2}, // Eq. (8)
+7 // Edit all task vectors
+for k=1k=1 to KK; l=1l=1 to LL; i=1i=1 to KK, i≠ki\neq k do
+    8 Til=Φkl​(Til)T_{i}^{l}=\Phi^{l}_{k}(T_{i}^{l})
+9 // Merging
+Wmtl=W0+∑kTkW_{\text{mtl}}=W_{0}+\sum_{k}T_{k}
+return θmtl\theta_{\textnormal{mtl}}
+
+
+Table 1: Multi-task performance when merging ViT-B/32 models on eight vision tasks. The best and
+second-best performances are written in bold and underlined text. The “#best” column represents the
+number of datasets where the method performs the best.
+
+Method              SUN397 Cars RESISC45 EuroSAT SVHN GTSRB MNIST DTD  Avg Acc #best
+Pretrained          62.3   59.7 60.7     45.5    31.4 32.6  48.5  43.8 48.0    -
+Individual          75.3   77.7 96.1     99.7    97.5 98.7  99.7  79.4 90.5    -
+Traditional MTL     73.9   74.4 93.9     98.2    95.8 98.9  99.5  77.9 88.9    -
+Weight Averaging    65.3   63.4 71.4     71.7    64.2 52.8  87.5  50.1 65.8    0
+Fisher Merging      68.6   69.2 70.7     66.4    72.9 51.1  87.9  59.9 68.3    2
+RegMean             65.3   63.5 75.6     78.6    78.1 67.4  93.7  52.0 71.8    0
+Task Arithmetic     55.2   54.9 66.7     78.9    80.2 69.7  97.3  50.4 69.1    0
+Ties-Merging        59.8   58.6 70.7     79.7    86.2 72.1  98.3  54.2 72.4    0
+TATR                62.7   59.3 72.3     82.3    80.5 72.6  97.0  55.4 72.8    0
+Ties-Merging & TATR 66.3   65.9 75.9     79.4    79.9 68.1  96.2  54.8 73.3    0
+Consensus Merging   65.7   63.6 76.5     77.2    81.7 70.3  97.0  57.1 73.6    0
+PCB Merging         63.8   62.0 77.1     80.6    87.5 78.5  98.7  58.4 75.8    3
+CAT Merging (ours)  68.1   65.4 80.5     89.5    85.5 78.5  98.6  60.7 78.3    4
+
+
+Table 2: Multi-task performance when merging ViT-L/14 models on eight vision tasks.
+
+Method              SUN397 Cars RESISC45 EuroSAT SVHN GTSRB MNIST DTD  Avg Acc #best
+Pretrained          66.8   77.7 71.0     59.9    58.4 50.5  76.3  55.3 64.5    -
+Individual          82.3   92.4 97.4     100.0   98.1 99.2  99.7  84.1 94.2    -
+Traditional MTL     80.8   90.6 96.3     96.3    97.6 99.1  99.6  84.4 93.5    -
+Weight Averaging    72.1   81.6 82.6     91.9    78.2 70.7  97.1  62.8 79.6    0
+Fisher Merging      69.2   88.6 87.5     93.5    80.6 74.8  93.3  70.0 82.2    1
+RegMean             73.3   81.8 86.1     97.0    88.0 84.2  98.5  60.8 83.7    1
+Task Arithmetic     73.9   82.1 86.6     94.1    87.9 86.7  98.9  65.6 84.5    0
+Ties-Merging        76.5   85.0 89.3     95.7    90.3 83.3  99.0  68.8 86.0    0
+TATR                74.6   83.7 87.6     93.7    88.6 88.1  99.0  66.8 85.3    0
+Ties-Merging & TATR 76.3   85.3 88.8     94.4    90.8 88.7  99.2  68.8 86.5    0
+Consensus Merging   75.0   84.3 89.4     95.6    88.3 82.4  98.9  68.0 85.2    0
+PCB Merging         76.2   86.0 89.6     95.9    89.9 92.3  99.2  71.4 87.6    0
+CAT Merging (ours)  78.7   88.5 91.1     96.3    91.3 95.7  99.4  75.7 89.6    6
+
+5.3 Shifting Parameter Trimming
+
+Shift parameters W∈ℝdlW\in\mathbb{R}^{d_{l}} adjust features via element-wise addition, the
+transformation applied to input xk∈ℝdlx_{k}\in\mathbb{R}^{d_{l}} is defined as:
+
+ f⁡(xk,W)=xk+W.f(x_{k};W)=x_{k}+W.   (15)
+
+We also adopt a binary removal mask mk∈{0,1}dlm_{k}\in\{0,1\}^{d_{l}}, yielding a refined vector
+Φk​(Ti)=Ti−Ti∘mk\Phi_{k}(T_{i})=T_{i}-T_{i}\circ m_{k}. The corresponding objective function
+becomes:
+
+  ∑i≠k∑xk‖xk+(W0+Tk+Ti−Ti∘mk)−xk−(W0+Tk)‖2\displaystyle\sum_{i\neq k}\sum_{x_{k}}\left\|\!x_
+  {k}\!+\!(W_{0}\!+\!T_{k}\!+\!T_{i}\!-\!T_{i}\!\circ\!m_{k})\!-\!x_{k}\!-\!(W_{0}\!+\!T_{k})
+  \!\right\|^{2}
+  +λ∑xi‖xi+(W0+Ti−Ti∘mk)−xi−(W0+Ti)‖2\displaystyle+\!\lambda\sum_{x_{i}}\left\|x_{i}\!+\!(W_   (16)
+  {0}\!+\!T_{i}\!-\!T_{i}\!\circ\!m_{k})\!-\!x_{i}\!-\!(W_{0}\!+\!T_{i})\right\|^{2}
+  =∑i≠k(∑xk‖Ti−Ti∘mk‖2+λ​∑xi‖Ti∘mk‖2).\displaystyle=\sum_{i\neq k}\left(\sum_{x_{k}}\left\|T_
+  {i}\!-\!T_{i}\circ m_{k}\right\|^{2}\!+\!\lambda\sum_{x_{i}}\left\|T_{i}\circ m_{k}\right\|
+  ^{2}\right).
+
+Similarly, the mask mkm_{k} can be determined by a maximization problem:
+
+ max⁡∑i≠kmk⁡(∑xk‖Ti∘mk‖2−λ​∑xi‖Ti∘mk‖2).\displaystyle\max_{m_{k}}\sum_{i\neq k}\left(\sum_{x_
+ {k}}\left\|T_{i}\circ m_{k}\right\|^{2}\!-\!\lambda\sum_{x_{i}}\left\|T_{i}\circ m_{k}\right  (17)
+ \|^{2}\right).
+
+Assuming data is approximately balanced across tasks, the optimal mask mkm_{k} is obtained by
+selecting the top-cc components of ∑i≠k(Ti)2\sum_{i\neq k}(T_{i})^{2} and setting the corresponding
+entries of mkm_{k} to 1, with the rest set to 0. Full derivations are provided in Appendix A.6.
+
+We have now finished discussing the trimming strategy for all major parameter types. During the
+merging process, we start with a layer-by-layer forward pass using only a small number of unlabeled
+samples—typically two or three per task—to collect necessary inputs for parameter trimming. The
+collected inputs are then processed to compute the corresponding basis or masks for editing task
+vectors based on the parameter type. The computed basis or masks are applied to all task vectors,
+enabling the final merging in Eq. (2) with minimal knowledge conflict. The detailed implementation
+of this process is described in Algorithm 1.
+
+Additionally, the scaling factor α\alpha (refer to Eq. (2)) is assumed to be 1 in this section to
+simplify the analysis. We clarify that setting α=1\alpha=1 does not affect the resulting
+conclusion. For example, in Eqs. (10)&(11), if we explicitly include α\alpha, the optimal vector
+BkB_{k} corresponds to the eigenvector of the matrix: ∑i≠k(α​Ti)⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​(α​Ti)=
+α2​∑i≠kTi⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​Ti\sum_{i\neq k}{(\alpha T_{i})}^{\top}({X_{k}}^{\top}X_{k}-\lambda{X_
+{i}}^{\top}X_{i}){(\alpha T_{i})}=\alpha^{2}\sum_{i\neq k}{T_{i}}^{\top}({X_{k}}^{\top}X_{k}-\
+lambda{X_{i}}^{\top}X_{i}){T_{i}}. Since scaling a matrix by a nonzero constant α2\alpha^{2} does
+not alter its eigenvectors, our theoretical conclusions remain valid. In practice, α\alpha is a
+critical hyperparameter that must be tuned carefully.
+
+
+Table 3: Multi-task performance when merging RoBERTa models on eight NLP tasks.
+
+Method             CoLA  MNLI  MRPC  QNLI  QQP   RTE   SST2  STS-B Average #best
+Task Arithmetic    6.68  66.23 78.46 78.62 72.69 53.43 83.49 27.10 58.34   1
+Ties-Merging       9.46  59.34 74.71 65.93 41.29 47.29 72.13 9.21  47.42   0
+TATR               10.20 65.44 72.56 75.73 74.58 55.18 78.87 37.46 58.39   0
+PCB Merging        11.40 50.85 77.63 78.22 55.78 60.29 75.57 67.01 59.59   1
+CAT Merging (ours) 33.20 72.33 68.22 82.92 76.05 62.82 89.33 15.57 62.56   6
+
+
+Table 4: Multi-task performance when merging BLIP models on six vision-language tasks.
+
+Method             COCO Caption Flickr30k Caption Textcaps OKVQA    TextVQA  ScienceQA #best
+                   CIDEr        CIDEr             CIDEr    Accuracy Accuracy Accuracy  
+Pretrained         0.07         0.03              0.05     42.80    21.08    40.50     -
+Task Arithmetic    0.86         0.50              0.39     17.71    0.49     40.10     1
+Ties-Merging       0.53         0.27              0.22     27.95    0.57     40.35     0
+TATR               0.46         0.31              0.21     28.30    14.74    42.98     0
+PCB Merging        0.71         0.52              0.30     36.04    1.88     43.01     0
+CAT Merging (ours) 0.91         0.53              0.36     44.07    19.69    46.36     5
+
+6 Experiments
+
+6.1 Settings
+
+Datasets. We select diverse datasets to evaluate our work, including eight visual datasets: SUN397
+(Xiao et al., 2016), Cars (Krause et al., 2013), RESISC45 (Cheng et al., 2017), EuroSAT (Helber
+et al., 2019), SVHN (Netzer et al., 2011), GTSRB (Stallkamp et al., 2011), MNIST (LeCun & Cortes,
+2010), DTD (Cimpoi et al., 2014), and six visual-language datasets: COCO Caption (Chen et al., 2015
+), Flickr30k Caption (Plummer et al., 2015), Textcaps (Sidorov et al., 2020), OKVQA (Marino et al.,
+2019), TextVQA (Singh et al., 2019), and ScienceQA (Lu et al., 2022), and eight NLP-task GLUE
+benchmark (Wang et al., 2019).
+
+Baselines. We compare our proposed method with various training-free model merging methods,
+including the straightforward Weight Average, Fisher Merging (Matena & Raffel, 2022), RegMean (Jin
+et al., 2023), Task Arithmetic (Ilharco et al., 2023b), Ties-Merging (Yadav et al., 2023), Task
+Arithmetic in Trust Region (TATR) (Sun et al., 2025), Consensus Merging (Wang et al., 2024), and
+PCB Merging (DU et al., 2024). We also provide the performance of some baseline methods, such as
+the pretrained model, the Individual task model, and the Traditional Multi-Task Learning model.
+
+Implementation details. Our implementation strictly follows Task Arithmetic (Ilharco et al., 2023b
+). For visual tasks, we employ the visual encoder from CLIP (Radford et al., 2021) as the
+pretrained backbone, experimenting with both ViT-B/32 and ViT-L/14 architectures. Task vectors are
+directly sourced from the repository provided by (Ilharco et al., 2023b). After merging the models,
+we evaluate and report the accuracy of each task, along with the overall average accuracy. For
+visual-language tasks, we derive task vectors by finetuning the visual question answering (VQA)
+version of BLIP (Li et al., 2022), training each task for 6,000 steps. The architecture of BLIP
+includes an image encoder, a text encoder, and a text decoder, with all components finetuned during
+training. We use CIDEr as the evaluation metric for caption tasks and accuracy for VQA tasks. For
+NLP tasks, we use RoBERTa (Liu et al., 2019b) as the backbone. Task vectors are obtained from (Lu
+et al., 2024). Following their setting, we reserve 10% of the training set for validation and
+employ the original validation data as the test set.
+
+6.2 Comparison Results
+
+Evaluation on visual tasks. Tables 1 and 2 present the merging results on eight visual
+classification benchmarks. CAT Merging achieves state-of-the-art performance, with average
+accuracies of 78.3% on ViT-B/32 and 89.6% on ViT-L/14. Notably, substantial improvements are
+observed on challenging datasets such as EuroSAT (89.5%, ViT-B/32) and GTSRB (95.7%, ViT-L/14).
+Additional results for ViT-B/16 and comparisons with test-time training methods are provided in the
+supplementary materials.
+
+Evaluation on NLP tasks. We evaluate CAT Merging on eight diverse NLP tasks using RoBERTa, covering
+both classification and regression (e.g., STS-B). For classification, we report accuracy, while for
+regression we report the mean of Pearson and Spearman correlations. As summarized in Table 3, CAT
+Merging consistently outperforms baseline methods, achieving the best results on six out of eight
+tasks, demonstrating strong generalization and robustness in model merging for language tasks.
+
+Evaluation on visual-language tasks. Table 4 reports results using the BLIP model on six
+vision-language tasks that potentially conflict with each other (Tiong et al., 2024). CAT Merging
+achieves top performance on five of six benchmarks, highlighting its effectiveness in multimodal
+tasks.
+
+
+Table 5: An ablation study of CAT Merging, where we selectively trim three different types of
+network parameters.
+
+Trimmed parameters                         Architecture
+Linear weight Normalization scaler Shift   ViT-B/32 ViT-L/14
+×\times       ✓                    ✓       71.5     85.6
+✓             ×\times              ✓       76.8     89.2
+✓             ✓                    ×\times 77.8     88.7
+✓             ✓                    ✓       78.3     89.6
+
+6.3 Ablation Study
+
+This section performs an ablation study to evaluate the effectiveness of the parameter-specific
+trimming techniques in CAT Merging, including the trimming of linear weights, normalization
+scalers, and shift parameters. Table 5 presents the results with ViT-B/32 and ViT-L/14
+architectures.
+
+As can be seen, excluding the trimming of linear weights leads to a significant performance drop,
+with average accuracies of 71.5% (ViT-B/32) and 85.6% (ViT-L/14). Similarly, removing the trimming
+of normalization scalers and shifts also causes performance degradation. With all three types
+trimmed, we achieve the highest average accuracy. These findings highlight the importance of
+mitigating knowledge conflict in all types of parameters.
+
+
+Figure 2: (a) Average accuracy (%) of CAT Merging on eight vision tasks with different numbers of
+exemplars per task. (b) Average accuracy (%) on eight vision tasks with ViT/L-14 models versus
+different α\alpha (scaling factor in Task Arithmetic, cf. Eq. (2)).
+
+6.4 Sensitivity Analysis
+
+Sensitivity analysis of exemplar number. As shown in Figure 2 (a), CAT Merging is less sensitive to
+the number of exemplars. It achieves strong results even with just one exemplar per task (76.61%
+for ViT-B/32 and 89.01% for ViT-L/14). This is due to the patch-based design of ViT, which splits
+one image into several patches, ensuring the diversity of each layer input even with limited
+samples.
+
+Sensitivity analysis of α\alpha. In Figure 2 (b), with different values of α\alpha, CAT Merging
+achieves more stable performance than Task Arithmetic. The stability should be attributed to
+suppressing knowledge conflict among task vectors, analyzed further in the next section. A detailed
+analysis of other hyperparameters, including weight λ\lambda and cc, is provided in Appendix C.4.
+
+6.5 Analysis of Knowledge Conflict
+
+This section investigates the effectiveness of CAT Merging in mitigating knowledge conflict.
+Specifically, we consider the task vectors corresponding to Cars and RESISC45 and merge them using
+distinct scaling factors, i.e., Wmtl=W0+αC​TCars+αR​TRESISC45W_{\text{mtl}}=W_{0}+\alpha_{\text{C}}
+T_{\text{Cars}}+\alpha_{\text{R}}T_{\text{RESISC45}}. Figure 3 visualizes the knowledge conflict
+during merging under different merging coefficients. For Task Arithmetic, regions with minimal
+knowledge conflict are primarily concentrated where both αC\alpha_{\text{C}} and αR\alpha_{\text
+{R}} are close to 0. In contrast, CAT Merging effectively reduces knowledge conflict, enabling the
+use of larger α\alpha values for model merging, which allows for better utilization of the task
+vectors.
+
+Refer to caption
+Figure 3: Visualization of knowledge conflict on Cars and RESISC45 (i.e.,
+Δ​LCars,RESISC45+Δ​LRESISC45,Cars\Delta L_{\text{Cars},\text{RESISC45}}+\Delta L_{\text{RESISC45},\
+text{Cars}}) when merging ViT-L/14 models with different merging weights αC\alpha_{\text{C}} and αR
+\alpha_{\text{R}}.
+
+7 Conclusion
+
+In this work, we propose CAT Merging, a novel training-free technique for multi-task model merging.
+By introducing parameter-specific strategies, such as projection for linear weights and masking for
+normalization and shift parameters, CAT Merging effectively resolves inter-task knowledge conflicts
+while preserving task-specific information. Experimental results across diverse vision, language,
+and vision-language tasks demonstrate the effectiveness of CAT Merging. We achieve significant
+accuracy improvements of up to 2.5% on ViT-B/32 and 2.0% on ViT-L/14 compared to existing methods.
+CAT Merging also exhibits strong robustness in the case with only a few exemplars, providing a
+practical solution for real-world multi-task scenarios where retraining is infeasible.
+
+8 Impact Statement
+
+This paper presents work whose goal is to advance the field of Machine Learning. There are many
+potential societal consequences of our work, none which we feel must be specifically highlighted
+here.
+
+9 Acknowledgments
+
+This work was supported, in part, by the Fundamental Research Funds for the Central Universities
+under Grants 2023JBZY037, 2022JBQY007, and 2024YJS047, by the Beijing Natural Science Foundation
+under Grant L231019, by the National Natural Science Foundation of China under Grants 62276019 and
+62306028, by the Shenzhen Science and Technology Program Project under Grant KJZD20240903102742055,
+and by the National Research Foundation Fellowship (NRF- NRFF13-2021-0006), Singapore.
+
+References
+
+  • Arpit et al. (2022) Arpit, D., Wang, H., Zhou, Y., and Xiong, C. Ensemble of averages:
+    Improving model selection and boosting performance in domain generalization. In Advances in
+    Neural Information Processing Systems, volume 35, pp. 8265–8277, 2022.
+  • Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P.,
+    Neelakantan, A., Shyam, P., Sastry, G., Askell, A., Agarwal, S., Herbert-Voss, A., Krueger, G.,
+    Henighan, T., Child, R., Ramesh, A., Ziegler, D., Wu, J., Winter, C., Hesse, C., Chen, M.,
+    Sigler, E., Litwin, M., Gray, S., Chess, B., Clark, J., Berner, C., McCandlish, S., Radford,
+    A., Sutskever, I., and Amodei, D. Language models are few-shot learners. In Advances in Neural
+    Information Processing Systems, volume 33, pp. 1877–1901, 2020.
+  • Cha et al. (2021) Cha, J., Chun, S., Lee, K., Cho, H.-C., Park, S., Lee, Y., and Park, S. Swad:
+    Domain generalization by seeking flat minima. In Advances in Neural Information Processing
+    Systems, volume 34, pp. 22405–22418, 2021.
+  • Chen et al. (2022) Chen, S., Crammer, K., He, H., Roth, D., and Su, W. J. Weighted training for
+    cross-task learning. In International Conference on Learning Representations, 2022. URL https:/
+    /openreview.net/forum?id=ltM1RMZntpu.
+  • Chen et al. (2015) Chen, X., Fang, H., Lin, T.-Y., Vedantam, R., Gupta, S., Dollár, P., and
+    Zitnick, C. L. Microsoft coco captions: Data collection and evaluation server. arXiv preprint
+    arXiv:1504.00325, 2015.
+  • Chen et al. (2018) Chen, Z., Badrinarayanan, V., Lee, C.-Y., and Rabinovich, A. GradNorm:
+    Gradient normalization for adaptive loss balancing in deep multitask networks. In International
+    Conference on Machine Learning, volume 80, pp. 794–803, 10–15 Jul 2018.
+  • Chen et al. (2020) Chen, Z., Ngiam, J., Huang, Y., Luong, T., Kretzschmar, H., Chai, Y., and
+    Anguelov, D. Just pick a sign: Optimizing deep multitask models with gradient sign dropout. In
+    Advances in Neural Information Processing Systems, volume 33, pp. 2039–2050, 2020.
+  • Cheng et al. (2017) Cheng, G., Han, J., and Lu, X. Remote sensing image scene classification:
+    Benchmark and state of the art. Proceedings of the IEEE, 105(10):1865–1883, 2017. doi: 10.1109/
+    JPROC.2017.2675998.
+  • Cimpoi et al. (2014) Cimpoi, M., Maji, S., Kokkinos, I., Mohamed, S., and Vedaldi, A. 
+    Describing textures in the wild. In IEEE Conference on Computer Vision and Pattern Recognition,
+    June 2014.
+  • Ding et al. (2021) Ding, K., Dong, X., He, Y., Cheng, L., Fu, C., Huan, Z., Li, H., Yan, T.,
+    Zhang, L., Zhang, X., and Mo, L. Mssm: A multiple-level sparse sharing model for efficient
+    multi-task learning. In International ACM SIGIR Conference on Research and Development in
+    Information Retrieval, pp. 2237–2241, 2021. URL https://doi.org/10.1145/3404835.3463022.
+  • DU et al. (2024) DU, G., Lee, J., Li, J., Jiang, R., Guo, Y., Yu, S., Liu, H., Goh, S. K.,
+    Tang, H.-K., He, D., and Zhang, M. Parameter competition balancing for model merging. In
+    Advances in Neural Information Processing Systems, 2024.
+  • Fisher (1925) Fisher, R. A. Theory of statistical estimation. In Mathematical proceedings of
+    the Cambridge philosophical society, volume 22, pp. 700–725, 1925.
+  • Gao et al. (2020) Gao, Y., Bai, H., Jie, Z., Ma, J., Jia, K., and Liu, W. Mtl-nas:
+    Task-agnostic neural architecture search towards general-purpose multi-task learning. In IEEE
+    Conference on Computer Vision and Pattern Recognition, June 2020.
+  • Guo et al. (2022) Guo, X., Li, B., , and Yu, H. Improving the sample efficiency of prompt
+    tuning with domain adaptation. In Findings of the Conference on Empirical Methods in Natural
+    Language Processing, December 2022.
+  • Hazimeh et al. (2021) Hazimeh, H., Zhao, Z., Chowdhery, A., Sathiamoorthy, M., Chen, Y.,
+    Mazumder, R., Hong, L., and Chi, E. Dselect-k: Differentiable selection in the mixture of
+    experts with applications to multi-task learning. In Advances in Neural Information Processing
+    Systems, volume 34, pp. 29335–29347, 2021.
+  • He et al. (2022) He, Y., Feng, X., Cheng, C., Ji, G., Guo, Y., and Caverlee, J. Metabalance:
+    Improving multi-task recommendations via adapting gradient magnitudes of auxiliary tasks. In
+    International ACM Web Conference, pp. 2205–2215, 2022. doi: 10.1145/3485447.3512093. URL https:
+    //doi.org/10.1145/3485447.3512093.
+  • Helber et al. (2019) Helber, P., Bischke, B., Dengel, A., and Borth, D. Eurosat: A novel
+    dataset and deep learning benchmark for land use and land cover classification. IEEE Journal of
+    Selected Topics in Applied Earth Observations and Remote Sensing, 12(7):2217–2226, 2019. doi: 
+    10.1109/JSTARS.2019.2918242.
+  • Hu et al. (2022) Hu, E. J., yelong shen, Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L.,
+    and Chen, W. LoRA: Low-rank adaptation of large language models. In International Conference on
+    Learning Representations, 2022. URL https://openreview.net/forum?id=nZeVKeeFYf9.
+  • Hu et al. (2023) Hu, Y., Xian, R., Wu, Q., Fan, Q., Yin, L., and Zhao, H. Revisiting
+    scalarization in multi-task learning: A theoretical perspective. In Advances in Neural
+    Information Processing Systems, volume 36, pp. 48510–48533, 2023.
+  • Ilharco et al. (2023a) Ilharco, G., Ribeiro, M. T., Wortsman, M., Schmidt, L., Hajishirzi, H.,
+    and Farhadi, A. Editing models with task arithmetic. In International Conference on Learning
+    Representations, 2023a.
+  • Ilharco et al. (2023b) Ilharco, G., Ribeiro, M. T., Wortsman, M., Schmidt, L., Hajishirzi, H.,
+    and Farhadi, A. Editing models with task arithmetic. In International Conference on Learning
+    Representations, 2023b. URL https://openreview.net/forum?id=6t0Kwf8-jrj.
+  • Izmailov et al. (2018) Izmailov, P., Podoprikhin, D., Garipov, T., Vetrov, D., and Wilson,
+    A. G. Averaging weights leads to wider optima and better generalization. In Conference on
+    Uncertainty in Artificial Intelligence, pp. 876–885, 2018.
+  • Javaloy & Valera (2022) Javaloy, A. and Valera, I. Rotograd: Gradient homogenization in
+    multitask learning. In International Conference on Learning Representations, 2022. URL https://
+    openreview.net/forum?id=T8wHz4rnuGL.
+  • Jin et al. (2023) Jin, X., Ren, X., Preotiuc-Pietro, D., and Cheng, P. Dataless knowledge
+    fusion by merging weights of language models. In International Conference on Learning
+    Representations, 2023. URL https://openreview.net/forum?id=FCnohuR6AnM.
+  • Krause et al. (2013) Krause, J., Stark, M., Deng, J., and Fei-Fei, L. 3d object representations
+    for fine-grained categorization. In IEEE International Conference on Computer Vision Workshops,
+    June 2013.
+  • LeCun & Cortes (2010) LeCun, Y. and Cortes, C. MNIST handwritten digit database. 2010. URL
+    http://yann.lecun.com/exdb/mnist/.
+  • Li et al. (2022) Li, J., Li, D., Xiong, C., and Hoi, S. BLIP: Bootstrapping language-image
+    pre-training for unified vision-language understanding and generation. In Chaudhuri, K.,
+    Jegelka, S., Song, L., Szepesvari, C., Niu, G., and Sabato, S. (eds.), International Conference
+    on Machine Learning, volume 162 of Proceedings of Machine Learning Research, pp. 12888–12900.
+    PMLR, 17–23 Jul 2022. URL https://proceedings.mlr.press/v162/li22n.html.
+  • Liu et al. (2021) Liu, B., Liu, X., Jin, X., Stone, P., and Liu, Q. Conflict-averse gradient
+    descent for multi-task learning. In Advances in Neural Information Processing Systems,
+    volume 34, pp. 18878–18890, 2021.
+  • Liu et al. (2017) Liu, P., Qiu, X., and Huang, X. Adversarial multi-task learning for text
+    classification. In Association for Computational Linguistics, pp. 1–10, July 2017. doi: 
+    10.18653/v1/P17-1001. URL https://aclanthology.org/P17-1001.
+  • Liu et al. (2019a) Liu, S., Johns, E., and Davison, A. J. End-to-end multi-task learning with
+    attention. In IEEE Conference on Computer Vision and Pattern Recognition, June 2019a.
+  • Liu et al. (2022) Liu, S., James, S., Davison, A., and Johns, E. Auto-lambda: Disentangling
+    dynamic task relationships. Transactions on Machine Learning Research, 2022. ISSN 2835-8856. 
+    URL https://openreview.net/forum?id=KKeCMim5VN.
+  • Liu et al. (2019b) Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis,
+    M., Zettlemoyer, L., and Stoyanov, V. Roberta: A robustly optimized bert pretraining approach. 
+    arXiv preprint arXiv:1907.11692, 2019b.
+  • Lu et al. (2022) Lu, P., Mishra, S., Xia, T., Qiu, L., Chang, K.-W., Zhu, S.-C., Tafjord, O.,
+    Clark, P., and Kalyan, A. Learn to explain: Multimodal reasoning via thought chains for science
+    question answering. In Advances in Neural Information Processing Systems, 2022.
+  • Lu et al. (2024) Lu, Z., Fan, C., Wei, W., Qu, X., Chen, D., and Cheng, Y. Twin-merging:
+    Dynamic integration of modular expertise in model merging. In Advances in Neural Information
+    Processing Systems, 2024.
+  • Ma et al. (2018) Ma, J., Zhao, Z., Yi, X., Chen, J., Hong, L., and Chi, E. H. Modeling task
+    relationships in multi-task learning with multi-gate mixture-of-experts. In International ACM
+    SIGKDD International Conference on Knowledge Discovery & Data Mining, pp. 1930–1939, 2018. doi:
+    10.1145/3219819.3220007. URL https://doi.org/10.1145/3219819.3220007.
+  • Marino et al. (2019) Marino, K., Rastegari, M., Farhadi, A., and Mottaghi, R. Ok-vqa: A visual
+    question answering benchmark requiring external knowledge. In IEEE Conference on Computer
+    Vision and Pattern Recognition, 2019.
+  • Matena & Raffel (2022) Matena, M. S. and Raffel, C. A. Merging models with fisher-weighted
+    averaging. In Advances in Neural Information Processing Systems, volume 35, pp. 17703–17716,
+    2022.
+  • Navon et al. (2022) Navon, A., Shamsian, A., Achituve, I., Maron, H., Kawaguchi, K., Chechik,
+    G., and Fetaya, E. Multi-task learning as a bargaining game. In International Conference on
+    Machine Learning, volume 162, pp. 16428–16446, 17–23 Jul 2022. URL https://
+    proceedings.mlr.press/v162/navon22a.html.
+  • Netzer et al. (2011) Netzer, Y., Wang, T., Coates, A., Bissacco, A., Wu, B., Ng, A. Y., et al. 
+    Reading digits in natural images with unsupervised feature learning. In NIPS workshop on deep
+    learning and unsupervised feature learning, volume 2011, pp.  4, 2011.
+  • Ortiz-Jimenez et al. (2023) Ortiz-Jimenez, G., Favero, A., and Frossard, P. Task arithmetic in
+    the tangent space: Improved editing of pre-trained models. In Advances in Neural Information
+    Processing Systems, volume 36, pp. 66727–66754, 2023.
+  • Plummer et al. (2015) Plummer, B. A., Wang, L., Cervantes, C. M., Caicedo, J. C., Hockenmaier,
+    J., and Lazebnik, S. Flickr30k entities: Collecting region-to-phrase correspondences for richer
+    image-to-sentence models. In IEEE International Conference on Computer Vision, December 2015.
+  • Radford et al. (2021) Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S.,
+    Sastry, G., Askell, A., Mishkin, P., Clark, J., Krueger, G., and Sutskever, I. Learning
+    transferable visual models from natural language supervision. In International Conference on
+    Machine Learning, volume 139, pp. 8748–8763, 18–24 Jul 2021. URL https://proceedings.mlr.press/
+    v139/radford21a.html.
+  • Sener & Koltun (2018) Sener, O. and Koltun, V. Multi-task learning as multi-objective
+    optimization. In Advances in Neural Information Processing Systems, volume 31. Curran
+    Associates, Inc., 2018.
+  • Sidorov et al. (2020) Sidorov, O., Hu, R., Rohrbach, M., and Singh, A. Textcaps: A dataset for
+    image captioning with reading comprehension. In European Conference on Computer Vision, pp.
+    742–758, 2020. ISBN 978-3-030-58536-5.
+  • Singh et al. (2019) Singh, A., Natarajan, V., Shah, M., Jiang, Y., Chen, X., Batra, D., Parikh,
+    D., and Rohrbach, M. Towards vqa models that can read. In IEEE Conference on Computer Vision
+    and Pattern Recognition, June 2019.
+  • Stallkamp et al. (2011) Stallkamp, J., Schlipsing, M., Salmen, J., and Igel, C. The german
+    traffic sign recognition benchmark: A multi-class classification competition. In International
+    Joint Conference on Neural Networks, pp. 1453–1460, 2011.
+  • Sun et al. (2023) Sun, W., Li, Q., Zhang, J., Wang, W., and Geng, Y.-a. Decoupling learning and
+    remembering: A bilevel memory rramework with knowledge projection for task-incremental
+    learning. In IEEE Conference on Computer Vision and Pattern Recognition, June 2023.
+  • Sun et al. (2025) Sun, W., Li, Q., Wang, W., ao Geng, Y., and Li, B. Task arithmetic in trust
+    region: A training-free model merging approach to navigate knowledge conflicts. arXiv preprint
+    arXiv:2501.15065, 2025. URL https://arxiv.org/abs/2501.15065.
+  • Sun et al. (2020) Sun, X., Panda, R., Feris, R., and Saenko, K. Adashare: Learning what to
+    share for efficient deep multi-task learning. In Advances in Neural Information Processing
+    Systems, volume 33, pp. 8728–8740, 2020.
+  • Tang et al. (2024) Tang, A., Shen, L., Luo, Y., Yin, N., Zhang, L., and Tao, D. Merging
+    multi-task models via weight-ensembling mixture of experts. In International Conference on
+    Machine Learning, 2024. URL https://openreview.net/forum?id=nLRKnO74RB.
+  • Tang et al. (2020) Tang, H., Liu, J., Zhao, M., and Gong, X. Progressive layered extraction
+    (ple): A novel multi-task learning (mtl) model for personalized recommendations. In ACM
+    Conference on Recommender Systems, pp. 269–278, 2020. doi: 10.1145/3383313.3412236. URL https:/
+    /doi.org/10.1145/3383313.3412236.
+  • Tiong et al. (2024) Tiong, A., Zhao, J., Li, B., Li, J., Hoi, S., and Xiong, C. What are we
+    measuring when we evaluate large vision-language models? an analysis of latent factors and
+    biases. In The 2024 Annual Conference of the North American Chapter of the Association for
+    Computational Linguistics (NAACL), 2024.
+  • Wang et al. (2019) Wang, A., Singh, A., Michael, J., Hill, F., Levy, O., and Bowman, S. R. 
+    GLUE: A multi-task benchmark and analysis platform for natural language understanding. In
+    International Conference on Learning Representations, 2019. URL https://openreview.net/forum?id
+    =rJ4km2R5t7.
+  • Wang et al. (2024) Wang, K., Dimitriadis, N., Ortiz-Jimenez, G., Fleuret, F., and Frossard, P. 
+    Localizing task information for improved model merging and compression. In International
+    Conference on Machine Learning, 2024.
+  • Wu et al. (2024) Wu, X., Huang, S., and Wei, F. Mixture of loRA experts. In International
+    Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=uWvKBCYh4S.
+  • Xiao et al. (2016) Xiao, J., Ehinger, K. A., Hays, J., Torralba, A., and Oliva, A. Sun
+    database: Exploring a large collection of scene categories. International Journal of Computer
+    Vision, 119:3–22, 2016.
+  • Yadav et al. (2023) Yadav, P., Tam, D., Choshen, L., Raffel, C., and Bansal, M. TIES-merging:
+    Resolving interference when merging models. In Advances in Neural Information Processing
+    Systems, 2023.
+  • Yang et al. (2023) Yang, E., Pan, J., Wang, X., Yu, H., Shen, L., Chen, X., Xiao, L., Jiang,
+    J., and Guo, G. Adatask: A task-aware adaptive learning rate approach to multi-task learning. 
+    AAAI Conference on Artificial Intelligence, 37(9):10745–10753, Jun. 2023. URL https://
+    ojs.aaai.org/index.php/AAAI/article/view/26275.
+  • Yang et al. (2024a) Yang, E., Shen, L., Wang, Z., Guo, G., Chen, X., Wang, X., and Tao, D. 
+    Representation surgery for multi-task model merging. In International Conference on Machine
+    Learning, 2024a. URL https://openreview.net/forum?id=Sbl2keQEML.
+  • Yang et al. (2024b) Yang, E., Wang, Z., Shen, L., Liu, S., Guo, G., Wang, X., and Tao, D. 
+    Adamerging: Adaptive model merging for multi-task learning. In International Conference on
+    Learning Representations, 2024b. URL https://openreview.net/forum?id=nZP6NgD3QY.
+  • Zhang et al. (2023a) Zhang, J., chen, s., Liu, J., and He, J. Composing parameter-efficient
+    modules with arithmetic operation. In Advances in Neural Information Processing Systems,
+    volume 36, pp. 12589–12610, 2023a.
+  • Zhang et al. (2023b) Zhang, W., Deng, L., Zhang, L., and Wu, D. A survey on negative transfer. 
+    IEEE/CAA Journal of Automatica Sinica, 10(2):305–329, 2023b. doi: 10.1109/JAS.2022.106004.
+  • Zhang & Yang (2022) Zhang, Y. and Yang, Q. A survey on multi-task learning. IEEE Transactions
+    on Knowledge and Data Engineering, 34(12):5586–5609, 2022. doi: 10.1109/TKDE.2021.3070203.
+  • Zhou et al. (2025) Zhou, H., Gokaslan, A., Kuleshov, V., and Hariharan, B. Interfering with
+    interference: Blind shuffling and superposition for better multi-model compression, 2025. URL
+    https://openreview.net/forum?id=4wuvmJRAU4.
+
+Appendix A Theoretical Proofs
+
+A.1 Proof of Lemma (4.2)
+
+Let WkW_{k} be the parameters for task kk, and let TiT_{i} be the task vector of task ii. The
+feature shift at layer ll caused by TiT_{i} is defined as:
+
+ Δ​fk|il=fkl​(Wk+Ti)−fkl​(Wk).\Delta f_{k|i}^{l}=f_{k}^{l}(W_{k}+T_{i})-f_{k}^{l}(W_{k}).
+
+We aim to prove the following bound:
+
+ ‖Δ​fk|il‖≤γl​‖Δ​fk|il−1‖+‖Δ​f^k|il‖.\|\Delta f_{k|i}^{l}\|\leq\gamma_{l}\|\Delta f_{k|i}^{l-1}\|+
+ \|\Delta\hat{f}_{k|i}^{l}\|.
+
+where Δ​fk|il−1=fkl−1​(Wk+Ti)−fkl−1​(Wk),and​Δ​f^k|il=f^kl​(Wk+Ti)−fkl​(Wk)\Delta f_{k|i}^{l-1}=f_
+{k}^{l-1}(W_{k}+T_{i})-f_{k}^{l-1}(W_{k}),\text{and}\,\Delta\hat{f}_{k|i}^{l}=\hat{f}_{k}^{l}(W_{k}
++T_{i})-f_{k}^{l}(W_{k}).
+
+Proof.
+
+The feature shift at layer ll can be decomposed as:
+
+ Δ​fk|il\       =fkl​(fkl−1​(Wk+Ti),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl)\displaystyle=f_{k}^{l}(f_
+ displaystyle\  {k}^{l-1}(W_{k}+T_{i});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_
+ Delta f_{k|i}^ {k}^{l})
+ {l}
+                =fkl​(fkl−1​(Wk+Ti),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl+Til)+fkl​(fkl−1​              (18)
+                (Wk),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl).\displaystyle=f_{k}^{l}(f_{k}^{l-1}(W_{k}
+                +T_{i});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l}+T_{i}^
+                {l})+f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}
+                (W_{k});W_{k}^{l}).
+
+Under the norm-induced triangular inequality, we have:
+
+ ‖Δ​fk|il‖≤‖fkl​(fkl−1​(Wk+Ti),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl+Til)‖+‖fkl​(fkl−1​(Wk),Wkl+Til)
+ −fkl​(fkl−1​(Wk),Wkl)‖.\displaystyle\|\Delta f_{k|i}^{l}\|\leq\|f_{k}^{l}(f_{k}^{l-1}(W_{k}   (19)
+ +T_{i});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l}+T_{i}^{l})\|+\|f_{k}^{l}
+ (f_{k}^{l-1}(W_{k});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l})\|.
+
+- For the first part, we apply the γl\gamma_{l}-Lipschitz continuity of fklf_{k}^{l}:
+
+ ‖fkl​(fkl−1​(Wk+Ti),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl+Til)‖≤γl​‖Δ​fk|il−1‖.\|f_{k}^{l}(f_{k}^{l-1}(W_
+ {k}+T_{i});W_{k}^{l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l}+T_{i}^{l})\|\leq\gamma_{l}
+ \|\Delta f_{k|i}^{l-1}\|.
+
+- For the second part:
+
+ ‖fkl​(fkl−1​(Wk),Wkl+Til)−fkl​(fkl−1​(Wk),Wkl)‖=‖Δ​f^k|il‖.\|f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^
+ {l}+T_{i}^{l})-f_{k}^{l}(f_{k}^{l-1}(W_{k});W_{k}^{l})\|=\|\Delta\hat{f}_{k|i}^{l}\|.
+
+Combining these two terms, we conclude:
+
+ ‖Δ​fk|il‖≤γl​‖Δ​fk|il−1‖+‖Δ​f^k|il‖.\|\Delta f_{k|i}^{l}\|\leq\gamma_{l}\|\Delta f_{k|i}^{l-1}\|+
+ \|\Delta\hat{f}_{k|i}^{l}\|.
+
+∎
+
+A.2 Proof of Theorem 4.4
+
+Theorem 4.4 (An Upper Bound on Knowledge Conflict).
+
+Suppose that Assumptions 4.1 and 4.3 hold for any task kk and task vector TiT_{i}, the knowledge
+conflict follows
+
+ |Δ​ℒk|i|≤β​∑l=1L(∏m=l+1Lγm)​‖Δ​f^k|il‖.\displaystyle|\Delta\mathcal{L}_{k|i}|\leq\beta\sum_   (20)
+ {l=1}^{L}\Bigl(\prod_{m=l+1}^{L}\gamma_{m}\Bigr)\,\|\Delta\hat{f}_{k|i}^{l}\|.
+
+Proof.
+
+Recall that in Lemma (4.2), we derive the following recursive Lipschitz bound:
+
+ ‖Δ​fk|il‖≤γl​‖Δ​fk|il−1‖+‖Δ​f^k|il‖.\|\Delta f_{k|i}^{l}\|\leq\gamma_{l}\|\Delta f_{k|i}^{l-1}\|+
+ \|\Delta\hat{f}_{k|i}^{l}\|.
+
+We use recursive substitution starting from layer LL down to l=1l=1:
+
+ ‖Δ​fk|iL‖\
+ displaystyle\|\ ≤γL​‖Δ​fk|iL−1‖+‖Δ​f^k|iL‖\displaystyle\leq\gamma_{L}\|\Delta f_{k|i}^{L-1}\
+ Delta f_{k|i}^  |+\|\Delta\hat{f}_{k|i}^{L}\|
+ {L}\|
+                 ≤γL​(γL−1​‖Δ​fk|iL−2‖+‖Δ​f^k|iL−1‖)+|Δ​f^k|iL|=γL​γL−1​‖Δ​fk|iL−2‖+γL​‖Δ​f^k
+                 |iL−1‖+‖Δ​f^k|iL‖\displaystyle\leq\gamma_{L}\left(\gamma_{L-1}\|\Delta f_{k|  (21)
+                 i}^{L-2}\|+\|\Delta\hat{f}_{k|i}^{L-1}\|\right)+\|\Delta\hat{f}_{k|i}^{L}\|=
+                 \gamma_{L}\gamma_{L-1}\|\Delta f_{k|i}^{L-2}\|+\gamma_{L}\|\Delta\hat{f}_{k|
+                 i}^{L-1}\|+\|\Delta\hat{f}_{k|i}^{L}\|
+                 ≤∑l=1L(∏m=l+1Lγm)​‖Δ​f^k|il‖.\displaystyle\leq\sum_{l=1}^{L}\Bigl(\prod_{m=
+                 l+1}^{L}\gamma_{m}\Bigr)\,\|\Delta\hat{f}_{k|i}^{l}\|.
+
+Using Assumption 4.3, which states that ℒ\mathcal{L} is β\beta-Lipschitz continuous with respect to
+the network’s final output, we conclude:
+
+ |Δ​ℒk|i|≤β​∑l=1L(∏m=l+1Lγm)​‖Δ​f^k|il‖.\displaystyle|\Delta\mathcal{L}_{k|i}|\leq\beta\sum_   (22)
+ {l=1}^{L}\Bigl(\prod_{m=l+1}^{L}\gamma_{m}\Bigr)\,\|\Delta\hat{f}_{k|i}^{l}\|.
+
+∎
+
+A.3 Frobenius Norm Decomposition of Orthogonal Projection
+
+Assume that BB has orthonormal columns (i.e., BT​B=IB^{T}B=I), then, for any matrix MM, the
+following equation holds:
+
+ ‖M​B​B⊤‖F2+‖M−M​B​B⊤‖F2=‖M‖F2.\displaystyle\left\|MB{B}^{\top}\right\|^{2}_{F}+\left\|M-MBB^  (23)
+ {\top}\right\|^{2}_{F}=\left\|M\right\|^{2}_{F}.
+
+Proof.
+
+              ‖M​B​B⊤‖F2+‖M−M​B​B⊤‖F2\displaystyle\left\|MB{B}^{\top}\right\|^{2}_{F}+\left\|
+              M-MBB^{\top}\right\|^{2}_{F}
+ =\           ‖M​B​B⊤‖F2+‖M⁡(I−B​B⊤)‖F2\displaystyle\left\|MB{B}^{\top}\right\|^{2}_{F}+\left
+ displaystyle \|M(I-BB^{\top})\right\|^{2}_{F}
+ =
+ =\           T​r​((M​B​B⊤)⊤​M​B​B⊤)+T​r​((M⁡(I−B​B⊤))⊤​M​(I−B​B⊤))\displaystyle Tr((MB{B}^{\
+ displaystyle top})^{\top}MB{B}^{\top})+Tr((M(I-BB^{\top}))^{\top}M(I-BB^{\top}))
+ =
+ =\           T​r​(B​B⊤​M⊤​M​B​B⊤)+T​r​((I−B​B⊤)⊤​M⊤​M​(I−B​B⊤))\displaystyle Tr(B{B}^{\top}M
+ displaystyle ^{\top}MB{B}^{\top})+Tr((I-BB^{\top})^{\top}M^{\top}M(I-BB^{\top}))
+ =
+ =\           T​r​(B​B⊤​B​B⊤​M⊤​M)+T​r​((I−B​B⊤)​(I−B​B⊤)⊤​M⊤​M)\displaystyle Tr(B{B}^{\top}B
+ displaystyle {B}^{\top}M^{\top}M)+Tr((I-BB^{\top})(I-BB^{\top})^{\top}M^{\top}M)
+ =
+ =\           T​r​(B​B⊤​M⊤​M)+T​r​((I−B​B⊤)​(I⊤−(B​B⊤)⊤)​M⊤​M)\displaystyle Tr(B{B}^{\top}M^
+ displaystyle {\top}M)+Tr((I-BB^{\top})(I^{\top}-(BB^{\top})^{\top})M^{\top}M)                 (24)
+ =
+ =\           T​r​(B​B⊤​M⊤​M)+T​r​((I−B​B⊤)​(I−B​B⊤)​M⊤​M)\displaystyle Tr(B{B}^{\top}M^{\
+ displaystyle top}M)+Tr((I-BB^{\top})(I-BB^{\top})M^{\top}M)
+ =
+ =\           T​r​(B​B⊤​M⊤​M)+T​r​((I−B​B⊤−B​B⊤+B​B⊤​B​B⊤)​M⊤​M)\displaystyle Tr(B{B}^{\top}M
+ displaystyle ^{\top}M)+Tr((I-BB^{\top}-BB^{\top}+BB^{\top}BB^{\top})M^{\top}M)
+ =
+ =\           T​r​(B​B⊤​M⊤​M)+T​r​((I−B​B⊤)​M⊤​M)\displaystyle Tr(B{B}^{\top}M^{\top}M)+Tr
+ displaystyle ((I-BB^{\top})M^{\top}M)
+ =
+ =\
+ displaystyle T​r​(M⊤​M)\displaystyle Tr(M^{\top}M)
+ =
+ =\
+ displaystyle ‖M‖F2\displaystyle\left\|M\right\|^{2}_{F}
+ =
+
+∎
+
+A.4 Solution of Eq.(9)
+
+Let Xk∈ℝn×dX_{k}\in\mathbb{R}^{n\times d} be the feature and Ti∈ℝd×hT_{i}\in\mathbb{R}^{d\times h}
+represent the task vector of the task ii. Now our target is learning a group of removal basis
+Bk∈ℝh×cB_{k}\in\mathbb{R}^{h\times c} for task kk such that:
+
+ max⁡∑i≠kBk⁡‖Xk​Ti​Bk​Bk⊤‖F2−λ​‖Xi​Ti​Bk​Bk⊤‖F2\max_{B_{k}}\sum_{i\neq k}\left\|X_{k}T_{i}B_
+ {k}{B_{k}}^{\top}\right\|^{2}_{F}-\lambda\left\|X_{i}T_{i}B_{k}{B_{k}}^{\top}\right\|^{2}_    (25)
+ {F}
+
+Then we have:
+
+              ∑i≠k‖Xk​Ti​Bk​Bk⊤‖F2−λ​‖Xi​Ti​Bk​Bk⊤‖F2\displaystyle\sum_{i\neq k}\left\|X_{k}
+              T_{i}B_{k}B_{k}^{\top}\right\|_{F}^{2}-\lambda\left\|X_{i}T_{i}B_{k}B_{k}^{\
+              top}\right\|_{F}^{2}
+ =\           ∑i≠kTr​(Xk​Ti​Bk​Bk⊤​Ti⊤​Xk⊤)−λ​T​r​(Xi​Ti​Bk​Bk⊤​Ti⊤​Xi⊤)\displaystyle\sum_{i\
+ displaystyle neq k}\text{Tr}(X_{k}T_{i}B_{k}B_{k}^{\top}T_{i}^{\top}X_{k}^{\top})-\lambda Tr
+ =            (X_{i}T_{i}B_{k}B_{k}^{\top}T_{i}^{\top}X_{i}^{\top})
+ =\           ∑i≠kTr​(Ti​Bk​Bk⊤​Ti⊤​Xk⊤​Xk)−λ​T​r​(Ti​Bk​Bk⊤​Ti⊤​Xi⊤​Xi)\displaystyle\sum_{i\
+ displaystyle neq k}\text{Tr}(T_{i}B_{k}B_{k}^{\top}T_{i}^{\top}X_{k}^{\top}X_{k})-\lambda Tr
+ =            (T_{i}B_{k}B_{k}^{\top}T_{i}^{\top}X_{i}^{\top}X_{i})
+ =\           ∑i≠kTr​(Ti​Bk​Bk⊤​Ti⊤​(Xk⊤​Xk−λ​Xi⊤​Xi))\displaystyle\sum_{i\neq k}\text{Tr}\
+ displaystyle left(T_{i}B_{k}B_{k}^{\top}T_{i}^{\top}\left(X_{k}^{\top}X_{k}-\lambda X_{i}^{\  (26)
+ =            top}X_{i}\right)\right)
+ =\           ∑i≠kTr​(Bk​Bk⊤​Ti⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​Ti)\displaystyle\sum_{i\neq k}\text{Tr}\
+ displaystyle left(B_{k}B_{k}^{\top}T_{i}^{\top}\left(X_{k}^{\top}X_{k}-\lambda X_{i}^{\top}
+ =            X_{i}\right)T_{i}\right)
+ =\           Tr​(Bk​Bk⊤​∑i≠kTi⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​Ti)\displaystyle\text{Tr}\left(B_{k}B_{k}^
+ displaystyle {\top}\sum_{i\neq k}T_{i}^{\top}\left(X_{k}^{\top}X_{k}-\lambda X_{i}^{\top}X_
+ =            {i}\right)T_{i}\right)
+ =\           Tr​(Bk⊤​(∑i≠kTi⊤​(Xk⊤​Xk−λ​Xi⊤​Xi)​Ti)⏟G​Bk)\displaystyle\text{Tr}\left(B_{k}^
+ displaystyle {\top}\underbrace{\left(\sum_{i\neq k}T_{i}^{\top}\left(X_{k}^{\top}X_{k}-\
+ =            lambda X_{i}^{\top}X_{i}\right)T_{i}\right)}_{G}B_{k}\right)
+
+The above equation implies that the largest cc eigenvectors of GG admit an optimal solution.
+
+A.5 Solution of Eq.(12)
+
+Let xk∈ℝdx_{k}\in\mathbb{R}^{d} be the feature and Ti∈ℝdT_{i}\in\mathbb{R}^{d} represents the task
+vector of the task ii for a scaler of a normalization layer. Now our target is learning a group of 
+removal binary mask mk∈{0,1}dm_{k}\in\{0,1\}^{d} for task kk such that:
+
+ max⁡∑i≠kmk⁡(∑xkl‖xkl∘Til∘mkl‖2−λ​∑xil‖xil∘Til∘mkl‖2).\max_{m_{k}}\sum_{i\neq k}\left(\sum_{x
+ ^{l}_{k}}\left\|x^{l}_{k}\circ T^{l}_{i}\circ m^{l}_{k}\right\|^{2}-\lambda\sum_{x^{l}_{i}}\  (27)
+ left\|x^{l}_{i}\circ T^{l}_{i}\circ m^{l}_{k}\right\|^{2}\right).
+
+Then we have:
+
+              ∑i≠k(∑xkl‖xkl∘Til∘mkl‖2−λ​∑xil‖xil∘Til∘mkl‖2)\displaystyle\sum_{i\neq k}\left(\
+              sum_{x^{l}_{k}}\left\|x^{l}_{k}\circ T^{l}_{i}\circ m^{l}_{k}\right\|^{2}-\
+              lambda\sum_{x^{l}_{i}}\left\|x^{l}_{i}\circ T^{l}_{i}\circ m^{l}_{k}\right\|^
+              {2}\right)
+ =\           ∑i≠k(∑xk∑z=1d(xk,z​Ti,z​mk,z)2−λ​∑xi∑z=1d(xi,z​Ti,z​mk,z)2)\displaystyle\sum_{i
+ displaystyle \neq k}\left(\sum_{x_{k}}\sum_{z=1}^{d}\left(x_{k,z}T_{i,z}m_{k,z}\right)^{2}-\
+ =            lambda\sum_{x_{i}}\sum_{z=1}^{d}\left(x_{i,z}T_{i,z}m_{k,z}\right)^{2}\right)
+ =\           ∑z=1dmk,z2​∑i≠k(∑xk(xk,z​Ti,z)2−λ​∑xi(xi,z​Ti,z)2)\displaystyle\sum_{z=1}^{d}m_  (28)
+ displaystyle {k,z}^{2}\sum_{i\neq k}\left(\sum_{x_{k}}\left(x_{k,z}T_{i,z}\right)^{2}-\
+ =            lambda\sum_{x_{i}}\left(x_{i,z}T_{i,z}\right)^{2}\right)
+ =\           ∑z=1dmk,z​∑i≠k(∑xk(xk,z​Ti,z)2−λ​∑xi(xi,z​Ti,z)2)⏟gz\displaystyle\sum_{z=1}^{d}
+ displaystyle m_{k,z}\underbrace{\sum_{i\neq k}\left(\sum_{x_{k}}\left(x_{k,z}T_{i,z}\right)^
+ =            {2}-\lambda\sum_{x_{i}}\left(x_{i,z}T_{i,z}\right)^{2}\right)}_{g_{z}}
+ =\
+ displaystyle ∑z=1dmi,k​gz.\displaystyle\sum_{z=1}^{d}m_{i,k}g_{z}.
+ =
+
+The above equation implies that in mkm_{k}, dimensions corresponding to the largest cc values of
+gzg_{z} should be set to 1, while others should be 0.
+
+A.6 Solution of Eq.(13)
+
+Let xk∈ℝdx_{k}\in\mathbb{R}^{d} be the feature and Ti∈ℝdT_{i}\in\mathbb{R}^{d} represents the task
+vector of the task ii for shift parameters. Now our target is learning a group of removal binary
+mask mk∈{0,1}dm_{k}\in\{0,1\}^{d} for task kk such that:
+
+ max⁡∑i≠kmk⁡(∑xk‖Ti∘mk‖2−λ​∑xi‖Ti∘mk‖2).\max_{m_{k}}\sum_{i\neq k}\left(\sum_{x_{k}}\left\|T_  (29)
+ {i}\circ m_{k}\right\|^{2}-\lambda\sum_{x_{i}}\left\|T_{i}\circ m_{k}\right\|^{2}\right).
+
+Suppose 0<λ<10<\lambda<1 and all tasks have an equal amount of data nn, then we have:
+
+              ∑i≠k(∑xk‖Ti∘mk‖2−λ​∑xi‖Ti∘mk‖2)\displaystyle\sum_{i\neq k}\left(\sum_{x_{k}}\
+              left\|T_{i}\circ m_{k}\right\|^{2}-\lambda\sum_{x_{i}}\left\|T_{i}\circ m_{k}\
+              right\|^{2}\right)
+ =\           n​∑i≠k(‖Ti∘mk‖2−λ​‖Ti∘mk‖2)\displaystyle n\sum_{i\neq k}\left(\left\|T_{i}\circ
+ displaystyle m_{k}\right\|^{2}-\lambda\left\|T_{i}\circ m_{k}\right\|^{2}\right)
+ =
+ =\           n⁡(1−λ)​∑i≠k(‖Ti∘mk‖2)\displaystyle n(1-\lambda)\sum_{i\neq k}\left(\left\|T_
+ displaystyle {i}\circ m_{k}\right\|^{2}\right)
+ =
+ =\           ∑i≠k(∑xk∑z=1d(xk,z​Ti,z​mk,z)2−λ​∑xi∑z=1d(xi,z​Ti,z​mk,z)2)\displaystyle\sum_{i
+ displaystyle \neq k}\left(\sum_{x_{k}}\sum_{z=1}^{d}\left(x_{k,z}T_{i,z}m_{k,z}\right)^{2}-\  (30)
+ =            lambda\sum_{x_{i}}\sum_{z=1}^{d}\left(x_{i,z}T_{i,z}m_{k,z}\right)^{2}\right)
+ =\           n⁡(1−λ)​∑i≠k(∑z=1dTi,z2​mk,z2)\displaystyle n(1-\lambda)\sum_{i\neq k}\left(\
+ displaystyle sum_{z=1}^{d}T_{i,z}^{2}m_{k,z}^{2}\right)
+ =
+ =\           n⁡(1−λ)​∑z=1dmk,z​∑i≠kTi,z2⏟gz\displaystyle n(1-\lambda)\sum_{z=1}^{d}m_{k,z}\
+ displaystyle underbrace{\sum_{i\neq k}T_{i,z}^{2}}_{g_{z}}
+ =
+ =\
+ displaystyle n⁡(1−λ)​∑z=1dmi,k​gz,\displaystyle n(1-\lambda)\sum_{z=1}^{d}m_{i,k}g_{z},
+ =
+
+The above equation implies that in mkm_{k}, dimensions corresponding to the largest cc values of
+gzg_{z} should be set to 1, while others should be 0.
+
+Appendix B Experiment Details
+
+This section introduces some additional details of experiments, including the detailes of the
+experimental environment, datasets, and baselines.
+
+B.1 Environment
+
+All experiments detailed in our manuscript and appendix were conducted on a workstation running
+Ubuntu 16.04, equipped with 2 Intel Xeon 2.60GHz CPUs, 256 GB of memory, and 6 NVIDIA RTX3090 GPUs.
+We leverage Python 3.8 to implement all the methods.
+
+B.2 Datasets
+
+Our experiments strictly follow Task Arithmetic (Ilharco et al., 2023b) and leverage the following
+eight widely-used image classification datasets:
+
+  • •
+   
+    SUN397 (Xiao et al., 2016): A large-scale scene classification dataset containing 108,754
+    images organized into 397 categories. Each category includes at least 100 images, making it a
+    diverse benchmark for scene recognition tasks.
+
+  • •
+   
+    Stanford Cars (Cars) (Krause et al., 2013): A fine-grained car classification dataset featuring
+    16,185 images of 196 distinct car models. The dataset is evenly divided into training and test
+    splits, enabling robust model evaluation.
+
+  • •
+   
+    RESISC45 (Cheng et al., 2017): A remote sensing image classification dataset with 31,500 images
+    spanning 45 scene classes. Each class contains approximately 700 images, covering a variety of
+    landscapes and man-made structures.
+
+  • •
+   
+    EuroSAT (Helber et al., 2019): A satellite imagery dataset designed for land-use and land-cover
+    classification, consisting of 27,000 labeled and geo-referenced images distributed among 10
+    categories, such as forests, residential areas, and agricultural fields.
+
+  • •
+   
+    SVHN (Netzer et al., 2011): A digit classification dataset derived from real-world house
+    numbers captured in Google Street View. It includes 10 digit classes, with 73,257 training
+    images, 26,032 test images, and an additional 531,131 samples for extended training.
+
+  • •
+   
+    GTSRB (Stallkamp et al., 2011): The German Traffic Sign Recognition Benchmark, comprising over
+    50,000 images across 43 traffic sign categories. This dataset is widely used for evaluating
+    traffic sign recognition systems.
+
+  • •
+   
+    MNIST (LeCun & Cortes, 2010): A classic handwritten digit classification dataset containing
+    60,000 training images and 10,000 test images, evenly distributed across 10 digit classes.
+
+  • •
+   
+    DTD (Cimpoi et al., 2014): The Describable Textures Dataset, which includes 5,640 images
+    spanning 47 texture categories, with around 120 images per category. It is designed for texture
+    recognition tasks.
+
+We also leverage the following six vision-language datasets:
+
+  • •
+   
+    COCO Caption (Chen et al., 2015): A large-scale image captioning dataset derived from the MS
+    COCO dataset. It contains over 330,000 images, with each image annotated with five different
+    captions, facilitating training for generating natural language descriptions of images.
+
+  • •
+   
+    Flickr30k Caption (Plummer et al., 2015): A dataset for image captioning and retrieval tasks,
+    consisting of 31,000 images sourced from Flickr. Each image is paired with five descriptive
+    sentences, capturing a variety of objects, scenes, and actions in the images.
+
+  • •
+   
+    TextCaps (Sidorov et al., 2020): A challenging image captioning dataset focusing on reasoning
+    over both visual and textual content in images. It includes 145,000 image-caption pairs, where
+    captions must integrate text from the image to provide meaningful descriptions.
+
+  • •
+   
+    OKVQA (Marino et al., 2019): A knowledge-based visual question-answering dataset designed to
+    evaluate the ability to answer open-ended questions about images using external knowledge. It
+    consists of more than 14,000 questions and corresponding answers requiring reasoning beyond the
+    image content.
+
+  • •
+   
+    TextVQA (Singh et al., 2019): A dataset for visual question answering where reading and
+    understanding text present in images is crucial. It includes over 45,336 questions across
+    28,408 images, requiring the integration of textual and visual reasoning to generate accurate
+    answers.
+
+  • •
+   
+    ScienceQA (Lu et al., 2022): A multi-modal dataset designed for science-related question
+    answering. It contains over 21,208 multi-modal multiple-choice questions paired with textual
+    explanations and images across various scientific disciplines, such as biology, physics, and
+    chemistry, supporting reasoning-based evaluation.
+
+B.3 Baselines.
+
+Our experiments are associated with several baseline approaches. The details of these baselines are
+as follows:
+
+  • •
+   
+    Pretrained directly employs a pretrained model to predict across multiple tasks. Since it does
+    not incorporate any downstream task-specific information during model training, its performance
+    on downstream tasks is typically suboptimal.
+
+  • •
+   
+    Individual. In this approach, an independent finetuned model is used for each task. While it
+    avoids interference between tasks, it cannot perform multiple tasks simultaneously. It serves
+    as a reference upper bound for model merging approaches.
+
+  • •
+   
+    Traditional MTL aggregates the original training data from all tasks to train a single
+    multi-task model.
+
+  • •
+   
+    Weight Averaging directly averages model parameters from multiple tasks into a single model,
+    enabling multi-task learning without additional training.
+
+  • •
+   
+    Fisher Merging (Matena & Raffel, 2022) leverages the Fisher information matrix to assess
+    parameter importance, merging model parameters based on this importance.
+
+  • •
+   
+    RegMean (Jin et al., 2023) refines weight matrices by adjusting and linearly combining rows,
+    utilizing statistical information derived from the training data.
+
+  • •
+   
+    Task Arithmetic (Ilharco et al., 2023b) introduces the concept of a “task vector,” defined as
+    the difference between finetuned model parameters and pretrained model parameters. Multiple
+    task vectors are then combined and added to the pretrained model to facilitate multi-task
+    learning.
+
+  • •
+   
+    Ties-Merging (Yadav et al., 2023) eliminates unimportant parameters from the task vector and
+    resolves sign conflicts among parameters, reducing interference during the final task vector
+    merging process.
+
+  • •
+   
+    TATR (Sun et al., 2025). This method advances task arithmetic by restricting the merging within
+    a trust region to mitigate knowledge conflict.
+
+  • •
+   
+    TATR & Ties-Merging (Sun et al., 2025; Yadav et al., 2023). This method combines the trust
+    region restriction in TATR into Ties-Merging to enhance the performance.
+
+  • •
+   
+    Consensus Merging (Wang et al., 2024) computing a group of masks for each task vector to
+    minimize the distance in parameter space between the merged model and the finetuned model.
+
+  • •
+   
+    PCB Merging (DU et al., 2024) trims components in the task vector that have small magnitudes
+    and are not significantly related to other tasks.
+
+Appendix C Additional Experiments
+
+C.1 Comparison on ViT-B/16
+
+Table 6 presents the results of various model merging methods using the ViT-B/16 architecture. As
+we can see, CAT Merging significantly improves the multi-task performance of Task Arithmetic,
+raising the average performance from 73.8% to 82.1%.
+
+
+Table 6: Multi-task performance when merging ViT-B/16 models on eight tasks.
+
+Method             SUN397 Cars RESISC45 EuroSAT SVHN GTSRB MNIST DTD  Avg Acc
+Pretrained         63.8   64.6 65.7     54.5    52.0 43.3  51.7  45.1 55.0
+Individual         81.8   86.8 96.9     99.7    97.8 99.1  99.7  82.0 92.9
+Weight Averaging   67.7   70.0 75.3     79.5    74.9 60.1  94.4  43.8 70.7
+Fisher Merging     68.5   69.9 75.2     80.4    73.2 61.2  94.5  50.7 71.7
+RegMean            69.1   71.6 77.6     88.8    83.7 70.2  96.9  54.6 76.6
+Task Arithmetic    61.1   65.9 74.0     76.2    88.0 73.9  98.4  53.0 73.8
+Ties-Merging       69.1   72.5 80.5     84.0    85.0 71.5  98.1  54.9 77.0
+TATR               67.4   70.4 77.9     81.7    87.6 77.2  98.3  55.6 77.0
+CAT Merging (ours) 72.9   75.9 83.1     92.8    88.2 82.7  98.8  62.7 82.1
+
+
+Table 7: Multi-task performance when merging on eight vision tasks.
+
+Method             SUN397 Cars RESISC45 EuroSAT SVHN GTSRB MNIST DTD  Avg Acc
+ViT-B/32
+TW AdaMerging      58.0   53.2 68.8     85.7    81.1 84.4  92.4  44.8 71.1
+TW AdaMerging++    60.8   56.9 73.1     83.4    87.3 82.4  95.7  50.1 73.7
+LW AdaMerging      64.5   68.1 79.2     93.8    87.0 91.9  97.5  59.1 80.1
+LW AdaMerging++    66.6   68.3 82.2     94.2    89.6 89.0  98.3  60.6 81.1
+Surgery Merging    63.8   59.9 83.3     97.9    87.0 87.0  98.6  69.4 80.9
+CAT Merging (ours) 68.1   65.4 80.5     89.5    85.5 78.5  98.6  60.7 78.3
+ViT-L/14
+AdaMerging         79.0   90.3 90.8     96.2    93.4 98.0  99.0  79.9 90.8
+AdaMerging++       79.4   90.3 91.6     97.4    93.4 97.5  99.0  79.2 91.0
+Surgery Merging    75.7   84.4 93.1     98.8    91.3 93.4  99.1  76.1 89.0
+CAT Merging (ours) 78.7   88.5 91.1     96.3    91.3 95.7  99.4  75.7 89.6
+
+C.2 Comparing with Test-time Training based Methods
+
+Table 7 shows that our CAT Merging achieves comparable or superior performance relative to two
+representative training-based techniques, demonstrating its effectiveness without incurring
+additional computational costs.
+
+C.3 Generalization Comparison
+
+This section explores the generalization ability of CAT Merging. Specifically, we merge models
+using task vectors from six tasks and evaluate their performance on two unseen tasks (MNIST and
+EuroSAT). The results in Table 8 show that CAT Merging outperforms all baselines on both seen and
+unseen datasets, with an average performance improvement of 3.4% and 2.6%, respectively. This
+improvement in generalization is attributed to CAT Merging’s ability to handle knowledge conflicts,
+ensuring that model updates move toward a more globally optimal direction.
+
+
+Table 8: Generalization results on two unseen tasks when merging ViT-B/32 models on six tasks.
+
+Method             SUN397 Cars RESISC45 DTD  SVHN GTSRB Avg Acc MNIST EuroSAT Avg Acc
+Task Arithmetic    63.3   62.4 75.1     57.8 84.6 80.4  70.6    77.2  46.2    61.7
+Ties-Merging       67.8   66.2 77.2     56.7 77.1 70.9  69.3    75.9  43.3    59.6
+TATR               66.0   64.1 77.9     60.1 83.9 81.8  72.3    77.2  47.7    62.5
+CAT Merging (Ours) 70.4   68.4 85.3     63.6 82.8 83.8  75.7    77.8  52.3    65.1
+
+
+Figure 4: Average accuracy (%) of CAT Merging on eight vision tasks with different values of λ\
+lambda (a) and cc (b).
+
+Refer to caption
+(a) SUN397 and Cars
+
+Refer to caption
+(b) Cars and RESISC45
+
+Refer to caption
+(c) RESISC45 and EuroSAT
+
+Refer to caption
+(d) EuroSAT and SVHN
+
+Refer to caption
+(e) SVHN and GTSRB
+
+Refer to caption
+(f) GTSRB and MNIST
+
+Refer to caption
+(g) MNIST and DTD
+
+
+Figure 5: Visualization of knowledge conflict when merging two ViT-L/14 models.
+
+C.4 Sensitivity Analysis
+
+This section analyzes the sensitivity of two additional hyper-parameters λ\lambda and cc.
+
+Sensitivity analysis of weight λ\lambda. In Figure 4 (a), λ\lambda significantly impacts
+performance only when set to 0, where the accuracy drops sharply to 65.33% (ViT-B/32) and 74.84%
+(ViT-L/14). This indicates that neglecting task-specific knowledge severely degrades the results.
+For λ>0\lambda>0, the performance remains stable across a wide range of values, demonstrating the
+robustness of CAT Merging.
+
+Sensitivity analysis of cc. cc affects the number of task vector components are trimmed. As
+illustrated in Figure 4 (b), the performance of CAT Merging remains stable for small cc, peaking at
+c=2c=2 for ViT-B/32 and c=3c=3 for ViT-L/14. Larger values lead to a partial decline as more
+knowledge is discarded, with ViT-B/32 dropping to 69.89% at c=128c=128.
+
+
+Table 9: Computational complexity comparison (in seconds) for merging ViT-B/32 and ViT-L/14 models
+across eight vision tasks, measured on a single RTX 3090 GPU.
+
+Method   TA w/ Surgery AdaMerging TATR PCB Merging CAT Merging (ours)
+ViT-B/32 12621         8276       176  43          46
+ViT-L/14 36826         16299      283  131         150
+
+C.5 Analysis of Computational Complexity
+
+The computational overhead of CAT Merging is reasonable and practically efficient. Specifically,
+CAT Merging involves two main steps:
+
+  • •
+   
+    Feature Extraction: This step is lightweight and efficient, requiring only a small number (2–3
+    per task) of unlabeled samples;
+
+  • •
+   
+    Eigendecomposition: While eigendecomposition has theoretically higher computational complexity,
+    in practice, we efficiently mitigate this through GPU parallelization. Moreover, CAT Merging
+    only requires the eigenvectors corresponding to the top-cc (2-4 in our work) eigenvalues,
+    enabling further acceleration through specialized methods (e.g., torch.lobpcg). Empirical
+    results (provided in the table 9, measured on a single RTX3090 GPU in seconds) demonstrate that
+    CAT Merging significantly outperforms training-based counterparts (e.g., TA w/ Surgery (Yang
+    et al., 2024a), AdaMerging (Yang et al., 2024b)) in terms of computational efficiency.
+
+
+Table 10: Balance comparison for merging ViT-B/32 and ViT-L/14 models across eight vision tasks.
+
+Method   Fisher Merging RegMean Task Arithmetic PCB Merging CAT Merging (ours)
+ViT-B/32 13.78          8.46    8.95            6.85        6.21
+ViT-L/14 6.79           6.86    5.11            3.49        2.51
+
+C.6 Analysis of the Balance during Merging
+
+As shown in Table 1 and 2, while CAT Merging achieves superior average performance, it does not
+always yield the highest accuracy on every individual dataset.
+
+Specifically, we observe that Fisher Merging exhibits better performance on certain datasets (e.g.,
+Cars and SUN397), likely because its weighting mechanism, based on the Fisher information matrix,
+implicitly prioritizes tasks with weaker performance (larger gradients produce higher Fisher
+information scores). Conversely, PCB Merging achieves superior performance on datasets like SVHN
+and MNIST, where masking low-magnitude vector components implicitly favors tasks with stronger
+finetuning outcomes (assuming larger vector magnitudes correlate with greater task specialization).
+
+However, both Fisher and PCB merging tend to perform less consistently across other tasks. In
+contrast, our CAT Merging framework explicitly targets inter-task knowledge conflicts and aims for
+a balanced integration across tasks. To quantitatively illustrate this balance, we measured the
+standard deviation of accuracy drops (defined as the accuracy difference between task-specific
+models and the merged model) across tasks. As shown in the table 10, CAT Merging demonstrates
+significantly lower variance, reflecting its ability to merge multiple tasks more evenly, without
+undue preference towards any particular task.
+
+C.7 Analysis of Knowledge Conflict
+
+This section provides more evidence about the effective mitigation of knowledge conflict in CAT
+Merging. Figure 5 visualizes the knowledge conflict during merging under different merging
+coefficients. As can be seen, CAT Merging consistently has lesser knowledge conflict than Task
+Arithmetic.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 
