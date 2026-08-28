@@ -237,7 +237,19 @@ flowchart LR
 2. **[ECHO 2605.24517](https://arxiv.org/abs/2605.24517) is counter-evidence, on our own benchmark.** It is exactly “GRPO on action tokens, extra CE on observation tokens, one forward pass two masks”, and doubles TB2.1 pass@1. So observation-token CE **does** work as a dense **on-policy auxiliary**. Our claimed dividing line — offline + main loss + long-horizon generation ⇒ compounding error; on-policy + auxiliary ⇒ it is supplying gradient to failed rollouts, unrelated to fidelity — is plausible but **unproven**, and is worth a head-to-head.
 3. **PaW runs the opposite order** (WM auxiliary on an agent base; we grow an agent on a WM base). Its \(\lambda\) schedule is reusable; its experimental conclusions are not transferable as-is.
 
-New in this round and **not yet in `refs/`**: [2606.07770](https://arxiv.org/abs/2606.07770), [2106.04379](https://arxiv.org/abs/2106.04379), [2603.02862](https://arxiv.org/abs/2603.02862), [2311.01388](https://arxiv.org/abs/2311.01388), [2602.02900](https://arxiv.org/abs/2602.02900), [2309.05803](https://arxiv.org/abs/2309.05803), [BMAS](https://doi.org/10.3390/a17020060), van der Pol “Plannable Approximations to MDP Homomorphisms” (contrastive action-equivariance loss ⇒ deterministic-MDP homomorphism when the loss is zero).
+**New in this round — URLs recorded here, HTML dumps not fetched** (user, 2026-08: recording the URL is enough; do not re-run `fetch_html_text.py` for these unless asked):
+
+| Paper | URL | What we use it for |
+|---|---|---|
+| Contrast encodes inductive bias: separating slow noise from dynamics | [arXiv:2606.07770](https://arxiv.org/abs/2606.07770) | Cross-trajectory negatives encode slow trajectory fingerprints, not dynamics ⇒ **sample negatives within one trajectory** |
+| Learning Markov State Abstractions for Deep RL | [arXiv:2106.04379](https://arxiv.org/abs/2106.04379) | Proved **sufficient conditions** for a Markov abstract state; inverse model + temporal contrastive, no reward, offline-OK |
+| Learning in MDPs with Exogenous Dynamics | [arXiv:2603.02862](https://arxiv.org/abs/2603.02862) | Action-independent components ⇒ regret depends only on exogenous space, with matching lower bound |
+| Time-series Generation by Contrastive Imitation | [arXiv:2311.01388](https://arxiv.org/abs/2311.01388) | Local transition policy + globally decomposable energy, cooperative, consistency proof |
+| MC-ETM: Manifold-Constrained Energy-Based Transition Models | [arXiv:2602.02900](https://arxiv.org/abs/2602.02900) | Offline conditional energy transition model; separates in-support error from truncation risk |
+| Revisiting Energy Based Models as Policies (R-NCE) | [arXiv:2309.05803](https://arxiv.org/abs/2309.05803) | Ranking-NCE asymptotically consistent; **IBC objective biased even at population level** |
+| Learning State-Specific Action Masks for RL (BMAS) | [doi:10.3390/a17020060](https://doi.org/10.3390/a17020060) | Learned action masks drop minimal-influence actions + merge behaviourally identical ones ⇒ the command taxonomy becomes a **measurement** |
+| Plannable Approximations to MDP Homomorphisms (van der Pol) | [consensus](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/), [doi:10.65109/daie3353](https://doi.org/10.65109/daie3353) | Contrastive action-equivariance loss ⇒ deterministic-MDP homomorphism when the loss is zero. **arXiv ID unverified — do not guess one** |
+| Learning Good State and Action Representations via Tensor Decomposition | [arXiv:2105.01136](https://arxiv.org/abs/2105.01136) | JMLR error bounds for learning state **and action** representations / best discrete MDP abstraction |
 
 Detailed runbook: [`train/README.md`](./train/README.md).
 
