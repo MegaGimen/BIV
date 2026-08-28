@@ -23,6 +23,43 @@ The user asked for this explicitly. Do not write telegram-style or paper-abstrac
 - **Do not answer questions the user did not ask.** Stay inside the actual intent. Do not add extra framings, dichotomies, “其实要分清两件事”、或他们没要求的下一步建议。Example: user asked whether similar world-model papers exist — list and explain those papers; do **not** volunteer an unasked split of the problem. Extra structure that “helps” often confuses. If something is optional, omit it until they ask.
 - **Do not invent, extremize, then negate the user’s idea.** Never write “这不是 XXX” / “你搞错了，这不是 XXX” when the user did not say it was XXX. Do not put words in their mouth so you can knock them down. If a clarification is needed, state the fact; do not frame it as correcting a claim they never made.
 
+## Active research thread (pick up here — 2026-08)
+
+Branch for this thread: **`Qwen3.5-35B-A3B`**. Paper dumps: [`refs/`](./refs/) (HTML text only, no PDFs). Merge code: [`merge/merge.py`](./merge/merge.py). Harbor / TB2.1 eval: `train/eval/`, `merge/eval.py`. The Muse 30B LoRA track below is a **separate** checkpoint line; do not mix controls.
+
+**User goal (do not substitute):** put **world laws into parameters** by watching the world (Newton: discover \(G=mg\) from falling apples, **not** fit the trajectory, **not** be handed the formula). Then have that knowledge available **before** the event finishes (guillotine raised → dodge, no need to re-solve physics in CoT). Then grow **acting** on top of that encoding, without the world-model objective and the agent objective fighting over the same assistant tokens.
+
+Two questions the user treats as the research:
+
+1. From observation, can an AI master underlying laws? Answer they accepted: **yes, but pure spectating is not enough** — need **invariants** and **interventions** (`do(a)` on the same history, not prompt paraphrase).
+2. Can mastered laws be encoded “subconsciously” so the model flinches early? Answer they accepted: **yes in principle** — compile System-2 mental simulation into System-1 / successor-style features; Qwen Table 9 Postfix CoT is the expensive explicit form, not the target.
+
+**Rejected (do not revive as the main plan):**
+
+- **Chat Vector merge** \(\theta_{\text{AgentWorld}} + \lambda(\theta_{\text{Instruct}}-\theta_{\text{Base}})\) on language tensors (`merge/merge.py`). TB2.1 was ~flat vs Instruct. Task arithmetic assumes a shared Base tangent space and parallel same-family objectives (code/medical/law). After CPT→next-state SFT→RL, AgentWorld has drifted; assistant slot emits **observations** \(P(o\mid h,a)\), Instruct emits **actions** \(P(a\mid h)\). Adding the Instruct−Base vector is a hard collision. DARE/λ only scale that collision. Copying Instruct tokenizer onto AgentWorld weights is a second glue collision.
+- **Small (5k–10k) agent SFT on AgentWorld** to “recover format.” That tests format glue, **not** “world as foundation.” It cannot buy back Instruct-scale general instruction following (user wants TB format via **system prompt**, not task-specific SFT). Same data on Instruct is a required control if this is ever run.
+- **Full-parameter agent training on AgentWorld** as the cheap reverse of Qwen Table 9. User judged expected effect poor (retraining a general agent from a simulator). Qwen §6.2 Table 9 is the **opposite order**: start from Qwen3.5-35B-A3B-**SFT** (already an agent), LWM RL warm-up, eval TB2.1 with **no** extra agent FT. Released `Qwen-AgentWorld-35B-A3B` is the **simulator** line (Base→CPT→SFT→RL).
+- **Hardcoded OS tracker as \(M_0\), LLM as semantic residual.** That is a hybrid **simulator** (laws live in the script). It does **not** encode laws into LLM weights. Fine as Demon/runtime engineering; not the training claim.
+- **Grow the agent in the orthogonal complement of WM singular vectors / “idle dimensions.”** Superstructure must **read** the substrate (English→agent works because they share representations). Orthogonal **updates** can protect WM; orthogonal **features** dump the policy into leftover junk dims.
+- Treat LATA as “layers 12–28 = physics, 29–head = policy.” LATA computes **per-layer cosine** between task and instruction vectors; layer indices are measured, not assumed. Qwen3.5-35B-A3B is a 40-layer Gated-DeltaNet + attention hybrid — do not cargo-cult dense-Transformer layer myths.
+- “100% linear decode,” “symplectic manifold on Transformers,” “hidden state collapses toward OOM” as if they were training rules. Metaphors only.
+
+**What “law in parameters” is not:** next-observation CE getting lower (that is appearance fitting, like pixels). A law must **extrapolate** under intervention and stay stable across prompt/surface change (cwd after `cd`, file gone after `rm`, permission denied stays denied). Eval for question 2 is **VoE / raised-blade**: truncated trajectory, observation of the hit not yet in context — does the internal state or the next **action** already treat the file as gone? If a shuffled-\(o\) twin also “dodges,” it is not the law.
+
+**Theory status (ignore data/GPU):** **not** enough to claim the two questions are solved. **Enough** to write an algorithm whose **pieces** hang on existing theorems. Remaining hole is **composition + assumption transfer**, not another metaphor paper:
+
+- CITRIS-style identifiability wants **known intervention targets**. A free-text command (`python foo.py`) often hits many variables at once; prompt variants ≠ \(do(a)\).
+- PSR defines state as predictions of **future tests**; the original papers leave **which tests** unsolved. Stdout is unbounded text; classic linear PSR assumes a finite test set.
+- DeepMDP / bisimulation bounds are about reward/control embeddings; WM CPT often has **no** reward. “Same physics” ≠ “same value.”
+- Successor features compile \(T\) into \(\psi\) given features \(\phi\); \(\phi\) is exactly the law question 1 is after — circular if you pretend \(\phi\) is given.
+- Nobody has proved these compose when actions are free-form text and observations are unbounded strings.
+
+**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** action in the trajectory is the intervention label; state \(z\) is a bundle of **testable future predictions** (PSR / DeepMDP — e.g. “if I `cat` this path, File Not Found?”), not “some unnamed hidden layer”; observation CE is a **render** of \(z\); policy \(\pi(a\mid z)\) **only reads** \(z\); compile \(T\to\pi\) with successor features or imagination backup (Dyna/Dreamer/MuZero), not by co-updating observation CE and policy CE on the same unfrozen LM head. Freeze \(z\)’s transition when training \(\pi\). Instruct + same agent data remains the control for “did the world substrate help.”
+
+**Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–H. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
+
+**If the user asks whether current theory is enough:** answer **no, composition still missing** (see above). Do not reopen merge-λ / DARE as the scientific next step unless they explicitly want another merge diagnostic (e.g. **measured** per-layer cosine, not guessed layer ranges).
+
 ## BIV Runtime (Cartesian layer)
 
 | Role | Location | Job |
@@ -188,7 +225,7 @@ Legacy Unsloth **Qwen3.5-9B**: `python scripts/train_sft.py --config configs/def
 
 ### Related literature (reference — not fully reimplemented)
 
-Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-Next Axolotl QLoRA**. Full CPT→RL stacks remain future.
+Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-Next Axolotl QLoRA**. Full CPT→RL stacks remain future. Active Qwen-AgentWorld / law-encoding thread and paper dumps: **Active research thread** above and [`refs/README.md`](./refs/README.md).
 
 | Work | Links | Relevance to our goals |
 |------|-------|------------------------|
@@ -266,6 +303,8 @@ In BIV, tool execution for reality-touching tools is replaced by Demon proxies b
 - Security boundaries: [`.agent/security.md`](.agent/security.md)
 - Common gotchas: [`.agent/gotchas.md`](.agent/gotchas.md)
 - Training runbook: [`train/README.md`](./train/README.md)
+- Research paper shelf + grouping: [`refs/README.md`](./refs/README.md)
+- Chat Vector merge (AgentWorld + Instruct): [`merge/merge.py`](./merge/merge.py)
 
 ## Contribution Flow
 
@@ -288,5 +327,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelin
 - Demon / proxies: `cartesian/demon.py`, `cartesian/tool_proxies.py`
 - WM data + metrics: `train/src/biv_wm/`
 - WM configs: `train/configs/trl/muse_glimmer_30b_lora.yaml` (Muse), `train/configs/default.yaml` / `control_shuffled.yaml` (legacy 9B)
+- Paper HTML dumps: `refs/papers/`, index `refs/README.md`
+- Chat Vector merge: `merge/merge.py`, eval serve `merge/eval.py`
 - WebUI proxy: `webui/vite.config.ts`
 - Tests mirror the `nanobot/` package structure.

@@ -90,6 +90,12 @@ WM vs agent 三条都不满足。
 - **发现律：** AI Feynman / SINDy / Othello-GPT / grokking / 因果表征
 - **提前躲：** Dyna 把想象编进策略；后继表征把未来占用编进特征；Dreamer/I2A/MuZero；婴儿 VoE
 
+## H. 补三个算法缺口（可识别、显式 z、T→π）
+
+- **律可识别：** CITRIS / iVAE / ICP / Noether / MDP homomorphism
+- **状态是预测不是隐故事：** PSR、DeepMDP、DBC、Denoised MDP、SLAC、KG-A2C
+- **编进策略：** Successor Features、MuZero、GVF/Horde、MBPO、Value Prediction Networks
+
 ## 检索词
 
 按问题搜，不要只搜 `world model agent merge`。
