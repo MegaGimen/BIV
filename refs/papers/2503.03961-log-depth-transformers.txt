@@ -1,0 +1,2129 @@
+source: https://arxiv.org/html/2503.03961
+arxiv: https://arxiv.org/abs/2503.03961
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Preliminaries: Universal Transformers
+     1. Transformer Sublayers.
+     2. Positional Encodings.
+     3. 2.1 Memory Management in Universal Transformers
+     4. 2.2 Numerical Datatype and Precision
+ 4. 3 Fixed Depth Transformers Can Divide Small Integers
+ 5. 4 Log Depth Enables Recognizing Regular Languages
+     1. Fixed Depth and Bounded Length Inputs.
+ 6. 5 Log Depth Enables Graph Connectivity
+     1. Fixed Depth and Bounded Length Inputs.
+ 7. 6 Comparing Scaling Depth to Scaling Width or Chain of Thought
+     1. Wide Transformers with Fixed Depth Remain in TC0
+     2. Transformers with Log Chain-of-Thought Steps Remain in TC0
+ 8. 7 Experiments: Learning to Recognize Regular Languages
+ 9. 8 Conclusion
+10. References
+11. A Building Blocks
+     1. A.1 Residual Stream Storage Interface
+     2. A.2 Clearing Stored Values
+     3. A.3 Computing Position Offsets
+     4. A.4 Equality Checks
+12. B Correctness of Division Construction Attention Heads
+13. C Regular Language Recognition Proof
+14. D Graph Connectivity Proof
+     1. Initial Layers.
+     2. Repeating Layers.
+     3. Final Layers.
+15. E Proofs for Width Scaling and Chain of Thought Claims
+16. F Experimental Details
+     1. Curriculum Training.
+     2. Depth Experiments.
+     3. Width Experiments.
+     4. Compute.
+     5. License.
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2503.03961v3 [cs.LG] 05 Nov 2025
+
+A Little Depth Goes a Long Way:
+The Expressive Power of Log-Depth Transformers
+
+William Merrill ^†^†thanks: Work partially conducted as a PhD student at New York University. 
+Affiliation: Allen Institute for AI Email: willm@allenai.org    Ashish Sabharwal Affiliation: Allen
+Institute for AI Email: ashishs@allenai.org
+
+Abstract
+
+Recent theoretical results show transformers cannot express sequential reasoning problems over long
+inputs, intuitively because their computational depth is bounded. However, prior work treats the
+depth as a constant, leaving it unclear to what degree bounded depth may suffice for solving
+problems over short inputs, or how increasing the transformer’s depth affects its expressive power.
+We address these questions by analyzing transformers whose depth can grow minimally with context
+length nn. We show even highly uniform transformers with depth Θ⁡(log⁡n)\Theta(\log n) can express
+two important problems: recognizing regular languages, which captures state tracking abilities and
+was known to be expressible only by an unconventional, non-uniform model of transformers, and graph
+connectivity, which underlies multi-step reasoning. Notably, both of these problems cannot be
+expressed by fixed-depth transformers under standard complexity conjectures, demonstrating the
+expressivity benefit of growing depth. Moreover, our theory quantitatively predicts how depth must
+grow with input length to express these problems, showing that depth scaling is more efficient than
+scaling width or chain-of-thought steps. Empirically, our detailed experiments designed to bridge
+the expressivity vs. learnability gap reveal that our theoretical depth requirements for regular
+language recognition closely match the practical depth requirements for successfully training
+transformers. Thus, our results clarify how depth affects a transformer’s reasoning capabilities,
+and provide practical guidance for effective depth selection for sequential reasoning.
+
+1 Introduction
+
+A line of recent work analyzing the intrinsic computational power of transformers, the neural
+architecture behind today’s immensely successful large language models (LLMs), has established
+that, with fixed depth, transformers cannot express many simple problems outside the complexity
+class 𝖳𝖢0\mathsf{TC}^{0}, including recognizing regular languages and resolving connectivity of
+nodes in a graph (Merrill and Sabharwal, 2023b; Chiang et al., 2023). These problems conceivably
+underlie many natural forms of sequential reasoning, such as state tracking (Liu et al., 2023;
+Merrill et al., 2024) and resolving logical inferences across long chains (Wei et al., 2022). Thus,
+these results suggest inherent limitations on the types of reasoning transformer classifiers can
+perform. Yet, these findings come with an important caveat: even if transformers cannot solve such
+problems exactly for inputs of arbitrary lengths, they may still be able to solve them over inputs
+up to some bounded length. This perspective, coupled with the fact that treating depth as fixed is
+crucial to prior analyses placing transformers in 𝖳𝖢0\mathsf{TC}^{0}, motivates two related
+questions about depth as an important resource for a transformer, in relation to the context length
+over which it reasons:
+
+ 1. 1.
+   
+    Bounded Context: If fixed-depth transformers cannot theoretically express certain problems over
+    unbounded context lengths, can they still express them over bounded but still practically
+    “large enough” contexts? Can we quantitatively characterize the context length up to which
+    transformers are effective for different problems as a function of their depth?
+
+ 2. 2.
+   
+    Dynamic Depth: Can minimally scaling the depth of a transformer allow it to solve such problems
+    for arbitrarily long inputs? How does this compare in efficiency to scaling width (i.e., model
+    dimension) or scaling inference-time compute via chain-of-thought steps?
+
+We address these questions by analyzing the expressive power of “universal” transformers (also
+called “looped” transformers) where a fixed model is given dynamic depth by repeating a block of
+middle layers a variable number of times (Dehghani et al., 2019; Yang et al., 2024; Geiping et al.,
+2025). We capture the regime where depth grows minimally with context length, with the middle
+layers repeated Θ⁡(log⁡n)\Theta(\log n) times on contexts of length nn. We prove that even such
+highly uniform transformers, when allowed log-depth, can recognize regular languages^1^1 1 While
+Liu et al. (2023) provided a similar result, their construction relied heavily on an
+unconventional, non-uniform transformer architecture, requiring a different set of model weights
+for each input length. In contrast, our result holds in a stronger setting of highly uniform
+transformers—where model weights are not only fixed (independent of input length) as in practice
+but even shared across blocks of layers, enabling effective inference-time scaling. Our formal
+model incorporates standard architectural choices like residual connection and layer norm. We
+supplement our stronger theoretical findings with matching empirical learnability results. and
+solve graph connectivity, two important reasoning problems known to be beyond fixed-depth
+transformers (Merrill and Sabharwal, 2023b). Our core technical contribution enabling this is Lemma
+ 1, that fully uniform transformers can compute division and remainder of small integers. This not
+only obviates the need for non-uniformity and special positional encodings relied upon in prior
+work, it is also an interesting finding on its own.
+
+
+Figure 1: To recognize a regular language over inputs of length nn, the depth of a universal
+transformer can grow Θ⁡(log⁡n)\Theta(\log n) by Theorem 1. On the other hand, width must grow
+superpolynomially (Theorem 3), and the number of chain-of-thought steps must be superlogarithmic (
+Theorem 4). The precise depth and width coefficients plotted here were obtained experimentally in
+Section 7.
+
+Our result has two interesting interpretations. First, it directly shows that, by dynamically
+increasing their depth as Θ⁡(log⁡n)\Theta(\log n) on inputs of length nn, one can construct
+transformers to solve regular language recognition (Theorem 1) and graph connectivity (Theorem 2)
+for arbitrary context length. In contrast, chain-of-thought (CoT) steps, used for additional
+test-time compute by newest LLMs such as OpenAI o1 (OpenAI, 2024) and DeepSeek-R1 (DeepSeek AI,
+2025), must be scaled superlogarithmically (Theorem 4) to solve these problems, and width must be
+scaled superpolynomially (Theorem 3), as shown in Figure 1. Thus scaling depth more efficiently
+allows solving these reasoning problems compared to scaling width or using CoT.
+
+Second, a universal transformer unrolled to a fixed (independent of input size) depth dd is a
+special case of a standard dd-depth transformer, namely one with a highly uniform structure
+(parameters shared across layers). Thus, our result shows that standard transformers with a fixed
+depth dd can recognize regular languages (Corollary 1.2) and solve graph connectivity problems (
+Corollary 2.1) as long as one cares only about bounded inputs of size 2O⁡(d)2^{O(d)}. This allows
+us to quantify how many layers are necessary for a desired input size. For instance, Corollaries 
+1.2 and 2.1 imply that with a depth of only 3232, such as in LLaMA 3.1 7B (Meta AI, 2024) and OLMo
+7B (Ai2, 2024), transformers can recognize regular languages up to strings of length 107107 and
+solve connectivity for graphs with up to 128128 vertices. A depth of 8080 (such as in LLaMA 3.1
+70B) makes these input size limits practically unbounded: strings of length up to 440440K and
+graphs with up to 2.12.1B vertices. Empirically, our experiments supplementing our theoretical
+findings demonstrate that scaling depth as Θ⁡(log⁡n)\Theta(\log n) is necessary and sufficient for
+learning to recognize hard regular languages.^2^2 2 Code: https://github.com/jopetty/word-problem/
+tree/willm/log-depth/log-depth.
+
+We hope these findings serve as actionable guidance for practitioners to choose effective model
+depths for reasoning over long contexts, and motivate further exploration of dynamic depth as an
+inference-time compute strategy for transformer based LLMs.
+
+2 Preliminaries: Universal Transformers
+
+We consider (s,r,t)(s,r,t)-universal transformers, which are defined to have ss fixed initial
+layers at the start, a sequence of rr layers that is repeated some number of times based on the
+input length, and a sequence of tt fixed final/terminal layers. Thus, an (s,r,t)(s,r,t)-universal
+transformer unrolled d⁡(n)d(n) times for input length nn has a total of s+r​d​(n)+ts+rd(n)+t
+layers. Geiping et al. (2025) empirically explored such transformers for scaling test-time
+computation for reasoning problems. A standard dd-layer transformer is (d,0,0)(d,0,0)-universal
+(equivalently, (0,0,d)(0,0,d)-universal), while a standard universal transformer (Dehghani et al.,
+2019; Yang et al., 2024) is (0,1,0)(0,1,0)-universal.
+
+Definition 1.
+
+A decoder-only (s,r,t)(s,r,t)-universal transformer with hh heads, dd layers, model dimension mm
+(divisible by hh), and feedforward width ww is specified by:
+
+ 1. 1.
+   
+    An embedding projection matrix 𝐄:Σ→ℚm\mathbf{E}:\Sigma\to\mathbb{Q}^{m} and positional encoding
+    function π:ℕ→ℚm\pi:\mathbb{N}\to\mathbb{Q}^{m}, which we assume separates 11 from other indices
+    (Merrill and Sabharwal, 2024);
+
+ 2. 2.
+   
+    A list of ss “initial” transformer layers (defined under “Transformer Sublayers” below);
+
+ 3. 3.
+   
+    A list of rr “repeated” transformer layers;
+
+ 4. 4.
+   
+    A list of tt “final” transformer layers;
+
+ 5. 5.
+   
+    An unembedding projection matrix 𝐔\mathbf{U} that maps vectors in ℚm\mathbb{Q}^{m} to logits in
+    ℚ|Σ|\mathbb{Q}^{\lvert\Sigma\rvert}.
+
+We next define how the transformer maps a sequence w1⋯wn∈Σnw_{1}\cdots w_{n}\in\Sigma^{n} to an
+output value y∈Σy\in\Sigma; to do so, we will always specify that the transformer is unrolled to a
+specific depth function d⁡(n)d(n), which we will consider to be d⁡(n)=⌈log⁡n⌉d(n)=\lceil\log n\
+rceil.^3^3 3 Following computer science conventions, we let log⁡n≜log2⁡n\log n\triangleq\log_{2}n.
+The computation is inductively defined by the residual stream 𝐡i\mathbf{h}_{i}: a cumulative sum of
+all layer outputs at each token ii. In the base case, the residual stream 𝐡i\mathbf{h}_{i} is
+initialized to 𝐡i0=𝐄⁡(wi)+π⁡(i)\mathbf{h}^{0}_{i}=\mathbf{E}(w_{i})+\pi(i). We then iteratively
+compute s+r​d​(n)+ts+rd(n)+t more layers, deciding which layer to use at each step as follows:
+
+ Lℓ={s​-layer​ℓif​ 1<ℓ≤sr​-layer​((ℓ−s−1)modr)+1if​s<ℓ≤s+r​d​(n)t​-layer​ℓ−s−r​d​(n)otherwise.L^{\
+ ell}=\begin{cases}s\textrm{-layer}\;\ell&\textrm{if}\;1<\ell\leq s\\ r\textrm{-layer}\;((\
+ ell-s-1)\bmod r)+1&\textrm{if}\;s<\ell\leq s+rd(n)\\ t\textrm{-layer}\;\ell-s-rd(n)&\textrm
+ {otherwise.}\end{cases}
+
+We then compute 𝐡1ℓ,…,𝐡nℓ=Lℓ​(𝐡1ℓ−1,…,𝐡nℓ−1)\mathbf{h}^{\ell}_{1},\ldots,\mathbf{h}^{\ell}_{n}=L^{\
+ell}(\mathbf{h}^{\ell-1}_{1},\ldots,\mathbf{h}^{\ell-1}_{n}). The transformer output is a token
+determined by first computing the logits 𝐡nℓ∗​𝐔\mathbf{h}^{\ell^{*}}_{n}\mathbf{U}, where ℓ∗=s+r​d​
+(n)+t\ell^{*}=s+rd(n)+t, and then selecting the token with maximum score. We can identify a special
+token in Σ\Sigma with “accept” and say that a transformer recognizes language LL if, for every
+w∈Σ∗w\in\Sigma^{*}, it outputs “accept” if and only if w∈Lw\in L.
+
+An (s,r,t)(s,r,t)-transformer unrolled to some fixed depth can be viewed as a “uniform” special
+case of a fixed-depth transformer. Thus, constructions of dynamic-depth transformers (depth d⁡(n)d
+(n) for inputs of length nn) imply that, given any bounded context length NN, there also exists a
+fixed-depth transformer with depth d⁡(N)d(N) for the task at hand. The fact that this can be done
+with a looped transformer with dynamic depth is, in fact, a stronger condition that shows the
+construction is uniform, which is formally important as non-uniform models of computation can have
+very strong and unrealistic power (Merrill et al., 2022, cf.). In this way, our results about
+looped transformers will provide insights about standard, non-looped transformers with bounded
+context lengths.
+
+Transformer Sublayers.
+
+To make Definition 1 well-defined, we will next describe the structure of the self-attention and
+feedforward sublayers that make up the structure of each transformer layer. Our definition of the
+transformer will have two minor differences from practice:
+
+ 1. 1.
+   
+    Averaging-hard attention (a.k.a., saturated attention): attention weight is split uniformly
+    across the tokens with maximum attention scores.
+
+ 2. 2.
+   
+    Masked pre-norm: We assume standard pre-norm (Xiong et al., 2020) but add a learned mask vector
+    𝐦∈ℝm\mathbf{m}\in\mathbb{R}^{m} that can select specific dimensions of the residual stream per
+    sublayer.
+
+Under masked pre-norm, the sublayer input will be read as sequence of normalized residual stream
+values 𝐳i=𝗅𝖺𝗒𝖾𝗋​_​𝗇𝗈𝗋𝗆​(𝐦⊙𝐡i)\mathbf{z}_{i}=\mathsf{layer\_norm}(\mathbf{m}\odot\mathbf{h}_{i}),
+where ⊙\odot is elementwise product and layer-norm can be standard layer-norm (Ba et al., 2016) or
+RMS norm (Zhang and Sennrich, 2019). The sublayer then maps 𝐳1,…,𝐳n\mathbf{z}_{1},\ldots,\mathbf{z}
+_{n} to a sequence δ1,…,δn\delta_{1},\ldots,\delta_{n}, and updates the residual stream as 𝐡i′=
+𝐡i+δi\mathbf{h}^{\prime}_{i}=\mathbf{h}_{i}+\delta_{i}.
+
+Definition 2 (Self-attention sublayer).
+
+The self-attention sublayer is parameterized by a mask 𝐦∈ℚm\mathbf{m}\in\mathbb{Q}^{m}, output
+projection matrix 𝐖:ℚm→ℚm\mathbf{W}:\mathbb{Q}^{m}\to\mathbb{Q}^{m}, and, for 1≤k≤h1\leq k\leq h,
+query, key, and value matrices 𝐐k,𝐊k,𝐕k\mathbf{Q}^{k},\mathbf{K}^{k},\mathbf{V}^{k}, each of which
+is a projection from ℚm\mathbb{Q}^{m} to ℚm/h\mathbb{Q}^{m/h}.
+
+Given input 𝐳i\mathbf{z}_{i}, the self-attention sublayer computes queries 𝐪i=𝐐k​𝐳i\mathbf{q}_{i}=\
+mathbf{Q}^{k}\mathbf{z}_{i}, keys 𝐤i=𝐊k​𝐳i\mathbf{k}_{i}=\mathbf{K}^{k}\mathbf{z}_{i}, and values
+𝐯i=𝐕k​𝐳i\mathbf{v}_{i}=\mathbf{V}^{k}\mathbf{z}_{i}. Next, these values are used to compute the
+attention head outputs:
+
+ 𝐚i,k=limτ→0∑j=1cexp⁡(1/τ⋅𝐪i,k⊤​𝐤j,k)Zi,k⋅𝐯j,k,where​Zi,k=∑j=1cexp⁡(1/τ⋅𝐪i,k⊤​𝐤j,k)\mathbf{a}_
+ {i,k}=\lim_{\tau\to 0}\sum_{j=1}^{c}\frac{\exp(1/\tau\cdot\mathbf{q}_{i,k}^{\top}\mathbf{k}_
+ {j,k})}{Z_{i,k}}\cdot\mathbf{v}_{j,k},\quad\textrm{where}\;Z_{i,k}=\sum_{j=1}^{c}\exp\left(1/\tau
+ \cdot\mathbf{q}_{i,k}^{\top}\mathbf{k}_{j,k}\right)
+
+and c=ic=i for causal attention and c=nc=n for unmasked attention. The τ→0\tau\to 0 limit
+implements averaging-hard attention: all probability mass is concentrated on the indices jj for
+which the attention score is maximized. This idealization is similar to assuming the temperature of
+the attention is large relative to the sequence length nn. Finally, the attention heads are
+aggregated to create an output to the residual stream δi=𝐖⋅concat⁡(𝐚i,1,…,𝐚i,h)\delta_{i}=\mathbf
+{W}\cdot\mathrm{concat}(\mathbf{a}_{i,1},\ldots,\mathbf{a}_{i,h}).
+
+Definition 3 (Feedforward sublayer).
+
+The feedforward sublayer at layer ℓ\ell is parameterized by a mask 𝐦∈ℚm\mathbf{m}\in\mathbb{Q}^{m}
+and projections 𝐖:ℚm→ℚw\mathbf{W}:\mathbb{Q}^{m}\to\mathbb{Q}^{w} and 𝐔:ℚw→ℚm\mathbf{U}:\mathbb{Q}^
+{w}\to\mathbb{Q}^{m}.
+
+A feedforward layer computes a local update to the residual stream via δi=𝐔⋅𝖱𝖾𝖫𝖴⁡(𝐖𝐳i)\delta_{i}=\
+mathbf{U}\cdot\mathsf{ReLU}(\mathbf{W}\mathbf{z}_{i}).
+
+Positional Encodings.
+
+We will assume no positional encodings (Kazemnejad et al., 2023), but that there is a beginning of
+sequence (BoS) symbol at the start. As described by Merrill and Sabharwal (2024), our constructions
+will generalize to any positional encoding as long as either BoS is provided or the first token’s
+positional encoding is linearly separable from all other positional encodings.
+
+2.1 Memory Management in Universal Transformers
+
+A technical challenge when working with universal transformers that add values to the residual
+stream is that if one is not careful, outputs from the previous iteration of a layer may interfere
+with its computation at a later iteration. This necessitates “memory management” of individual
+cells in which the transformer stores values. In particular, any intermediate values stored by a
+layer must be “reset” to 0 and any desired output values must be correctly updated after use in
+subsequent layers.
+
+Appendix A discusses in detail how {−1,0,1}\{-1,0,1\} values can be stored directly in the residual
+stream, while a general scalar zz can be stored either as ψ⁡(z)=⟨z,1,−z,−1⟩\psi(z)=\langle
+z,1,-z,-1\rangle in its unnormalized form or as the unit vector ϕ⁡(z)=1/2⋅ψ⁡(z)/z2+1\phi(z)=1/\sqrt
+{2}\cdot\psi(z)/\sqrt{z^{2}+1} in its normalized form (Merrill and Sabharwal, 2024, “layer-norm
+hash”; cf.). Importantly, however zz is stored, when it is read using masked pre-norm, we obtain ϕ⁡
+(z)\phi(z). In Appendix A, we show how numerical values represented using ψ\psi or ϕ\phi can be
+easily written (Lemma 4), read (Lemma 2), and deleted (Lemmas 5 and 6) from the residual stream. We
+will leverage these operations heavily in our theoretical constructions.
+
+2.2 Numerical Datatype and Precision
+
+Our constructions will involve working with scalars used as pointers to token positions, which will
+be stored in and retrieved from the residual stream (as discussed in Section 2.1). We thus need Ω⁡
+(log⁡n)\Omega(\log n) bits of precision. We now formalize the underlying datatype we use for our
+constructions.
+
+We assume scalars are encoded as strings in {0,1}p\{0,1\}^{p}, with p=c​log⁡np=c\log n for some
+fixed c>0c>0. Note that model parameters in our fully uniform setting cannot depend on nn, but
+activations can. We assume there is some datatype 𝔻p\mathbb{D}_{p} that assigns a numerical
+semantics for each string in {0,1}p\{0,1\}^{p}. For x∈ℝx\in\mathbb{R}, let [x]𝔻p[x]_{\mathbb{D}_
+{p}} be xx rounded into 𝔻p\mathbb{D}_{p}, i.e., the bitstring whose numerical value in 𝔻p\mathbb{D}
+_{p} is closest to xx (breaking ties in favor of the higher value).
+
+Our constructions will be agnostic to the underlying details of 𝔻p\mathbb{D}_{p}. Instead, we will
+minimally assume that, for some fixed cc, all arithmetic operations in the transformer computation
+graph (addition, multiplication, division, exp\exp, and layer-norm) are pp-precise for p≥c​log⁡np\
+geq c\log n in the following sense:
+
+Definition 4 (pp-Precise Operations).
+
+Let f:ℝk→ℝf:\mathbb{R}^{k}\to\mathbb{R} be an operation with pp-precision realization f~:𝔻pk→𝔻p\
+tilde{f}:\mathbb{D}_{p}^{k}\to\mathbb{D}_{p}. We say f~\tilde{f} is pp-precise if, for any
+x1,…,xk∈ℝx_{1},\ldots,x_{k}\in\mathbb{R} exactly representable in 𝔻p\mathbb{D}_{p},
+
+ [f⁡(x1,…,xk)]𝔻p=f~​([x1]𝔻p,…,[xk]𝔻p).[f(x_{1},\ldots,x_{k})]_{\mathbb{D}_{p}}=\tilde{f}([x_{1}]_
+ {\mathbb{D}_{p}},\ldots,[x_{k}]_{\mathbb{D}_{p}}).
+
+To apply this definition, we view the summation in attention heads as an nn-ary operation. We also
+view layer-norm as a single operation from ℝm→ℝm\mathbb{R}^{m}\to\mathbb{R}^{m}.
+
+Definition 4 is naturally satisfied by the log-precision transformer model formalized by Merrill et
+al. (2024, Section 2.2 and Appendix A) and used in earlier work (Merrill and Sabharwal, 2023b;
+Merrill and Sabharwal, 2023a), as long as sufficient precision is used internally to compute
+attention and layer-norm precisely. It is an open question how much precision is required by the
+internal primitive operations of summation and layer-norm to guarantee their output is (c​log⁡n)(c\
+log n)-precise. We intentionally abstract away these low-level details here, especially because, in
+practice, additional precision is typically allocated in any case for attention and layer-norm
+computation (Micikevicius et al., 2018; Ai2, 2024).
+
+Finally, we briefly note how Definition 4 relates to other datatype models. Chiang et al. (2023)
+propose a polynomial-precision rational datatype, which satisfies Definition 4 because the first
+c​log⁡nc\log n bits (and potentially more) are correct. In contrast, finite-precision transformers
+do not satisfy Definition 4 because only O⁡(1)\mathrm{O}(1) bits are correct. In particular, while
+the mixed-precision model of Yang et al. (2025) can precisely represent attention, it cannot store
+(c​log⁡n)(c\log n)-bit values in the residual stream or as the output of layer-norm. It therefore
+does not satisfy Definition 4 or suffice for our constructions.
+
+3 Fixed Depth Transformers Can Divide Small Integers
+
+A useful primitive for coordinating information routing in a log-depth transformer will be dividing
+integers and computing remainders. We therefore start by proving that transformers can perform
+integer division for small numbers, which will be a useful tool for our main results. Specifically,
+we show that given a non-negative integer aia_{i} no larger than the current position ii, one can
+compute and store the (normalized) quotient and remainder when aia_{i} is divided by an integer mm.
+This effectively means transformers can perform arithmetic modulo mm for small integers.
+
+Lemma 1 (Division).
+
+Let ai,bi,ci,m∈ℤ≥0a_{i},b_{i},c_{i},m\in\mathbb{Z}^{\geq 0} be such that ai=bi​m+cia_{i}=b_{i}m+c_
+{i} where ai≤ia_{i}\leq i and ci<mc_{i}<m. Suppose ψ⁡(i)\psi(i), ψ⁡(m)\psi(m), and ϕ⁡(ai)\phi(a_
+{i}) (or ψ⁡(ai)\psi(a_{i})) are present in the residual stream of a transformer at each token ii.
+Then, there exists a block of 7 transformer layers with causally masked attention and masked
+pre-norm that, on any input sequence, adds ϕ⁡(bi)\phi(b_{i}) and ϕ⁡(ci)\phi(c_{i}) to the residual
+stream at each token ii.
+
+Proof.
+
+The overall idea is as follows. In the first layer, each position ii outputs an indicator of
+whether it’s a multiple of mm. It also adds ϕ⁡(j)\phi(j) to the residual stream such that jj is the
+quotient i/mi/m if ii is a multiple of mm. In the second layer, each position ii attends to the
+nearest position j≤ij\leq i that is a multiple of mm and retrieves the (normalized) quotient stored
+there, which is j/m=⌊i/m⌋j/m=\lfloor i/m\rfloor. It adds this (normalized) quotient in its own
+residual stream. We then use Lemma 7 (§A.3) to construct a third layer that adds ϕ⁡(i−1)\phi(i-1)
+and ϕ⁡(i−2)\phi(i-2) to the residual stream. A fourth layer checks in parallel whether the quotient
+stored at ii matches the quotients stored at i−1i-1 and i−2i-2, respectively. In the fifth layer,
+position ii counts the number of positions storing the same quotient as ii, excluding the first
+such position. Finally, in the sixth layer, position ii attends to position aia_{i} to compute and
+add to the residual stream ϕ⁡(⌊ai/m⌋)\phi(\lfloor a_{i}/m\rfloor) (which is ϕ⁡(bi)\phi(b_{i})) and
+ϕ⁡(ai−m⁡⌊ai/m⌋)\phi(a_{i}-m\lfloor a_{i}/m\rfloor) (which is ϕ⁡(ci)\phi(c_{i})). We next describe a
+detailed implementation of the construction, followed by an argument of its correctness.
+
+Construction. The first layer uses the following attention head. The query at position ii is qi=ϕ⁡
+(i,m)=ϕ⁡(i/m)q_{i}=\phi(i,m)=\phi(i/m) computed via Lemma 3 (§A.1) leveraging the assumption that
+ψ⁡(i)\psi(i) and ψ⁡(m)\psi(m) are present in the residual stream. The key and value at position jj
+are kj=vj=ϕ⁡(j)k_{j}=v_{j}=\phi(j) Let hi1=ϕ⁡(j)h^{1}_{i}=\phi(j) denote the head’s output. The
+feedforward sublayer computes ei=𝕀⁡(hi1=ϕ⁡(i/m))e_{i}=\mathbb{I}(h^{1}_{i}=\phi(i/m)) using Lemma 8
+(scalar equality check, §A.4) on the first coordinate of hi1h^{1}_{i} and ϕ⁡(i/m)\phi(i/m). By
+Lemma 9 (§B), ei=1e_{i}=1 if and only if ii is a multiple of mm and, if ei=1e_{i}=1, then hi1=ϕ⁡(i/
+m)h^{1}_{i}=\phi(i/m), i.e., it represents the quotient i/mi/m. We store hi1=ϕ⁡(i/m)h^{1}_{i}=\phi
+(i/m) and eie_{i} to the residual stream.^4^4 4 As described in §8, a component will be added to
+the second layer to reset intermediate memory cells used in the first layer to 0 (this will happen
+analogously in later layers, but we will omit mentioning it).
+
+The second layer uses a head that attends with query qi=⟨1,1⟩q_{i}=\langle 1,1\rangle, key kj=⟨ej,
+[ϕ⁡(j)]0⟩k_{j}=\langle e_{j},[\phi(j)]_{0}\rangle, and value vj=hj1v_{j}=h^{1}_{j}; both eje_{j}
+and hj1h^{1}_{j} can be read from the residual stream using masked pre-norm. This head attends to
+all positions j≤ij\leq i that are multiples of mm (where ej=1e_{j}=1), with [ϕ⁡(j)]0[\phi(j)]_{0},
+the first component of ϕ⁡(j)\phi(j), serving as a tie-breaking term for breaking ties in favor of
+the nearest multiple of mm. Lemma 10 (§B) shows this head outputs hi2=ϕ⁡(⌊i/m⌋)h^{2}_{i}=\phi(\
+lfloor i/m\rfloor), which we store in the residual stream.
+
+The third layer uses Lemma 7 (§A.3) to add ϕ⁡(i−1)\phi(i-1) and ϕ⁡(i−2)\phi(i-2) to the residual
+stream at position ii.
+
+In parallel for k∈{1,2}k\in\{1,2\}, the fourth layer attends with query qi=ϕ⁡(i−k)q_{i}=\phi(i-k),
+key kj=ϕ⁡(j)k_{j}=\phi(j), and value vj=ϕ⁡(⌊j/m⌋)v_{j}=\phi(\lfloor j/m\rfloor) to retrieve the
+quotient stored at position i−ki-k. It uses Lemma 8 (SA.4) on the first coordinate to store in the
+residual stream a boolean bik=𝕀⁡(ϕ⁡(⌊i/m⌋)=ϕ⁡(⌊(i−k)/m⌋))b^{k}_{i}=\mathbb{I}(\phi(\lfloor i/m\
+rfloor)=\phi(\lfloor(i-k)/m\rfloor)), indicating whether the quotient stored at ii matches the
+quotient stored at i−ki-k.
+
+In the fifth layer, position ii attends with query qi=⟨ϕ⁡(⌊i/m⌋),1⟩q_{i}=\langle\phi(\lfloor i/m\
+rfloor),1\rangle, key kj=⟨ϕ⁡(⌊j/m⌋),bj1⟩k_{j}=\langle\phi(\lfloor j/m\rfloor),b^{1}_{j}\rangle, and
+value vj=1−bj2v_{j}=1-b^{2}_{j}. When the output hi5h^{5}_{i} of this layer is read through layer
+norm, it produces ϕ⁡(hi5)=ϕ⁡(imodm)\phi(h^{5}_{i})=\phi(i\bmod m) as proved in Lemma 11 (§B).
+
+The sixth layer attends with query qi=ϕ⁡(ai)q_{i}=\phi(a_{i}), key kj=ϕ⁡(j)k_{j}=\phi(j), and value
+vj=⟨⌊j/m⌋,ϕ⁡(jmodm)⟩v_{j}=\langle\lfloor j/m\rfloor,\phi(j\bmod m)\rangle (from layers two and
+five) to compute ⟨ϕ⁡(⌊ai/m⌋),ϕ⁡(aimodm)⟩\langle\phi(\lfloor a_{i}/m\rfloor),\phi(a_{i}\bmod m)\
+rangle, which equals ⟨ϕ⁡(bi),ϕ⁡(ci)⟩\langle\phi(b_{i}),\phi(c_{i})\rangle.
+
+The seventh and final layer cleans up any remaining intermediate values stored in the residual
+stream, setting them back to 0 as per Lemma 8. This is possible because all values vv are of the
+form ϕ⁡(x)\phi(x) or a boolean, which means adding −ϕ⁡(v)-\phi(v) to the residual stream will reset
+the corresponding cell to 0. ∎
+
+Our division construction is somewhat similar to the modular counting construction from Strobl et
+al. (2024), though the tools and underlying assumptions are different. Specifically, their approach
+relies on nonstandard position embeddings whereas ours uses masked pre-norm.
+
+4 Log Depth Enables Recognizing Regular Languages
+
+Constant-depth transformers cannot recognize regular languages, a natural task closely related to
+state tracking (Liu et al., 2023; Merrill et al., 2024). Liu et al. (2023, Theorem 1)^5^5 5 Saunshi
+et al. (2025, Theorem 5.1) also give a log-depth transformer construction for the regular language
+recognition problem. It is, however, not fully uniform as positions are encoded with vectors of
+length O⁡(log⁡n)\mathrm{O}(\log n). show that a variant of log-depth transformers can recognize
+regular languages using an associative prefix-sum construction (Hillis and Steele Jr, 1986;
+Blelloch, 1990, cf.). However, it is, prima facie, unclear whether the fully uniform model of
+transformers we study—where the parameters cannot change at all with nn—can implement their
+construction for two key reasons:
+
+ 1. 1.
+   
+    To handle information routing, Liu et al. (2023, Page 44) require parameters that are not fully
+    uniform, meaning they can depend on the input length and depth. This leaves it unclear whether
+    a single transformer (with a fixed set of parameters) could solve the task across all input
+    lengths. In other words, their work leaves it unclear whether a single transformer could
+    implement the approach in a way that generalizes to inputs of any length.
+
+ 2. 2.
+   
+    Liu et al. (2023) also make several simplifications to the transformer architecture: they add
+    non-standard positional embeddings and remove residual connections and layer-norm. While one
+    could adapt their construction to handle residual connections, it is not clear how to do this
+    while also making their construction uniform, which requires proper memory management of cells
+    in the residual stream (Section 2.1).
+
+Our result, using Lemma 1, addresses both of these weaknesses. It shows, for the first time, that a
+single transformer with fixed parameters (w.r.t. input length nn) can recognize strings of any
+length; moreover this transformer does not require specific positional encodings, allows for
+layer-norm (in fact leverages it), and allows for residual connections while remaining fully
+uniform.
+
+Theorem 1 (Regular Language Recognition).
+
+Let LL be a regular language over Σ\Sigma recognized by a (non-)deterministic finite automaton with
+states QQ. Let $∉Σ\$\not\in\Sigma. Then there exists a causally masked (0,8,9)(0,8,9)-universal
+transformer with
+
+  • •
+   
+    model dimension mNFA=O⁡(|Q|2)m_{\textnormal{NFA}}=\mathrm{O}(\lvert Q\rvert^{2}), or mDFA=O⁡(|Q
+    |​log⁡|Q|)m_{\textnormal{DFA}}=\mathrm{O}(\lvert Q\rvert\log\lvert Q\rvert) if deterministic;
+
+  • •
+   
+    feedforward width wNFA=O⁡(2|Q|4)w_{\textnormal{NFA}}=\mathrm{O}\big(2^{\lvert Q\rvert^{4}}\big)
+    , or wDFA=O⁡(2|Q|2​log2​|Q|)w_{\textnormal{DFA}}=\mathrm{O}\big(2^{\lvert Q\rvert^{2}\log^{2}\
+    lvert Q\rvert}\big) if deterministic;
+
+that, on any string w$w\$, recognizes whether w∈Lw\in L when unrolled to ⌈log2⁡|w|⌉\lceil\log_{2}\
+lvert w\rvert\rceil depth.
+
+Proof in Appendix C. Theorem 1 reveals that running a transformer to Θ⁡(log⁡n)\Theta(\log n) depth
+on inputs of length nn unlocks new power compared to a fixed-depth transformer, assuming 𝖳𝖢0≠𝖭𝖢1\
+mathsf{TC}^{0}\neq\mathsf{NC}^{1}. If we do not care that the construction is uniform across
+layers, we can simplify 8-layer block that determines activeness to 1 layer: we simply hardcode the
+layer index ℓ\ell and use a single transformer layer to compute imodℓi\mod\ell. Thus, the
+non-uniform construction results in a shallower transformer family:
+
+Corollary 1.1 (Regular Language Recognition, Non-Uniform).
+
+Let LL be a regular language over Σ\Sigma and $∉Σ\$\not\in\Sigma. There exists a family of causally
+masked transformers {Tn}n=1∞\{T_{n}\}_{n=1}^{\infty} where TnT_{n} has 4​⌈log2⁡n⌉+54\lceil\log_{2}n
+\rceil+5 layers such that, on any string w$w\$ of length nn, TnT_{n} recognizes whether w∈Lw\in L.
+
+These results can be extended beyond regular languages: if a bb-layer transformer can perform some
+binary associative operation ⊕:X×X→X\oplus:X\times X\to X, then one can construct an Θ⁡(b​log⁡n)\
+Theta(b\log n) layer transformer that computes the iterated version on nn values, x1⊕x2⊕…⊕xn∈Xx_{1}
+\oplus x_{2}\oplus\ldots\oplus x_{n}\in X. One example is iterated matrix multiplication. For
+matrices from a fixed set (e.g., k×kk\times k boolean matrices), Theorem 1 already shows that this
+task can be performed. However, if the matrices are not from a fixed set (e.g., matrices over ℤ\
+mathbb{Z} or ℚ\mathbb{Q} or whose shape depends on nn), then it is unclear whether log-depth
+transformers can solve the binary multiplication problem, and thus whether they can solve the
+iterated version.
+
+Fixed Depth and Bounded Length Inputs.
+
+Interestingly, while Theorems 1 and 1.1 are about log-depth transformers, they can be turned around
+to infer bounds on the input length up to which fixed depth transformers (i.e., depth fixed w.r.t.
+input length) can recognize regular languages. Specifically, given any regular language LL and a
+fixed dd, Corollary 1.1 implies that there exists a depth dd transformer that can recognize strings
+w∈Lw\in L as long as 4​⌈log2⁡|w|⌉+5≤d4\lceil\log_{2}\lvert w\rvert\rceil+5\leq d,^6^6 6 The
+inequality holds since Corollary 1.1 generalizes to show TnT_{n} recognizes all strings of length
+m≤nm\leq n. which is satisfied if 4​(1+log2⁡|w|)+5≤d4\;(1+\log_{2}\lvert w\rvert)+5\leq d, i.e., |w
+|≤2(d−9)/4\lvert w\rvert\leq 2^{(d-9)/4}:
+
+Corollary 1.2 (Depth Scaling for Regular Language).
+
+Let LL be a regular language over Σ\Sigma and $∉Σ\$\not\in\Sigma. For any d∈ℕd\in\mathbb{N}, there
+exists a causally masked dd-layer transformer that, on any string w$w\$ of length at most 2(d−9)/
+4+12^{(d-9)/4}+1, recognizes whether w∈Lw\in L.
+
+An analogous result holds for universal (i.e., shared parameter) transformers from Theorem 1.
+
+5 Log Depth Enables Graph Connectivity
+
+In the graph connectivity problem (also referred to as STCON or the reachability problem), the
+input is a graph GG, along with a source vertex ss and a target vertex tt. The task is to determine
+if GG has a path from ss to tt. This is a core problem at the heart of many computational questions
+in areas as diverse as network security, routing and navigation, chip design, and—perhaps most
+commonly for language models—multi-step reasoning. This problem is known to be complete for the
+class of logspace Turing machines (Reingold, 2008; Immerman, 1998), which means that, under common
+complexity conjectures, it cannot be solved accurately by fixed-depth transformers, which can only
+solve problems in the smaller class 𝖳𝖢0\mathsf{TC}^{0}. However, graph connectivity can be
+expressed by log-depth threshold circuits (Barrington and Maciel, 2000, 𝖳𝖢1\mathsf{TC}^{1},), which
+opens up a natural question: Can log-depth transformers, which are in 𝖳𝖢1\mathsf{TC}^{1}, solve
+graph connectivity?
+
+Sanford et al. (2024) provide results showing that a non-uniform log-depth transformer with
+arbitrarily powerful feedforward nets can solve variants of graph connectivity. We prove that even
+a fully uniform log-depth transformer can solve graph connectivity (proof sketch below, full proof
+in Appendix D):
+
+Theorem 2 (Graph Connectivity).
+
+There exists a (17,2,1)(17,2,1)-universal transformer TT with both causal and unmasked heads, fixed
+model dimension mm, and fixed feedforward width ww that, when unrolled ⌈log2⁡n⌉\lceil\log_{2}n\
+rceil times, solves connectivity on (directed or undirected) graphs over nn vertices: given the
+n×nn\times n adjacency matrix of a graph GG, n3n^{3} padding tokens, and s,t∈{1,…​n}s,t\in\{1,\
+ldots n\} in unary, TT checks whether GG has a path from vertex ss to vertex tt.
+
+Proof Sketch.
+
+We will prove this for the more general case of a directed graph GG over nn vertices. Let A∈{0,1}
+n×nA\in\{0,1\}^{n\times n} be GG’s adjacency matrix. The idea is to use the first n2n^{2} tokens of
+the transformer to construct binary predicates Bℓ​(i,j)B_{\ell}(i,j) for ℓ∈{0,1,…,⌈log⁡n⌉}\ell\in\
+{0,1,\ldots,\lceil\log n\rceil\} capturing whether GG has a path of length at most 2ℓ2^{\ell} from
+ii to jj. To this end, the transformer will use the n3n^{3} padding tokens to also construct
+intermediate ternary predicates Cℓ​(i,k,j)C_{\ell}(i,k,j) for ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\
+lceil\log n\rceil\} capturing whether GG has paths of length at most 2ℓ−12^{\ell-1} from ii to kk
+and from kk to jj. These two series of predicates are computed from each other iteratively, as in
+standard algorithms for graph connectivity:
+
+ B0​(i,j)\displaystyle B_{0}(i,j) ⇔A⁡(i,j)∨i=j\displaystyle\iff A(i,j)\ \vee\ i=j               (1)
+ Cℓ+1​(i,k,j)\displaystyle C_{\   ⇔Bℓ​(i,k)∧Bℓ​(k,j)\displaystyle\iff B_{\ell}(i,k)\wedge B_{\  (2)
+ ell+1}(i,k,j)                    ell}(k,j)
+ Bℓ+1​(i,j)\displaystyle B_{\     ⇔∃k​s.t.​Cℓ+1​(i,k,j)\displaystyle\iff\exists k\;\textrm      (3)
+ ell+1}(i,j)                      {s.t.}\;C_{\ell+1}(i,k,j)
+
+The crucial part is to construct a transformer that correctly operationalizes the computation of
+predicates BℓB_{\ell} and CℓC_{\ell}. The input to the transformer is the adjacency matrix AA
+represented using n2n^{2} tokens from {0,1}\{0,1\}, followed by n3n^{3} padding tokens □\square,
+and finally the source and target nodes s,t∈{1,…,n}s,t\in\{1,\ldots,n\} represented in unary
+notation using special tokens aa and bb:
+
+ A1,1​…​A1,n​A2,1​…​A2,n​…​…​An,1​…​An,n​□​…​…​…​□⏟n3​a​…​…​a⏟s​b​…​…​b⏟t\displaystyle A_{1,1}\
+ ldots A_{1,n}\ A_{2,1}\ldots A_{2,n}\ \ldots\ldots\ A_{n,1}\ldots A_{n,n}\ \underbrace{\square\
+ ldots\ldots\ldots\square}_{n^{3}}\ \underbrace{a\ldots\ldots a}_{s}\ \underbrace{b\ldots\ldots b}
+ _{t}
+
+Let N=n2+n3+s+tN=n^{2}+n^{3}+s+t, the length of the input to the transformer. The first n2n^{2}
+token positions will be used to compute predicates BℓB_{\ell}, while the next n3n^{3} token
+positions will be used for predicates CℓC_{\ell}.
+
+Initial Layers. The transformer starts off by using layer 1 to store 1/N,n,n2,s,1/N,n,n^{2},s, and
+tt in the residual stream at every position. It then uses the next 15 layers to compute and store
+in the residual stream the semantic “coordinates” of each of the first n2+n3n^{2}+n^{3} token
+position, namely, (i,j)(i,j) for each of the first n2n^{2} positions p=i​n+jp=in+j and (i,k,j)
+(i,k,j) for each of the next n3n^{3} positions p=n2+(i​n2+k​n+j)p=n^{2}+(in^{2}+kn+j). Finally,
+layer 17 of the transformer computes the predicate B0​(i,j)B_{0}(i,j) at the first n2n^{2} token
+positions.
+
+Repeated Layers. The repeated layers alternate between computing the CℓC_{\ell} and the BℓB_{\ell}
+predicates for ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\lceil\log n\rceil\}. The idea is to compute Cℓ​
+(i,k,j)C_{\ell}(i,k,j) in the n3n^{3} padding tokens by attending to positions (i,k)(i,k) and (k,j)
+(k,j) and retrieving Bℓ−1​(i,k)B_{\ell-1}(i,k) and Bℓ−1​(k,j)B_{\ell-1}(k,j). Similarly, Bℓ​(i,j)B_
+{\ell}(i,j) is computed in the n2n^{2} input positions via uniform attention over padding positions
+(i,k′,j)(i,k^{\prime},j) that store Cℓ​(i,k′,j)C_{\ell}(i,k^{\prime},j).
+
+Final Layers. Finally, in layer 2​⌈log⁡n⌉+182\lceil\log n\rceil+18, the final token uses a head
+that attends with query ⟨ϕ⁡(s),ϕ⁡(t)⟩\langle\phi(s),\phi(t)\rangle corresponding to the source and
+target nodes ss and tt mentioned in the input, attending solely to the position with coordinates
+(s,t)(s,t), and retrieving the final value B⌈log⁡n⌉​(s,t)B_{\lceil\log n\rceil}(s,t). ∎
+
+Thus, while 𝖭𝖢1\mathsf{NC}^{1} circuits (which have log depth) cannot solve graph connectivity
+unless 𝖭𝖢1=𝖭𝖫\mathsf{NC}^{1}=\mathsf{NL}, log-depth transformers can.
+
+Fixed Depth and Bounded Length Inputs.
+
+As for regular languages, this result also provides a concrete input length bound up to which a
+fixed-depth transformer can solve this problem, namely when 18+2​⌈log2⁡n⌉≤d18+2\lceil\log_{2}n\
+rceil\leq d, which is satisfied if 18+2​(1+log2⁡n)≤d18+2\;(1+\log_{2}n)\leq d, i.e., n≤2(d−20)/2n\
+leq 2^{(d-20)/2}:
+
+Corollary 2.1 (Depth Scaling for Graph Connectivity).
+
+For any d∈ℕd\in\mathbb{N}, there exists a dd-layer transformer with both causal and unmasked heads
+that, on any graph with at most 2(d−20)/22^{(d-20)/2} vertices, solves the connectivity problem.
+
+6 Comparing Scaling Depth to Scaling Width or Chain of Thought
+
+Our results show that looping layers enables transformers to solve problems likely (conditionally
+under the conjecture that 𝖳𝖢0≠𝖭𝖢1\mathsf{TC}^{0}\neq\mathsf{NC}^{1}) outside 𝖳𝖢0\mathsf{TC}^{0}. We
+now consider how looping compares in expressive power to other ways to add computation to
+transformers. Rather than increasing depth by repeating layers, one can increase a transformer’s
+width via a larger model dimension (Definition 1) or padding tokens (Pfau et al., 2024). Whereas
+slightly increasing depth likely expands expressive power beyond 𝖳𝖢0\mathsf{TC}^{0}, we show that
+achieving expressivity beyond 𝖳𝖢0\mathsf{TC}^{0} via width likely requires superpolynomial width,
+which is intractable. In contrast to repeating layers, another way to extend inference-time
+computation is using chain-of-thought (CoT) steps. We thus compare the expressive power achieved
+repeated layers with CoT steps.
+
+Wide Transformers with Fixed Depth Remain in 𝖳𝖢0\mathsf{TC}^{0}.
+
+Our Corollaries 1.2 and 2.1 show that minimally growing a transformer’s depth allows it to express
+key problems that are likely outside 𝖳𝖢0\mathsf{TC}^{0}. In contrast, Theorem 3 (which extends
+Merrill and Sabharwal (2023b); for completeness, Appendix E gives a sketch) shows that, if depth
+remains fixed, width must increase drastically with sequence length to enable expressive power
+outside 𝖳𝖢0\mathsf{TC}^{0}.
+
+Theorem 3 (Width Scaling).
+
+Let TT be a fixed-depth transformer whose width (model dimension or padding tokens; Pfau et al.,
+2024) grows at most polynomial in nn and whose weights on input length nn (to accommodate growing
+width) are computable in 𝖫\mathsf{L}. Then TT can be simulated in 𝖫\mathsf{L}-uniform 𝖳𝖢0\mathsf
+{TC}^{0}.
+
+Thus, to solve reasoning problems outside 𝖳𝖢0\mathsf{TC}^{0} over a context length nn, growing
+depth is much more efficient than growing width. Of course, there may be other types of problems
+(e.g., those that are knowledge intensive or very parallelizable) where growing width might be more
+important than growing depth. Petty et al. (2024) provide an interesting empirical investigation of
+this choice on language modeling, semantic parsing, and other tasks.
+
+Transformers with Logarithmic Chain-of-Thought Steps Remain in 𝖳𝖢0\mathsf{TC}^{0}.
+
+Merrill and Sabharwal (2024, Theorem 4) analyze the power of transformers with O⁡(log⁡n)\mathrm{O}
+(\log n) CoT steps, showing it is at most 𝖫\mathsf{L}. However, we have shown that transformers
+with Θ⁡(log⁡n)\Theta(\log n) depth can solve directed graph connectivity, which is 𝖭𝖫\mathsf{NL}
+-complete: this suggests growing depth has some power beyond growing CoT unless 𝖫=𝖭𝖫\mathsf{L}=\
+mathsf{NL}. In fact, the O⁡(log⁡n)\mathrm{O}(\log n) CoT steps result can be strengthened (Li et
+al., 2024, Figure 10; for completeness, Appendix E gives a sketch) to an upper bound of 𝖳𝖢0\mathsf
+{TC}^{0}:
+
+Theorem 4 (CoT Scaling).
+
+Transformers with O⁡(log⁡n)\mathrm{O}(\log n) chain-of-thought steps can only recognize languages
+in 𝖫\mathsf{L}-uniform 𝖳𝖢0\mathsf{TC}^{0}.
+
+Thus, while giving a model O⁡(log⁡n)\mathrm{O}(\log n) CoT steps does not increase its expressive
+power beyond 𝖳𝖢0\mathsf{TC}^{0}, our Theorems 1 and 2 allow Θ⁡(log⁡n)\Theta(\log n) to solve key
+problems that are (likely) outside 𝖳𝖢0\mathsf{TC}^{0}. This demonstrates an advantage of dynamic
+depth over CoT as a form of inference-time compute for reasoning problems including regular
+language recognition and graph connectivity. It would be interesting to explore this comparison
+more generally for other problems.
+
+7 Experiments: Learning to Recognize Regular Languages
+
+Our theory characterizes the depth and width required to express regular language recognition and
+graph connectivity. Specifically, Theorem 1 predicts that recognizing regular languages over
+strings of length nn is empirically possible with depth proportional to log⁡n\log n. On the other
+hand, Theorem 3 predicts that the width would need to scale superpolynomially. Here, we aim to
+empirically measure how much depth and width transformers require in practice when trained to
+recognize regular languages. We will find that expressibility and learnability are highly aligned
+here: transformers with log depth can learn to recognize regular languages, whereas width must
+increase superpolynomially with nn. Moreover, we can empirically quantify the constant factors in
+these relationships.
+
+
+Figure 2: Strong linear fits imply theory/experiment match for modeling the impact of depth (left,
+d=4.8​log2​n−15.8d=4.8\log_{2}n-15.8 with r2=0.93r^{2}=0.93) and width (right, n=7.2​log2​w−41.7n=
+7.2\log_{2}w-41.7 with r2=0.98r^{2}=0.98) on effective context length for the A5A_{5} state
+tracking task, a canonical hard regular language recognition problem. As predicted by Theorems 1
+and 3, to recognize strings of length nn, depth only needs to increase minimally ∝log⁡n\propto\log
+n while width must increase drastically as exp⁡(Θ⁡(n))\exp(\Theta(n)).
+
+We report on an extensive set of experiments to address these questions, training models of
+different depths and widths on the A5A_{5} state tracking task (Merrill et al., 2024), which is a
+canonical testbed for hard regular language recognition (Theorem 1). The input to the task is a
+sequence of elements in A5A_{5} (the group of even permutations over 5 elements), and the label at
+each token is the cumulative product of previous permutations up to and including that token (which
+is itself an element of A5A_{5}).
+
+We train several (non-universal) transformers with the same architecture used by Merrill et al.
+(2024) on  100 million A5A_{5} sequences of varying lengths up to 1024. To understand the impact of
+depth and width in a controlled way, we train two series of transformers: the first with width
+fixed to 512 and depth varying in {6,9,12,15,18,21,24}\{6,9,12,15,18,21,24\}, and the second with
+depth fixed to 6 and width varying in {128,256,512,1024}\{128,256,512,1024\}. See Appendix F for
+further details about our training procedure. After each model is trained, we measure accuracy at
+each token index from 1 to 1024 and define n∗n^{*} as the maximum token index at which the model
+achieved at least 95% validation accuracy. As we trained several seeds with the same depth and
+width, we aggregate these results across all models with the same depth and width by taking the
+best-performing (max n∗n^{*}) model. We then plot n∗n^{*}, which represents the effective context
+length up to which a model can solve the A5A_{5} problem, as a function of either depth or width,
+holding the other variable fixed. We then evaluate if the predicted theoretical relationships
+between depth, width, and context length hold via an r2r^{2} statistic.
+
+The results are shown in Figure 2. When varying depth (left plot), there is a very strong positive
+correlation (r2=0.93r^{2}=0.93) between model depth (x-axis) and log⁡n∗\log n^{*} (y-axis, log
+scale), the effective (log) context length till which it can solve problems with high accuracy.
+When varying width (right plot) there is an even stronger positive correlation (r2=0.98r^{2}=0.98)
+between log width (x-axis, log scale) and n∗n^{*} (y-axis). These results provide strong empirical
+support for our theoretical predictions that, to recognize regular languages over strings of length
+nn, increasing depth logarithmically in nn will suffice (Theorem 1), but width must increase
+exponentially in nn (Theorem 3). Figure 2 also gives us a strongly predictive functional form to
+quantify the impact of scaling depth or width on the effective context length for regular language
+recognition. The empirical slope for the depth relationship is is 4.8 layers per log tokens. This
+is less than the slope of 8 derived for universal transformers in Theorem 1, but slightly greater
+than the theoretical coefficient of 4 for transformers whose depth grows non-uniformly with context
+length. Thus, our transformers have learned a construction whose depth coefficient is comparable to
+what we showed was possible in theory, though perhaps slightly more wasteful than it needs to be.
+Overall, these empirical results show that, in practice, the impact of depth and width on effective
+context length for regular language recognition aligns with our theoretical predictions, and we are
+able to empirically fit the quantitative coefficients in the relationships.
+
+8 Conclusion
+
+We have shown that recognizing regular languages and graph connectivity, two key problems
+inexpressible by fixed-depth transformers, become expressible if the depth of the transformer can
+grow very slightly (logarithmically) with the context length by repeating layers. This implies
+transformers with fixed depth dd can solve these problems up to bounded context lengths of 2O⁡(d)2^
+{O(d)}. Further, we showed that scaling depth to solve these problems is more efficient than
+scaling width (which requires superpolynomial increase) or scaling chain-of-thought steps (which
+requires superlogarithmic increase). As dynamic test-time compute methods have become popular for
+building more powerful reasoning models such as OpenAI o1 (OpenAI, 2024) and DeepSeek-R1 (DeepSeek
+AI, 2025), it would be interesting to explore whether universal transformers can realize this
+theoretical efficiency to provide more efficient long-context reasoning than chain-of-thought steps
+in practice.
+
+While growing depth enables transformers to solve some key problems outside 𝖳𝖢0\mathsf{TC}^{0},
+there are limitations on the types of problems log depth should enable solving. Unless 𝖭𝖢=𝖯\mathsf
+{NC}=\mathsf{P}, log-depth (or even polylog-depth) transformers cannot express 𝖯\mathsf{P}-complete
+problems including solving linear equalities, in-context context-free language recognition, circuit
+evaluation, and determining the satisfiability of Horn clauses (Greenlaw et al., 1991). In future
+work, it would interesting to study the depth required for transformers to solve other interesting
+problems in 𝖭𝖢\mathsf{NC} including context-free recognition (generalizing regular languages;
+Theorem 1), which is in 𝖠𝖢1\mathsf{AC}^{1} (Ruzzo, 1981; Venkateswaran, 1991) and boolean formula
+evaluation, which is 𝖭𝖢1\mathsf{NC}^{1}-complete (Buss, 1987). This would help us better understand
+the degree to which repeating layers can be used as a form of interence-time compute.
+
+Limitations
+
+We have given constructions whereby looped transformers can express 𝖭𝖢1\mathsf{NC}^{1}-hard
+problems, though we have not considered looped transformers’ inductive biases and learning
+dynamics, which are also important in practice beyond expressivity. Saunshi et al. (2025)
+empirically study the inductive biases of looped transformers, suggesting looped transformers may
+generalize in ways favorable for reasoning tasks. Our experiments in Section 7 were conducted with
+non-looped transformers. It would be interesting in future work to evaluate how the depth
+requirements change if we enforce that the transformer must re-use the same weights across layers.
+
+References
+
+  • Ai2 (2024) Ai2 OLMo: accelerating the science of language models. In ACL, Cited by: §1, §2.2.
+  • Ba et al. (2016) J. L. Ba, J. R. Kiros, and G. E. Hinton Layer normalization. External Links: 
+    1607.06450, Link Cited by: §2.
+  • Barrington and Thérien (1988) D. A. M. Barrington and D. Thérien Finite monoids and the fine
+    structure of NC1. J. ACM 35 (4), pp. 941–952. External Links: ISSN 0004-5411, Document Cited
+    by: Appendix C.
+  • Barrington and Maciel (2000) D. M. Barrington and A. Maciel Lecture 5: the landscape of
+    complexity classes. Note: Lecture notes. Cited by: §5.
+  • Blelloch (1990) G. E. Blelloch Prefix sums and their applications. Technical report Technical
+    Report CMU-CS-90-190, School of Computer Science, Carnegie Mellon University. Cited by: §4.
+  • Buss (1987) S. R. Buss The Boolean formula value problem is in ALOGTIME. In STOC, pp. 123–131. 
+    External Links: Document Cited by: §8.
+  • Chiang et al. (2023) D. Chiang, P. Cholak, and A. Pillay Tighter bounds on the expressivity of
+    transformer encoders. In ICML, Cited by: §1, §2.2.
+  • DeepSeek AI (2025) DeepSeek AI DeepSeek-R1: incentivizing reasoning capability in LLMs via
+    reinforcement learning. arXiv abs/2501.12948. Cited by: §1, §8.
+  • Dehghani et al. (2019) M. Dehghani, S. Gouws, O. Vinyals, J. Uszkoreit, and L. Kaiser Universal
+    transformers. In ICLR, Cited by: §1, §2.
+  • Geiping et al. (2025) J. Geiping, S. McLeish, N. Jain, J. Kirchenbauer, S. Singh, B. R.
+    Bartoldson, B. Kailkhura, A. Bhatele, and T. Goldstein Scaling up test-time compute with latent
+    reasoning: a recurrent depth approach. ArXiv abs/2502.05171. Cited by: §1, §2.
+  • Greenlaw et al. (1991) R. Greenlaw, H. J. Hoover, and W. L. Ruzzo A compendium of problems
+    complete for P. Technical report Technical Report TR91-11, University of Alberta. External
+    Links: Link Cited by: §8.
+  • Hillis and Steele Jr (1986) W. D. Hillis and G. L. Steele Jr Data parallel algorithms. 
+    Communications of the ACM 29 (12), pp. 1170–1183. Cited by: §4.
+  • Immerman (1998) N. Immerman Descriptive complexity. Springer Science & Business Media. Cited
+    by: §5.
+  • Kazemnejad et al. (2023) A. Kazemnejad, I. Padhi, K. Natesan, P. Das, and S. Reddy The impact
+    of positional encoding on length generalization in transformers. In NeurIPS, Cited by: §2.
+  • Li et al. (2024) Z. Li, H. Liu, D. Zhou, and T. Ma Chain of thought empowers transformers to
+    solve inherently serial problems. In ICLR, Cited by: §6.
+  • Liu et al. (2023) B. Liu, J. T. Ash, S. Goel, A. Krishnamurthy, and C. Zhang Transformers learn
+    shortcuts to automata. In ICLR, Cited by: Appendix C, §1, item 1, item 2, §4, footnote 1.
+  • Merrill et al. (2024) W. Merrill, J. Petty, and A. Sabharwal The illusion of state in
+    state-space models. In ICML, Cited by: Appendix C, Appendix F, §1, §2.2, §4, §7, §7.
+  • Merrill et al. (2022) W. Merrill, A. Sabharwal, and N. A. Smith Saturated transformers are
+    constant-depth threshold circuits. TACL 10, pp. 843–856. Cited by: Appendix E, §2.
+  • Merrill and Sabharwal (2023a) W. Merrill and A. Sabharwal A logic for expressing log-precision
+    transformers. In NeurIPS, Cited by: Appendix E, §2.2.
+  • Merrill and Sabharwal (2023b) W. Merrill and A. Sabharwal The parallelism tradeoff: limitations
+    of log-precision transformers. TACL 11. Cited by: Appendix E, Appendix E, §1, §1, §2.2, §6.
+  • Merrill and Sabharwal (2024) W. Merrill and A. Sabharwal The expressive power of transformers
+    with chain of thought. In ICLR, Cited by: §A.3, §A.3, item 1, §2, §2.1, §6.
+  • Meta AI (2024) Meta AI The Llama 3 herd of models. arXiv abs/2407.21783. Cited by: §1.
+  • Micikevicius et al. (2018) P. Micikevicius, S. Narang, J. Alben, G. Diamos, E. Elsen, D.
+    Garcia, B. Ginsburg, M. Houston, O. Kuchaiev, G. Venkatesh, and H. Wu Mixed precision training.
+    In ICLR, External Links: Link Cited by: §2.2.
+  • Myhill (1957) J. Myhill Finite automata and the representation of events. WADD Technical Report
+    57, pp. 112–137. Cited by: Appendix C.
+  • OpenAI (2024) OpenAI OpenAI o1 system card. arXiv abs/2412.16720. Cited by: §1, §8.
+  • Petty et al. (2024) J. Petty, S. Steenkiste, I. Dasgupta, F. Sha, D. Garrette, and T. Linzen 
+    The impact of depth on compositional generalization in transformer language models. In NAACL, 
+    Cited by: §6.
+  • Pfau et al. (2024) J. Pfau, W. Merrill, and S. R. Bowman Let’s think dot by dot: hidden
+    computation in transformer language models. In COLM, External Links: Link Cited by: §6, Theorem
+    3.
+  • Reingold (2008) O. Reingold Undirected connectivity in log-space. J. ACM 55 (4). External
+    Links: ISSN 0004-5411, Document Cited by: §5.
+  • Ruzzo (1981) W. L. Ruzzo On uniform circuit complexity. Journal of Computer and System Sciences
+    22 (3), pp. 365–383. External Links: ISSN 0022-0000, Document, Link Cited by: §8.
+  • Sanford et al. (2024) C. Sanford, B. Fatemi, E. Hall, A. Tsitsulin, M. Kazemi, J. Halcrow, B.
+    Perozzi, and V. Mirrokni Understanding transformer reasoning capabilities via graph algorithms.
+    In NeurIPS, Cited by: §5.
+  • Saunshi et al. (2025) N. Saunshi, N. Dikkala, Z. Li, S. Kumar, and S. J. Reddi Reasoning with
+    latent thoughts: on the power of looped transformers. In ICLR, Cited by: Limitations, footnote
+    5.
+  • Strobl et al. (2024) L. Strobl, D. Angluin, D. Chiang, J. Rawski, and A. Sabharwal Transformers
+    as transducers. arXiv abs/2404.02040. Cited by: §3.
+  • Thérien (1981) D. Thérien Classification of finite monoids: the language approach. Theoretical
+    Computer Science 14 (2), pp. 195–208. External Links: ISSN 0304-3975, Document, Link Cited by:
+    Appendix C.
+  • Venkateswaran (1991) H. Venkateswaran Properties that characterize LOGCFL. Journal of Computer
+    and System Sciences 43 (2), pp. 380–404. External Links: ISSN 0022-0000, Document, Link Cited
+    by: §8.
+  • Wei et al. (2022) J. Wei, X. Wang, D. Schuurmans, M. Bosma, brian ichter, F. Xia, E. H. Chi, Q.
+    V. Le, and D. Zhou Chain of thought prompting elicits reasoning in large language models. In 
+    NeurIPS, Cited by: §1.
+  • Xiong et al. (2020) R. Xiong, Y. Yang, D. He, K. Zheng, S. Zheng, H. Zhang, Y. Lan, L. Wang,
+    and T. Liu On layer normalization in the transformer architecture. External Links: Link Cited
+    by: item 2.
+  • Yang et al. (2025) A. Yang, M. Cadilhac, and D. Chiang Knee-deep in C-RASP: a transformer depth
+    hierarchy. External Links: 2506.16055, Link Cited by: §2.2.
+  • Yang et al. (2024) L. Yang, K. Lee, R. D. Nowak, and D. Papailiopoulos Looped transformers are
+    better at learning learning algorithms. In ICLR, Cited by: §1, §2.
+  • Zhang and Sennrich (2019) B. Zhang and R. Sennrich Root mean square layer normalization. In 
+    NeurIPS, Cited by: §2.
+
+Appendix A Building Blocks
+
+A.1 Residual Stream Storage Interface
+
+Our masked pre-norm transformer architecture always normalizes values when reading them from the
+residual stream. This means that it’s not always the case that what’s added to the residual stream
+by one layer is accessible as-is in future layers, which can be problematic if there is a need to
+“erase” that value. We discuss how values are stored and, if needed, erased from the stream.
+
+For any general scalar zz, storing zz in the residual stream results in sgn​(z)\textrm{sgn}(z)
+being retrieved when masked pre-norm is applied to this cell. This will be useful when we want to
+collapse multiple values or perform equality or threshold checks. As a special case, when z∈
+{−1,0,1}z\in\{-1,0,1\}, the retrieved value after masked pre-norm is precisely zz. Thus scalars in
+{−1,0,1}\{-1,0,1\} can be stored and retrieved without any information loss.
+
+In order to retrieve a value zz with masked pre-norm (rather than just its sign), we can instead
+represent zz as a 4-dimensional vector ψ⁡(z)=⟨z,1,−z,−1⟩\psi(z)=\langle z,1,-z,-1\rangle. Then,
+pre-norm masked to only this vector will return ϕ⁡(z)=1/2⋅ψ⁡(z)/z2+1\phi(z)=1/\sqrt{2}\cdot\psi(z)/
+\sqrt{z^{2}+1}. Scalars zz stored as ψ⁡(z)\psi(z) or ϕ⁡(z)\phi(z) in the residual stream can be
+trivially retrieved as ϕ⁡(z)\phi(z) by masked pre-norm:
+
+Lemma 2.
+
+There exists a masked pre-norm ν\nu such that, if ϕ⁡(z)\phi(z) or ψ⁡(z)\psi(z) is stored in 𝐡\
+mathbf{h}, ν⁡(𝐡)=ϕ⁡(z)\nu(\mathbf{h})=\phi(z).
+
+Furthermore, a single masked pre-norm can even be used to retrieve multiple scalars stored in the
+residual stream. Since ϕ⁡(z)\phi(z) is a unit-norm vector, this is a consequence of the following
+lemma:
+
+Lemma 3.
+
+There exists a masked pre-norm ν\nu such that, if 𝐡\mathbf{h} stores unit-norm vectors ϕ1,…,ϕk\phi_
+{1},\ldots,\phi_{k}, then ν⁡(𝐡)=⟨ϕ1,…​ϕk⟩\nu(\mathbf{h})=\langle\phi_{1},\ldots\phi_{k}\rangle.
+
+Proof.
+
+We apply the mask to focus on the positions where ϕ1,…,ϕk\phi_{1},\ldots,\phi_{k} are stored. Then,
+the masked pre-norm outputs
+
+ 12​k​⟨ϕ1,…,ϕk⟩.\frac{1}{\sqrt{2k}}\langle\phi_{1},\ldots,\phi_{k}\rangle.
+
+We can hardcode the scalar multiplier of layer-norm to remove the scalar factor, or, equivalently,
+bake it into the next linear transformation. Either way, we are able to retrieve the concatenation
+of ϕ1,…,ϕk\phi_{1},\ldots,\phi_{k} as input to the layer. ∎
+
+The following establishes that we can compute numerical values zz with attention heads and make
+them accessible as ϕ⁡(z)\phi(z) in later layers:
+
+Lemma 4.
+
+Let zz be a scalar computable by an attention head from residual stream 𝐡\mathbf{h}. There exist
+two layers producing residual streams 𝐡′,𝐡′′\mathbf{h}^{\prime},\mathbf{h}^{\prime\prime} such that
+
+ 1. 1.
+   
+    ϕ⁡(z)\phi(z) can be read via masked pre-norm from 𝐡′\mathbf{h}^{\prime} or 𝐡′′\mathbf{h}^{\
+    prime\prime}.
+
+ 2. 2.
+   
+    ϕ⁡(z)\phi(z) is stored in 𝐡′′\mathbf{h}^{\prime\prime} at (formerly blank) indices II.
+
+Proof.
+
+The first layer computes zz and stores ψ⁡(z)\psi(z) at blank indices II in the residual stream,
+producing 𝐡′\mathbf{h}^{\prime}. Thus, the second layer can read ϕ⁡(z)\phi(z) with masked pre-norm
+via Lemma 2 and can also recompute zz from 𝐡\mathbf{h}, which is a subspace of 𝐡′\mathbf{h}^{\
+prime}. At this point, it outputs −ψ⁡(z)+ϕ⁡(z)-\psi(z)+\phi(z) at indices II, which leads to 𝐡′′\
+mathbf{h}^{\prime\prime} storing ϕ⁡(z)\phi(z) at II. ∎
+
+A.2 Clearing Stored Values
+
+In the repeated layers of a universal transformer, we will need to overwrite the values stored at
+particular indices in the residual stream. That is, if [𝐡]I=𝐱[\mathbf{h}]_{I}=\mathbf{x}, it will
+be useful to produce 𝐡′\mathbf{h}^{\prime} such that [𝐡′]I=𝐲[\mathbf{h}^{\prime}]_{I}=\mathbf{y}
+instead. The following lemmas will help implement constructions of this form.
+
+Lemma 5.
+
+If a unit-norm vector ϕ\phi is stored in 𝐡\mathbf{h} at II, there exists a feedforward sub-layer
+that removes ϕ\phi, i.e., produces 𝐡′\mathbf{h}^{\prime} such that [𝐡′]i=0→[\mathbf{h}^{\prime}]_
+{i}=\vec{0}.
+
+Proof.
+
+The layer reads ϕ\phi via masked pre-norm and writes −ϕ-\phi to 𝐡\mathbf{h} at II, setting [𝐡]I=ϕ−ϕ
+=0→[\mathbf{h}]_{I}=\phi-\phi=\vec{0}. ∎
+
+Combining Lemma 5 with a parallel layer that stores some new value at II, we see that we can
+effectively overwrite values at II rather than just deleting them.
+
+It is also possible to remove information that is not a unit-norm vector, although the construction
+is less direct.
+
+Lemma 6.
+
+Let δ\delta be the output of a transformer layer on 𝐡\mathbf{h}, targeted to indices II at which 𝐡\
+mathbf{h} is blank. Then there exists another transformer layer that resets the residual stream 𝐡′=
+𝐡+δ\mathbf{h}^{\prime}=\mathbf{h}+\delta to 𝐡\mathbf{h}.
+
+Proof.
+
+The second layer is a copy of the initial layer that considers the subvector 𝐡\mathbf{h} of 𝐡′\
+mathbf{h}^{\prime} as its input and where all signs are flipped. Thus, it outputs −δ-\delta, which
+guarantees that the final residual stream is 𝐡′′=𝐡+δ−δ=𝐡\mathbf{h}^{\prime\prime}=\mathbf{h}+\
+delta-\delta=\mathbf{h}. ∎
+
+A.3 Computing Position Offsets
+
+It will be useful to show how a transformer can compute the position index of the previous token.
+
+Lemma 7.
+
+For a fixed value kk, assume that at each position ii, a transformer stores 𝟙[i=0]\mathbbm{1}[i=0]
+and 𝟙[i<k]\mathbbm{1}[i<k] in the residual stream. Then, there exists a layer that adds ϕ⁡(i−k)\phi
+(i-k) to the residual stream at token indices i≥ki\geq k.
+
+Proof.
+
+We construct two attention heads. The first head is uniform with value jj as 𝟙[j=0]\mathbbm{1}[j=
+0]. Thus, the head computes h1=1/ih_{1}=1/i. The second head is uniform with value jj as 𝟙[j≥k]\
+mathbbm{1}[j\geq k], and thus computes h2=(i−k)/ih_{2}=(i-k)/i. We then use a feedforward layer to
+compute:
+
+ ϕ⁡(h1,h2)=ϕ⁡(i−ki,1i)=ϕ⁡(i−k).\phi(h_{1},h_{2})=\phi(\frac{i-k}{i},\frac{1}{i})=\phi(i-k).
+
+The resulting value is then written to the residual stream. ∎
+
+The precondition that we can identify the initial token [Merrill and Sabharwal, 2024, cf.] is easy
+to meet with any natural representation of position, including 1/i1/i or ϕ⁡(i)\phi(i), as we can
+simply compare the position representation against some constant.
+
+We assume that the positional encodings used by the model allow detecting the initial token [
+Merrill and Sabharwal, 2024]. One way to enable this would simply be to add a beginning-of-sequence
+token, although most position embeddings should also enable it directly.
+
+A.4 Equality Checks
+
+We show how to perform an equality check between two scalars and store the output as a boolean.
+
+Lemma 8.
+
+Given two scalars x,yx,y computable by attention heads or stored in the residual stream, we can use
+a single transformer layer to write 𝟙[x=y]\mathbbm{1}[x=y] in the residual stream. Furthermore, a
+second layer can be used to clear all intermediate values.
+
+Proof.
+
+After computing x,yx,y in a self-attention layer, we write x−yx-y to a temporary cell in the
+residual stream. The feedforward sublayer reads σ1=sgn⁡(x−y)\sigma_{1}=\mathrm{sgn}(x-y), computes
+z=1−ReLU⁡(σ1)−ReLU⁡(−σ1)z=1-\mathrm{ReLU}(\sigma_{1})-\mathrm{ReLU}(-\sigma_{1}), and writes zz to
+the residual stream.
+
+The next transformer layer then recomputes y−xy-x and adds it to the intermediate memory cell,
+which sets it back to 0. Thus, the output is correct and intermediate memory is cleared. ∎
+
+Appendix B Correctness of Division Construction Attention Heads
+
+The proof of Lemma 1 presents the full construction to implement division in a transformer. For
+space, we omitted a full proofs of correctness for attention heads in the construction, which we
+now present. We expect some of these techniques could be reused, though we have not stated them as
+generally as the gadgets in Appendix A.
+
+Lemma 9 (First Layer of Lemma 1).
+
+Let hi1h^{1}_{i} be an attention head computed with query qi=ϕ⁡(i/m)q_{i}=\phi(i/m) and keys/values
+kj=vj=ϕ⁡(j)k_{j}=v_{j}=\phi(j). Let ei=𝕀⁡(hi1=ϕ⁡(i/m))e_{i}=\mathbb{I}(h_{i}^{1}=\phi(i/m)). Then
+ei=1e_{i}=1 if and only if ii is a multiple of mm. Furthermore, if ei=1e_{i}=1, then hi1=ϕ⁡(i/m)h^
+{1}_{i}=\phi(i/m).
+
+Proof.
+
+Suppose first that ii is a multiple of mm. In this case, there exists a position j∗≤ij^{*}\leq i
+such that i=m​j∗i=mj^{*}, which means the query qi=ϕ⁡(i/m)=ϕ⁡(j∗)q_{i}=\phi(i/m)=\phi(j^{*})
+exactly matches the key kj∗k_{j^{*}}. The head will thus return vj∗=ϕ⁡(j∗)=ϕ⁡(i/m)v_{j^{*}}=\phi(j^
+{*})=\phi(i/m), representing precisely the quotient i/mi/m. Further, the equality check will pass,
+making ei=1e_{i}=1. The layer thus behaves as intended when ii is a multiple of mm.
+
+On the other hand, when ii is not a multiple of mm, no such j∗j^{*} exists. The head will instead
+attend to some jj for which i≠m​ji\neq mj and therefore ϕ⁡(i/m)≠ϕ⁡(j)\phi(i/m)\neq\phi(j), making
+the subsequent equality check fail and setting ei=0e_{i}=0, as intended. ∎
+
+Lemma 10 (Second Layer of Lemma 1).
+
+Let hi2h^{2}_{i} be an attention head computed with qi=⟨1,1⟩q_{i}=\langle 1,1\rangle, key kj=⟨ej,
+[ϕ⁡(j)]0⟩k_{j}=\langle e_{j},[\phi(j)]_{0}\rangle, and value vj=hj1v_{j}=h^{1}_{j}. Then hi2=ϕ⁡(⌊i/
+m⌋)h^{2}_{i}=\phi(\lfloor i/m\rfloor) .
+
+Proof.
+
+By construction, qi⋅kj=ej−[ϕ⁡(j)]0q_{i}\cdot k_{j}=e_{j}-[\phi(j)]_{0} where [ϕ⁡(j)]0=j/2​j2+2[\phi
+(j)]_{0}=j/\sqrt{2j^{2}+2} is the first coordinate of ϕ⁡(j)\phi(j). Note that [ϕ⁡(j)]0∈[0,1)[\phi
+(j)]_{0}\in[0,1) for positions j≤ij\leq i and that it is monotonically increasing in jj. It follows
+that the dot product is maximized at the largest j≤ij\leq i such that ej=1e_{j}=1, i.e., at the
+largest j≤ij\leq i that is a multiple of mm. This jj has the property that ⌊i/m⌋=j/m\lfloor i/m\
+rfloor=j/m. Thus, the head at this layer attends solely to this jj. Recall that the value vjv_{j}
+at this position is hj1=ϕ⁡(j/m)=ϕ⁡(⌊i/m⌋)h^{1}_{j}=\phi(j/m)=\phi(\lfloor i/m\rfloor). ∎
+
+Lemma 11 (Fifth Layer of Lemma 1).
+
+Let hi5h^{5}_{i} be an attention head computed with query qi=⟨ϕ⁡(⌊i/m⌋),1⟩q_{i}=\langle\phi(\lfloor
+i/m\rfloor),1\rangle, key kj=⟨ϕ⁡(⌊j/m⌋),bj1⟩k_{j}=\langle\phi(\lfloor j/m\rfloor),b^{1}_{j}\rangle,
+and value vj=1−bj2v_{j}=1-b^{2}_{j}. Then hi5=ϕ⁡(imodm)h^{5}_{i}=\phi(i\bmod m).
+
+Proof.
+
+The query-key product achieves its upper bound of 2 exactly when two conditions hold: ⌊i/m⌋=⌊j/m⌋\
+lfloor i/m\rfloor=\lfloor j/m\rfloor and bj1=1b^{1}_{j}=1. Thus, the head attends from ii to all
+j≤ij\leq i that store the same quotient as ii and also have bj1=1b^{1}_{j}=1. To make this clearer,
+let’s write ii as i=b′​m+c′i=b^{\prime}m+c^{\prime} for some c′<mc^{\prime}<m. The query-key dot
+product is then maximized precisely at the c′c^{\prime} positions jj in {b′​m+1,b′​m+2,…,b′​m+c′}\
+{b^{\prime}m+1,b^{\prime}m+2,\ldots,b^{\prime}m+c^{\prime}\}, for all of which ⌊j/m⌋=⌊i/m⌋=b′\
+lfloor j/m\rfloor=\lfloor i/m\rfloor=b^{\prime}; note that b′​mb^{\prime}m is not included in this
+list as bj1=0b^{1}_{j}=0 when j=b′​mj=b^{\prime}m. Of these positions, only b′​m+1b^{\prime}m+1 has
+the property that the quotient there is not the same as the quotient two position earlier, as
+captured by the value vj=1−bj2v_{j}=1-b^{2}_{j}. Thus, the value vjv_{j} is 11 among these
+positions only at j=b′​m+1j=b^{\prime}m+1, and 0 elsewhere.
+
+Assuming mm does not divide ii, c′>0c^{\prime}>0 and the head attends uniformly at c′c^{\prime}
+positions, returning 1/c′1/c^{\prime} as the head output. By construction, c′=i−b′​m=imodmc^{\
+prime}=i-b^{\prime}m=i\bmod m. The layer adds the vector ψ⁡(1,1/c′)\psi(1,1/c^{\prime}) defined as
+⟨1,1/c′,−1,−1/c′⟩\langle 1,1/c^{\prime},-1,-1/c^{\prime}\rangle to the residual stream at position
+ii. This, when read in the next layer using masked pre-norm, will yield ϕ⁡(1,1/c′)=ϕ⁡(c′)=ϕ⁡(imodm)
+\phi(1,1/c^{\prime})=\phi(c^{\prime})=\phi(i\bmod m).
+
+On the other hand, if mm does divide ii (which can be checked with a separate, parallel head), we
+write ψ⁡(0)\psi(0) to the residual stream, which, when read by the next layer, will yield ϕ⁡(0)=ϕ⁡
+(imodm)\phi(0)=\phi(i\bmod m). ∎
+
+Appendix C Regular Language Recognition Proof
+
+See 1
+
+Proof.
+
+Regular language recognition can be framed as multiplying a sequence of elements in the automaton’s
+transition monoid [Myhill, 1957, Thérien, 1981]. It thus suffices to show how nn elements in a
+finite monoid can be multiplied with Θ⁡(log⁡n)\Theta(\log n) depth. We show how a log-depth
+universal transformer can implement the standard binary tree construction [Barrington and Thérien,
+1988, Liu et al., 2023, Merrill et al., 2024] where each level multiplies two items, meaning the
+overall depth is Θ⁡(log⁡|w|)\Theta(\log\lvert w\rvert). We will represent a tree over the input
+tokens within the transformer. Each level of the tree will take 8 transformer layers. We define a
+notion of active tokens: at level 0, all tokens are active, and, at level ℓ\ell, tokens at t⋅2ℓ−1t\
+cdot 2^{\ell}-1 for any tt will remain active, and all other tokens will be marked as inactive. As
+an invariant, active token i=t⋅2ℓ−1i=t\cdot 2^{\ell}-1 in level ℓ\ell will store a unit-norm vector
+δiℓ\delta^{\ell}_{i} that represents the cumulative product of tokens from i−2ℓ+1i-2^{\ell}+1 to
+ii.
+
+We now proceed by induction over ℓ\ell, defining the behavior of non-$ tokens at layers that make
+up level ℓ\ell. The current group element δiℓ\delta^{\ell}_{i} stored at active token ii is, by
+inductive assumption, the cumulative product from i−2ℓ+1i-2^{\ell}+1 to ii. Let αiℓ\alpha^{\ell}_
+{i} denote that token ii is active. By Lemma 7 we use a layer to store i−1i-1 at token ii. The next
+layer attends with query ϕ⁡(i−1)\phi(i-1), key ϕ⁡(j)\phi(j), and value δjℓ\delta^{\ell}_{j} to
+retrieve δi−1ℓ\delta^{\ell}_{i-1}, the group element stored at the previous token. Finally, another
+layer attends with query 1→\vec{1}, key ⟨ϕ​(j)1,αiℓ⟩\langle\phi(j)_{1},\alpha^{\ell}_{i}\rangle,
+and value δj−1ℓ\delta^{\ell}_{j-1} to retrieve the group element δj∗ℓ\delta^{\ell}_{j^{*}} stored
+at the previous active token, which represents the cumulative product from i−2⋅2ℓ+1i-2\cdot 2^{\
+ell}+1 to i−2ℓi-2^{\ell}. Next, we will use two layers to update δiℓ←δiℓ+1\delta^{\ell}_{i}\
+leftarrow\delta^{\ell+1}_{i} and δjℓ←0→\delta^{\ell}_{j}\leftarrow\vec{0}, which is achieved as
+follows. First, we assert there exists a single feedforward layer that uses a table lookup to
+compute δj∗ℓ,δiℓ↦d\delta^{\ell}_{j^{*}},\delta^{\ell}_{i}\mapsto d such that d/∥d∥=δj∗ℓ⋅δiℓ=δiℓ+1d/
+\lVert d\rVert=\delta^{\ell}_{j^{*}}\cdot\delta^{\ell}_{i}=\delta^{\ell+1}_{i}. Next, we invoke
+Lemma 6 to construct a layer that adds dd to an empty cell of the residual stream and then another
+layer that deletes it. This second layer can now read both δiℓ,δj∗ℓ\delta^{\ell}_{i},\delta^{\ell}_
+{j^{*}} and δiℓ+1\delta^{\ell+1}_{i} (from dd) as input, and we modify it to add δiℓ+1−δiℓ\delta^{\
+ell+1}_{i}-\delta^{\ell}_{i} to δiℓ\delta^{\ell}_{i}, changing its value to δiℓ+1\delta^{\ell+1}_
+{i}. Similarly, we modify it to add −δj∗ℓ-\delta^{\ell}_{j^{*}} to δj∗ℓ\delta^{\ell}_{j^{*}} to set
+it to 0. A feedforward network then subtracts δiℓ\delta^{\ell}_{i} from the residual stream and
+adds δiℓ⋅δjℓ\delta^{\ell}_{i}\cdot\delta^{\ell}_{j}. This requires at most 4 layers.
+
+To determine activeness in layer ℓ+1\ell+1, each token ii attends to its left to compute ci/ic_{i}/
+i, where cic_{i} is the prefix count of active tokens, inclusive of the current token. We then
+compute ϕ⁡(ci/i,1/i)=ϕ⁡(ci)\phi(c_{i}/i,1/i)=\phi(c_{i}) and store cic_{i} it temporarily in the
+residual stream. At this point, we use Lemma 1 to construct 7 layers that compute cimod2c_{i}\bmod
+2 with no storage overhead. The current token is marked as active in layer ℓ+1\ell+1 iff ci=0mod2c_
+{i}=0\mod 2, which is equivalent to checking whether i=t⋅2ℓ−1i=t\cdot 2^{\ell}-1 for some tt. In
+addition to updating the new activeness αiℓ+1\alpha^{\ell+1}_{i}, we also persist store the
+previous activeness αiℓ\alpha^{\ell}_{i} in a separate cell of the residual stream and clear cic_
+{i}. This requires at most 8 layers.
+
+Finally, we describe how to aggregate the cumulative product at the $\$ token, which happens in
+parallel to the behavior at other tokens. Let δ$ℓ\delta^{\ell}_{\$} be a monoid element stored at $
+\$ that is initialized to the identity and will be updated at each layer. Using the previously
+stored value i−1i-1, we can use a layer to compute and store αi−1ℓ\alpha^{\ell}_{i-1} and αi−1ℓ+1\
+alpha^{\ell+1}_{i-1} at each ii. A head then attends with query 1→\vec{1}, key ⟨ϕ​(j)1,10⋅αi−1ℓ⟩\
+langle\phi(j)_{1},10\cdot\alpha^{\ell}_{i-1}\rangle, and value ⟨(1−αj−1ℓ+1)⋅δj−1ℓ+1⟩\langle(1-\
+alpha^{\ell+1}_{j-1})\cdot\delta^{\ell+1}_{j-1}\rangle. This retrieves a value from the previous
+active token jj at level ℓ\ell that is δjℓ\delta^{\ell}_{j} if jj will become inactive at ℓ+1\ell+1
+and 0→\vec{0} otherwise. Iff δjℓ\delta^{\ell}_{j} is retrieved, a feedforward network subtracts δ$ℓ
+\delta^{\ell}_{\$} from the residual stream and adds δjℓ⋅δ$ℓ\delta^{\ell}_{j}\cdot\delta^{\ell}_{\
+$}. This guarantees that whenever a tree is deactivated, its cumulative product is incorporated
+into δ$ℓ\delta^{\ell}_{\$}. Thus, after ℓ=⌈log2⁡|w|⌉+1\ell=\lceil\log_{2}\lvert w\rvert\rceil+1
+levels, δ$ℓ\delta^{\ell}_{\$} will be the transition monoid element for ww. We can use one
+additional layer to check whether this monoid element maps the initial state to an accepting state
+using a finite lookup table. Overall, this can be expressed with 8 layers repeated ⌈log2⁡|w|⌉\lceil
+\log_{2}\lvert w\rvert\rceil times and 9 final layers (to implement the additional step beyond
+⌈log⁡n⌉\lceil\log n\rceil).
+
+Finally, we justify the model size mm and feedforward width ww. To represent a nondeterministic
+monoid element Q→QQ\to Q, which is defined by a matrix in {0,1}|Q|×|Q|\{0,1\}^{\lvert Q\rvert\times
+\lvert Q\rvert}, we must store sNFA=|Q|2s_{\text{NFA}}=\lvert Q\rvert^{2} bits. For a deterministic
+monoid element, we can reduce this to sDFA=|Q|​log⁡|Q|s_{\text{DFA}}=\lvert Q\rvert\log\lvert Q\
+rvert by storing the index of the unique 11 in each row of the matrix. The model size is then m=O⁡
+(s)m=\mathrm{O}(s), which gives:
+
+ mNFA\displaystyle  =O⁡(|Q|2)\displaystyle=\ mDFA\displaystyle  =O⁡(|Q|​log⁡|Q|).\displaystyle=\
+ m_{\textnormal     mathrm{O}(\lvert Q\rvert m_{\textnormal     mathrm{O}(\lvert Q\rvert\log\lvert
+ {NFA}}             ^{2})                    {DFA}}             Q\rvert).
+
+The feedforward network stores a lookup table enumerating all possible values of s2s^{2} bits,
+returning ss bits in each case. This can be represented as long as m=O⁡(s)m=\mathrm{O}(s) and w=O⁡
+(2s2)w=\mathrm{O}(2^{s^{2}}), which gives:
+
+ wNFA\            =O⁡(2|Q|4)\displaystyle= mDFA\            =O⁡(2|Q|2​log2​|Q|).\displaystyle=\
+ displaystyle w_  \mathrm{O}(2^{\lvert Q\  displaystyle m_  mathrm{O}(2^{\lvert Q\rvert^{2}\log^
+ {\textnormal     rvert^{4}})              {\textnormal     {2}\lvert Q\rvert}).
+ {NFA}}                                    {DFA}}
+
+This finishes the proof. ∎
+
+Appendix D Graph Connectivity Proof
+
+See 2
+
+Proof.
+
+We will prove this for directed graphs, as an undirected edge between two vertices can be
+equivalently represented as two directed edges between those vertices. Let GG be a directed graph
+over nn vertices. Let A∈{0,1}n×nA\in\{0,1\}^{n\times n} be GG’s adjacency matrix: for i,j∈{1,…,n}
+i,j\in\{1,\ldots,n\}, Ai,jA_{i,j} is 11 if GG has an edge from ii to jj, and 00 otherwise.
+
+The idea is to use the first n2n^{2} tokens of the transformer to construct binary predicates Bℓ​
+(i,j)B_{\ell}(i,j) for ℓ∈{0,1,…,⌈log⁡n⌉}\ell\in\{0,1,\ldots,\lceil\log n\rceil\} capturing whether
+GG has a path of length at most 2ℓ2^{\ell} from ii to jj. To this end, the transformer will use the
+n3n^{3} padding tokens to also construct intermediate ternary predicates Cℓ​(i,k,j)C_{\ell}(i,k,j)
+for ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\lceil\log n\rceil\} capturing whether GG has paths of length
+at most 2ℓ−12^{\ell-1} from ii to kk and from kk to jj. These two series of predicates are computed
+from each other iteratively, as in standard algorithms for graph connectivity:
+
+ B0​(i,j)\displaystyle B_{0}(i,j) ⇔A⁡(i,j)∨i=j\displaystyle\iff A(i,j)\ \vee\ i=j               (4)
+ Cℓ+1​(i,k,j)\displaystyle C_{\   ⇔Bℓ​(i,k)∧Bℓ​(k,j)\displaystyle\iff B_{\ell}(i,k)\wedge B_{\  (5)
+ ell+1}(i,k,j)                    ell}(k,j)
+ Bℓ+1​(i,j)\displaystyle B_{\     ⇔∃k​s.t.​Cℓ+1​(i,k,j)\displaystyle\iff\exists k\;\textrm      (6)
+ ell+1}(i,j)                      {s.t.}\;C_{\ell+1}(i,k,j)
+
+We first argue that B⌈log⁡n⌉​(i,j)=1B_{\lceil\log n\rceil}(i,j)=1 if and only if GG has a path from
+ii to jj. Clearly, there is such a path if and only if there is a “simple path” of length at most
+nn from ii to jj. To this end, we argue by induction over ℓ\ell that Bℓ​(i,j)=1B_{\ell}(i,j)=1 if
+an only if GG has a path of length at most 2ℓ2^{\ell} from ii to jj. For the base case of ℓ=0\ell=
+0, by construction, B0​(i,j)=1B_{0}(i,j)=1 if and only if either i=ji=j (which we treat as a path
+of length 00) or Ai,j=1A_{i,j}=1 (i.e., there is a direct edge from ii to jj). Thus, Bℓ​(i,j)=1B_{\
+ell}(i,j)=1 if and only if there is a path of length at most 20=12^{0}=1 from ii to jj. Now suppose
+the claim holds for Bℓ​(i,j)B_{\ell}(i,j). By construction, Cℓ+1​(i,k,j)=1C_{\ell+1}(i,k,j)=1 if
+and only if Bℓ​(i,k)=Bℓ​(k,j)=1B_{\ell}(i,k)=B_{\ell}(k,j)=1, which by induction means there are
+paths of length at most 2ℓ2^{\ell} from ii to kk and from kk to jj, which in turn implies that
+there is a path of length at most 2⋅2ℓ=2ℓ+12\cdot 2^{\ell}=2^{\ell+1} from ii to jj (through kk).
+Furthermore, note conversely that if there is a path of length at most 2ℓ+12^{\ell+1} from ii to
+jj, then there must exist a “mid-point” kk in this path such that there are paths of length at most
+2ℓ2^{\ell} from ii to kk and from kk to jj, i.e., Cℓ+1​(i,k,j)=1C_{\ell+1}(i,k,j)=1 for some kk.
+This is precisely what the definition of Bℓ+1​(i,j)B_{\ell+1}(i,j) captures: it is 11 if and only
+if there exists a kk such that Cℓ+1​(i,k,j)=1C_{\ell+1}(i,k,j)=1, which, as argued above, holds if
+and only if there is a path of length at most 2ℓ+12^{\ell+1} from ii to jj. This completes the
+inductive step.
+
+The crucial part is to construct a transformer that correctly operationalizes the computation of
+predicates BℓB_{\ell} and CℓC_{\ell}. The input to the transformer is the adjacency matrix AA
+represented using n2n^{2} tokens from {0,1}\{0,1\}, followed by n3n^{3} padding tokens □\square,
+and finally the source and target nodes s,t∈{1,…,n}s,t\in\{1,\ldots,n\} represented in unary
+notation using special tokens aa and bb:
+
+ A1,1​…​A1,n​A2,1​…​A2,n​…​…​An,1​…​An,n​□​…​…​…​□⏟n3​a​…​…​a⏟s​b​…​…​b⏟t\displaystyle A_{1,1}\
+ ldots A_{1,n}\ A_{2,1}\ldots A_{2,n}\ \ldots\ldots\ A_{n,1}\ldots A_{n,n}\ \underbrace{\square\
+ ldots\ldots\ldots\square}_{n^{3}}\ \underbrace{a\ldots\ldots a}_{s}\ \underbrace{b\ldots\ldots b}
+ _{t}
+
+Let N=n2+n3+s+tN=n^{2}+n^{3}+s+t, the length of the input to the transformer. The first n2n^{2}
+token positions will be used to compute predicates BℓB_{\ell}, while the next n3n^{3} token
+positions will be used for predicates CℓC_{\ell}.
+
+Initial Layers.
+
+The transformer starts off by using layer 1 to store 1/N,n,n2,s,1/N,n,n^{2},s, and tt in the
+residual stream at every position, as follows. The layer uses one head with uniform attention and
+with value 11 only at the first token (recall that the position embedding is assumed to separate 1
+from other positions). This head computes 1/N1/N and the layer adds ψ⁡(1/N)\psi(1/N) to the
+residual stream. Note that the input tokens in the first set of n2n^{2} positions, namely 00 and
+11, are distinct from tokens in the rest of the input. The layer, at every position, uses a second
+head with uniform attention, and with value 11 at tokens in {0,1}\{0,1\} and value 00 at all other
+tokens. This head computes n2/Nn^{2}/N. The layer now adds ψ⁡(n2/N,1/N)\psi(n^{2}/N,1/N), where ψ⁡
+(a,b)\psi(a,b) is defined as the (unnormalized) vector ⟨a,b,−a,−b⟩\langle a,b,-a,-b\rangle. When
+these coordinates are later read from the residual stream via masked pre-norm, they will get
+normalized and one would obtain ϕ⁡(n2/N,1/N)=ϕ⁡(n2)\phi(n^{2}/N,1/N)=\phi(n^{2}). Thus, future
+layers will have access to ϕ⁡(n2)\phi(n^{2}) through the residual stream. The layer similarly uses
+three additional heads to compute n3/Nn^{3}/N, s/Ns/N, and t/Nt/N. From the latter two values, it
+computes ψ⁡(s/N,1/N)\psi(s/N,1/N) and ψ⁡(t/N,1/N)\psi(t/N,1/N) and adds them to the residual
+stream; as discussed above, these can be read in future layers as ϕ⁡(s/N,1/N)=ϕ⁡(s)\phi(s/N,1/N)=\
+phi(s) and ϕ⁡(t/N,1/N)=ϕ⁡(t)\phi(t/N,1/N)=\phi(t). Finally, the layer computes ψ⁡(n3/N,n2/N)\psi(n^
+{3}/N,n^{2}/N) and adds it to the residual stream. Again, this will be available to future layers
+as ϕ⁡(n3/N,n2/N)=ϕ⁡(n)\phi(n^{3}/N,n^{2}/N)=\phi(n).
+
+The transformer uses the next 15 layers to compute and store in the residual stream the semantic
+“coordinates” of each of the first n2+n3n^{2}+n^{3} token position as follows. For each of the
+first n2n^{2} positions p=i​n+jp=in+j with 1≤p≤n21\leq p\leq n^{2}, it uses Lemma 1 (7 layers) with
+aia_{i} set to pp and mm set nn in order to add ϕ⁡(i)\phi(i) and ϕ⁡(j)\phi(j) to the residual
+stream at position pp. In parallel, for each of the next n3n^{3} positions p=n2+(i​n2+k​n+j)p=n^{2}
++(in^{2}+kn+j) with n2+1≤p≤n2+n3n^{2}+1\leq p\leq n^{2}+n^{3}, it uses Lemma 1 with aia_{i} set to
+pp and mm set nn in order to add ϕ⁡((i+1)​n+k)\phi((i+1)n+k) and ϕ⁡(j)\phi(j) to the residual
+stream. It then uses the lemma again (7 more layers), this time with aia_{i} set to (i+1)​n+k(i+1)
+n+k and mm again set to nn, to add ϕ⁡(i+1)\phi(i+1) and ϕ⁡(k)\phi(k) to the residual stream.
+Lastly, it uses Lemma 7 applied to ϕ⁡(i+1)\phi(i+1) to add ϕ⁡(i)\phi(i) to the residual stream.
+
+Layer 17 of the transformer computes the predicate B0​(i,j)B_{0}(i,j) at the first n2n^{2} token
+positions as follows. At position p=i​n+jp=in+j, it uses Lemma 8 to compute 𝕀⁡(ϕ⁡(A⁡(i,j)=ϕ⁡(1))
+CLOSE\mathbb{I}(\phi(A(i,j)=\phi(1)) and 𝕀⁡(ϕ⁡(i)=ϕ⁡(j))\mathbb{I}(\phi(i)=\phi(j)); note that ϕ⁡
+(A⁡(i,j))\phi(A(i,j)), ϕ⁡(i)\phi(i), and ϕ⁡(j)\phi(j) are available in the residual stream at
+position pp. It then uses a feedforward layer to output 11 if both of these are 11, and output 00
+otherwise. This is precisely the intended value of B0​(i,j)B_{0}(i,j). The sublayer then adds B0​
+(i,j)B_{0}(i,j) to the residual stream. The layer also adds to the residual stream the value 11,
+which will be used to initialize the boolean that controls layer alternation in the repeated layers
+as discussed next.
+
+Repeating Layers.
+
+The next set of layers alternates between computing the CℓC_{\ell} and the BℓB_{\ell} predicates
+for ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\lceil\log n\rceil\}. To implement this, each position ii at
+layer updates in the residual stream the value of a single boolean rr computed as follows. rr is
+initially set to 11 at layer 8. Each repeating layer retrieves rr from the residual stream and adds
+1−r1-r to the same coordinate in the residual stream. The net effect is that the value of rr
+alternates between 11 and 00 at the repeating layers. The transformer uses this to alternate
+between the computation of the CℓC_{\ell} and the BℓB_{\ell} predicates.
+
+For ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\lceil\log n\rceil\}, layer (2​ℓ−1)+8(2\ell-1)+8 of the
+transformer computes the predicate Cℓ​(i,k,j)C_{\ell}(i,k,j) at the set of n3n^{3} (padding)
+positions p=n2+i​n2+k​n+jp=n^{2}+in^{2}+kn+j, as follows. It uses two heads, one with query ⟨ϕ⁡
+(i),ϕ⁡(k)⟩\langle\phi(i),\phi(k)\rangle and the other with query ⟨ϕ⁡(k),ϕ⁡(j)⟩\langle\phi(k),\phi
+(j)\rangle. The keys in the first n2n^{2} positions q=i′​n+j′q=i^{\prime}n+j^{\prime} are set to
+⟨ϕ⁡(i′),ϕ⁡(j′)⟩\langle\phi(i^{\prime}),\phi(j^{\prime})\rangle, and the values are set to Bℓ−1​
+(i′,j′)B_{\ell-1}(i^{\prime},j^{\prime}). The two heads thus attend solely to positions with
+coordinates (i,k)(i,k) and (k,j)(k,j), respectively, and retrieve boolean values Bℓ−1​(i,k)B_{\
+ell-1}(i,k) and Bℓ−1​(k,j)B_{\ell-1}(k,j), respectively, stored there in the previous layer. The
+layer then uses Lemma 8 to compute 𝕀⁡(Bℓ−1​(i,k)=1)\mathbb{I}(B_{\ell-1}(i,k)=1) and 𝕀⁡(Bℓ−1​(k,j)=
+1)\mathbb{I}(B_{\ell-1}(k,j)=1), and uses a feedforward layer to output 11 if both of these checks
+pass, and output 00 otherwise. This is precisely the intended value of Cℓ​(i,k,j)C_{\ell}(i,k,j).
+If ℓ>1\ell>1, the layer replaces the value Cℓ−1​(i,k,j)C_{\ell-1}(i,k,j) stored previously in the
+residual stream with the new boolean value Cℓ​(i,k,j)C_{\ell}(i,k,j) by adding Cℓ​(i,k,j)−Cℓ−1​
+(i,k,j)C_{\ell}(i,k,j)-C_{\ell-1}(i,k,j) to the same coordinates of the residual stream. If ℓ=1\ell
+=1, it simply adds Cℓ​(i,k,j)C_{\ell}(i,k,j) to the residual stream.
+
+For ℓ∈{1,…,⌈log⁡n⌉}\ell\in\{1,\ldots,\lceil\log n\rceil\}, layer 2​ℓ+82\ell+8 computes the
+predicate Bℓ​(i,j)B_{\ell}(i,j) at the first n2n^{2} positions p=i​n+jp=in+j, as follows. It uses a
+head with query ⟨ϕ⁡(i),ϕ⁡(j)⟩\langle\phi(i),\phi(j)\rangle. The keys in the second set of n3n^{3}
+positions q=n2+i′​n2+k′​n+j′q=n^{2}+i^{\prime}n^{2}+k^{\prime}n+j^{\prime} are set to ⟨ϕ⁡(i′),ϕ⁡
+(j′)⟩\langle\phi(i^{\prime}),\phi(j^{\prime})\rangle (recall that ϕ⁡(i′)\phi(i^{\prime}) and ϕ⁡(j′)
+\phi(j^{\prime}) are available in the residual stream at qq) and the corresponding values are set
+to the boolean Cℓ​(i′,k′,j′)C_{\ell}(i^{\prime},k^{\prime},j^{\prime}), stored previously in the
+residual stream. The head thus attends uniformly to the nn padding positions that have coordinates
+(i,k′,j)(i,k^{\prime},j) for various choices of k′k^{\prime}. It computes the average of their
+values, which equals h=1n​∑k′=1nCℓ​(i,k′,j)h=\frac{1}{n}\sum_{k^{\prime}=1}^{n}C_{\ell}(i,k^{\
+prime},j) as well as 1/(2​n)1/(2n) using an additional head. We observe that h≥1/nh\geq 1/n if
+there exists a k′k^{\prime} such that Cℓ​(i,k′,j)=1C_{\ell}(i,k^{\prime},j)=1, and h=0h=0
+otherwise. These conditions correspond precisely to Bℓ​(i,j)B_{\ell}(i,j) being 11 and 00,
+respectively. We compute h−1/(2​n)h-1/(2n) and store it in the residual stream. Similar to the
+proof of Lemma 8, the feedforward layer reads σ=sgn⁡(h−1/(2​n))\sigma=\mathrm{sgn}(h-1/(2n)),
+computes z=(1+ReLU⁡(σ))/2z=(1+\mathrm{ReLU}(\sigma))/2, and writes zz to the residual stream. The
+value zz is precisely the desired Bℓ​(i,j)B_{\ell}(i,j) as σ\sigma is 11 when h≥1/nh\geq 1/n and 00
+when h=0h=0. As in Lemma 8, the intermediate value h−1/(2​n)h-1/(2n) written to the residual stream
+can be recomputed and reset in the next layer. As before, the transformer replaces the value Bℓ−1​
+(i,j)B_{\ell-1}(i,j) stored previously in the residual stream with the newly computed value Bℓ​
+(i,j)B_{\ell}(i,j) by adding ψ⁡(Bℓ​(i,j)−Bℓ−1​(i,j))\psi(B_{\ell}(i,j)-B_{\ell-1}(i,j)) to the
+stream at the same coordinates.
+
+Final Layers.
+
+Finally, in layer 2​⌈log⁡n⌉+182\lceil\log n\rceil+18, the final token uses a head that attends with
+query ⟨ϕ⁡(s),ϕ⁡(t)⟩\langle\phi(s),\phi(t)\rangle corresponding to the source and target nodes ss
+and tt mentioned in the input; recall that ϕ⁡(s)\phi(s) and ϕ⁡(t)\phi(t) are available in the
+residual stream. The keys in the first n2n^{2} positions p=i​n+jp=in+j are, as before, set to ⟨ϕ⁡
+(i),ϕ⁡(j)⟩\langle\phi(i),\phi(j)\rangle, and the values are set to B⌈log⁡n⌉​(i,j)B_{\lceil\log n\
+rceil}(i,j) retrieved from the residual stream. The head thus attends solely to the position with
+coordinates (s,t)(s,t), and retrieves and outputs the value B⌈log⁡n⌉​(s,t)B_{\lceil\log n\rceil}
+(s,t). This value, as argued earlier, is 11 if and only if GG has a path from ss to tt. ∎
+
+Appendix E Proofs for Width Scaling and Chain of Thought Claims
+
+See 3
+
+Proof.
+
+By assumption, we can construct an 𝖫\mathsf{L}-uniform 𝖳𝖢0\mathsf{TC}^{0} circuit family in which
+the transformer weights for sequence length nn are hardcoded as constants. Next, we can apply
+standard arguments [Merrill et al., 2022, Merrill and Sabharwal, 2023b, Merrill and Sabharwal,
+2023a] to show that the self-attention and feedforward sublayers can both be simulated by
+constant-depth threshold circuits, and the size remains polynomial (though a larger polynomial).
+Thus, any function computable by a constant-depth, polynomial-width transformer is in 𝖫\mathsf{L}
+-uniform 𝖳𝖢0\mathsf{TC}^{0}. ∎
+
+See 4
+
+Proof.
+
+The high-level idea is that a polynomial-size circuit can enumerate all possible O⁡(log⁡n)O(\log n)
+-length chains of thought. Then, in parallel for each chain of thought, we construct a threshold
+circuit that simulates a transformer [Merrill and Sabharwal, 2023b] on the input concatenated with
+the chain of thought, outputting the transformer’s next token. We then select the chain of thought
+in which all simulated outputs match the correct next token and output its final answer. The
+overall circuit has constant depth, polynomial size, and can be shown to be 𝖫\mathsf{L}-uniform.
+Thus, any function computable by a transformer with O⁡(log⁡n)O(\log n) chain of thought is in 𝖳𝖢0\
+mathsf{TC}^{0}. ∎
+
+Appendix F Experimental Details
+
+Curriculum Training.
+
+In early experiments, we found that learning from long A5A_{5} sequences directly was infeasible
+for our transformer models. We hypothesize this was because, unless earlier tokens are predicted
+correctly, later tokens contribute significant noise to the gradient. In order to make the learning
+problem feasible, we follow a curriculum training process, first training on A5A_{5} sequences of
+length 2, then length 4, and continuing up to some fixed maximum power 2i2^{i}. We can then measure
+the maximum n∗≤2in^{*}\leq 2^{i} such that the model achieves strong validation accuracy, as
+mentioned in Section 7.
+
+Depth Experiments.
+
+All depth experiments used a fixed width of 512. For historical reasons, we have slightly different
+numbers of runs for different experimental conditions, and some of the runs use different batch
+sizes (64 and 128). We originally ran a single sweep of depths and widths with 5 runs for depths 6,
+12, 18, and 24, each using a batch size of 64 and maximum depth of 2i=1282^{i}=128. Seeking to
+clarify the trend between these original data points, we launched 3 additional runs at depths 9,
+15, 18, and 21 using a batch size of 128, which anecdotally sped up training without harming final
+performance. We also observed that the original depth 24 runs were at the ceiling n∗=128n^{*}=128,
+so we launched 3 additional depth-24 runs with a batch size of 128 and 2i=5122^{i}=512 (we also
+used this larger sequence length for all other runs in the second set). In total, this made:
+
+  • •
+   
+    5 runs at depths 6, 12, and 8;
+
+  • •
+   
+    3 runs at depths 9, 15, 18, and 21;
+
+  • •
+   
+    8 runs at depth 24.
+
+Width Experiments.
+
+All width experiments used a fixed depth of 6. We launched 5 runs at widths 128, 258, 512, 1024
+with the same hyperparameters, each using a batch size of 64 and 2i=1282^{i}=128.
+
+Compute.
+
+Each training run was launched on a single GPU. We estimate that, together, these experiments took
+about 1000 GPU hours.
+
+License.
+
+The codebase of Merrill et al. [2024], which we used for data generation, has MIT license.
+
+NeurIPS Paper Checklist
+
+ 1. 1.
+   
+    Claims
+
+ 2. Question: Do the main claims made in the abstract and introduction accurately reflect the
+    paper’s contributions and scope?
+
+ 3. Answer: [Yes]
+
+ 4. Justification: Sections 4, 5, 6 and 7 provide theoretical and empirical support for all claims.
+
+ 5. Guidelines:
+
+      □ •
+       
+        The answer NA means that the abstract and introduction do not include the claims made in
+        the paper.
+
+      □ •
+       
+        The abstract and/or introduction should clearly state the claims made, including the
+        contributions made in the paper and important assumptions and limitations. A No or NA
+        answer to this question will not be perceived well by the reviewers.
+
+      □ •
+       
+        The claims made should match theoretical and experimental results, and reflect how much the
+        results can be expected to generalize to other settings.
+
+      □ •
+       
+        It is fine to include aspirational goals as motivation as long as it is clear that these
+        goals are not attained by the paper.
+
+ 6. 2.
+   
+    Limitations
+
+ 7. Question: Does the paper discuss the limitations of the work performed by the authors?
+
+ 8. Answer: [Yes]
+
+ 9. Justification: Simplifying assumptions are discussed in Section 2.
+
+10. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper has no limitation while the answer No means that the
+        paper has limitations, but those are not discussed in the paper.
+
+      □ •
+       
+        The authors are encouraged to create a separate "Limitations" section in their paper.
+
+      □ •
+       
+        The paper should point out any strong assumptions and how robust the results are to
+        violations of these assumptions (e.g., independence assumptions, noiseless settings, model
+        well-specification, asymptotic approximations only holding locally). The authors should
+        reflect on how these assumptions might be violated in practice and what the implications
+        would be.
+
+      □ •
+       
+        The authors should reflect on the scope of the claims made, e.g., if the approach was only
+        tested on a few datasets or with a few runs. In general, empirical results often depend on
+        implicit assumptions, which should be articulated.
+
+      □ •
+       
+        The authors should reflect on the factors that influence the performance of the approach.
+        For example, a facial recognition algorithm may perform poorly when image resolution is low
+        or images are taken in low lighting. Or a speech-to-text system might not be used reliably
+        to provide closed captions for online lectures because it fails to handle technical jargon.
+
+      □ •
+       
+        The authors should discuss the computational efficiency of the proposed algorithms and how
+        they scale with dataset size.
+
+      □ •
+       
+        If applicable, the authors should discuss possible limitations of their approach to address
+        problems of privacy and fairness.
+
+      □ •
+       
+        While the authors might fear that complete honesty about limitations might be used by
+        reviewers as grounds for rejection, a worse outcome might be that reviewers discover
+        limitations that aren’t acknowledged in the paper. The authors should use their best
+        judgment and recognize that individual actions in favor of transparency play an important
+        role in developing norms that preserve the integrity of the community. Reviewers will be
+        specifically instructed to not penalize honesty concerning limitations.
+
+11. 3.
+   
+    Theory Assumptions and Proofs
+
+12. Question: For each theoretical result, does the paper provide the full set of assumptions and a
+    complete (and correct) proof?
+
+13. Answer: [Yes]
+
+14. Justification: All proofs are included either right next to the formal statements or in the
+    appendix.
+
+15. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not include theoretical results.
+
+      □ •
+       
+        All the theorems, formulas, and proofs in the paper should be numbered and
+        cross-referenced.
+
+      □ •
+       
+        All assumptions should be clearly stated or referenced in the statement of any theorems.
+
+      □ •
+       
+        The proofs can either appear in the main paper or the supplemental material, but if they
+        appear in the supplemental material, the authors are encouraged to provide a short proof
+        sketch to provide intuition.
+
+      □ •
+       
+        Inversely, any informal proof provided in the core of the paper should be complemented by
+        formal proofs provided in appendix or supplemental material.
+
+      □ •
+       
+        Theorems and Lemmas that the proof relies upon should be properly referenced.
+
+16. 4.
+   
+    Experimental Result Reproducibility
+
+17. Question: Does the paper fully disclose all the information needed to reproduce the main
+    experimental results of the paper to the extent that it affects the main claims and/or
+    conclusions of the paper (regardless of whether the code and data are provided or not)?
+
+18. Answer: [Yes]
+
+19. Justification: Sections 7 and F provide all key details of the experiments.
+
+20. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not include experiments.
+
+      □ •
+       
+        If the paper includes experiments, a No answer to this question will not be perceived well
+        by the reviewers: Making the paper reproducible is important, regardless of whether the
+        code and data are provided or not.
+
+      □ •
+       
+        If the contribution is a dataset and/or model, the authors should describe the steps taken
+        to make their results reproducible or verifiable.
+
+      □ •
+       
+        Depending on the contribution, reproducibility can be accomplished in various ways. For
+        example, if the contribution is a novel architecture, describing the architecture fully
+        might suffice, or if the contribution is a specific model and empirical evaluation, it may
+        be necessary to either make it possible for others to replicate the model with the same
+        dataset, or provide access to the model. In general. releasing code and data is often one
+        good way to accomplish this, but reproducibility can also be provided via detailed
+        instructions for how to replicate the results, access to a hosted model (e.g., in the case
+        of a large language model), releasing of a model checkpoint, or other means that are
+        appropriate to the research performed.
+
+      □ •
+       
+        While NeurIPS does not require releasing code, the conference does require all submissions
+        to provide some reasonable avenue for reproducibility, which may depend on the nature of
+        the contribution. For example
+
+         1. (a)
+           
+            If the contribution is primarily a new algorithm, the paper should make it clear how to
+            reproduce that algorithm.
+
+         2. (b)
+           
+            If the contribution is primarily a new model architecture, the paper should describe
+            the architecture clearly and fully.
+
+         3. (c)
+           
+            If the contribution is a new model (e.g., a large language model), then there should
+            either be a way to access this model for reproducing the results or a way to reproduce
+            the model (e.g., with an open-source dataset or instructions for how to construct the
+            dataset).
+
+         4. (d)
+           
+            We recognize that reproducibility may be tricky in some cases, in which case authors
+            are welcome to describe the particular way they provide for reproducibility. In the
+            case of closed-source models, it may be that access to the model is limited in some way
+            (e.g., to registered users), but it should be possible for other researchers to have
+            some path to reproducing or verifying the results.
+
+21. 5.
+   
+    Open access to data and code
+
+22. Question: Does the paper provide open access to the data and code, with sufficient instructions
+    to faithfully reproduce the main experimental results, as described in supplemental material?
+
+23. Answer: [Yes]
+
+24. Justification: As promised, we have updated the camera-ready version to point to the repository
+    with code and data.
+
+25. Guidelines:
+
+      □ •
+       
+        The answer NA means that paper does not include experiments requiring code.
+
+      □ •
+       
+        Please see the NeurIPS code and data submission guidelines (https://nips.cc/public/guides/
+        CodeSubmissionPolicy) for more details.
+
+      □ •
+       
+        While we encourage the release of code and data, we understand that this might not be
+        possible, so “No” is an acceptable answer. Papers cannot be rejected simply for not
+        including code, unless this is central to the contribution (e.g., for a new open-source
+        benchmark).
+
+      □ •
+       
+        The instructions should contain the exact command and environment needed to run to
+        reproduce the results. See the NeurIPS code and data submission guidelines (https://nips.cc
+        /public/guides/CodeSubmissionPolicy) for more details.
+
+      □ •
+       
+        The authors should provide instructions on data access and preparation, including how to
+        access the raw data, preprocessed data, intermediate data, and generated data, etc.
+
+      □ •
+       
+        The authors should provide scripts to reproduce all experimental results for the new
+        proposed method and baselines. If only a subset of experiments are reproducible, they
+        should state which ones are omitted from the script and why.
+
+      □ •
+       
+        At submission time, to preserve anonymity, the authors should release anonymized versions
+        (if applicable).
+
+      □ •
+       
+        Providing as much information as possible in supplemental material (appended to the paper)
+        is recommended, but including URLs to data and code is permitted.
+
+26. 6.
+   
+    Experimental Setting/Details
+
+27. Question: Does the paper specify all the training and test details (e.g., data splits,
+    hyperparameters, how they were chosen, type of optimizer, etc.) necessary to understand the
+    results?
+
+28. Answer: [Yes]
+
+29. Justification: Sections 7 and F provide all key details of the experiments.
+
+30. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not include experiments.
+
+      □ •
+       
+        The experimental setting should be presented in the core of the paper to a level of detail
+        that is necessary to appreciate the results and make sense of them.
+
+      □ •
+       
+        The full details can be provided either with the code, in appendix, or as supplemental
+        material.
+
+31. 7.
+   
+    Experiment Statistical Significance
+
+32. Question: Does the paper report error bars suitably and correctly defined or other appropriate
+    information about the statistical significance of the experiments?
+
+33. Answer: [Yes]
+
+34. Justification: We include r2r^{2} as a measure of linear fit.
+
+35. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not include experiments.
+
+      □ •
+       
+        The authors should answer "Yes" if the results are accompanied by error bars, confidence
+        intervals, or statistical significance tests, at least for the experiments that support the
+        main claims of the paper.
+
+      □ •
+       
+        The factors of variability that the error bars are capturing should be clearly stated (for
+        example, train/test split, initialization, random drawing of some parameter, or overall run
+        with given experimental conditions).
+
+      □ •
+       
+        The method for calculating the error bars should be explained (closed form formula, call to
+        a library function, bootstrap, etc.)
+
+      □ •
+       
+        The assumptions made should be given (e.g., Normally distributed errors).
+
+      □ •
+       
+        It should be clear whether the error bar is the standard deviation or the standard error of
+        the mean.
+
+      □ •
+       
+        It is OK to report 1-sigma error bars, but one should state it. The authors should
+        preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis
+        of Normality of errors is not verified.
+
+      □ •
+       
+        For asymmetric distributions, the authors should be careful not to show in tables or
+        figures symmetric error bars that would yield results that are out of range (e.g. negative
+        error rates).
+
+      □ •
+       
+        If error bars are reported in tables or plots, The authors should explain in the text how
+        they were calculated and reference the corresponding figures or tables in the text.
+
+36. 8.
+   
+    Experiments Compute Resources
+
+37. Question: For each experiment, does the paper provide sufficient information on the computer
+    resources (type of compute workers, memory, time of execution) needed to reproduce the
+    experiments?
+
+38. Answer: [Yes]
+
+39. Justification: Provided in Appendix F.
+
+40. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not include experiments.
+
+      □ •
+       
+        The paper should indicate the type of compute workers CPU or GPU, internal cluster, or
+        cloud provider, including relevant memory and storage.
+
+      □ •
+       
+        The paper should provide the amount of compute required for each of the individual
+        experimental runs as well as estimate the total compute.
+
+      □ •
+       
+        The paper should disclose whether the full research project required more compute than the
+        experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make
+        it into the paper).
+
+41. 9.
+   
+    Code Of Ethics
+
+42. Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS
+    Code of Ethics https://neurips.cc/public/EthicsGuidelines?
+
+43. Answer: [Yes]
+
+44. Justification: No special circumstances.
+
+45. Guidelines:
+
+      □ •
+       
+        The answer NA means that the authors have not reviewed the NeurIPS Code of Ethics.
+
+      □ •
+       
+        If the authors answer No, they should explain the special circumstances that require a
+        deviation from the Code of Ethics.
+
+      □ •
+       
+        The authors should make sure to preserve anonymity (e.g., if there is a special
+        consideration due to laws or regulations in their jurisdiction).
+
+46. 10.
+   
+    Broader Impacts
+
+47. Question: Does the paper discuss both potential positive societal impacts and negative societal
+    impacts of the work performed?
+
+48. Answer: [N/A]
+
+49. Justification: The contribution of this work is foundational understanding of the computational
+    power of transformers.
+
+50. Guidelines:
+
+      □ •
+       
+        The answer NA means that there is no societal impact of the work performed.
+
+      □ •
+       
+        If the authors answer NA or No, they should explain why their work has no societal impact
+        or why the paper does not address societal impact.
+
+      □ •
+       
+        Examples of negative societal impacts include potential malicious or unintended uses (e.g.,
+        disinformation, generating fake profiles, surveillance), fairness considerations (e.g.,
+        deployment of technologies that could make decisions that unfairly impact specific groups),
+        privacy considerations, and security considerations.
+
+      □ •
+       
+        The conference expects that many papers will be foundational research and not tied to
+        particular applications, let alone deployments. However, if there is a direct path to any
+        negative applications, the authors should point it out. For example, it is legitimate to
+        point out that an improvement in the quality of generative models could be used to generate
+        deepfakes for disinformation. On the other hand, it is not needed to point out that a
+        generic algorithm for optimizing neural networks could enable people to train models that
+        generate Deepfakes faster.
+
+      □ •
+       
+        The authors should consider possible harms that could arise when the technology is being
+        used as intended and functioning correctly, harms that could arise when the technology is
+        being used as intended but gives incorrect results, and harms following from (intentional
+        or unintentional) misuse of the technology.
+
+      □ •
+       
+        If there are negative societal impacts, the authors could also discuss possible mitigation
+        strategies (e.g., gated release of models, providing defenses in addition to attacks,
+        mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback
+        over time, improving the efficiency and accessibility of ML).
+
+51. 11.
+   
+    Safeguards
+
+52. Question: Does the paper describe safeguards that have been put in place for responsible
+    release of data or models that have a high risk for misuse (e.g., pretrained language models,
+    image generators, or scraped datasets)?
+
+53. Answer: [N/A]
+
+54. Justification: The paper poses no such risks.
+
+55. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper poses no such risks.
+
+      □ •
+       
+        Released models that have a high risk for misuse or dual-use should be released with
+        necessary safeguards to allow for controlled use of the model, for example by requiring
+        that users adhere to usage guidelines or restrictions to access the model or implementing
+        safety filters.
+
+      □ •
+       
+        Datasets that have been scraped from the Internet could pose safety risks. The authors
+        should describe how they avoided releasing unsafe images.
+
+      □ •
+       
+        We recognize that providing effective safeguards is challenging, and many papers do not
+        require this, but we encourage authors to take this into account and make a best faith
+        effort.
+
+56. 12.
+   
+    Licenses for existing assets
+
+57. Question: Are the creators or original owners of assets (e.g., code, data, models), used in the
+    paper, properly credited and are the license and terms of use explicitly mentioned and properly
+    respected?
+
+58. Answer: [Yes]
+
+59. Justification: Cited and acknowledged license for synthetic data codebase in Appendix F.
+
+60. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not use existing assets.
+
+      □ •
+       
+        The authors should cite the original paper that produced the code package or dataset.
+
+      □ •
+       
+        The authors should state which version of the asset is used and, if possible, include a
+        URL.
+
+      □ •
+       
+        The name of the license (e.g., CC-BY 4.0) should be included for each asset.
+
+      □ •
+       
+        For scraped data from a particular source (e.g., website), the copyright and terms of
+        service of that source should be provided.
+
+      □ •
+       
+        If assets are released, the license, copyright information, and terms of use in the package
+        should be provided. For popular datasets, paperswithcode.com/datasets has curated licenses
+        for some datasets. Their licensing guide can help determine the license of a dataset.
+
+      □ •
+       
+        For existing datasets that are re-packaged, both the original license and the license of
+        the derived asset (if it has changed) should be provided.
+
+      □ •
+       
+        If this information is not available online, the authors are encouraged to reach out to the
+        asset’s creators.
+
+61. 13.
+   
+    New Assets
+
+62. Question: Are new assets introduced in the paper well documented and is the documentation
+    provided alongside the assets?
+
+63. Answer: [N/A]
+
+64. Justification: The paper did not introduce any new assets.
+
+65. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not release new assets.
+
+      □ •
+       
+        Researchers should communicate the details of the dataset/code/model as part of their
+        submissions via structured templates. This includes details about training, license,
+        limitations, etc.
+
+      □ •
+       
+        The paper should discuss whether and how consent was obtained from people whose asset is
+        used.
+
+      □ •
+       
+        At submission time, remember to anonymize your assets (if applicable). You can either
+        create an anonymized URL or include an anonymized zip file.
+
+66. 14.
+   
+    Crowdsourcing and Research with Human Subjects
+
+67. Question: For crowdsourcing experiments and research with human subjects, does the paper
+    include the full text of instructions given to participants and screenshots, if applicable, as
+    well as details about compensation (if any)?
+
+68. Answer: [N/A]
+
+69. Justification: Did not involve research with human subjects.
+
+70. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not involve crowdsourcing nor research with human
+        subjects.
+
+      □ •
+       
+        Including this information in the supplemental material is fine, but if the main
+        contribution of the paper involves human subjects, then as much detail as possible should
+        be included in the main paper.
+
+      □ •
+       
+        According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or
+        other labor should be paid at least the minimum wage in the country of the data collector.
+
+71. 15.
+   
+    Institutional Review Board (IRB) Approvals or Equivalent for Research with Human Subjects
+
+72. Question: Does the paper describe potential risks incurred by study participants, whether such
+    risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals
+    (or an equivalent approval/review based on the requirements of your country or institution)
+    were obtained?
+
+73. Answer: [N/A]
+
+74. Justification: Did not involve research with human subjects.
+
+75. Guidelines:
+
+      □ •
+       
+        The answer NA means that the paper does not involve crowdsourcing nor research with human
+        subjects.
+
+      □ •
+       
+        Depending on the country in which research is conducted, IRB approval (or equivalent) may
+        be required for any human subjects research. If you obtained IRB approval, you should
+        clearly state this in the paper.
+
+      □ •
+       
+        We recognize that the procedures for this may vary significantly between institutions and
+        locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines
+        for their institution.
+
+      □ •
+       
+        For initial submissions, do not include any information that would break anonymity (if
+        applicable), such as the institution conducting the review.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

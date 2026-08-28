@@ -1,0 +1,1167 @@
+source: https://arxiv.org/html/1812.02224
+arxiv: https://arxiv.org/abs/1812.02224
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Notation and Problem Description
+ 4. 3 Gradient Cosine Similarity
+     1. A toy example.
+ 5. 4 Applications
+     1. 4.1 Binary Classification Tasks
+     2. 4.2 Multi Class Classification Tasks
+     3. 4.3 Gridworld Tasks
+     4. 4.4 Single and Multi-task Atari Games
+ 6. 5 Related Work
+ 7. 6 Shortcomings
+ 8. 7 Conclusions
+ 9. References
+10. A Proofs
+     1. A.1 Proof for Proposition 1
+     2. A.2 Proof for Proposition 3
+11. B Positive and Negative Examples of Auxiliary Losses
+12. C Weighted Version of Our Method
+13. D Experimental Details
+     1. D.1 Identifying Near and Far Classes in ImageNet
+     2. D.2 Gridworld Experiments
+     3. D.3 Atari Experiments
+14. E Gradient Cosine Similarity in High Dimensions
+15. F Overparametrization and reliability of gradient similarity globally
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:1812.02224v2 [stat.ML] 25 Nov 2020
+
+Adapting Auxiliary Losses Using Gradient Similarity
+
+Yunshu Du ^†^†thanks: Equal Contribution^†^†thanks: Washington State University. Work done during
+an internship at DeepMind.    Wojciech M. Czarnecki^1^1footnotemark: 1 ^†^†thanks: DeepMind    
+Siddhant M. Jayakumar^3^3footnotemark: 3    Mehrdad Farajtabar^3^3footnotemark: 3    Razvan Pascanu
+^3^3footnotemark: 3    Balaji Lakshminarayanan ^†^†thanks: Google Research, Brain Team. Work done
+while at DeepMind. Affiliation: yunshu.du@wsu.edu, {lejlot, sidmj, farajtabar, razp, balajiln}
+@google.com
+
+Abstract
+
+One approach to deal with the statistical inefficiency of neural networks is to rely on additional
+auxiliary losses that help build useful representations. However, it is not always trivial to know
+if an auxiliary task will be helpful or, more importantly, when it could start hurting the main
+task. We investigate whether the cosine similarity between the gradients of the different tasks
+provides a signal to detect when an auxiliary loss is helpful to the main loss. We prove
+theoretically that our approach is at least guaranteed to converge to the critical points of the
+main task. Then, we demonstrate the practical usefulness of the proposed algorithm in both
+supervised learning and reinforcement learning domains. Finally, we discuss the potential
+implications of relying on this heuristic as a measurement of task similarity.
+
+
+
+1 Introduction
+
+Neural networks are powerful function approximators that have excelled on a wide range of tasks (
+Simonyan and Zisserman, 2015; Mnih et al., 2015; He et al., 2016a; Silver et al., 2016; Vaswani
+et al., 2017). Despite the state of the art results across domains, they remain data-inefficient
+and expensive to train. In supervised learning, large deep learning benchmarks with millions of
+examples are needed for training (Russakovsky et al., 2015) and the additional implication of
+requiring human intervention to label a large dataset can be prohibitively expensive. In
+reinforcement learning (RL), agents typically consume millions of frames of experiences before
+learning to act reasonably in complex environments (Silver et al., 2016; Espeholt et al., 2018),
+which not only puts pressure on computing power but also makes particular domains (e.g., robotics)
+impractical.
+
+Different techniques have been studied for improving data efficiency, from data augmentation (
+Krizhevsky et al., 2012; Simonyan and Zisserman, 2015; Hauberg et al., 2016) to multi-task learning
+(Teh et al., 2017; Kendall et al., 2018; Chen et al., 2018; Hessel et al., 2018; Sener and Koltun,
+2018) to transfer learning (Taylor and Stone, 2009; Pan et al., 2010). In this work, we focus on a
+particular type of transfer learning: transferring knowledge of an auxiliary task to a main task.
+We assume that besides the main task, one has access to one or more additional auxiliary tasks that
+share some unknown structures with the main task. To improve data efficiency, these additional
+tasks can be used as auxiliary losses to transfer knowledge to the main task. Note that only the
+performance of the main task is of interest, even though the model is trained simultaneously on all
+tasks; any improvement on the auxiliary losses is useful only to the extent that it helps learning
+features or behaviors for the main task.
+
+Auxiliary tasks have been shown to work well for reinforcement learning (Zhang et al., 2016;
+Jaderberg et al., 2017; Mirowski et al., 2017; Papoudakis et al., 2018; Li et al., 2019, e.g.,).
+The success of these approaches depend on how well aligned the auxiliary losses are with the main
+task. Knowing this apriori is typically non-trivial and the usefulness of an auxiliary task can
+change through the course of training. In this work, we explore a simple yet effective heuristic
+for measuring the similarity between an auxiliary task and the main task of interest (given the
+value of their parameters) using gradient information.
+
+2 Notation and Problem Description
+
+Assume we have a main task 𝒯m​a​i​n\mathcal{T}_{{main}} and some update rule induced by an
+auxiliary task 𝒯a​u​x\mathcal{T}_{{aux}}. This can be given by the gradients of an auxiliary loss
+ℒa​u​x\mathcal{L}_{{aux}} (though our derivation holds also when there is no such loss, as will be
+discussed later). Let us assume the main task induces a loss ℒm​a​i​n\mathcal{L}_{{main}}. We care
+only about maximizing performance on 𝒯m​a​i​n\mathcal{T}_{{main}} while 𝒯a​u​x\mathcal{T}_{{aux}}
+is an auxiliary task which is not of direct interest. The goal is to devise an algorithm that/ can
+automatically:
+
+ 1. 1.
+   
+    leverage 𝒯a​u​x\mathcal{T}_{{aux}} as long as it is helpful to 𝒯m​a​i​n\mathcal{T}_{{main}},
+
+ 2. 2.
+   
+    detect when 𝒯a​u​x\mathcal{T}_{{aux}} becomes harmful to 𝒯m​a​i​n\mathcal{T}_{{main}} and block
+    negative transfer to recover the performance of training only on 𝒯m​a​i​n\mathcal{T}_{{main}}.
+
+We propose to parameterize the solution for 𝒯m​a​i​n\mathcal{T}_{{main}} and 𝒯a​u​x\mathcal{T}_
+{{aux}} by two neural networks, f⁡(⋅,𝜽,ϕm​a​i​n)f(\cdot,{\bm{\theta}},{\bm{\phi}}_{{main}}) and g⁡
+(⋅,𝜽,ϕa​u​x)g(\cdot,{\bm{\theta}},{\bm{\phi}}_{{aux}}), where they share a subset of parameters
+(denoted by 𝜽{\bm{\theta}}) and have their own set of parameters (denoted by ϕm​a​i​n{\bm{\phi}}_
+{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}} respectively). Generally, the auxiliary loss literature
+proposes to minimize weighted losses of the form
+
+ arg​min𝜽,ϕmain,ϕaux⁡ℒmain​(𝜽,ϕmain)+λ​ℒaux​(𝜽,ϕaux)\displaystyle\argmin_{{\bm{\theta}},{\bm{\
+ phi}}_{{main}},{\bm{\phi}}_{{aux}}}\mathcal{L}_{{main}}({\bm{\theta}},{\bm{\phi}}_{{main}})+\  (1)
+ lambda\mathcal{L}_{{aux}}({\bm{\theta}},{\bm{\phi}}_{{aux}})
+
+under the intuition that modifying 𝜽{\bm{\theta}} to minimize ℒa​u​x\mathcal{L}_{{aux}} will
+improve ℒm​a​i​n\mathcal{L}_{{main}} if the two tasks are sufficiently related. There are two
+potential problems with minimizing equation 1: (i) λ\lambda is usually kept as a constant which is
+not adaptable where the usefulness of 𝒯a​u​x\mathcal{T}_{{aux}} changes during training (e.g.,
+helps initially but hurts later), and (ii) the relatedness of the two tasks are often ambiguous to
+quantify.
+
+Ideally one would want to modulate the weight λ\lambda at each learning iteration tt such that
+either final performance on main task is maximized or convergence speed of the main task is
+maximized.^1^1 1 Note that both quantities might be ill-defined without considering a fixed budget
+of iterations. Also, while they are correlated, the two maximization problems can lead to different
+behaviors.
+
+A greedy variant of this objective is to modulate λ\lambda at each learning iteration tt by how
+useful 𝒯a​u​x\mathcal{T}_{{aux}} is for 𝒯m​a​i​n\mathcal{T}_{{main}} given 𝜽(t),ϕm​a​i​n(t),ϕa​u​x
+(t){\bm{\theta}}^{(t)},{\bm{\phi}}_{{main}}^{(t)},{\bm{\phi}}_{{aux}}^{(t)}. That is, at each
+optimization iteration, we want to efficiently approximate the solution to
+
+ arg​minλ(t)⁡ℒmain​(𝜽(t)−α​∇𝜽(ℒmain+λ(t)​ℒaux),ϕmain(t)−α​∇ϕmainℒmain).\displaystyle\argmin_{\
+ lambda^{(t)}}\mathcal{L}_{{main}}\Bigl({\bm{\theta}}^{(t)}-\alpha\nabla_{\bm{\theta}}(\        (2)
+ mathcal{L}_{{main}}+\lambda^{(t)}\mathcal{L}_{{aux}}),{\bm{\phi}}_{{main}}^{(t)}-\alpha\
+ nabla_{{\bm{\phi}}_{{main}}}\mathcal{L}_{{main}}\Bigr).
+
+Note that the input space of 𝒯m​a​i​n\mathcal{T}_{{main}} and 𝒯a​u​x\mathcal{T}_{{aux}} do not have
+to match. In particular, 𝒯a​u​x\mathcal{T}_{{aux}} does not need to be defined for an input of
+𝒯m​a​i​n\mathcal{T}_{{main}} or the other way around.^2^2 2 In the supervised learning case when
+the input features are shared, this resembles Quadrianto et al. (2010), multi-task learning without
+label correspondences setting. Solving the general problem, or even the greedy variant given by
+equation 2 is expensive, as it requires at each step to solve a non-linear maximization problem.
+Instead, we look for a cheap heuristic to approximate λ(t)\lambda^{(t)} which does not require
+hyperparameter tuning or computing derivatives through the learning process—and which will
+outperform a constant λ(t)\lambda^{(t)}.
+
+Note that our setup is in sharp contrast to multi-objective optimization where both the tasks are
+of interest. We are only interested in minimizing the ℒm​a​i​n\mathcal{L}_{{main}} with the help of
+the ℒa​u​x\mathcal{L}_{{aux}} where possible.
+
+3 Gradient Cosine Similarity
+
+Refer to caption
+Figure 1: Illustration of cosine similarity between gradients on synthetic loss surfaces.
+
+We propose to use the cosine similarity of gradients between tasks to quantify the relatedness
+between tasks and hence for approximating λ(t)\lambda^{(t)}. Consider the example in Figure 1 where
+the main function to minimize is ℒm​a​i​n=(θ−10)2\mathcal{L}_{{main}}=(\theta-10)^{2} and the
+auxiliary function is ℒa​u​x=θ2\mathcal{L}_{{aux}}=\theta^{2}, their gradients are ∇θℒm​a​i​n=2​
+(θ−10)\nabla_{\theta}\mathcal{L}_{{main}}=2(\theta-10) and ∇θℒa​u​x=2​θ\nabla_{\theta}\mathcal{L}_
+{{aux}}=2\theta respectively. When θ=−20\theta=-20, the gradients of the main and auxiliary
+functions point in the same direction and the cosine similarity is 11; minimizing the auxiliary
+loss is beneficial for minimizing the main loss. However, at a different point, θ=5\theta=5, the
+two gradients point in different directions and the cosine similarity is −1-1; minimizing the
+auxiliary loss would hinder minimizing the main loss. This example suggests a natural strategy for
+approximating λ(t)\lambda^{(t)}: minimize the auxiliary loss as long as its gradient has
+non-negative cosine similarity with the main gradient; otherwise, the auxiliary loss should be
+ignored. This follows the well-known intuition that if a vector is in the same half-space as the
+gradient of a function ff, then it is a descent direction for ff. This reduces our strategy to ask
+if the gradient of the auxiliary loss is also a descent direction for the main loss of interest.
+
+We start by first introducing two propositions in this section and prove that our proposed method
+ensures convergence on the main task—although one can not guarantee the speed of convergence (we
+discuss this in more details later in this section). The proof holds even when adding to the
+gradient vectors that might not be the gradient of any function, which we argue is a practical
+scenario in reinforcement learning. Later in Section 4, we show empirically that our method is a
+good heuristic for blocking negative transfer and in practice often leads to positive transfer.
+
+Proposition 1.
+
+Given any gradient vector field G⁡(𝛉)=∇𝛉ℒ​(𝛉)G({\bm{\theta}})=\nabla_{\bm{\theta}}\mathcal{L}({\bm
+{\theta}}) and any vector field V⁡(𝛉)V({\bm{\theta}}) (such as the gradient of another loss
+function, or an arbitrary set of updates), an update rule of the form
+
+ 𝜽(t+1):=𝜽(t)−\displaystyle α(t)​(G⁡(𝜽(t))+V⁡(𝜽(t))​max⁡(0,cos⁡(G⁡(𝜽(t)),V⁡(𝜽(t)))))\
+ {\bm{\theta}}^{(t+1)}:={\  displaystyle\alpha^{(t)}\Bigl(G({\bm{\theta}}^{(t)})+V({\bm{\       (3)
+ bm{\theta}}^{(t)}-         theta}}^{(t)})\max\bigl(0,\cos(G({\bm{\theta}}^{(t)}),V({\bm{\
+                            theta}}^{(t)}))\bigr)\Bigr)
+
+converges to the local minimum of ℒ\mathcal{L} given small enough α(t)\alpha^{(t)}.
+
+Proof is provided in Appendix A.1.
+
+We point out three important properties of the above statement. First, it guarantees only lack of
+divergence, but does not guarantee any improvement of convergence. That is, cosine similarity is
+not a silver bullet that guarantees positive transfer, but it can drop the “worst-case scenarios”
+thus preventing negative transfer. In principle, the convergence speed of the main loss could be
+affected both positively or negatively, though we notice empirically that the effect tends to be
+positive in realistic scenarios. Second, it is worth noting that simply adding an arbitrary vector
+field to ∇ℒ\nabla\mathcal{L} does not have the convergence property and hence Proposition 1 has
+practical utility—there are realistic scenarios where one does not always form a gradient field.
+For example, the update rule of the Q-learning algorithm in RL does not form a gradient field.
+Another example is when adding another gradient field to the update rule of REINFORCE (which is a
+Monte-Carlo estimate of a gradient), depending on the setting, the sum might not be a gradient
+field anymore. Lastly, it should be noted that gradient similarity is a local quantity on which we
+can not technically rely to draw global conclusions on learning dynamics. That is, having negative
+cosine similarity at step tt does not guarantee divergence of the main loss, nor does it guarantee
+that using the auxiliary loss (with fixed weight) will lead to slower convergence than not having
+it at all.
+
+A toy example.
+
+We illustrate both positive and negative scenarios of our proposed method by running a set of
+experiments using steepest descent method. There are two main losses to be minimized: L1​(θ1,θ2)=
+θ12+θ22L_{1}(\theta_{1},\theta_{2})=\theta_{1}^{2}+\theta_{2}^{2} and L2​(θ1,θ2)=(θ1<0)​(θ12+θ22)+
+(θ1>0)​(1−exp⁡(−2​(θ12+θ22)))L_{2}(\theta_{1},\theta_{2})=(\theta_{1}<0)(\theta_{1}^{2}+\theta_{2}^
+{2})+(\theta_{1}>0)(1-\exp(-2(\theta_{1}^{2}+\theta_{2}^{2}))). Two auxiliary losses are: L3​
+(θ1,θ2)=(θ1−1)2+(θ2−1)2L_{3}(\theta_{1},\theta_{2})=(\theta_{1}-1)^{2}+(\theta_{2}-1)^{2} and L4​
+(θ1,θ2)=(θ1−2)2+(θ2−0.5)2L_{4}(\theta_{1},\theta_{2})=(\theta_{1}-2)^{2}+(\theta_{2}-0.5)^{2}. We
+also consider an arbitrary vector field V⁡(θ1,θ2)=[−θ2θ12+θ22−2​θ1,θ1θ12+θ22−2​θ2]V(\theta_{1},\
+theta_{2})=[-\tfrac{\theta_{2}}{\theta_{1}^{2}+\theta_{2}^{2}}-2\theta_{1},\tfrac{\theta_{1}}{\
+theta_{1}^{2}+\theta_{2}^{2}}-2\theta_{2}]. Each experiment runs for 600600 iterations with a
+constant step size of 0.010.01. Convergence time is defined as the number of steps needed to get
+below value 0.10.1 of the main loss. Each colored curve shows an example trajectory.
+
+Refer to caption
+Figure 2: Positive and negative examples of our proposed method. Top row: combine L1L_{1} with the
+gradient of an auxiliary loss L3L_{3}. Middle row: combine L1L_{1} with a vector field VV. Bottom
+row: combine L2L_{2} with the gradient of an auxiliary loss L4L_{4}. Our method (the last column)
+converges in all cases, while simply adding a gradient or vector field leads to divergence (the
+second column).
+
+Shown in Figure 2, the first column depicts the loss when following the update given by ∇L1\nabla
+L_{1} and ∇L2\nabla L_{2} respectively. The second column shows the performance on the main loss
+when using an update that sums between the gradient of the main loss and the vector fields produced
+by ∇L3,V,\nabla L_{3},V, and ∇L4\nabla L_{4} respectively. The last column shows the performance on
+the main loss when using our proposed cosine similarity method. Figure 2 shows our method ensures
+convergence in all cases. In particular, the top two rows show the positive case where our method
+speeds up learning, even when combined with VV. Observe that simply adding ∇L1+V\nabla L_{1}+V is
+not a gradient vector field and following it leads to divergence of L1L_{1}. The last row shows a
+negative case where our method slows down convergence. Note, however, that our method still
+converges, while simply adding ∇L2\nabla L_{2} and ∇L4\nabla L_{4} (the second column) diverges.
+More details are provided in Appendix B to help intuitively understand the kind of scenarios for
+which our approach could help.
+
+Proposition 1 refers to losses with the same set of parameters 𝜽{\bm{\theta}}, while equation 2
+refers to the scenario when each loss has task specific parameters (e.g. ϕm​a​i​n{\bm{\phi}}_
+{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}}). The following proposition extends to this scenario:
+
+Proposition 2.
+
+Given two losses parametrized with 𝚯\mathbf{\Theta} (some of which are shared 𝛉{\bm{\theta}} and
+some unique to each loss ϕm​a​i​n{\bm{\phi}}_{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}}), learning
+rule:
+
+ 𝜽(t+1):=𝜽(t)−α(t)​(CLOSE\
+ displaystyle{\bm{\theta}}^      ∇𝜽ℒm​a​i​n​(𝜽)+\displaystyle\nabla_{{\bm{\theta}}}\mathcal{L}  (4)
+ {(t+1)}:={\bm{\theta}}^{(t)}-\  _{{main}}({\bm{\theta}})+
+ alpha^{(t)}\Bigl(
+                                 OPEN∇𝜽ℒa​u​x​(𝜽)​max⁡(0,cos⁡(∇𝜽ℒm​a​i​n​(𝜽),∇𝜽ℒa​u​x​(𝜽))))\
+                                 displaystyle\nabla_{{\bm{\theta}}}\mathcal{L}_{{aux}}({\bm{\
+                                 theta}})\max(0,\cos(\nabla_{{\bm{\theta}}}\mathcal{L}_
+                                 {{main}}({\bm{\theta}}),\nabla_{{\bm{\theta}}}\mathcal{L}_
+                                 {{aux}}({\bm{\theta}})))\Bigr)
+
+ ϕm​a​i​n(t+1)\            :=ϕm​a​i​n(t)−α(t)​∇ϕm​a​i​nℒm​a​i​n​(𝚯)\displaystyle:={\bm{\phi}}_
+ displaystyle{\bm{\phi}}_  {{main}}^{{(t)}}-\alpha^{{(t)}}\nabla_{{\bm{\phi}}_{{main}}}\        (5)
+ {{main}}^{{(t+1)}}        mathcal{L}_{{main}}(\mathbf{\Theta})
+ ϕa​u​x(t+1)\displaystyle  :=ϕa​u​x(t)−α(t)​∇ϕa​u​xℒa​u​x​(𝚯)\displaystyle:={\bm{\phi}}_
+ {\bm{\phi}}_{{aux}}^      {{aux}}^{(t)}-\alpha^{(t)}\nabla_{{\bm{\phi}}_{{aux}}}\mathcal{L}_   (6)
+ {(t+1)}                   {{aux}}(\mathbf{\Theta})
+
+leads to convergence to local minimum of ℒm​a​i​n\mathcal{L}_{{main}} w.r.t. (𝛉,ϕm​a​i​n)({\bm{\
+theta}},{\bm{\phi}}_{{main}}) given small enough α(t)\alpha^{(t)}.
+
+Proof.
+
+Comes directly from the previous proposition that G=∇𝜽ℒm​a​i​nG=\nabla_{{\bm{\theta}}}\mathcal{L}_
+{{main}} and V=∇𝜽ℒa​u​xV=\nabla_{{\bm{\theta}}}\mathcal{L}_{{aux}}. For any vector fields
+A,B,CA,B,C, we have ⟨A,B⟩≥0\langle A,B\rangle\geq 0 and ⟨C,B⟩≥0\langle C,B\rangle\geq 0 implies
+⟨A+C,B⟩≥0\langle A+C,B\rangle\geq 0. ∎
+
+Analogous guarantees also hold for the unweighted version of this algorithm. Instead of weighting
+by cos⁡(G,V)\cos(G,V), we use a binary weight (sign⁡(cos⁡(G,V))+1)/2(\sign(\cos(G,V))+1)/2 which is
+equivalent to using VV iff cos⁡(G,V)>0\cos(G,V)>0. When training with mini-batches, accurately
+estimating cos⁡(G,V)\cos(G,V) can be difficult due to noise; the unweighted variant only requires
+sign⁡(cos⁡(G,V))\sign(\cos(G,V)) which can be estimated more robustly. Hence, we use the unweighted
+variant in our experiments unless otherwise specified.
+
+Despite its simplicity, our proposed update rule can give rise to interesting phenomena. We can
+show that the emerging vector field could be non-conservative, which means there does not exist a
+loss function for which it is a gradient. While this might seem problematic (for
+gradient-descent-based optimizers), it describes only the global structure—typically used
+optimizers are local in nature and they do local, linear or quadratic approximations of the
+function (Shwartz-Ziv and Tishby, 2017). Consequently, in practice, one should not expect any
+negative effects from this phenomena, as it simply shows that our proposed technique is in fact
+qualitatively changing the nature of the update rules for training.
+
+Proposition 3.
+
+In general, the proposed update rule does not have to create a conservative vector field.
+
+Proof is provided in Appendix A.2.
+
+4 Applications
+
+We now demonstrate how to use the gradient cosine similarity to decide when to leverage the
+auxiliary. We aim to answer two questions: (i) is gradient cosine similarity capable of detecting
+negative interference, which can be changing during the course of training between tasks, and (ii)
+compared with a constant weight, can our proposed heuristic block negative transfer when 𝒯a​u​x\
+mathcal{T}_{{aux}} starts to hinder 𝒯m​a​i​n\mathcal{T}_{{main}}. All experiments (unless otherwise
+stated) follow the unweighted version of our method, summarized in Algorithm 1. The weighted
+version of our method is summarized in Algorithm 2, Appendix C.
+
+
+Algorithm 1 Unweighted version of our method.
+1: Initialize shared parameters 𝜽{\bm{\theta}} and task specific parameters ϕm​a​i​n,ϕa​u​x{\bm{\
+phi}}_{{main}},{\bm{\phi}}_{{aux}} randomly.
+2: for 𝗂𝗍𝖾𝗋=1:𝗆𝖺𝗑​_​𝗂𝗍𝖾𝗋\mathsf{iter}=1:\mathsf{max\_iter} do
+3:  Compute ∇𝜽ℒm​a​i​n\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}}, ∇ϕm​a​i​nℒm​a​i​n\nabla_{{\bm{\
+phi}}_{{main}}}\mathcal{L}_{{main}}, ∇𝜽ℒa​u​x\nabla_{{\bm{\theta}}}\mathcal{L}_{{aux}},
+∇ϕa​u​xℒa​u​x\nabla_{{\bm{\phi}}_{{aux}}}\mathcal{L}_{{aux}}.
+4:  Update ϕm​a​i​n{\bm{\phi}}_{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}} using corresponding gradients
+5:  if cos⁡(∇𝜽ℒm​a​i​n,∇𝜽ℒa​u​x)≥\cos(\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}},\nabla_{{\bm{\
+theta}}}\mathcal{L}_{{aux}})\geq 0 then
+6:  Update 𝜽{\bm{\theta}} using ∇𝜽ℒm​a​i​n+∇𝜽ℒa​u​x\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}}+\
+nabla_{{\bm{\theta}}}\mathcal{L}_{{aux}}
+7:  else
+8:  Update 𝜽{\bm{\theta}} using ∇𝜽ℒm​a​i​n\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}}  
+
+4.1 Binary Classification Tasks
+
+First, we apply our method in supervised learning and design a multi-task binary classification
+problem on ImageNet (Russakovsky et al., 2015). We take a pair of classes from ImageNet, refer to
+these as class AA and class BB; all the other 998 classes (except AA and BB) are referred to as the
+b​a​c​k​g​r​o​u​n​dbackground. Our tasks 𝒯m​a​i​n\mathcal{T}_{{main}} and 𝒯a​u​x\mathcal{T}_{{aux}}
+are then formed as a binary classification of if an image is class AA (otherwise
+b​a​c​k​g​r​o​u​n​dbackground) and if an image is class BB (otherwise
+b​a​c​k​g​r​o​u​n​dbackground) respectively.
+
+Our goal is to show that cosine similarity can automatically detect when the auxiliary task becomes
+unhelpful and block negative transfer thus we consider two scenarios: (i) auxiliary task helps and
+(ii) auxiliary task hurts. It is natural to hypothesis that a pair of near classes would fit
+scenario (i) and a pair of far classes fit scenario (ii). However, there are no ground truth labels
+for such a class distance measure thus it is difficult to decided if two classes are similar or
+not. To combat this, we instead use two distance measures to serve as an estimated class similarity
+for selecting class pair AA and BB: lowest common ancestor (LCA) is the ImageNet label hierarchy,
+and Frechet Inception Distance (FID) (Heusel et al., 2017) is the image embedding from a
+pre-trained model. Based on these measures, we picked three pair of classes for near, class 871871
+(trimaran) vs. 484484 (catamaran), 250250 (Siberian husky) vs. 249249 (malamute), and 238238
+(Greater Swiss Mountain dog) vs. 241241 (Entleucher); and for far, class 920920 (traffic light) vs.
+6262 (rock python), 926926 (hotpot) vs. 800800 (slot), and 4848 (Komodo dragon) vs. 920920 (traffic
+light). See Appendix D.1 for details on class pair selection.
+
+We train modified ResNetV2-18 model (He et al., 2016b) with all parameters in the convolutional
+layers shared (denote as 𝜽{\bm{\theta}}) between tasks, followed by task-specific parameters
+ϕm​a​i​n{\bm{\phi}}_{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}}. First, we use a multi-task learning
+setup and minimize ℒm​a​i​n+ℒa​u​x\mathcal{L}_{{main}}+\mathcal{L}_{{aux}} (i.e., λ=1\lambda=1),
+and measure cosine similarity on 𝜽{\bm{\theta}} through the course of training. Figure 3(a) shows
+that cosine similarity is higher for near pairs (blue lines) and lower (mostly negative) for far
+pairs (red lines), indicating that cosine similarity captures task relatedness well. Next, we
+compare single-task training (i.e., λ=0\lambda=0), multi-task training, and our proposed method on
+near and far class pairs to illustrate scenario (i) and (ii) respectfully. Note that, the
+multi-task baseline here is not minimizing the desired objective, ℒm​a​i​n\mathcal{L}_{{main}} and
+is only used for demonstrating what would happen if the auxiliary loss is weighted as a constant
+without any adaptions based on its usefulness.
+
+Refer to caption
+(a) Cosine similarity: near (blue) & far pairs (red).
+
+Refer to caption
+(b) Near pair: 871871 vs 484484
+
+Refer to caption
+(c) Far pair: 4848 vs 920920
+
+
+Figure 3: Experiments on ImageNet class pairs. (a): gradient cosine similarity is higher for near
+pairs and lower for far pairs. (b) and (c): testing accuracy on single-task (dotted), multi-task
+(dashed), and our method (solid).
+
+Figure 3(b) shows scenario (i) where auxiliary task helps. While all variants perform similarly in
+terms of final performance, our method obtains an initial boost compared to the single task
+learning and thereafter achieves similar performance as the multi-task learning. This behavior
+indicates that when gradient cosine similarity is high, our method automatically “switches on”
+ℒa​u​x\mathcal{L}_{{aux}} and trains as multi-tasking. Figure 3(c) shows scenario (ii) where the
+auxiliary task could hinder. Here, the multi-task baseline suffers from poorer performance than
+single-task learning throughout the training process due to the class distance is far and lack of
+transferability. In contrast, our method blocks negative transfer by “switching off” the unhelpful
+auxiliary task and later recovers the performance of single-task. We note that the blocking did not
+happen until later in training (at around step 15,00015,000). This observation potentially reflects
+two aspects of our method: (i) estimating the cosine similarity between gradients can be noisy and
+unreliable, and (ii) our method does not guarantee maximizing transfer but only “drop the worst.”
+Nevertheless, this experiment shows that our method can eventually notice that the auxiliary task
+hinders the main task and is able to block negative transfer then recover the performance of the
+single task learning.
+
+4.2 Multi Class Classification Tasks
+
+Second, we evaluate our method on the multi-class classification task of rotated MNIST digits, a
+common benchmark in multi-task continual learning (Lopez-Paz and Ranzato, 2017; Farajtabar et al.,
+2020) and multi-task generalization (Ghifary et al., 2015) problems. In this setting, the main task
+is classifying the original MNIST images to one of the 10 digit classes. The auxiliary task
+consists of all images rotated by a certain degree. For this task we use a simple multi-layer fully
+connected network with 3 hidden layers each with 100 neurons and ReLU nonlinearity on the top. Each
+task is then is equipped with a separate 10 neuron head for the associated 10 dimensional logit. We
+used all the 60K training inputs and train the network for 50 epochs with batch size set to 128.
+For the optimizer we used RMSprop with learning rate 0.0010.001.
+
+
+Table 1: Results on RotatedMNIST: Main task is the original MNIST problem. In the auxiliary task
+all the input images are rotated by the degree specified in the rotation column.
+
+                               Error ±\pm Std (%\%)
+rotation      single-task           multi-task            our method
+   0     2.14±0.162.14\pm 0.16 2.19±0.192.19\pm 0.19 2.11±0.132.11\pm 0.13
+   45    2.15±0.152.15\pm 0.15 2.36±0.172.36\pm 0.17 2.10±0.142.10\pm 0.14
+   90    2.17±0.192.17\pm 0.19 2.41±0.222.41\pm 0.22 2.26±0.082.26\pm 0.08
+  135    2.11±0.122.11\pm 0.12 2.50±0.192.50\pm 0.19 2.37±0.122.37\pm 0.12
+  180    2.20±0.162.20\pm 0.16 2.23±0.122.23\pm 0.12 2.21±0.162.21\pm 0.16
+
+Table 1 shows the results. We reported the mean and standard deviation of the classification error
+on 10k held-out test examples over 10 runs with random network initialization and data order.
+Overall, the proposed method shows a strong performance compared to single- and multi-task
+baselines. More specifically, in the case of 0 rotation (i.e. the two tasks are similar) the
+auxiliary task has positive influence in both cases over the single-task with some marginal
+advantage of the proposed method compared to the multi-task baseline. Interestingly, when the
+digits are rotated (45, 90, etc) the auxiliary task is negatively interfering with the main task.
+Again, the proposed method succeeds to mitigate the negative behavior significantly. For the case
+of 45 degrees it not only outperform the multi-task baseline but also beats the single task again
+by benefiting from positive transfer while cleverly avoiding negative interference. In the case of
+90 and 135 degrees the negative effect of the auxiliary task compromised its positive effect and
+the performance degrades, however, as expected the proposed method is avoiding a significant amount
+of negative interference compared to the multi-task baseline.
+
+4.3 Gridworld Tasks
+
+We now turn to the reinforcement learning domain and consider a typical RL problem where one aims
+to find a policy π\pi that maximizes the sum of future discounted rewards 𝔼π​[∑t′=1Nγt′−1​rt′]\
+mathbb{E}_{\pi}[\sum_{{t^{\prime}}=1}^{N}\gamma^{{t^{\prime}}-1}r_{t^{\prime}}] in a partially
+observable Markov Decision Process (POMDP). There have been many techniques proposed to solve this
+optimization problem (e.g., (Williams, 1992), (Watkins, 1989), (Schulman et al., 2017), (Espeholt
+et al., 2018)). Inherently, these techniques are data inefficient due to the complexity of the
+problem. One way to address this issue is to use transfer learning, such as transfer from
+pre-trained policies (Rusu et al., 2015). However, a teacher policy is not always available for the
+main task. When in this scenario, one can train policies in other tasks that share enough
+similarities and hope for a positive transfer. One way of exploiting this extra information is to
+use distillation (Hinton et al., 2015; Rusu et al., 2015) to guide the main task in its initial
+learning phase (Schmitt et al., 2018)—although it might be difficult to find a suitable strategy
+that combines the main and auxiliary losses and/or smoothly transition between them. Typically, the
+teacher policy can be treated as an auxiliary loss (Schmitt et al., 2018) or a prior (Teh et al.,
+2017) with a fixed mixing coefficient. However, these techniques become unsound if the teacher
+policy is helpful only in specific states while hindering in other states.
+
+We design a simple RL experiment to show that our method is capable of finding the strategy of
+combining the main loss and the auxiliary loss. We define a distribution over a set of 15×1515\
+times 15 gridworlds, where an agent observes its surrounding (up to four pixels away) and can move
+in four directions, up, down, left, and right. We randomly place two types of positive rewards,
++5+5 and +10+10 points, both terminating an episode. To guarantee a finite length of episodes, we
+add a fixed probability of 0.010.01 of transitioning to a non-rewarding terminal state. See
+Appendix D.2 for more experiment details and a visualization of the environment.
+
+First, we train a Q-learning agent to navigate the gridworld which gives us a teacher policy πQ\pi^
+{\text{Q}}. Then, we create tasks to which there is a possible positive knowledge transfer by
+keeping the environment with the same layout but removing the +10+10 rewards (and corresponding
+states are no longer terminating). Consequently, we have two tasks: the auxiliary task 𝒯a​u​x\
+mathcal{T}_{{aux}} where we have a strong teacher policy πQ\pi^{\text{Q}}, and the main task
+𝒯m​a​i​n\mathcal{T}_{{main}} where the +10+10 rewards are removed. That is, we know 𝒯a​u​x\mathcal
+{T}_{{aux}} is helpful initially but hurts later since 𝒯m​a​i​n\mathcal{T}_{{main}} no longer has
+the +10+10 reward; our proposed method should adapt to this change during training. We sample
+1,0001,000 such environment pairs and report expected returns obtained (100100 evaluation episodes
+per evaluation point) using five training methods: 1) reward using only policy gradient (Williams,
+1992) in the new task, this is the baseline; 2) distill using only distillation (Rusu et al., 2015)
+cost towards the teacher; 3) add simply adding the two above; 4) cos-weighted using the weighted
+version of our method (Algorithm 2); 5) cos-unweighted using the unweighted version of our method
+(Algorithm 1).
+
+Cross-task transfer experiment 𝒯a​u​x→𝒯m​a​i​n\mathcal{T}_{{aux}}\rightarrow\mathcal{T}_{{main}}
+
+Refer to caption
+
+Distilling from the solution of the same task 𝒯m​a​i​n→𝒯m​a​i​n\mathcal{T}_{{main}}\rightarrow\
+mathcal{T}_{{main}}
+
+Refer to caption
+
+Figure 4: Top row: expected learning curves for cross-environment distillation experiments,
+averaged over 1,0001,000 partially observable gridworlds. The teacher’s policy is based on
+Q-Learning, its performance in a new environment (with modified positive rewards) is represented by
+the top dotted line. The bottom dotted line represents random policy. Each column represents a
+different temperature applied to the teacher policy. 00 temperature is the original deterministic
+greedy policy given by Q-Learning. Bottom row: expected learning curves for same-environment
+distillation experiments when the teacher is perfect, where, trusting the teacher everywhere is
+optimum.
+
+Results are shown in the top row of Figure 4. The baseline reward gives a score of slightly above
+11 point after 10,00010,000 steps of training. To leverage teacher policies, we define the
+auxiliary loss to be a distillation loss (i.e., a per-state cross-entropy between the teacher’s and
+student’s distributions over actions). First, we test using solely the distillation loss while
+sampling trajectories from the student (distill). This recovers a subset of teacher’s behaviors and
+end up with 00 point—an expected negative transfer as the teacher is guiding us to states that are
+no longer rewarding. Then, we test simply adding gradients estimated by policy gradient and
+distillation (add). The resulting policy learns quickly but saturates at a return of 11 point,
+showing very limited positive transfer. Lastly, when using our proposed gradient cosine similarity
+as the measure of transferability (cos-weighted and cos-unweighted), we get a significant
+performance boost. The learned policies reach baseline performance after just one-third of steps
+taken by the baseline, and on average obtain 33 points after 10,00010,000 steps.^3^3 3 Note that we
+compute cosine similarity between a distillation gradient and a single sample of the policy
+gradient estimator, meaning that we are using a high variance estimate of the similarity. For
+larger experiments, one would need to compute running means for reliable statistics.
+
+This experiment shows that gradient cosine similarity allows using knowledge from other related
+tasks in an automatic fashion. The agent is simply ignoring the teacher signal when it disagrees
+with its policy gradient estimator. If they do agree in terms of which actions to reinforce, the
+teacher’s logits are used for better replication of useful policies. In addition, in the bottom row
+of Figure 4, we present an experiment of transferring between the same task 𝒯m​a​i​n\mathcal{T}_
+{{main}}. Here, the teacher is perfect and it is the optimal to follow it everywhere. We see that
+the cosine similarity methods underperformed that of simply adding the two losses. This is expected
+as the noise in the gradients makes it hard to measure if the two tasks are a good fit.
+
+4.4 Single and Multi-task Atari Games
+
+Finally, we consider a similar RL setup in the more complex Atari domain (Bellemare et al., 2013).
+We use a deep RL agent the same as previous works (Mnih et al., 2015; Mnih et al., 2016; Espeholt
+et al., 2018; Hessel et al., 2018) and train using the batched actor-critic with V-trace algorithm
+(Espeholt et al., 2018). See Appendix D.3 for more experiment details.
+
+First, we look at training an agent on a main task (here, to play Breakout) given a sub-optimal
+teacher (obtained by stop training before it converges) to the task. Analogous to the previous
+experiment, we define the auxiliary loss as the distillation (i.e., the KL divergence) between the
+sub-optimal teacher and the training model. Figure 5) shows as expected that solely relying on
+distillation loss (Only KL) leads to lower performance. Training with both distillation and RL
+losses without adaptation (RL+KL(Baseline)) leads to slightly better but also sub-optimal
+performance. While both approaches learn very quickly initially, they plateau much lower than the
+pure RL approach (RL(Baseline), minimizing just the main task) due to the potential negative effect
+from the imperfect teacher and the lack of ability to detect and prevent such an effect. In our
+method (RL+KL(Our Method)), the KL penalty is scaled at every time-step by the cosine similarity
+between the policy gradient and distillation losses; once this falls below a fixed threshold, the
+loss is “turned off” thus preventing negative transfer. This experiment shows our approach is able
+to learn quickly at the beginning then continue fine-tuning with pure RL loss once the distillation
+loss is zeroed out. That is, when the teacher does not provide useful information anymore, our
+method simply encourages the agent to learn on its own.
+
+Refer to caption
+Figure 5: Results on Breakout. We perform distillation of a sub-optimal teacher policy as an
+auxiliary task.
+
+Then, we consider a setting where the main task 𝒯m​a​i​n\mathcal{T}_{{main}} is to train an agent
+to play two Atari games, Breakout and Ms. PacMan, such that the performance on both games are
+jointly maximized (i.e., ℒm​a​i​n=ℒB​r​e​a​k​o​u​t+ℒP​a​c​M​a​n\mathcal{L}_{{main}}=\mathcal{L}_
+{Breakout}+\mathcal{L}_{PacMan}). Similar to previous experiments, we have access to a teacher
+trained on just Breakout as the auxiliary task. Note that 𝒯m​a​i​n\mathcal{T}_{{main}} itself is
+chosen to be multi-task to illustrate a complex scenario where 𝒯a​u​x\mathcal{T}_{{aux}} helps with
+only part of 𝒯m​a​i​n\mathcal{T}_{{main}} (here, Breakout).
+
+Figure 6 shows that, compared to the baseline method which trains only on the main loss (Multitask)
+and the simple addition of the updates of the two tasks method (Multitask RL + Distillation) where
+the agent learns one task at the expense of the other, our method (Multitask RL + Distillation (Our
+Method)) of scaling the auxiliary loss by gradient cosine similarity is able to correct itself by
+“turning off” the auxiliary distillation when the teacher is no longer helpful and is able to learn
+Ms. PacMan without forgetting Breakout. The evolution of the gradient cosine similarity between the
+auxiliary teacher and the main Breakout and Ms.PacMan task in Figure 6 provides a meaningful cue
+for the usefulness of ℒa​u​x\mathcal{L}_{{aux}}.
+
+Refer to caption
+Figure 6: Results on Breakout and Ms. PacMan (averaged over 33 seeds). The two plots to the left
+show performance on Breakout and Ms. PacMan respectively. The third plot shows how the gradient
+cosine similarity between the teacher and the two tasks changes during training. The last plot
+shows an average score of the multi-task performance (normalized independently for each game based
+on the best score achieved across all experiments). Our method learns both games without forgetting
+and achieves the best average performance.
+
+5 Related Work
+
+Our work is related to the literature on identifying task similarity in transfer learning. It is
+generally believed that positive transfer can be achieved when source task(s) and target task(s)
+are related. However, it is usually assumed that this relatedness mapping is provided by human
+experts (Taylor and Stone, 2009; Pan et al., 2010); few works have addressed the problem of finding
+a general measure of similarity to predict transferability between tasks. In RL, methods have been
+proposed to use the Markov Decision Process (MDP) similarity as a measure of task relatedness (
+Carroll and Seppi, 2005; Ammar et al., 2014). In image classification, Yosinski et al. (2014)
+defined image similarity in ImageNet by manually splitting classes into man-made versus natural
+objects. However, none of these works have explicitly used the learned similarity metric to
+quantify the transferability from one task to another. In our work, we propose to use cosine
+similarity of gradients as a generalizable measure across domains and show it can be directly
+leveraged to detect when unwanted interference occurs and block negative transfer. One important
+aspect of task similarity for transfer is that it is highly dependent on the parametrization of the
+model and the current value of the parameters. We exploit this property by providing a heuristic
+similarity measure for the current parameters, resulting in an approach that relies on an adaptive
+weight over the updates of the model.
+
+Auxiliary tasks have shown to be beneficial in facilitating learning across domains. In RL, several
+work have studied using different tasks as auxiliaries. The UNREAL framework (Jaderberg et al.,
+2017) incorporated unsupervised control along with reward prediction learning as auxiliary tasks;
+Mirowski et al. (2017) studied auxiliary tasks in the context of navigation; Kartal et al. (2019)
+used terminal prediction as an auxiliary task; Hernandez-Leal et al. (2019) considered multiagent
+system where the other agents’ policy can be used as auxiliary tasks for the main agent. In image
+classification, Zhang et al. (2016) used unsupervised reconstruction tasks. Papoudakis et al.
+(2018) also explored auxiliary losses for VizDoom. However, these works rely on empirical results
+and do not address how the auxiliary tasks were selected. In our work, we propose a simple yet
+effective heuristic that provides explicit guidance on the important question of how to select a
+good auxiliary task.
+
+Our work is also related to, but different from multi-task learning (Caruana, 1997), particularly
+the line of work on using adaptive scaling techniques for multi-objective learning. GradNorm (Chen
+et al., 2018) uses gradient magnitude to scale loss function for each task, aiming to learn well
+for all tasks. Kendall et al. (2018) proposed a weighting mechanism by considering the
+homoscedastic uncertainty of each task. Sener and Koltun (2018) propose formulating multi-task
+learning as multi-objective optimization and leverage multiple gradient descent algorithm (MGDA) (
+Désidéri, 2012) to find a common descent direction among multiple tasks. Our work distinct in two
+ways: (i) we care only about the performance of the main task but not all tasks; our optimization
+goal is not the traditional multi-objective optimization, and (ii) the aforementioned work scale
+the losses individually without looking at their interaction (which can lead to poor performance in
+our problem setup when the auxiliary task hurts the main task), whereas we look for alignments in
+the vector field between the main and the auxiliary task, and the auxiliary task is used only when
+it is well-aligned with the main task. Nevertheless, our approaches are complementary since they
+are solving different problems and it would be interesting to combine them to further improve the
+performance.
+
+6 Shortcomings
+
+We discuss here a few shortcomings of our proposed method and present some initial analyses. First,
+estimating the cosine similarity between the gradients of tasks could be expensive or noisy and we
+currently use a fixed threshold for turning off the auxiliary loss. These could be addressed by
+calculating a running average of the cosine similarity to get a smoother result and potentially
+hyper-tune the threshold instead of setting it as a fixed constant. We point out also that even for
+a perfect alignment—a cosine similarity of 11—is not informative. In this case, using the auxiliary
+loss would be equivalent to increasing the learning rate. The positive transfer comes mostly from
+the fact that the gradients are not perfectly aligned, meaning that the auxiliary loss is learning
+features that could become useful to the main loss later on. This is reflective on the fact that
+the gradient descent is not necessarily the optimal descent direction. In addition, one might argue
+that our approach would fail in high-dimensional spaces since random vectors in such spaces tend to
+be orthogonal, so that cosine similarity will be naturally driven to 00. In fact, this is not the
+case; if two gradients are meant to be co-linear, the noise components cancel each other thus will
+not affect the cosine similarity estimation. We empirically explore this in Appendix E in the
+supplementary material.
+
+Second, the new loss surface might be less smooth which can be problematic when using optimizers
+that rely on statistics of the gradients or second order information (e.g. Adam or RMSprop). In
+these cases, the transition from just the gradient of the main task to the sum of the gradients can
+affect the statistics of the optimizer in unexpected ways. While this can be technically true, we
+have not observed this behaviour in practice.
+
+Thirdly, although the proposed approach works well empirically on complex and noisy tasks like
+Atari games, as discussed in Section 3, it guarantees only the main task’s convergence, but not how
+fast it is. While removing the worst case scenarios is important and a good first step, one might
+care more for data efficiency when using auxiliary losses (i.e., faster convergence). In Appendix B
+we provide counter examples where the proposed update rule slows down learning, compared to
+optimizing the main task alone.
+
+Finally, similar to other concurrent works (Yu et al., 2020; Schaul et al., 2019) we are making the
+assumption that the auxiliary loss harming learning of main loss locally (at time tt) implies it
+will affect the convergence speed globally. In theory, however, this is not necessarily the case.
+By moving in an ascent direction on the main loss, one might learn better representations that
+could lead to better performance or faster learning. Empirically we do not notice this to happen
+and we hypothesize that overparametrization helps making gradient similarity reliable as a signal
+for task interference. We provide a longer discussion in the Appendix F.
+
+7 Conclusions
+
+In this work, we explored a simple yet efficient technique to ensure that an auxiliary loss does
+not hurt the learning on the main task. The proposed approach reduces to applying gradients of the
+auxiliary task only if they are a descent direction of the main task. We have empirically shown the
+potential of using the proposed hypothesis as an elegant way of picking a suitable auxiliary task.
+While we have mostly considered scenarios where the auxiliary task helps initially but hurts later,
+it would be interesting to explore settings where the auxiliary task hurts initially but helps in
+the end. Examples of such are annealing β\beta in β\beta-VAE (Higgins et al., 2017) and annealing
+the confidence penalty in Pereyra et al. (2017).
+
+References
+
+  • Ammar et al. (2014) H. B. Ammar, E. Eaton, M. E. Taylor, D. C. Mocanu, K. Driessens, G. Weiss,
+    and K. Tuyls. An automated measure of MDP similarity for transfer in reinforcement learning. In
+    Workshops at the Twenty-Eighth AAAI Conference on Artificial Intelligence, 2014.
+  • Bellemare et al. (2013) M. G. Bellemare, Y. Naddaf, J. Veness, and M. Bowling. The arcade
+    learning environment: An evaluation platform for general agents. Journal of Artificial
+    Intelligence Research, 47:253–279, 2013.
+  • Carroll and Seppi (2005) J. L. Carroll and K. Seppi. Task similarity measures for transfer in
+    reinforcement learning task libraries. In IEEE International Joint Conference on Neural
+    Networks, 2005.
+  • Caruana (1997) R. Caruana. Multitask learning. Machine learning, 28(1):41–75, 1997.
+  • Chen et al. (2018) Z. Chen, V. Badrinarayanan, C.-Y. Lee, and A. Rabinovich. Gradnorm: Gradient
+    normalization for adaptive loss balancing in deep multitask networks. In ICML, 2018.
+  • Désidéri (2012) J.-A. Désidéri. Multiple-gradient descent algorithm (mgda) for multiobjective
+    optimization. Comptes Rendus Mathematique, 350(5-6):313–318, 2012.
+  • Draxler et al. (2018) F. Draxler, K. Veschgini, M. Salmhofer, and F. A. Hamprecht. Essentially
+    no barriers in neural network energy landscape. arXiv preprint arXiv:1803.00885, 2018.
+  • Espeholt et al. (2018) L. Espeholt, H. Soyer, R. Munos, K. Simonyan, V. Mnih, T. Ward,
+    Y. Doron, V. Firoiu, T. Harley, I. Dunning, et al. IMPALA: Scalable distributed Deep-RL with
+    importance weighted actor-learner architectures. arXiv preprint arXiv:1802.01561, 2018.
+  • Farajtabar et al. (2020) M. Farajtabar, N. Azizan, A. Mott, and A. Li. Orthogonal gradient
+    descent for continual learning. In AISTATS, 2020.
+  • Garipov et al. (2018) T. Garipov, P. Izmailov, D. Podoprikhin, D. P. Vetrov, and A. G. Wilson. 
+    Loss surfaces, mode connectivity, and fast ensembling of DNNs. In NeurIPS, 2018.
+  • Ghifary et al. (2015) M. Ghifary, W. Bastiaan Kleijn, M. Zhang, and D. Balduzzi. Domain
+    generalization for object recognition with multi-task autoencoders. In Proceedings of the IEEE
+    international conference on computer vision, 2015.
+  • Goldstein (1962) A. Goldstein. Cauchy’s method of minimization. Numerische Mathematik, 4
+    (1):146–150, 1962.
+  • Hauberg et al. (2016) S. Hauberg, O. Freifeld, A. B. L. Larsen, J. Fisher, and L. Hansen. 
+    Dreaming more data: Class-dependent distributions over diffeomorphisms for learned data
+    augmentation. In Artificial Intelligence and Statistics, 2016.
+  • He et al. (2016a) K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learning for image
+    recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition,
+    pages 770–778, 2016a.
+  • He et al. (2016b) K. He, X. Zhang, S. Ren, and J. Sun. Identity mappings in deep residual
+    networks. In European conference on computer vision, pages 630–645. Springer, 2016b.
+  • Hernandez-Leal et al. (2019) P. Hernandez-Leal, B. Kartal, and M. E. Taylor. Agent modeling as
+    auxiliary task for deep reinforcement learning. In Proceedings of the AAAI Conference on
+    Artificial Intelligence and Interactive Digital Entertainment, 2019.
+  • Hessel et al. (2018) M. Hessel, H. Soyer, L. Espeholt, W. Czarnecki, S. Schmitt, and H. van
+    Hasselt. Multi-task deep reinforcement learning with PopArt. arXiv preprint arXiv:1809.04474,
+    2018.
+  • Heusel et al. (2017) M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, G. Klambauer, and
+    S. Hochreiter. GANs trained by a two time-scale update rule converge to a Nash equilibrium. 
+    arXiv preprint arXiv:1706.08500, 2017.
+  • Higgins et al. (2017) I. Higgins, L. Matthey, A. Pal, C. Burgess, X. Glorot, M. Botvinick,
+    S. Mohamed, and A. Lerchner. β\beta-VAE: Learning basic visual concepts with a constrained
+    variational framework. In ICLR, 2017.
+  • Hinton et al. (2015) G. Hinton, O. Vinyals, and J. Dean. Distilling the knowledge in a neural
+    network. arXiv preprint arXiv:1503.02531, 2015.
+  • Jaderberg et al. (2017) M. Jaderberg, V. Mnih, W. M. Czarnecki, T. Schaul, J. Z. Leibo,
+    D. Silver, and K. Kavukcuoglu. Reinforcement learning with unsupervised auxiliary tasks. In
+    ICLR, 2017.
+  • Kartal et al. (2019) B. Kartal, P. Hernandez-Leal, and M. E. Taylor. Terminal prediction as an
+    auxiliary task for deep reinforcement learning. In Proceedings of the AAAI Conference on
+    Artificial Intelligence and Interactive Digital Entertainment, pages 38–44, 2019.
+  • Kendall et al. (2018) A. Kendall, Y. Gal, and R. Cipolla. Multi-task learning using uncertainty
+    to weigh losses for scene geometry and semantics. In CVPR, 2018.
+  • Krizhevsky et al. (2012) A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet classification
+    with deep convolutional neural networks. In NeurIPS, 2012.
+  • Li et al. (2019) A. Li, H. Hu, P. Mirowski, and M. Farajtabar. Cross-view policy learning for
+    street navigation. In Proceedings of the IEEE International Conference on Computer Vision,
+    2019.
+  • Lopez-Paz and Ranzato (2017) D. Lopez-Paz and M. Ranzato. Gradient episodic memory for
+    continual learning. In Advances in Neural Information Processing Systems, pages 6467–6476,
+    2017.
+  • Mirowski et al. (2017) P. Mirowski, R. Pascanu, F. Viola, H. Soyer, A. J. Ballard, A. Banino,
+    M. Denil, R. Goroshin, L. Sifre, K. Kavukcuoglu, et al. Learning to navigate in complex
+    environments. In ICLR, 2017.
+  • Mnih et al. (2015) V. Mnih, K. Kavukcuoglu, D. Silver, A. A. Rusu, J. Veness, M. G. Bellemare,
+    A. Graves, M. Riedmiller, A. K. Fidjeland, G. Ostrovski, et al. Human-level control through
+    deep reinforcement learning. Nature, 518(7540):529, 2015.
+  • Mnih et al. (2016) V. Mnih, A. P. Badia, M. Mirza, A. Graves, T. Lillicrap, T. Harley,
+    D. Silver, and K. Kavukcuoglu. Asynchronous methods for deep reinforcement learning. In ICML,
+    2016.
+  • Pan et al. (2010) S. J. Pan, Q. Yang, et al. A survey on transfer learning. IEEE Transactions
+    on knowledge and data engineering, 22(10):1345–1359, 2010.
+  • Papoudakis et al. (2018) G. Papoudakis, K. C. Chatzidimitriou, and P. A. Mitkas. Deep
+    reinforcement learning for doom using unsupervised auxiliary tasks. CoRR, abs/1807.01960, 2018.
+  • Pereyra et al. (2017) G. Pereyra, G. Tucker, J. Chorowski, Ł. Kaiser, and G. Hinton. 
+    Regularizing neural networks by penalizing confident output distributions. arXiv preprint
+    arXiv:1701.06548, 2017.
+  • Quadrianto et al. (2010) N. Quadrianto, J. Petterson, T. S. Caetano, A. J. Smola, and
+    S. Vishwanathan. Multitask learning without label correspondences. In NeurIPS, 2010.
+  • Russakovsky et al. (2015) O. Russakovsky, J. Deng, H. Su, J. Krause, S. Satheesh, S. Ma,
+    Z. Huang, A. Karpathy, A. Khosla, M. Bernstein, et al. Imagenet large scale visual recognition
+    challenge. International Journal of Computer Vision, 2015.
+  • Rusu et al. (2015) A. A. Rusu, S. G. Colmenarejo, C. Gulcehre, G. Desjardins, J. Kirkpatrick,
+    R. Pascanu, V. Mnih, K. Kavukcuoglu, and R. Hadsell. Policy distillation. arXiv preprint
+    arXiv:1511.06295, 2015.
+  • Schaul et al. (2019) T. Schaul, D. Borsa, J. Modayil, and R. Pascanu. Ray interference: a
+    source of plateaus in deep reinforcement learning. arXiv preprint arXiv:1904.11455, 2019.
+  • Schmitt et al. (2018) S. Schmitt, J. J. Hudson, A. Zidek, S. Osindero, C. Doersch, W. M.
+    Czarnecki, J. Z. Leibo, H. Kuttler, A. Zisserman, K. Simonyan, et al. Kickstarting deep
+    reinforcement learning. arXiv preprint arXiv:1803.03835, 2018.
+  • Schulman et al. (2017) J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. Proximal
+    policy optimization algorithms. arXiv preprint arXiv:1707.06347, 2017.
+  • Sener and Koltun (2018) O. Sener and V. Koltun. Multi-task learning as multi-objective
+    optimization. In Advances in Neural Information Processing Systems, 2018.
+  • Shwartz-Ziv and Tishby (2017) R. Shwartz-Ziv and N. Tishby. Opening the black box of deep
+    neural networks via information. arXiv preprint arXiv:1703.00810, 2017.
+  • Silver et al. (2016) D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre, G. Van
+    Den Driessche, J. Schrittwieser, I. Antonoglou, V. Panneershelvam, M. Lanctot, et al. Mastering
+    the game of Go with deep neural networks and tree search. Nature, 529(7587):484, 2016.
+  • Simonyan and Zisserman (2015) K. Simonyan and A. Zisserman. Very deep convolutional networks
+    for large-scale image recognition. In ICLR, 2015.
+  • Taylor and Stone (2009) M. E. Taylor and P. Stone. Transfer learning for reinforcement learning
+    domains: A survey. JMLR, 2009.
+  • Teh et al. (2017) Y. Teh, V. Bapst, W. M. Czarnecki, J. Quan, J. Kirkpatrick, R. Hadsell,
+    N. Heess, and R. Pascanu. Distral: Robust multitask reinforcement learning. In NeurIPS, 2017.
+  • Vaswani et al. (2017) A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+    Ł. Kaiser, and I. Polosukhin. Attention is all you need. In NeurIPS, 2017.
+  • Watkins (1989) C. J. C. H. Watkins. Learning from delayed rewards. PhD thesis, King’s College,
+    Cambridge, 1989.
+  • Williams (1992) R. J. Williams. Simple statistical gradient-following algorithms for
+    connectionist reinforcement learning. Machine learning, 8(3-4):229–256, 1992.
+  • Yosinski et al. (2014) J. Yosinski, J. Clune, Y. Bengio, and H. Lipson. How transferable are
+    features in deep neural networks? In NeurIPS, 2014.
+  • Yu et al. (2020) T. Yu, S. Kumar, A. Gupta, S. Levine, K. Hausman, and C. Finn. Gradient
+    surgery for multi-task learning. arXiv preprint arXiv:2001.06782, 2020.
+  • Zhang et al. (2016) Y. Zhang, K. Lee, and H. Lee. Augmenting supervised neural networks with
+    unsupervised objectives for large-scale image classification. In ICML, 2016.
+
+Adapting Auxiliary Losses Using Gradient Similarity:
+Supplementary Material
+
+Appendix A Proofs
+
+A.1 Proof for Proposition 1
+
+Given any gradient vector field G⁡(𝛉)=∇𝛉ℒ​(𝛉)G({\bm{\theta}})=\nabla_{\bm{\theta}}\mathcal{L}({\bm
+{\theta}}) and any vector field V⁡(𝛉)V({\bm{\theta}}) (such as gradient of another loss function,
+but could be arbitrary set of updates), an update rule of the form
+
+ 𝜽(t+1):=𝜽(t)−α(t)​(G⁡(𝜽(t))+V⁡(𝜽(t))​max⁡(0,cos⁡(G⁡(𝜽(t)),V⁡(𝜽(t))))CLOSE\displaystyle{\bm{\
+ theta}}^{(t+1)}:={\bm{\theta}}^{(t)}-\alpha^{(t)}(G({\bm{\theta}}^{(t)})+V({\bm{\theta}}^      (7)
+ {(t)})\max(0,\cos(G({\bm{\theta}}^{(t)}),V({\bm{\theta}}^{(t)})))
+
+converges to the local minimum of ℒ\mathcal{L} given small enough α(t)\alpha^{(t)}.
+
+Proof.
+
+Let us denote
+
+ G(t):=G⁡(𝜽(t))V(t):=V⁡(𝜽(t))∇ℒ(t):=∇𝜽ℒ​(𝜽(t))G^{(t)}:=G({\bm{\theta}}^{(t)})\;\;\;\;\;\;\;\;V^
+ {(t)}:=V({\bm{\theta}}^{(t)})\;\;\;\;\;\;\;\;\nabla\mathcal{L}^{(t)}:=\nabla_{\bm{\theta}}\
+ mathcal{L}({\bm{\theta}}^{(t)})
+
+ Δ​𝜽(t):=G(t)+V(t)​max⁡(0,cos⁡(G(t),V(t))).\Delta{\bm{\theta}}^{(t)}:=G^{(t)}+V^{(t)}\max(0,\cos(G
+ ^{(t)},V^{(t)})).
+
+Our update rule is simply 𝜽(t+1):=𝜽(t)−α(t)​Δ​𝜽(t){\bm{\theta}}^{(t+1)}:={\bm{\theta}}^{(t)}-\alpha
+^{(t)}\Delta{\bm{\theta}}^{(t)} and we have
+
+ ⟨Δ​𝜽(t),∇ℒ(t)⟩\displaystyle\  =⟨G(t)+V(t)​max⁡(0,cos⁡(G(t),V(t))),∇ℒ(t)⟩\displaystyle=\
+ langle\Delta{\bm{\theta}}^    langle G^{(t)}+V^{(t)}\max(0,\cos(G^{(t)},V^{(t)})),\nabla\     (8)
+ {(t)},\nabla\mathcal{L}^{(t)} mathcal{L}^{(t)}\rangle
+ \rangle
+                               =⟨G(t),∇ℒ(t)⟩+⟨V(t)​max⁡(0,cos⁡(G(t),V(t))),∇ℒ(t)⟩\
+                               displaystyle=\langle G^{(t)},\nabla\mathcal{L}^{(t)}\rangle+\   (9)
+                               langle V^{(t)}\max(0,\cos(G^{(t)},V^{(t)})),\nabla\mathcal{L}^
+                               {(t)}\rangle
+                               =‖∇ℒ(t)‖2+1‖V(t)‖​‖∇ℒ(t)‖​max⁡(0,⟨∇ℒ(t),V(t)⟩)​⟨V(t),∇ℒ(t)⟩≥0.
+                               \displaystyle=\|\nabla\mathcal{L}^{(t)}\|^{2}+\tfrac{1}{\|V^
+                               {(t)}\|\|\nabla\mathcal{L}^{(t)}\|}\max(0,\langle\nabla\        (10)
+                               mathcal{L}^{(t)},V^{(t)}\rangle)\langle V^{(t)},\nabla\mathcal
+                               {L}^{(t)}\rangle\geq 0.
+
+And it can be 0 if and only if ‖∇ℒ(t)‖=0\|\nabla\mathcal{L}^{(t)}\|=0 (since sum of two
+non-negative terms is zero iff both are zero, and step from (4) to (5) is only possible if this is
+not true), thus it is 0 only when we are at the critical point of ℒ\mathcal{L}. Thus the method
+converges due to convergence of steepest descent methods, see “Cauchy’s method of minimization” [
+Goldstein, 1962]. ∎
+
+A.2 Proof for Proposition 3
+
+In general, the proposed update rule does not have to create a conservative vector field.
+
+Proof.
+
+Proof comes from a counterexample, let us define in 2D space:
+
+ ℒm​a​i​n​(θ1,θ2)=a​θ1\mathcal{L}_{{main}}(\theta_{1},\theta_{2})=a\theta_{1}
+
+ ℒa​u​x(θ1,θ2)={a​θ1if ​θ1∈[1,2]∧θ2∈[0,1]0 therwise \mathcal{L}_{{aux}}(\theta_{1},\theta_{2})=\
+ left\{\begin{matrix}a\theta_{1}&\;\;\text{if }\theta_{1}\in[1,2]\wedge\theta_{2}\in[0,1]\\ 0&\
+ text{ therwise }\end{matrix}\right.
+
+for some fixed a≠0a\neq 0. Let us now define two paths (parametrized by ss) between points (0,0)
+(0,0) and (2,2)(2,2), path AA which is a concatenation of a line from (0,0)(0,0) to (0,2)(0,2) (we
+call it UU, since it goes up) and line from (0,2)(0,2) to (2,2)(2,2) (which we call RR as it goes
+right), and path BB which first goes right and then up. Let VcosV_{\text{cos}} denote the update
+rule we follow, then:
+
+ ∫AVcos​𝑑s=∫A∇ℒmain​𝑑s=∫U∇ℒmain​𝑑s+∫R∇ℒmain​𝑑s=∫R∇ℒmain​𝑑s=2​a\int_{A}V_{\text{cos}}ds=\int_{A}\
+ nabla\mathcal{L}_{\text{{main}}}ds=\int_{U}\nabla\mathcal{L}_{\text{{main}}}ds+\int_{R}\nabla\
+ mathcal{L}_{\text{{main}}}ds=\int_{R}\nabla\mathcal{L}_{\text{{main}}}ds=2a
+
+At the same time, since gradient of ℒm​a​i​n\mathcal{L}_{{main}} is conservative by definition:
+
+ ∫BVcos​𝑑s=∫B∇ℒmain​𝑑s+∫C∇ℒaux​𝑑s=∫A∇ℒmain​𝑑s+∫C∇ℒaux​𝑑s=2​a+∫C∇ℒaux​𝑑s=3​a\int_{B}V_{\text{cos}}
+ ds=\int_{B}\nabla\mathcal{L}_{\text{{main}}}ds+\int_{C}\nabla\mathcal{L}_{\text{{aux}}}ds=\int_
+ {A}\nabla\mathcal{L}_{\text{{main}}}ds+\int_{C}\nabla\mathcal{L}_{\text{{aux}}}ds=2a+\int_{C}\
+ nabla\mathcal{L}_{\text{{aux}}}ds=3a
+
+where CC is a part of BB that goes through [1,2]×[0,1][1,2]\times[0,1]. We conclude that
+∫AVcos​𝑑s≠∫BVcos​𝑑s\int_{A}V_{\text{cos}}ds\neq\int_{B}V_{\text{cos}}ds, so our vector field is not
+path invariant, thus by Green’s Theorem it is not conservative, which concludes the proof. See
+Figure 7 for visualization. ∎
+
+Refer to caption
+Figure 7: Visualization of the counterexample from Proposition 3, stars denote starting (green) and
+end (black) points. Dotted and dashed lines correspond to paths A and B respectively. Blue arrows
+represent gradient vector field of the main loss, while the violet ones the merged vector field.
+
+
+Figure 8: Positive example optimization for L1​(θ1,θ2)=θ12+θ22L_{1}(\theta_{1},\theta_{2})=\theta_
+{1}^{2}+\theta_{2}^{2}, L2​(θ1,θ2)=(θ1−1)2+(θ2−1)2L_{2}(\theta_{1},\theta_{2})=(\theta_{1}-1)^{2}+
+(\theta_{2}-1)^{2} and V⁡(θ1,θ2)=[−θ2θ12+θ22−2​θ1,θ1θ12+θ22−2​θ2]V(\theta_{1},\theta_{2})=[-\tfrac
+{\theta_{2}}{\theta_{1}^{2}+\theta_{2}^{2}}-2\theta_{1},\tfrac{\theta_{1}}{\theta_{1}^{2}+\theta_
+{2}^{2}}-2\theta_{2}] where the proposed method speeds up the process (compared on all runs). Each
+colored trajectory represents one optimization run with random initial position. Star represents
+the convergence point. All experiments use steepest descent method and run 600 iterations with a
+constant step size of 0.01. Convergence time is defined as number of steps needed to get below 0.1
+loss of L1L_{1} (gray region). Color of each point represents its alignment with ∇L1\nabla L_{1}
+(green—positive alignment, red—negative alignment, white—directions are perpendicular). In this
+example L2L_{2} is helpful for L1L_{1} as it reinforces good descent directions in most of the
+space. However, simple mixing is actually slowing optimization down (or makes it fail completely,
+see the second row), while the proposed methods (weighted and unweighted variants) converge faster
+(see the third row). When using non-conservative vector field VV one obtains lack of convergence
+(cyclic behaviour, see the fourth row), while the proposed merging still works well (see the last
+row).
+
+Appendix B Positive and Negative Examples of Auxiliary Losses
+
+We show in figure 8 positive examples of where an auxiliary loss can help a main loss to converge
+faster. In addition, as mentioned in Section 3 that an auxiliary task does not guarantee faster
+convergence, we discuss here a few potential issues of using cosine similarity of gradients to
+measure task similarity and show in Figure 9 a negative example on where the auxiliary loss could
+slow-down the convergence of the main task. First, the method depends on being able to compute
+cosine between gradients. However, in deep learning we rarely are able to compute exact gradients
+in practice, we instead depend on their high variance estimators (mini-batches in supervised
+learning, or Monte Carlo estimators in RL). Consequently, estimating the cosine similarity might
+require additional tricks such as keeping moving averages of estimates. Second, adding additional
+task gradient in selected subset of iterates can lead to very bumpy surface from the perspective of
+optimizer, causing methods which keep track of gradient statistics/estimate higher order
+derivatives, can be less efficient. Finally, one can construct specific functions, where despite
+still minimizing the loss, one significantly slows down optimization process.
+
+Refer to caption
+Refer to caption
+Refer to caption
+Refer to caption
+
+Figure 9: Negative example optimization for L1​(θ)=(θ1<0)​(θ12+θ22)+(θ1>0)​(1−exp⁡(−2​(θ12+θ22)))L_
+{1}(\theta)=(\theta_{1}<0)(\theta_{1}^{2}+\theta_{2}^{2})+(\theta_{1}>0)\Bigl(1-\exp\bigl(-2(\
+theta_{1}^{2}+\theta_{2}^{2})\bigr)\Bigr) and L2​(θ)=(θ1−2)2+(θ2−0.5)2L_{2}(\theta)=(\theta_{1}-2)^
+{2}+(\theta_{2}-0.5)^{2} where the proposed method slows down the process (compared on red runs).
+For the ease of presentation, we choose L1L_{1}, which is non-differentiable/smooth when θ=0\theta=
+0. But one can create any smooth functions with analogous properties. The core idea is, when there
+exists a flat region on the loss surface, the auxiliary lost tends to push the iterates to this
+region. Even though this move still decreases the loss (i.e., convergence is guaranteed), the
+optimization process will be slowed down.
+
+Appendix C Weighted Version of Our Method
+
+Algorithm 2 describes the weighted version of our method.
+
+
+Algorithm 2 Weighted version of our method.
+1: Initialize shared parameters 𝜽{\bm{\theta}} and task specific parameters ϕm​a​i​n,ϕa​u​x{\bm{\
+phi}}_{{main}},{\bm{\phi}}_{{aux}}. randomly.
+2: for 𝗂𝗍𝖾𝗋=1:𝗆𝖺𝗑​_​𝗂𝗍𝖾𝗋\mathsf{iter}=1:\mathsf{max\_iter} do
+3:  Compute ∇𝜽ℒm​a​i​n,∇ϕm​a​i​nℒm​a​i​n\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}},\nabla_{{\bm{\
+phi}}_{{main}}}\mathcal{L}_{{main}}, ∇𝜽ℒa​u​x,∇ϕa​u​xℒa​u​x\nabla_{{\bm{\theta}}}\mathcal{L}_
+{{aux}},\nabla_{{\bm{\phi}}_{{aux}}}\mathcal{L}_{{aux}}.
+4:  Update ϕm​a​i​n{\bm{\phi}}_{{main}} and ϕa​u​x{\bm{\phi}}_{{aux}} using corresponding gradients
+5:  Update 𝜽{\bm{\theta}} using ∇𝜽ℒm​a​i​n+max⁡(0,cos⁡(∇𝜽ℒm​a​i​n,∇𝜽ℒa​u​x))​∇𝜽ℒa​u​x\nabla_{{\bm{\
+theta}}}\mathcal{L}_{{main}}+\max(0,\cos(\nabla_{{\bm{\theta}}}\mathcal{L}_{{main}},\nabla_{{\bm{\
+theta}}}\mathcal{L}_{{aux}}))\nabla_{{\bm{\theta}}}\mathcal{L}_{{aux}}
+
+Appendix D Experimental Details
+
+We present in this section experimental details for the ImageNet classification task, the RL
+gridworld task, and the RL Atari game task.
+
+D.1 Identifying Near and Far Classes in ImageNet
+
+Refer to caption
+Figure 10: LCA (xx-axis) versus FID (yy-axis) as a ground truth for class similarity. The
+measurements reflect human intuition of class similarity; trimaran and catamaran (bottom-left) are
+similar both visually and conceptually, whereas rock python and traffic light (top-right) are
+dissimilar both visually and conceptually.
+
+As a ground truth for class similarity, we identify pairs of ImageNet classes to be near or far
+using, lowest common ancestor (LCA) and Frechet Inception Distance (FID) [Heusel et al., 2017].
+
+ImageNet follows a tree hierarchy where each class is a leaf node. We define the distance between a
+pair of classes as at which tree level their LCA is found. In particular, there are 19 levels in
+the class tree, each leaf node (i.e. class) is considered to be level 0 while the root node is
+considered to be level 19. We perform bottom-up search for one pair of random sampled classes and
+find their LCA node—the class distance is then defined as the level number of this node. For
+example, class 871871 (“trimaran”) and class 484484 (“catamaran”) has class distance 1 because
+their LCA is one level up.
+
+FID is used as a second measure of similarity. We obtain the image embedding of a pair of classes
+using the penultimate layer of a pre-trained ResNetV2-50 model [He et al., 2016b] and then compute
+the embedding distance using FID, defined in Heusel et al. [2017] as:
+
+ FID=d2​((m1,C1),(m2,C2))=‖m1−m2‖22+Tr⁡(C1+C2−2​(C1​C2)1/2).\displaystyle\mathrm{FID}=d^{2}\
+ bigl((m_{1},C_{1}),(m_{2},C_{2})\bigr)=\|m_{1}-m_{2}\|_{2}^{2}+\mathrm{Tr}\bigl(C_{1}+C_{2}   (11)
+ -2(C_{1}C_{2})^{1/2}\bigr).
+
+where mk,Ckm_{k},C_{k} denote the mean and covariance of the embeddings from class kk.
+
+We randomly sampled 50 pairs of classes for each level of L​C​A={1,2,3,4,16,17,18,19}LCA=\
+{1,2,3,4,16,17,18,19\} (400 pair of classes in total) and compute their FID. Figure 10 shows a plot
+of LCA (x-axis) verses FID (y-axis) over our sampled class pairs. It can be seen that LCA and FID
+are (loosely) correlated and that they reflect human intuition of task similarity for some pairs.
+For example, trimaran and catamaran (bottom-left) are similar both visually and conceptually,
+whereas rock python and traffic light (top-right) are dissimilar both visually and conceptually.
+However, there are contrary examples where LCA disagrees with FID; monkey pinscher and doberman
+pinscher (top-left) are visually dissimilar but conceptually similar, whereas bubble and sundial
+(bottom-right) are visually similar but conceptually dissimilar. Per the observations, in
+subsequent experiments we pick class pairs that are {Low LCA, Low FID} as near pairs (e.g.,
+trimaran and catamaran), and class pairs that are {high LCA, high FID} as far pairs (e.g., rock
+python and traffic light).
+
+D.2 Gridworld Experiments
+
+We define a distribution over 15×1515\times 15 gridworlds, where an agent observes its surrounding
+(up to 4 pixels away) and can move in 4 directions (with 10% transition noise). We randomly place
+walls (blocking movement) as well as two types of positive rewards: +5+5 and +10+10 points, both
+terminating an episode. There are also some negative rewards (both terminating and non-terminating)
+to make problem harder. In order to guarantee (expected) finite length of episodes we add fixed
+probability of 0.01 of transitioning to a non-rewarding terminal state.
+
+For the sake of simplicity we use episode-level policy gradient [Williams, 1992] with value
+function baseline, with policies parametrized as logits 𝜽{\bm{\theta}} of π⁡(a|s)=exp⁡(θs,a)∑bexp⁡
+(θs,b)∈[0,1]\pi(a|s)=\tfrac{\exp(\theta_{s,a})}{\sum_{b}\exp(\theta_{s,b})}\in[0,1], baselines as
+Bs∈ℝB_{s}\in\mathbb{R}, with fixed learning rate of α=0.01\alpha=0.01, discount factor γ=0.95\gamma
+=0.95 and 10,000 training steps (states visited).
+
+For this setup, the update rule for each sequence τ=((s1,a1,r1),…​(sN,aN,rN))\tau=\bigl((s_{1},a_
+{1},r_{1}),\dots(s_{N},a_{N},r_{N})\bigr) is thus given by
+
+ Δ​𝜽=α​∇𝜽​log⁡π⁡(at′|st′)​[∑i=0N−t′rt′+i−Bst′]=α​G(t)Δ​Bst′=−α​∇Bst′(Bst′−∑i=0N−t′rt′+i)2.\Delta{\
+ bm{\theta}}=\alpha\nabla_{\bm{\theta}}\log\pi(a_{t^{\prime}}|s_{t^{\prime}})\left[\sum_{i=0}^{N-
+ {t^{\prime}}}r_{{t^{\prime}}+i}-B_{s_{t^{\prime}}}\right]=\alpha G^{(t)}\;\;\;\;\;\;\;\;\Delta B_
+ {s_{t^{\prime}}}=-\alpha\nabla_{B_{s_{t^{\prime}}}}(B_{s_{t^{\prime}}}-\sum_{i=0}^{N-{t^{\
+ prime}}}r_{{t^{\prime}}+i})^{2}.
+
+In order to make use of expert policies for 𝒯a​u​x\mathcal{T}_{{aux}} we define auxiliary loss as a
+distillation loss, which is just a per-state cross-entropy between teacher’s and student’s
+distributions over actions. If we just add gradients estimated by policy gradient, and the ones
+given by distillation, the update is given by
+
+ Δ𝜽=α[G(t)−∇𝜽H×(πQ(⋅|st′)∥π(⋅|st′))]=α[G(t)+∑aπQ(a|st′)∇𝜽logπ(a|st′)],\Delta{\bm{\theta}}=\alpha\
+ left[G^{(t)}-\nabla_{\bm{\theta}}\text{H}^{\times}(\pi^{\text{Q}}(\cdot|s_{t^{\prime}})\|\pi(\
+ cdot|s_{t^{\prime}}))\right]=\alpha[G^{(t)}+\sum_{a}\pi^{\text{Q}}(a|s_{t^{\prime}})\nabla_{\bm{\
+ theta}}\log\pi(a|s_{t^{\prime}})],
+
+where V(t)=∑aπQ​(a|st′)​∇𝜽​log⁡π⁡(a|st′)V^{(t)}=\sum_{a}\pi^{\text{Q}}(a|s_{t^{\prime}})\nabla_{\bm
+{\theta}}\log\pi(a|s_{t^{\prime}}) and H×(p,q)=−∑kpklogqk\text{H}^{\times}(p,q)=-\sum_{k}p_{k}\log
+q_{k} is the cross entropy.
+
+However, if we use the proposed gradient cosine similarity, we get the following update
+
+ Δ​𝜽=α⁡[G(t)+V(t)​(2⋅sign⁡(cos⁡(G(t),V(t)))−1)].\Delta{\bm{\theta}}=\alpha\left[G^{(t)}+V^{(t)}\
+ bigl(2\cdot\sign(\cos(G^{(t)},V^{(t)}))-1\bigr)\right].
+
+This get a significant boost to performance, and policies that score on average 3 points after
+10,000 steps and obtain baseline performance after just one third of steps. Figure 11 shows a
+depiction of the task and an example solution.
+
+Refer to caption
+Refer to caption
+Refer to caption
+Refer to caption
+
+Figure 11: Left most: Initial task 𝒯m​a​i​n\mathcal{T}_{{main}}, yellow border denotes starting
+point and violet ones terminating states. Red states are penalizing with the value in the box while
+the green ones provide positive reward. Middle Left: Solution found by a single run of Q-learning
+with uniform exploration policy. Middle Right: Transformed task 𝒯a​u​x\mathcal{T}_{{aux}}. Right
+most: Solution found by gradient cosine similarity driven distillation with policy gradient.
+
+D.3 Atari Experiments
+
+For all Atari game experiments, we use a convolutional architecture as in previous work [Espeholt
+et al., 2018, Hessel et al., 2018, Mnih et al., 2015, Mnih et al., 2016], trained with batched
+actor-critic with the V-trace algorithm [Espeholt et al., 2018]. We use a learning rate of
+0.00060.0006 and an entropy cost of 0.010.01 for all experiments, with a batch size of 3232 and
+200200 parallel actors.
+
+For the single game experiment, Breakout, we use 0.02 for the threshold on the cosine similarity
+and, for technical reasons we ended up computing the cosine distance on a per-layer basis and then
+averaged. We additionally need to do a moving average of the cosine over time (0.999​c(t−1)+0.001​c
+(t)0.999c^{(t-1)}+0.001c^{(t)}) to ensure there are no sudden spikes in the weighting due to noisy
+gradients. Same setting is used for the multi-task experiment, just that the threshold is set to
+0.01.
+
+Appendix E Gradient Cosine Similarity in High Dimensions
+
+
+Figure 12: Cosine similarity as a function of dimensionality. Left: we generate two random vectors
+θ1\theta_{1} and θ2\theta_{2} from a Gaussian distribution with zero mean and variance σ2\sigma^{2}
+and as expected, the cosine similarity drops to zero very quickly as the number of dimensions
+increases. Right: we mimic a scenario where the true gradients of the main and auxiliary are
+aligned, however we observe only corrupted noisy gradients which are noisy copies of the true
+underlying vector; we generate μ∼𝒩⁡(0,Id)\mu\sim\mathcal{N}(0,I_{d}) and generate θ1∼𝒩⁡(μ,σ​Id)\
+theta_{1}\sim\mathcal{N}(\mu,\sigma I_{d}) and θ2∼𝒩⁡(μ,σ​Id)\theta_{2}\sim\mathcal{N}(\mu,\sigma I_
+{d}). In this case, cosine similarity is larger in higher dimensions (as the inner product of the
+corruption noise goes to zero).
+
+As discussed in Section 6 of the paper, we empirically show in Figure 12 that if two gradients are
+meant to be co-linear (e.g., tasks share some underlying structure), the cosine similarity can
+still be a potential way of measuring task similarity even in high dimensions.
+
+Appendix F Overparametrization and reliability of gradient similarity globally
+
+As discussed in Section 6 of the paper, in theory it is not clear that moving in an ascent
+direction of the main loss locally (e.g. for a small finite number of steps) has negative
+consequences on speed of convergence when the main loss is non-convex as in the case of neural
+networks.
+
+For example the auxiliary loss could drive the model outside of the convex bowl (basin of
+attraction) of a suboptimal minima, helping the neural network convert to a better solution for the
+main loss, even though locally it will move in an ascent direction on the main loss. In general if
+we think of the auxiliary loss as some form of regularization, one interpretation of regularization
+terms is that it is needed to prevent overfitting the data. That implies that it will, at some
+point in training, stop the model to move in the descent direction of the training error which
+would lead to memorization of the training set.
+
+However we observe that in practice, as a heuristic, gradient similarity seems to work reasonably
+well. While we do not have an understanding of the efficiency of our heuristic, we hypothesize that
+overparametrization of neural networks might play an important role in the explanation. For
+example, it is well understood that overparametrization makes it less likely for the loss surface
+to exhibit suboptimal local minima. Therefore the explicit case of needing to move in ascent
+direction in order to escape the basing of attraction of a suboptimal solution becomes less likely.
+The lack of bad local minima however does not exclude that moving in an ascent direction can
+potentially have positive effects globally. For example, one can imagine moving in a descent
+direction forcing learning to traverse a plateaux until it reaches a minima, while moving in a
+ascent direction leads to a steep valley. The minima reached on both direction could be connected
+(as most minima for neural networks seem to be Garipov et al. [2018], Draxler et al. [2018]) and
+hence this is not a case of being stuck in a suboptimal solution. While such structures of the loss
+surface have not been investigated, and they could happen due to the non-linearity, we believe that
+overparametrization makes them less likely. We leave exploring this hypothesis as an open question
+for future work.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

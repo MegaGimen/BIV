@@ -1,0 +1,968 @@
+source: https://arxiv.org/html/2606.16070
+arxiv: https://arxiv.org/abs/2606.16070
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Contributions.
+ 3. 2 Related Work
+     1. World models for LLM planning.
+     2. Programmatic and compositional world models.
+ 4. 3 Problem Formulation
+     1. Three roles.
+     2. World model MM.
+     3. Evaluation axes.
+     4. Success rate (SR).
+     5. Planning interface.
+ 5. 4 The Mind-Studio Framework
+     1. 4.1 World Model Synthesis
+     2. 4.2 LLM-as-Planner: A Stable Evaluation Harness
+ 6. 5 Experiments
+     1. Tasks and baselines.
+     2. Models and selection.
+     3. 5.1 Model Fidelity
+         1. Offline fidelity.
+         2. Online fidelity.
+         3. LLM-as-WM failure mode.
+     4. 5.2 Planning Results
+     5. 5.3 Per-Action Fidelity
+         1. NSP–task-success relationship.
+     6. 5.4 Ablation: synthesis inputs
+     7. 5.5 Backbone Stability and Task Alignment
+ 7. 6 Conclusion
+ 8. References
+ 9. A Subgoal Curriculum and Predicate Specification
+10. B Implementation Details
+     1. B.1 Models and decoding
+     2. B.2 Synthesis pipeline
+     3. B.3 Entropy-score hyperparameters
+     4. B.4 Planning harness
+     5. B.5 Computational resources
+     6. B.6 Reproducibility
+11. C Game setting skill-file excerpt
+
+License: CC BY 4.0
+arXiv:2606.16070v2 [cs.AI] 16 Jun 2026
+
+Mind-Studio: Executable World Models with Lookahead Evaluation for Partially Observable Games
+
+Yifei Dong Affiliation: Hong Kong University of Science and Technology Email: 
+Linquan.Wu@my.cityu.edu.hk    Mingen Zheng Affiliation: Hong Kong University of Science and
+Technology Email: j.z.pan@ed.ac.uk    Linquan Wu Affiliation: City University of Hong Kong Email: 
+baijiaxin@hkbu.edu.hkhttps://github.com/HKBU-KnowComp/MindStudio    Jeff Z. Pan Affiliation: 
+University of Edinburgh    Jiaxin Bai Affiliation: Hong Kong Baptist University
+ydongbl@connect.ust.hk  mzhengap@connect.ust.hk
+
+Abstract
+
+World-model synthesis aims to turn interaction experience into an internal model of environment
+dynamics. Existing symbolic approaches often fit observed transitions or mixtures of local rules,
+but they do not produce a complete executable program that can run independently of the real
+environment. We present Mind-Studio, a framework that synthesizes executable pygame-style world
+models from state-action-next-state trajectories using large language models. Mind-Studio combines
+entropy-selected traces with a lightweight game skill file containing object, action, and static
+scene information extracted from screenshots. We evaluate synthesis quality with a KK-step
+lookahead fidelity protocol that compares generated WM rollouts against Real-ALE rollouts from the
+same state. On Montezuma’s Revenge, Mind-Studio improves chosen-action NSP from 0.3%0.3\%
+(PoE-World) to 48.7%48.7\% while verifying 5/85/8 subgoals; across Alien, Assault, and Skiing, it
+achieves stronger branch-level fidelity than prior learned lookahead sources.
+
+1 Introduction
+
+Refer to caption Refer to caption Refer to caption Refer to caption
+Original game-state renderings
+Refer to caption Refer to caption Refer to caption Refer to caption
+Mind-Studio game renderings
+Skiing           Assault          Alien            Montezuma
+
+
+Figure 1: Representative game renderings. Top: original Atari game-state renderings. Bottom:
+Mind-Studio renderings produced by the generated code-based world models, showing the abstract
+object-centric representation.
+
+A world model is an internal representation that describes how an environment changes under
+actions, allowing an agent to reason beyond the current observation Ha and Schmidhuber (2018);
+Sutton and Barto (1998). For decision making, such a model should not merely predict the next state
+once; it should encode enough dynamics to support hypothetical rollouts under different actions.
+
+Symbolic world models are a natural fit for this goal because they represent environments through
+objects, attributes, relations, and rules d’Avila Garcez et al. (2019). Code-based symbolic world
+models go one step further: object states become program variables, while dynamics are expressed
+through control flow, functions, and numerical updates Silver and Chitnis (2020).
+
+Recent LLM-based systems show that programmatic world models can be induced from
+state-action-next-state tuples Tang et al. (2024b); Piriyakulkij et al. (2025a). However, many
+existing methods remain transition-centric: they reproduce observed input-output behavior or
+combine local rule experts, but do not necessarily synthesize a complete mechanism that explains
+how the transition is produced. In partially observable Atari games, this distinction matters. The
+same visible state can hide different internal conditions, and multiple mechanisms—movement,
+collision priority, enemy behavior, respawn, and object collection—often interact in the same local
+region.
+
+This motivates the central question of this work: how can we synthesize an executable world model
+that captures these mechanisms as a runnable program, rather than only fitting surface-level
+transitions? A useful world model should preserve object identities, static scene constraints,
+action semantics, and update order, so that its behavior remains coherent when executed from
+different states.
+
+We propose Mind-Studio, a code-based symbolic world-model synthesis framework. Mind-Studio builds
+symbolic trajectories from pixel- or RAM-derived OC-Atari objects, selects informative transitions
+using entropy-based scoring, compresses the selected traces into static interfaces and
+action-conditioned deltas, and prompts an LLM to generate a pygame-style transition program guided
+by a compact game skill file. The resulting standalone program is the main artifact: it can update
+object states, render predicted scenes, and expose the rules used to produce each transition.
+
+We evaluate the synthesized WMs on Montezuma’s Revenge, Alien, Assault, and Skiing (Figure 1).
+These games stress different synthesis challenges, including hidden boundary conditions, moving
+enemies, stochastic obstacles, and jump-sensitive interactions. We measure fidelity with a KK-step
+lookahead protocol that compares WM and Real-ALE endpoints from the same snapshot. On Montezuma,
+Mind-Studio improves chosen-action NSP from 0.3%0.3\% (PoE-World) to 48.7%48.7\% while reaching 5/
+85/8 subgoals. Across the three stochastic games, Table 2 shows that Mind-Studio generally produces
+stronger executable WMs, with especially clear branch-fidelity gains on Assault and Alien and
+competitive results on Skiing, demonstrating the effectiveness of the synthesized executable WMs.
+
+Contributions.
+
+Mind-Studio makes four contributions: (i) a single-pass LLM synthesis pipeline guided by a game
+skill file that encodes static layout, action semantics, and domain conventions—the skill file can
+be populated from pixel-level scene extraction, enabling use even when RAM-based state is
+unavailable; (ii) an entropy-based selector for transitions that expose hidden-variable and
+context-priority rules; (iii) an object-centric program representation with explicit priority
+ordering that encodes hidden rules as executable control flow; and (iv) a KK-step lookahead
+evaluation protocol with a shared LLM-as-Planner harness for controlled comparisons across
+lookahead sources and planner backbones.All code, synthesized programs, and planning logs are
+publicly available.
+
+2 Related Work
+
+Refer to caption
+Figure 2: Mind-Studio WM synthesis pipeline. Entropy selection picks rule-bearing rows 𝒯~\widetilde
+{\mathcal{T}}; compressor E⁡(⋅)E(\cdot) packs static interface 𝒫\mathcal{P} and per-step deltas Δ​𝒫
+\Delta\mathcal{P}; the LLM emits executable MM guided by the game-setting skill file.
+
+World models for LLM planning.
+
+World models let agents simulate action consequences before committing Ha and Schmidhuber (2018);
+Sutton and Barto (1998). Recent LLM-based approaches use the model itself for tree-search planning
+Hao et al. (2023), text-state simulation Wang et al. (2024), implicit next-state prediction Li et
+al. (2026), retrieval-augmented imagination Yang et al. (2025), web-policy co-evolution Fang et al.
+(2025); Kim and Hwang (2025), neurosymbolic MPC-style rollouts Zhou et al. (2025), or planner/
+world-model separation Xiong et al. (2025). Mind-Studio follows this goal of inference-time
+lookahead, but differs by asking for one executable, object-centric transition program whose
+KK-step branch endpoints can be rendered and checked pixel-wise against Real-ALE Bellemare et al.
+(2015) rollouts, rather than free-form language observations or many weighted rules.
+
+Programmatic and compositional world models.
+
+Program synthesis offers inspectable, reusable dynamics Ellis et al. (2021); d’Avila Garcez et al.
+(2019); WorldCoder and GIF-MCTS synthesize Python transition code through online exploration or
+MCTS-guided offline search Tang et al. (2024a); Dainese et al. (2024), while REPL-Plan and FPWC use
+executable feedback or refinable graph world models for planning Liu et al. (2025); Yin et al.
+(2025), and PDDLGym provides symbolic planning tasks in a gym interface Silver and Chitnis (2020).
+Text2World benchmarks LLM-based symbolic world model generation from text Hu et al. (2025), and
+Khan et al. (2026) infer symbolic world models for stochastic environments from unguided
+exploration—both works share our goal of turning interaction experience into reusable transition
+programs. Mind-Studio shares this propose–execute–verify spirit but targets OC-Atari Delfosse et
+al. (2024) POMDPs Kaelbling et al. (1998) where overlapping contacts, stochastic respawns, and
+hidden variables require explicit mechanism priority in a single control-flow program—in contrast
+to PoE-World’s product of programmatic experts with learned weights Piriyakulkij et al. (2025b) or
+AgentOWL’s hierarchical learned options Piriyakulkij et al. (2026).
+
+3 Problem Formulation
+
+Three roles.
+
+Mind-Studio involves three roles: (1) the world model MM, an executable Python program that
+predicts how the game state changes after an action; (2) the player, the controllable character in
+the Atari game environment, whose screen coordinate is the primary signal for evaluation; and (3)
+ the LLM planner πLLM\pi_{\text{LLM}}, a language model that selects actions by consulting
+per-action previews produced by MM.
+
+Let 𝒟={(ot,at,ot+1)}\mathcal{D}=\{(o_{t},a_{t},o_{t+1})\} be logged transitions from a partially
+observed game, with each raw observation oto_{t} converted into an object-centric symbolic state
+sts_{t}—a structured list of game objects (player, enemies, items) each represented by typed
+attribute slots such as position, size, and status, extracted via the OC-Atari RAM parser Delfosse
+et al. (2024). The goal is to synthesize an executable world model MM that rolls this symbolic
+state forward under an action:
+
+ s^t+1=M⁡(st,at).\hat{s}_{t+1}=M(s_{t},a_{t}).   (1)
+
+We evaluate MM both as a replay predictor and as the lookahead source for a real-game planner.
+Montezuma progress is an ordered subgoal sequence {G1,…,GJ}\{G_{1},\ldots,G_{J}\}; the other games
+use achievement counts such as gates, kills, or eggs. Table 1 summarises notation used throughout.
+
+World model MM.
+
+MM is a pygame-style Python transition program. Its static interface 𝒫\mathcal{P} holds persistent
+object slots; its transition code updates positions, contacts, deaths, and spawns. The predicted
+state can be rendered so both the planner and evaluator inspect the same branch previews.
+
+         Symbol           Meaning
+      𝒟\mathcal{D}        Logged replay transitions {(ot,at,ot+1)}\{(o_{t},a_{t},o_{t+1})\}
+         sts_{t}          Object-centric symbolic state at step tt
+           MM             Synthesized executable world model (pygame-style)
+       M⋆M^{\star}        Best (highest-NSP) program after optional refinement
+      𝒫\mathcal{P}        Static game interface held in MM
+  Δ​𝒫\Delta\mathcal{P}    Per-step object deltas (compact experience format)
+𝒯~\widetilde{\mathcal{T}} Entropy-selected training rows
+   s^t+1\hat{s}_{t+1}     WM-predicted next state
+           KK             Lookahead horizon (frames per candidate action)
+  πLLM\pi_{\text{LLM}}    LLM planner selecting actions via KK-step previews
+           NSP            Next-state prediction hit rate (player xy exact match)
+           PP             Task-progress score (kills / subgoals / gates reached)
+       Δ​P\Delta P        Progress increment of a planning session
+
+
+Table 1: Notation summary.
+
+Evaluation axes.
+
+We report two complementary outcomes. Next-state prediction (NSP) measures whether model previews
+match Real-ALE rollouts; success rate (SR) measures whether those previews help a planner make real
+task progress. We distinguish offline NSP (fixed held-out states, planner not in the loop) from
+online NSP (states actually visited during closed-loop planning); both use the same KK-frame hold
+protocol defined below.
+
+At each planning round rr, the harness starts from the same ALE snapshot and evaluates every
+candidate action a∈𝒜ra\in\mathcal{A}_{r}. The action is held for KK frames under both MM and Real
+ALE. A single ALE frame rarely produces a measurable player displacement—for instance, a jump in
+Montezuma’s Revenge requires right followed by 7 noop frames before the player reaches peak
+height—so KK is set to the smallest value in {1,4,8,16}\{1,4,8,16\} that maximises held-out NSP for
+each game, yielding K=16K{=}16 for Skiing and K=8K{=}8 for the remaining three. This is an
+action-granularity hold, not a multi-step planner: for each candidate aa we roll out exactly KK
+frames of the same action to obtain a comparable endpoint, rather than composing distinct actions
+over multiple decision steps. A branch is correct when the two rollouts end at the same extracted
+player position:
+
+ hr(a)=[ϕ(MK(sr,a))=ϕ(RK(sr,a))],h_{r}(a)=\mathbf{1}\!\left[\phi(M^{K}(s_{r},a))=\phi(R^{K}(s_  (2)
+ {r},a))\right],
+
+where RKR^{K} denotes the Real-ALE KK-frame hold rollout and ϕ⁡(⋅)\phi(\cdot) extracts the player’s
+screen coordinate—the pixel-level (x,y)(x,y) position of the controllable character’s bounding-box
+centre. We use the player coordinate as the evaluation signal because objects on fixed patrol
+routes (enemies, items) are easier to predict and are already supplied to the planner as part of
+the predicted state s^\hat{s}; the player position is the key decision-relevant quantity that
+varies with the chosen action. We summarize planning-time fidelity in two ways:
+
+ NSPbranch\displaystyle\mathrm{NSP}_ =∑r,ahr​(a)∑r|𝒜r|,\displaystyle=\frac{\sum_{r,a}h_{r}(a)}
+ {\mathrm{branch}}                   {\sum_{r}|\mathcal{A}_{r}|},                               (3)
+ NSPchosen\displaystyle\mathrm{NSP}_ =∑rhr​(ar⋆)|ℛ|.\displaystyle=\frac{\sum_{r}h_{r}(a_{r}^{\
+ {\mathrm{chosen}}                   star})}{|\mathcal{R}|}.
+
+Here ℛ\mathcal{R} is the set of comparable planning rounds. Branch NSP averages over all previews
+shown to the planner; chosen-action NSP averages only over the committed action ar⋆a_{r}^{\star}.
+Per-action NSP is kept separate for diagnosis (Table 5); it is not supplied to the planner as a
+hand-designed scalar action score.
+
+Before closed-loop planning, synthesis selects M⋆M^{\star} by one-step replay NSP on held-out
+tuples: the fraction of (s,a,s′)∈𝒟a(s,a,s^{\prime})\in\mathcal{D}_{a} where ϕ⁡(M⁡(s,a))=ϕ⁡(s′)\phi
+(M(s,a))=\phi(s^{\prime}), averaged over all actions.
+
+Success rate (SR).
+
+For Montezuma, SR is the fraction of ordered subgoals verified in the real environment within the
+step budget:
+
+ SR=m⋆/J,\mathrm{SR}\;=\;m^{\star}/J,   (4)
+
+where m⋆m^{\star} is the largest verified subgoal index. For non-Montezuma games we report the
+game-specific achievement count directly.
+
+Planning interface.
+
+The LLM planner πLLM\pi_{\text{LLM}} receives three inputs: the current symbolic state sts_{t}, the
+verified subgoal prefix mm, and a compact table of per-action world-model previews, Bt={MK​(st,a)}
+a∈𝒜B_{t}=\{M^{K}(s_{t},a)\}_{a\in\mathcal{A}}. It then outputs the next action, or a short action
+chunk:
+
+ at∼πLLM(⋅∣st,Bt,m).a_{t}\sim\pi_{\text{LLM}}\!\left(\cdot\mid s_{t},B_{t},m\right).  (5)
+
+The table contains the serialized predicted object states and their rendered endpoints. The subgoal
+predicates Φk\Phi_{k} are not passed as binary action scores to the LLM; they are used to update
+the verified prefix only after the committed action is executed in the real environment. Terminal
+resets or NstuckN_{\text{stuck}} non-progress steps trigger rollback to the last verified
+checkpoint (Algorithm 1).
+
+4 The Mind-Studio Framework
+
+Mind-Studio has two stages (Figure 2). In the synthesis stage, it (i) selects rule-bearing
+transitions via entropy scoring, (ii) compresses them into a base-state and state-increment format,
+and (iii) calls an LLM synthesizer to emit an executable world model MM, which is then (iv)
+ verified on held-out replay tuples to select M⋆M^{\star}. In the planning stage, M⋆M^{\star} is
+plugged into a shared LLM-as-Planner harness, so performance differences across WM sources reflect
+lookahead fidelity rather than a different planner implementation.
+
+4.1 World Model Synthesis
+
+Let 𝒯={(st,at,st+1)}\mathcal{T}=\{(s_{t},a_{t},s_{t+1})\} be the symbolic transitions extracted
+from 𝒟\mathcal{D}. We select a rule-bearing subset 𝒯~⊂𝒯\widetilde{\mathcal{T}}\subset\mathcal{T},
+compress it, and give the result to an LLM synthesizer together with a game-setting skill file
+𝒮game\mathcal{S}_{\text{game}}:
+
+ Mcand=gϕ​(𝒮game,E⁡(𝒯~)),M_{\text{cand}}\;=\;g_{\phi}\!\big(\,\mathcal{S}_{\text{game}},\;E(\   (6)
+ widetilde{\mathcal{T}})\,\big),
+
+where gϕg_{\phi} is the LLM synthesizer that produces the world model MM as an executable Python
+program; it is frozen at API inference (no fine-tuning). The skill file 𝒮game\mathcal{S}_{\text
+{game}} encodes object types, legal actions, domain conventions, and static scene layout (e.g. maze
+wall coordinates for Montezuma). Static layout entries that are absent from RAM-derived state can
+be obtained by pixel-level scene extraction, making the approach applicable to games where only
+visual observations are available. Beyond geometric layout, the skill file can include high-level
+game background and goal descriptions that help the LLM orient synthesis without relying solely on
+interaction traces. The compressor E⁡(⋅)E(\cdot) converts 𝒯~\widetilde{\mathcal{T}} into a
+prompt-friendly format that maximises information per token: it records the static interface 𝒫\
+mathcal{P} (base state: persistent object slots shared across all steps) and per-step deltas Δ​𝒫i=
+(sti,ati,δ​sti)\Delta\mathcal{P}_{i}=(s_{t_{i}},a_{t_{i}},\delta s_{t_{i}}) (state increments: only
+the attributes that changed at step ii), such as player.xy displacement, lives decrements, and
+contact onsets or offsets. Together, 𝒫\mathcal{P} and {Δ​𝒫i}\{\Delta\mathcal{P}_{i}\} give the LLM
+synthesizer gϕg_{\phi} the persistent game interface and the rule-bearing transitions it needs to
+emit MM. The synthesis target is an executable Python program with a pygame-style simulator
+interface (including state transition and rendering hooks). Each candidate is executed on a
+held-out replay split; the program with the highest NSPreplay\mathrm{NSP}_{\text{replay}} (Eq. (3))
+becomes M⋆M^{\star} for planning.
+
+Entropy-based selection of 𝒯~\widetilde{\mathcal{T}}. Most transitions repeat common dynamics,
+while rare rows reveal contacts, spawns, and context-dependent controls. The goal of the heuristic
+H⁡(ri)H(r_{i}) is to maximise the information density of the synthesizer’s context: by upweighting
+rows that exhibit object-attribute changes, relational transitions, and discrete game events, the
+selector covers diverse game mechanics rather than spending the LLM context budget on repeated
+movement. We therefore score each row ri=(st,at,st+1)r_{i}=(s_{t},a_{t},s_{t+1}) with H⁡(ri)H(r_
+{i}) and prefer rows where informative state changes occur. The same core score is used for all
+four games; Montezuma additionally forces coverage for rare interaction types such as Rope (a
+climbable vertical rope that changes player movement physics: the player swings rather than walks)
+and Conveyer_Belt (a platform surface that applies a constant horizontal drift to the player):
+
+ H⁡(ri)=\displaystyle ∑o∈Δiobjωchange​(o)\displaystyle\sum_{o\in\Delta^{\text{obj}}_{i}}\
+ H(r_{i})\;=          omega_{\text{change}}(o)
+                      +ωrel​|Riafter​△​Ribefore|\displaystyle+\omega_{\text{rel}}\big|R_{i}^{\  (7)
+                      text{after}}\triangle R_{i}^{\text{before}}\big|
+                      +ωevt⋅𝟏[eventi≠∅],\displaystyle+\omega_{\text{evt}}\cdot\mathbf{1}[\text
+                      {event}_{i}\neq\emptyset],
+
+Here Δiobj\Delta^{\text{obj}}_{i} lists objects whose attributes changed. ωchange\omega_{\text
+{change}} upweights appearances and disappearances relative to ordinary movement; for displacement
+(d​x,d​y)(dx,dy) we use ωmove​(1+α​|d​x​|+β|​d​y|)\omega_{\text{move}}(1+\alpha|dx|+\beta|dy|). The
+relation term compares before/after sets of (relation, object_type) pairs, and the event term
+captures explicit game events. We assemble 𝒯~\widetilde{\mathcal{T}} from the top-scoring rows plus
+small coverage and boundary sets; Appendix B lists the entropy-score constants, and Sec. 5.4 tests
+this choice against a chronological prefix.
+
+We evaluate the synthesized M⋆M^{\star} against PoE-World and LLM-as-WM on both NSP (Sec. 5.1) and
+SR (Sec. 5.2).
+
+4.2 LLM-as-Planner: A Stable Evaluation Harness
+
+The second stage asks whether the synthesized model improves action selection. We use a shared
+LLM-as-Planner harness with subgoal rollback (Eq. (5), Algorithm 1) to obtain a tractable common
+interface: in our setup, PoE-World’s original BFS planner does not finish a Montezuma episode
+within an one-hour planning budget. Every lookahead source produces the same kind of KK-step branch
+table, and the planner commits an action or short action chunk from that table. Thus the PoE-World
+numbers below describe its lookahead previews under this harness, rather than the full native
+PoE-World planner stack.
+
+The harness tracks the verified subgoal prefix mm in the real environment. It advances from mm to
+m+1m{+}1 only when predicate Φm+1\Phi_{m+1} fires on a real committed state, never on a prediction.
+Terminal resets or NstuckN_{\text{stuck}} non-progress steps restore the last verified checkpoint.
+This separates the WM axis, where the planner is fixed and only the lookahead source changes, from
+the backbone axis, where M⋆M^{\star} is fixed and the planner LLM changes.
+
+  Game         Planner              Task outcome             Chosen-action NSP        Branch NSP (exact)
+                                                                  (exact)
+                            Real LLM-as PoE-  Mind-Studio LLM-as PoE-  Mind-Studio LLM-as PoE-  Mind-Studio
+                                   WM   World   (ours)      WM   World   (ours)      WM   World   (ours)
+          Qwen3-Coder-480B  0    0      1     1           0.00   0.17  0.09        0.13   0.17  0.15
+          DeepSeek-V4-Flash 0    0      0     0           0.15   1.00  1.00        0.05   0.72  0.72
+Skiing    Llama-4-Scout-17B 0    0      0     0           0.00   0.08  0.15        0.05   0.08  0.15
+          Claude-4-Sonnet   0    0      0     0           0.00   0.08  0.15        0.00   0.08  0.15
+          Gemini-2.5-Flash  0    0      0     0           0.00   0.23  0.23        0.00   0.15  0.15
+          Qwen3-Coder-480B  21   63     42    84          0.03   0.68  0.95        0.00   0.44  0.87
+          DeepSeek-V4-Flash 42   21     63    42          0.03   0.71  0.88        0.01   0.33  0.79
+Assault   Llama-4-Scout-17B 0    0      21    84          0.00   0.26  0.97        0.00   0.34  0.98
+          Claude-4-Sonnet   63   63     0     63          0.08   0.47  0.89        0.11   0.33  0.91
+          Gemini-2.5-Flash  0    0      63    42          0.27   0.39  0.95        0.23   0.36  0.91
+          Qwen3-Coder-480B  3    3      0     3           0.00   0.48  0.50        0.08   0.28  0.38
+Alien^‡\  DeepSeek-V4-Flash 17   13     0     3           0.00   0.00  0.79        0.01   0.32  0.49
+ddagger   Llama-4-Scout-17B 11   3      3     20          0.00   0.58  0.24        0.00   0.39  0.20
+          Claude-4-Sonnet   38   5      21    4           0.00   0.16  0.55        0.00   0.16  0.38
+          Gemini-2.5-Flash  12   23     13    18          0.00   0.21  0.26        0.00   0.22  0.24
+          Qwen3-Coder-480B  5/8  5/8    5/8   5/8         0.02   0.00  0.49        0.31   0.12  0.25
+          DeepSeek-V4-Flash 5/8  2/8    2/8   2/8         0.00   0.11  0.00        0.00   0.06  0.00
+Montezuma Llama-4-Scout-17B 4/8  5/8    5/8   5/8         0.00   0.07  0.49        0.25   0.09  0.25
+          Claude-4-Sonnet   8/8  5/8    5/8   5/8         0.29   0.13  0.66        0.30   0.07  0.20
+          Gemini-2.5-Flash  8/8  8/8    8/8   8/8         0.00   0.12  0.42        0.00   0.12  0.23
+
+
+Table 2: Online fidelity and task outcome. Each row fixes the planner LLM and compares lookahead
+sources. Task columns report the game score; NSP columns report exact-pixel lookahead accuracy. ^‡\
+ddaggerAlien branch NSP omits noop/fire. Columns place LLM-as-WM next to the Real reference and
+Mind-Studio (ours) at the right. Bold is computed only over learned lookahead sources (LLM-as-WM,
+PoE-World, and Mind-Studio), excluding the Real reference; all learned-source ties for the largest
+value within a row and metric are bolded.
+
+5 Experiments
+
+The experiments ask three questions: whether Mind-Studio gives more faithful planning-time
+lookahead than LLM-as-WM and PoE-World, which actions account for the gains, and whether the
+conclusions persist across planner backbones. Each row in Table 2 is an independent rollout, so we
+interpret NSP–success links as correlational rather than paired causal effects.
+
+Tasks and baselines.
+
+We use four OC-Atari games Delfosse et al. (2024) selected to span diverse WM synthesis challenges.
+Montezuma’s Revenge is a maze game with many boundary conditions: platform edges, ladder entry
+points, rope transfer geometry, and skull-collision distances are all absent from RAM and must be
+inferred from interaction traces or supplied via pixel-level scene extraction in the skill file;
+the skull patrol is stochastic and unpredictable. Assault features a player cannon at the bottom
+and enemy ships that weave left and right to evade fire, requiring the WM to model dynamic evasion
+rather than fixed trajectories. Alien and Skiing stress stochastic enemy/gate spawning and
+velocity-based player physics, respectively. Together the four games cover hidden-variable boundary
+conditions, dynamic opponent behavior, stochastic respawning, and velocity accumulation—distinct
+synthesis challenges within the OC-Atari object-centric framework. We compare with LLM-as-WM, which
+directly predicts next states from the planner LLM, and PoE-World Piriyakulkij et al. (2025a), an
+ensemble-style programmatic WM for partial observability. PoE-World’s native BFS planner did not
+finish within an eight-hour budget in our setup, so every lookahead source is evaluated under the
+same LLM-as-Planner harness (Sec. 4.2); only the preview source changes.
+
+Models and selection.
+
+For each game, Mind-Studio synthesizes executable candidates from entropy-selected transitions and
+the game-setting skill file, optionally augmented with induced static-map/rule summaries (Appendix 
+B), then selects the candidate with the best held-out replay NSP (Sec. 4.1); Sec. 5.4 ablates this
+input choice. An optional refinement loop can fold replay failures back into the skill file and
+regenerate; however, gains were inconsistent across synthesizer models and the additional wall-time
+was not justified, so all planning results use single-round synthesis. The Qwen3-Coder rows provide
+the main head-to-head comparison, using Qwen3-Coder-480B-A35B-Instruct-Turbo as synthesizer unless
+stated otherwise. The remaining rows reuse the same selected Mind-Studio programs with four
+non-Qwen planners, hide generated code from the planner, and score all previews against Real-ALE
+rollouts, separating program quality from planner formatting effects. All decoding uses temperature
+00; identifiers, budgets, retry caps, and implementation details are in Appendix B.
+
+5.1 Model Fidelity
+
+Offline fidelity.
+
+Offline evaluation removes the planner and scores WM rollouts from fixed states on two data splits.
+The replay split contains the trajectories used to synthesize the WM, replayed under the same
+initial states (Table 3); the random split is a random-policy holdout session not used for
+synthesis (Table 4). Both tables report chosen-action NSP for the logged action and branch NSP
+pooled over candidate actions. Mind-Studio leads on random holdout NSP for Assault, Skiing, and
+Montezuma, while PoE-World remains stronger on Alien random replay.
+
+  Game               Chosen-action NSP                          Branch NSP
+          LLM-as WM PoE- World Mind-Studio (ours) LLM-as WM PoE- World Mind-Studio (ours)
+  Alien   0.67      0.65       0.67               0.22      0.35       0.22
+ Assault  0.00      1.00       1.00               0.00      0.33       1.00
+ Skiing   1.00      0.97       1.00               0.51      0.80       0.83
+Montezuma 0.42      0.42       0.51               0.27      0.12       0.26
+
+
+Table 3: Offline NSP on replay states (Qwen3-Coder-480B). Train-session states; no planner in the
+loop. Per-game lookahead horizon KK in Table 8.
+
+  Game               Chosen-action NSP                          Branch NSP
+          LLM-as WM PoE- World Mind-Studio (ours) LLM-as WM PoE- World Mind-Studio (ours)
+  Alien   0.16      0.23       0.16               0.15      0.24       0.15
+ Assault  0.00      0.33       0.98               0.00      0.33       0.98
+ Skiing   0.31      0.66       0.69               0.37      0.67       0.70
+Montezuma 0.12      0.05       0.16               0.10      0.03       0.12
+
+
+Table 4: Offline NSP on random states (Qwen3-Coder-480B). Test-session states; no planner in the
+loop. Per-game lookahead horizon KK in Table 8.
+
+Online fidelity.
+
+Inside LLM-as-Planner, each planning round snapshots the live ALE state, rolls out every candidate
+action for KK frames under both the WM and Real ALE (K=16K{=}16 on Skiing, K=8K{=}8 elsewhere), and
+counts an exact hit when the final player_xy matches pixel-wise. Chosen-action NSP tests only the
+committed action; branch NSP pools all candidate actions. Thus, the NSP columns in Table 2 measure
+fidelity on the states actually visited by the planner.
+
+LLM-as-WM failure mode.
+
+LLM-as-WM must infer KK-frame geometry from text rather than execute transition code, which
+explains its near-zero exact NSP on movement-heavy cases in Table 2.
+
+5.2 Planning Results
+
+Table 2 is the planning results grid using the world model predictions. Each row fixes the planner
+and changes only the lookahead source; Real-ALE is an oracle reference, not a learned WM. The
+Qwen3-Coder-480B row gives the cleanest source comparison: Mind-Studio matches the best learned
+task outcome on 4 games, improves the chosen-action NSP and branch action NSP on most cases.
+
+The non-Qwen rows test whether the same previews remain useful across planner backbones. Assault is
+the most stable fidelity case: Mind-Studio has the strongest chosen-action and branch NSP under all
+five planners, and obtains the best or tied-best learned task outcome under 3/53/5 planners. Alien
+and Montezuma vary more by planner, and Skiing is a weak result: only the Qwen3-Coder-480B planner
+obtains nonzero task progress, while other planners match the zero-score baselines and branch NSP
+often ties or only slightly exceeds PoE-World (Table 7). On Montezuma, the Qwen3-Coder-480B row
+reaches 5/85/8 verified subgoals under Mind-Studio, PoE-World, and LLM-as-WM alike (Table 2),
+indicating that lookahead fidelity rather than subgoal count separates the sources at this horizon.
+
+5.3 Per-Action Fidelity
+
+Table 5 breaks pooled branch NSP into per-action rates, exposing which actions drive the aggregate
+differences.
+
+        Game         Action LLM-as WM PoE- World Mind-Studio (ours)
+                      Noop  0.15      0.17       0.18
+Skiing (K=16K{=}16)   Left  0.23      0.25       0.09
+                     Right  0.00      0.08       0.18
+                       Up   0.00      1.00       1.00
+ Assault (K=8K{=}8)   Left  0.00      0.00       1.00
+                     Right  0.00      0.32       0.61
+                      Noop  0.84      1.00       0.65
+                      Fire  0.84      1.00       0.65
+                       Up   0.00      1.00       0.65
+  Alien (K=8K{=}8)    Down  0.00      0.00       0.25
+                      Left  0.00      0.17       0.55
+                     Right  0.00      0.17       0.15
+                     LFire  0.42      0.17       0.55
+                     RFire  0.05      0.17       0.15
+                      Noop  0.99      0.50       0.99
+                      Fire  0.99      0.00       0.00
+Montezuma (K=8K{=}8)   Up   0.01      0.49       0.01
+                      Down  0.48      0.00       0.00
+                      Left  0.00      0.00       0.48
+                     Right  0.00      0.01       0.49
+
+
+Table 5: Per-action branch NSP (Qwen3-Coder-480B). Bold = best among learned sources. Alien noop/
+fire are diagnostic and excluded from pooled branch NSP.
+
+On Montezuma, LLM-as-WM’s branch NSP is inflated by stationary actions (noop/fire near 1.001.00 and
+down at 0.480.48) while remaining at 0.000.00 on left/right; Mind-Studio has the reverse profile,
+with stronger lateral movement but weaker stationary-action fidelity.
+
+NSP–task-success relationship.
+
+Across 5656 learned-source pairs, higher chosen-action NSP ties or improves task outcome in 4444
+cases (Sec. 5.5), confirming NSP as a useful proxy. The gap between NSP and SR stems from two
+sources. First, the synthesized WM is deterministic: it cannot model stochastic respawns or random
+enemy motion, so an action that looks safe in preview may still fail in the real environment.
+Second, a one-frame positional error compounds over KK frames, producing large endpoint
+discrepancies even when the first-step prediction is nearly correct. Alien egg counts and Skiing’s
+momentum-overshoot are the clearest examples; see Sec. 5.5 for detail.
+
+5.4 Ablation: synthesis inputs
+
+We ablate synthesis inputs on Montezuma, the game with the most complex rule set. All synthesizers
+use a 128K context window and are scored by one-step holdout NSP on selected.py over the
+random-policy session (988 transitions), using the same exact-pixel player_xy precision metric as
+planning-time NSP. This offline metric is easier than KK-step planning NSP, but it isolates whether
+the synthesized transition program generalizes beyond the replay trace used for prompting.
+
+In the reported table, Default uses 279 entropy-selected compact rows, while −-compression uses 17
+consecutive full (st,at,st+1)(s_{t},a_{t},s_{t+1}) prefixes—about 16.4×16.4\times (≈\approx1540%)
+more interaction examples within the same context budget. Removing compression sharply lowers exact
+holdout NSP for every synthesizer. The −-setting ablation also hurts the Qwen models, while
+DeepSeek is less sensitive. Replacing replay traces with random-policy data helps Qwen3-Coder-480B
+under exact match (0.520.52 vs. 0.460.46) but not DeepSeek (0.120.12 vs. 0.310.31).
+
+                                       Ablated input                       Default 𝒯~\widetilde{\
+   Synthesizer      −-data    −-comp. full (s,a,s′)(s,a,s^  −-setting no         mathcal{T}}
+                     random            {\prime})               skill
+Qwen3-Coder-480B   0.521      0.077                        0.244          0.462
+Qwen3-Max-Thinking 0.219      0.187                        0.137          0.352
+DeepSeek-V4-Flash  0.119      0.035                        0.298          0.313
+
+
+Table 6: Synthesis-input ablation on Montezuma held-out one-step NSP (exact-pixel player_xy
+precision).
+
+5.5 Backbone Stability and Task Alignment
+
+Table 2 sweeps five planner LLMs while holding each selected Mind-Studio program fixed, and Table 7
+averages branch fidelity across those planners. Higher fidelity usually helps: across 5656
+learned-source pairs with different chosen-action NSP (three learned sources compared within each
+fixed game–planner row, omitting NSP ties), the higher-NSP source ties or improves task outcome in
+4444 cases and strictly improves it in 1616; branch NSP gives a similar pattern (4343
+ties-or-better, 1616 strict wins). Still, the exceptions matter. Alien shows that aggregate NSP can
+reward easy noop/fire predictions while missing lateral movement, so task outcome and per-action
+coverage must be read together. The sweep reinforces the game-level pattern. Assault is robust in
+fidelity, with Mind-Studio much higher than PoE-World in mean branch NSP (0.910.91 vs. 0.360.36)
+and best or tied-best learned task outcome under 3/53/5 planners. Skiing remains weak despite a
+small fidelity edge (0.270.27 vs. 0.240.24): offline NSP on Skiing is strong, but holding left for
+K=16K{=}16 frames causes over-steering that reduces downward speed to near zero; the KK-hold
+protocol thus cannot capture the cumulative directional cost of sustained holds, making Skiing hard
+for any bounded-lookahead planner. Montezuma and Alien depend more strongly on the planner
+backbone.
+
+             Game              Mind-Studio PoE-World LLM-as-WM
+     Skiing (K=16K{=}16)       0.266       0.239     0.046
+      Assault (K=8K{=}8)       0.912       0.361     0.069
+  Alien (K=8K{=}8)^‡\ddagger   0.338       0.284     0.024
+Montezuma’s Revenge (K=8K{=}8) 0.186       0.093     0.215
+
+
+Table 7: Cross-planner branch fidelity. Each cell is the mean exact-pixel branch NSP across the
+five planner LLMs in Table 2. ^‡\ddaggerAlien omits noop/fire.
+
+6 Conclusion
+
+Mind-Studio turns an agent’s internal “image of the world” into a runnable program. The same
+program serves both as a per-action next-state predictor and as the lookahead source for an LLM
+planner with subgoal rollback. This composition mirrors how a player approaches an unfamiliar
+environment: infer rules, simulate candidate actions, commit, and back up after failure. On
+Montezuma’s Revenge and three respawn-driven OC-Atari games, the synthesized WM improves per-action
+accuracy over an ensemble baseline and lets LLM-as-Planner reach more subgoals than BFS within an
+order-of-magnitude smaller wall-time budget, with planner-backbone sweeps exposing where task
+outcomes remain sensitive to planner choice.
+
+More broadly, Mind-Studio demonstrates that a single, unrefined LLM pass over entropy-selected
+symbolic traces is sufficient to produce an executable world model that meaningfully supports
+planning in partially observable settings. The game skill file, which can be seeded from
+pixel-level scene extraction alone, bridges the gap between raw visual observations and the
+structured dynamics knowledge that an LLM synthesizer needs. We believe this
+design—skill-file-guided single-pass synthesis evaluated by KK-step lookahead fidelity—is a
+reusable blueprint for building lightweight, interpretable world models in any domain where
+object-level observations and discrete actions are available.
+
+Limitations
+
+Mind-Studio’s remaining errors are concentrated in geometry-sensitive contexts (compound rope/skull
+interactions, ladder–platform overlap), pointing to a clear improvement path: targeted trace
+collection around rare interaction types together with richer transition templates for residual
+stochastic cases. Task success also depends on exploration quality: Alien egg counts still vary
+across planner backbones despite strong per-action NSP, indicating that route-discovery prompts are
+complementary to better world models.
+
+LLM-as-WM’s near-zero movement NSP suggests an alternative direction: extracting explicit
+transition rules—conditions, priority orderings, context flags—and injecting them as structured
+context into the LLM, potentially matching the hidden-rule coverage of executable code without a
+compiled program. Our experiments are also scoped to Atari 2600 with ≤20\leq 20 object types and an
+8-action space; extending to richer vocabularies or continuous control is a natural next step.
+
+Ethical Considerations
+
+This work uses publicly available Atari 2600 ROMs and the open-source OC-Atari extractor; no
+human-subject data or sensitive content is involved. The synthesized world models are restricted to
+game dynamics and have no foreseeable misuse profile beyond the underlying LLM and ALE software.
+Released artifacts (programs, prompts, and logs) are intended for academic reproducibility.
+Applications beyond games, especially in higher-stakes domains such as robotics, healthcare, or
+finance, should pair executable model synthesis with domain-specific validation and safety checks.
+
+Acknowledgments and AI Assistance
+
+In accordance with ARR/ACL disclosure guidance, we used AI tools for limited editorial support,
+specifically grammar polishing and syntax-error correction in manuscript text and code snippets.
+All research design, experiments, numerical results, interpretations, and final wording decisions
+were made and verified by the authors.
+
+References
+
+  • Bellemare et al. (2015) M. G. Bellemare, Y. Naddaf, J. Veness, and M. Bowling The arcade
+    learning environment: an evaluation platform for general agents (extended abstract). In 
+    Proceedings of the Twenty-Fourth International Joint Conference on Artificial Intelligence,
+    IJCAI 2015, Buenos Aires, Argentina, July 25-31, 2015, Q. Yang and M. J. Wooldridge (Eds.), 
+    pp. 4148–4152. External Links: Link Cited by: §2.
+  • Dainese et al. (2024) N. Dainese, M. Merler, M. Alakuijala, and P. Marttinen Generating code
+    world models with large language models guided by monte carlo tree search. In The Thirty-eighth
+    Annual Conference on Neural Information Processing Systems, External Links: Link Cited by: §2.
+  • Delfosse et al. (2024) Q. Delfosse, J. Blüml, B. Gregori, and K. Kersting OC-atari:
+    object-centric atari 2600 reinforcement learning environments. In Reinforcement Learning
+    Conference, External Links: 2306.08649, Link Cited by: Appendix A, §B.6, §2, §3, §5.
+  • d’Avila Garcez et al. (2019) A. S. d’Avila Garcez, M. Gori, L. C. Lamb, L. Serafini, M.
+    Spranger, and S. N. Tran Neural-symbolic computing: an effective methodology for principled
+    integration of machine learning and reasoning. CoRR abs/1905.06088. External Links: Link, 
+    1905.06088 Cited by: §1, §2.
+  • Ellis et al. (2021) K. Ellis, C. Wong, M. Nye, M. Sablé-Meyer, L. Morales, L. Hewitt, L. Cary,
+    A. Solar-Lezama, and J. B. Tenenbaum Dreamcoder: bootstrapping inductive program synthesis with
+    wake-sleep library learning. In Proceedings of the 42nd acm sigplan international conference on
+    programming language design and implementation, pp. 835–850. Cited by: §2.
+  • Fang et al. (2025) T. Fang, H. Zhang, Z. Zhang, K. Ma, W. Yu, H. Mi, and D. Yu WebEvolver:
+    enhancing web agent self-improvement with co-evolving world model. In Proceedings of the 2025
+    Conference on Empirical Methods in Natural Language Processing, pp. 8959–8975. External Links: 
+    Document, Link Cited by: §2.
+  • Ha and Schmidhuber (2018) D. Ha and J. Schmidhuber World models. CoRR abs/1803.10122. External
+    Links: Link, 1803.10122 Cited by: §1, §2.
+  • Hao et al. (2023) S. Hao, Y. Gu, H. Ma, J. Hong, Z. Wang, D. Wang, and Z. Hu Reasoning with
+    language model is planning with world model. In Proceedings of the 2023 Conference on Empirical
+    Methods in Natural Language Processing, H. Bouamor, J. Pino, and K. Bali (Eds.), Singapore, 
+    pp. 8154–8173. External Links: Link, Document Cited by: §2.
+  • Hu et al. (2025) M. Hu, T. Chen, Y. Zou, Y. Lei, Q. Chen, M. Li, Y. Mu, H. Zhang, W. Shao, and
+    P. Luo Text2World: benchmarking large language models for symbolic world model generation. In 
+    Findings of the Association for Computational Linguistics: ACL 2025, W. Che, J. Nabende, E.
+    Shutova, and M. T. Pilehvar (Eds.), Vienna, Austria, pp. 26043–26066. External Links: Link,
+    Document, ISBN 979-8-89176-256-5 Cited by: §2.
+  • Kaelbling et al. (1998) L. P. Kaelbling, M. L. Littman, and A. R. Cassandra Planning and acting
+    in partially observable stochastic domains. Artificial intelligence 101 (1-2), pp. 99–134. 
+    Cited by: §2.
+  • Khan et al. (2026) Z. Khan, A. Prasad, E. Stengel-Eskin, J. Cho, and M. Bansal One life to
+    learn: inferring symbolic world models for stochastic environments from unguided exploration. 
+    In The Fourteenth International Conference on Learning Representations, External Links: Link 
+    Cited by: §2.
+  • Kim and Hwang (2025) M. Kim and S. Hwang CoEx – co-evolving world-model and exploration. In 
+    Findings of the Association for Computational Linguistics: EMNLP 2025, Suzhou, China, 
+    pp. 21629–21651. External Links: Document, Link Cited by: §2.
+  • Li et al. (2026) Y. Li, H. WANG, J. Qiu, Z. Yin, D. Zhang, C. Qian, Z. Li, X. Ma, G. Chen, and
+    H. Ji From word to world: can large language models be implicit text-based world models?. In 
+    ICLR 2026 Workshop on Lifelong Agents: Learning, Aligning, Evolving, External Links: Link Cited
+    by: §2.
+  • Liu et al. (2025) A. Z. Liu, X. Wang, J. Sansom, Y. Fu, J. Choi, S. Sohn, J. Kim, and H. Lee 
+    Interactive and expressive code-augmented planning with large language models. In Proceedings
+    of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+    Papers), Vienna, Austria, pp. 20330–20354. External Links: Document, Link Cited by: §2.
+  • Piriyakulkij et al. (2025a) T. Piriyakulkij, Y. Liang, H. Tang, A. Weller, M. Kryven, and K.
+    Ellis PoE-world: compositional world modeling with products of programmatic experts. In 
+    Advances in Neural Information Processing Systems, D. Belgrave, C. Zhang, H. Lin, R. Pascanu,
+    P. Koniusz, M. Ghassemi, and N. Chen (Eds.), Vol. 38, pp. 26609–26638. External Links: Link 
+    Cited by: §1, §5.
+  • Piriyakulkij et al. (2026) W. T. Piriyakulkij, W. Lehrach, K. Ellis, and K. Murphy Joint
+    learning of hierarchical neural options and abstract world model. External Links: 2602.02799,
+    Link Cited by: §2.
+  • Piriyakulkij et al. (2025b) W. T. Piriyakulkij, Y. Liang, H. Tang, A. Weller, M. Kryven, and K.
+    Ellis PoE-world: compositional world modeling with products of programmatic experts. In The
+    Thirty-ninth Annual Conference on Neural Information Processing Systems, External Links: Link 
+    Cited by: §2.
+  • Silver and Chitnis (2020) T. Silver and R. Chitnis PDDLGym: gym environments from pddl problems
+    . External Links: 2002.06432, Link Cited by: §1, §2.
+  • Sutton and Barto (1998) R. S. Sutton and A. G. Barto Reinforcement learning: an introduction. 
+    MIT Press. Cited by: §1, §2.
+  • Tang et al. (2024a) H. Tang, D. Key, and K. Ellis WorldCoder, a model-based LLM agent: building
+    world models by writing code and interacting with the environment. In Advances in Neural
+    Information Processing Systems 38: Annual Conference on Neural Information Processing Systems
+    2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024, A. Globersons, L. Mackey, D.
+    Belgrave, A. Fan, U. Paquet, J. M. Tomczak, and C. Zhang (Eds.), External Links: Link Cited by:
+    §2.
+  • Tang et al. (2024b) H. Tang, D. Key, and K. Ellis WorldCoder, a model-based llm agent: building
+    world models by writing code and interacting with the environment. In Advances in Neural
+    Information Processing Systems, A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J.
+    Tomczak, and C. Zhang (Eds.), Vol. 37, pp. 70148–70212. External Links: Document, Link Cited
+    by: §1.
+  • Wang et al. (2024) R. Wang, G. Todd, Z. Xiao, X. Yuan, M. Côté, P. Clark, and P. A. Jansen Can
+    language models serve as text-based world simulators?. In Proceedings of the 62nd Annual
+    Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), Bangkok,
+    Thailand, pp. 123–138. External Links: Link Cited by: §2.
+  • Xiong et al. (2025) S. Xiong, A. Payani, Y. Yang, and F. Fekri Deliberate reasoning in language
+    models as structure-aware planning with an accurate world model. In Proceedings of the 63rd
+    Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), 
+    Vienna, Austria, pp. 31900–31931. External Links: Document, Link Cited by: §2.
+  • Yang et al. (2025) C. Yang, X. Wang, Q. Zhang, Q. Jiang, and X. Huang Efficient integration of
+    external knowledge to LLM-based world models via retrieval-augmented generation and
+    reinforcement learning. In Findings of the Association for Computational Linguistics: EMNLP
+    2025, Suzhou, China, pp. 9484–9501. External Links: Document, Link Cited by: §2.
+  • Yin et al. (2025) X. Yin, X. Luo, H. Wu, L. Gao, and J. Song Unlocking smarter device control:
+    foresighted planning with a world model-driven code execution approach. In Findings of the
+    Association for Computational Linguistics: EMNLP 2025, Suzhou, China, pp. 3982–4005. External
+    Links: Document, Link Cited by: §2.
+  • Zhou et al. (2025) S. Zhou, T. Zhou, Y. Yang, G. Long, D. Ye, J. Jiang, and C. Zhang WALL-e:
+    world alignment by neurosymbolic learning improves world model-based llm agents. In Advances in
+    Neural Information Processing Systems, D. Belgrave, C. Zhang, H. Lin, R. Pascanu, P. Koniusz,
+    M. Ghassemi, and N. Chen (Eds.), Vol. 38, pp. 65352–65391. External Links: Link Cited by: §2.
+
+Appendix A Subgoal Curriculum and Predicate Specification
+
+We factorize Montezuma’s Revenge into K=8K{=}8 ordered milestones. The agent must complete them in
+sequence, and no credit is given for out-of-order completions.
+
+ 1. 1.
+   
+    Reach ladder foot. Agent’s bottom edge within 8 px of the base tile of the first ladder.
+
+ 2. 2.
+   
+    Climb ladder. Agent’s yy-coordinate passes the midpoint of the ladder segment.
+
+ 3. 3.
+   
+    Cross rope. Agent collides with the rope sprite and translates horizontally by ≥16\geq 16 px
+    while the rope-contact flag is set.
+
+ 4. 4.
+   
+    Descend to key room. Agent’s bounding box enters the key-room region (fixed pixel rectangle,
+    empirically determined).
+
+ 5. 5.
+   
+    Obtain key. The key-object sprite disappears from the scene, and agent inventory count
+    increments.
+
+ 6. 6.
+   
+    Return to door. Agent’s bounding box overlaps the door sprite in the key room.
+
+ 7. 7.
+   
+    Unlock door. Inventory count decrements; the door-open animation flag becomes active.
+
+ 8. 8.
+   
+    Reach room exit. Agent exits the current screen region through the designated portal.
+
+Each predicate Φk\Phi_{k} is a Python function that reads axis-aligned bounding boxes directly from
+the OC-Atari object extractor Delfosse et al. (2024). All spatial thresholds are fixed at
+evaluation time and are identical across world-model conditions. The environment maintains a
+monotonic counter mm, which increments from mm to m+1m{+}1 only when Φm+1\Phi_{m+1} fires on the
+true game state returned by ALE, never on a WM prediction.
+
+
+Algorithm 1 LLM-as-Planner with subgoal rollback
+1: WM M⋆M^{\star}, LLM policy πLLM\pi_{\text{LLM}}, predicates {Φj}j=0J\{\Phi_{j}\}_{j=0}^{J}, env.
+ℰ\mathcal{E}, budget TmaxT_{\max}, stuck cap NstuckN_{\text{stuck}}
+2: m←0m\!\leftarrow\!0; s0←reset​(ℰ)s_{0}\!\leftarrow\!\text{reset}(\mathcal{E}); s0†←s0s^{\dagger}
+_{0}\!\leftarrow\!s_{0}; stuck←0\text{stuck}\!\leftarrow\!0
+3: for t=0,…,Tmax−1t=0,\dots,T_{\max}-1 do
+4:   for a∈𝒜a\in\mathcal{A} do ⊳\triangleright KK-frame lookahead via M⋆M^{\star}
+5:    s^t,a←(M⋆)K​(st,a)\hat{s}_{t,a}\!\leftarrow\!(M^{\star})^{K}(s_{t},a)
+6:   end for
+7:   Bt←{s^t,a}a∈𝒜B_{t}\!\leftarrow\!\{\hat{s}_{t,a}\}_{a\in\mathcal{A}}
+8:   at∼πLLM(⋅∣st,Bt,m)a_{t}\!\sim\!\pi_{\text{LLM}}(\cdot\mid s_{t},B_{t},m)
+9:   st+1←ℰ.step​(at)s_{t+1}\!\leftarrow\!\mathcal{E}.\text{step}(a_{t})
+10:   if Φm+1​(st+1)=1\Phi_{m+1}(s_{t+1})=1 then ⊳\triangleright subgoal verified
+11:    m←m+1m\!\leftarrow\!m+1; sm†←st+1s^{\dagger}_{m}\!\leftarrow\!s_{t+1}; stuck←0\text{stuck}\!
+\leftarrow\!0
+12:   else if Reset​(st+1)\text{Reset}(s_{t+1}) or stuck≥Nstuck\text{stuck}\!\geq\!N_{\text{stuck}}
+then
+13:    st+1←ℰ.restore​(sm†)s_{t+1}\!\leftarrow\!\mathcal{E}.\text{restore}(s^{\dagger}_{m});
+stuck←0\text{stuck}\!\leftarrow\!0 ⊳\triangleright rollback
+14:   else
+15:    stuck←stuck+1\text{stuck}\!\leftarrow\!\text{stuck}+1
+16:   end if
+17:   if m=Jm=J then break
+18:   end if
+19: end for
+20: return verified prefix mm, trajectory
+
+Appendix B Implementation Details
+
+B.1 Models and decoding
+
+All LLMs are accessed through their commercial inference APIs with decoding temperature 00 for code
+synthesis, repair, and planning. The exact identifiers used in the reported runs are:
+
+  • •
+   
+    Qwen3-Coder-480B-A35B-Instruct-Turbo – WM synthesizer (default) and main planner;
+
+  • •
+   
+    Qwen3-Max-Thinking – WM synthesizer ablation;
+
+  • •
+   
+    DeepSeek-V4-Pro (synth), DeepSeek-V4-Flash (planner);
+
+  • •
+   
+    Gemini-2.5-Flash – WM synthesizer ablation and planner stability sweep;
+
+  • •
+   
+    Claude-4-Sonnet – WM synthesizer ablation and planner stability sweep;
+
+  • •
+   
+    Llama-4-Scout-17B-16E – WM synthesizer ablation and planner stability sweep.
+
+B.2 Synthesis pipeline
+
+The synthesizer receives (i) the entropy-selected subset 𝒯~\widetilde{\mathcal{T}} (see Sec. 4.1
+for the score and Sec. 4.1 for the assembly rule), (ii) a static-map / rule list induced from 𝒟\
+mathcal{D} for the all branch, and (iii) a physics-summary block. The token budget per synthesis
+call is 32,76832{,}768 input / 8,1928{,}192 output. The refinement loop runs for at most 33
+iterations. Each iteration replays 𝒟val\mathcal{D}_{\text{val}}, returns up to 2020 mismatch rows,
+and asks the synthesizer for a local patch.
+
+B.3 Entropy-score hyperparameters
+
+For Eq. (7), ordinary movement uses ωmove=1\omega_{\text{move}}=1, α=0.3\alpha=0.3, and β=0.5\beta=
+0.5, so a position update contributes 1+0.3​|d​x​|+0.5|​d​y|1+0.3|dx|+0.5|dy|. Appearance and
+disappearance changes in ωchange​(o)\omega_{\text{change}}(o) contribute 1010. The relation-change
+and explicit-event weights are ωrel=4\omega_{\text{rel}}=4 and ωevt=10\omega_{\text{evt}}=10,
+respectively. These constants are fixed across all games; only optional coverage constraints for
+rare observed interactions are game-specific.
+
+B.4 Planning harness
+
+Algorithm 1 is run with Tmax=300T_{\max}=300 steps on Montezuma’s Revenge and Alien, Tmax=200T_{\
+max}=200 on Skiing, and Tmax=100T_{\max}=100 on Assault. The stuck cap is Nstuck=12N_{\text{stuck}}
+=12. The commit-chain length KK is game-specific (Table 8), matching the OC-Atari frameskip used to
+record the training traces. Each LLM call returns a single action or a length-KK chunk; chunked
+outputs are truncated if a checkpoint commit fires mid-chunk. All methods use the same evaluation
+configuration within each game and planner condition.
+
+       Game         Lookahead horizon KK
+       Alien        8
+      Assault       8
+      Skiing        16
+Montezuma’s Revenge 8
+
+
+Table 8: Per-game lookahead horizon used in offline and online NSP evaluation.
+
+B.5 Computational resources
+
+WM synthesis is API-only. Each game’s full pipeline (entropy selection, synthesis, patching,
+optional refinement, and single-step evaluation) consumes ≤200\leq 200 LLM calls and finishes in
+under 2020 minutes wall clock per game on a workstation that drives only the API and the OC-Atari
+sandbox. Planning runs are CPU-only (ALE + OC-Atari + LLM API); a full 300300-round Montezuma
+planning episode under Mind-Studio finishes in ∼7​s\sim 7\,\text{s} on a single core. No GPU is
+required for any reported number.
+
+B.6 Reproducibility
+
+We release: (i) the synthesized WM programs (M⋆M^{\star} per game) used in all reported tables;
+(ii) the prompt templates for synthesis, refinement, and planning; (iii) per-game subgoal
+predicates (Φk\Phi_{k}, Appendix A); (iv) the raw planning logs behind every cell in Tables 2 and 7
+; and (v) the entropy-selector code (Eq. (7)) and WM evaluator. All runs use the OC-Atari extractor
+at its default configuration Delfosse et al. (2024) and the public Atari 2600 ROMs.
+
+Appendix C Game setting skill-file excerpt
+
+Table 6 uses a game setting / skill block during WM synthesis in the Default condition. The
+following is an excerpt from games/montezumarevenge/ prompt_settings_en.txt, showing the concrete
+content that is removed in the −-setting ablation.
+
+[game_setting]
+Use up/down/left/right and FIRE-like actions
+to move and jump; on ropes/ladders you can
+climb up/down; touching a skull kills and
+restarts; the goal is to get the key.
+
+[patch_actions]
+"NOOP", "LEFT", "RIGHT", "UP", "DOWN",
+"FIRE", "LEFTFIRE", "RIGHTFIRE"
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

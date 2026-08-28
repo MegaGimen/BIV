@@ -1,0 +1,1904 @@
+source: https://arxiv.org/html/2606.27483
+arxiv: https://arxiv.org/abs/2606.27483
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Preliminaries
+     1. 2.1 World models in LLM agents
+     2. 2.2 Mid-training in large language models
+     3. 2.3 Group-based RL
+ 4. 3 Methodology
+     1. 3.1 The format-capability gap in post-training
+     2. 3.2 World model agentic mid-training
+     3. 3.3 Format-eliciting supervised fine-tuning
+     4. 3.4 Foresight-conditioned RL
+         1. World model optimization: foresight grounding and calibration
+         2. Policy optimization: execution success
+ 5. 4 Related Work
+     1. 4.1 World models in autonomous agents
+     2. 4.2 Agentic data synthesis and mid-training
+ 6. 5 Experiments
+     1. 5.1 Experiment setup
+         1. Search
+         2. Mathematical reasoning
+         3. Baselines and configurations
+     2. 5.2 Main results
+         1. Necessity of our three phases.
+         2. Stage dependency.
+         3. Comparison with other world modeling methods.
+         4. Efficacy on complex multi-hop reasoning.
+         5. Qualitative analysis of world model blocks.
+ 7. 6 Conclusion
+ 8. Authors
+ 9. Affiliations
+10. ^†Corresponding Authors
+11. Acknowledgments
+12. References
+13. A Addition descriptions for our method
+     1. A.1 World model agentic mid-training
+     2. A.2 Foresight-conditioned reinforcement learning
+14. B Data construction
+     1. B.1 World model agentic mid-training
+     2. B.2 Format-eliciting supervised fine-tuning
+15. C Detailed training configurations
+     1. C.1 World model agentic mid-training
+     2. C.2 Format-eliciting supervised fine-tuning
+     3. C.3 Foresight-conditioned reinforcement learning
+         1. C.3.1 Prompt
+             1. Search
+             2. Mathematical reasoning
+         2. C.3.2 Outcome reward function
+             1. Search
+             2. Mathematical reasoning
+         3. C.3.3 Training hyperparameters
+             1. Search
+             2. Mathematical reasoning
+16. D Additional experimental results
+     1. D.1 The format-capability gap in post-training
+     2. D.2 Sensitivity analysis on ω\omega
+     3. D.3 Ablation studies on RgroundR_{\text{ground}} in FC-RL
+     4. D.4 Analysis of response length
+     5. D.5 Analysis of the RL-only baseline and the necessity of SFT
+17. E Case study
+     1. E.1 An example of the format-capability gap in post-training
+     2. E.2 A search example of the reasoning flow with internalized world model
+     3. E.3 A mathematical reasoning example of the reasoning flow with internalized world model
+
+License: CC BY 4.0
+arXiv:2606.27483v1 [cs.AI] 25 Jun 2026
+\correspondence
+
+xuanzhang24@m.fudan.edu.cn
+
+Internalizing the Future: A Unified Agentic Training Paradigm for World Model Planning
+
+Xuan Zhang^1,2,3    Zhijian Zhou^1,2,3    Lingfeng Qiao^3    Yulei Qin^3    Ke Li^3    Xing Sun^3 
+   Xiaoyu Tan^3†    Chao Qu^1†    Yuan Qi^1† Affiliation: ^1Fudan University, ^2Shanghai Innovation
+Institute, ^3Tencent Youtu Lab
+June 25, 2026
+
+Abstract
+
+Large language model (LLM) agents have demonstrated strong capability in sequential
+decision-making, yet they remains fundamentally reactive in long-horizon tasks. Unlike humans who
+employ ”what-if” reasoning to evaluate potential plans before commitment, standard agents lack an
+internal world model to simulate future outcomes. Therefore, we propose to internalize future-aware
+planning by training a single autoregressive model to verbalize both a prospective state rollout
+and a plan-conditioned success estimate—a textual analogue of the QQ-value. Crucially, we identify
+a format-capability gap: simply fine-tuning agents on look-ahead traces during post-training leads
+to superficial mimicry of foresight without genuine predictive grounding. To bridge this gap, we
+introduce a three-stage training paradigm: (i) World Model Agentic Mid-Training (WM-AMT) to inject
+latent predictive capabilities into the policy; (ii) Format-Eliciting SFT (FE-SFT) to structure
+this injected capability; and (iii) Foresight-Conditioned Reinforcement Learning (FC-RL) to refine
+the calibration and utility of the generated simulations. Evaluated on search and mathematical
+reasoning tasks, our approach consistently outperforms other training baselines. Our results
+demonstrate that effective internal world modeling in LLM agents requires a capability-first
+training pipeline to achieve grounded and calibrated foresight.
+
+1 Introduction
+
+Refer to caption
+Figure 1: Overview of our key design of an agent policy with internalized world model.
+
+LLM agents have become strong controllers for multi-step tasks given their comprehensive
+pre-trained semantic knowledge and remarkable capabilities in sequential decision-making [45, 42].
+However, the prevailing paradigm in long-horizon settings remains fundamentally reactive, yet human
+planning is rarely reactive. Before acting, people often ask a what-if question: if I follow this
+plan, what is likely to happen next, and how likely is it to succeed? This style of reasoning is
+central to intelligent behavior because it allows alternatives to be mentally compared before
+commitment, as shown in Figure 1. In Craik’s classic formulation, effective intelligence depends on
+carrying a “small-scale model” of external reality that lets possible actions be tried out in
+thought before they are executed [5]. Inspired by this pattern of planning, we do not claim full
+counterfactual reasoning; rather, we target a plan-conditioned form of future simulation and
+evaluation within a language agent.
+
+While standard autoregressive reasoning methods such as Chain-of-Thought [48] mainly improve
+decomposition of the current problem, the ability that we aim to inject is closely related to an
+internal world model [43, 16]. Instead of utilizing separate modules to serve as external world
+models [3, 47, 15], our key claim is that, for language agents, this kind of future-aware planning
+signal should be internalized as part of the policy itself. Moreover, unlike Dreamer-style
+model-based RL [17, 18, 19], our goal is not to introduce a separate simulator or a dedicated value
+head. Instead, we train a single autoregressive model not only to serve as a reasoning agent, but
+also to verbalize both: (i) a compact prospective rollout of what may happen next, and (ii) a
+plan-conditioned estimate of success if the current plan is followed. This textual estimate is best
+understood as a verbalized analogue of Q⁡(s,a)Q(s,a) or local action value, represented in the same
+token space as the policy rather than as a claim of full what-if reasoning. Unlike other methods
+that only train agents to predict future states or transition dynamics [4, 8, 52], our design of
+internal world modeling is more comprehensive and innovative. Crucially, our verbalized QQ-values
+are designed to be continuously updated and corrected by actual environmental feedback obtained
+from real execution during RL training, which is also distinct from previous works [20].
+
+Such explicit verbalization offers a transparent reasoning signal, allowing the agent to
+effectively prune suboptimal paths through implicit deliberation. To inject this capability, a
+natural idea is to leverage the inherent world modeling potential of LLMs [28] by training the
+agent to imagine the future, evaluate it, and then act. However, our preliminary experiments show
+that this strategy fails when applied only during post-training. With SFT and RL on formatted
+look-ahead traces, the agent learns the surface form of a simulation but not the predictive
+competence behind it. Experimental results for SFT and RL are shown in Table 7, and an example is
+shown in Appendix E.1. We call this failure mode the format-capability gap: the agent can produce a
+plausible-looking foresight block while the content remains weakly grounded, miscalibrated, or
+outright misleading, thus introducing noise rather than useful guidance.
+
+This motivates us to propose a unified three-stage training paradigm: World Model Agentic
+Mid-Training (WM-AMT), Format-Eliciting SFT (FE-SFT), and Foresight-Conditioned Reinforcement
+Learning (FC-RL). WM-AMT injects the underlying predict-then-act capability by augmenting
+large-scale agentic trajectories with future-aware experience summaries. FE-SFT then teaches the
+model when and how to externalize this latent capability in a structured foresight block. FC-RL
+finally improves both action quality and foresight quality by rewarding task success, grounded
+anticipation, and calibrated confidence. All three stages are implemented within one causal
+language model, with no additional value head.
+
+We evaluate this training paradigm on two representative agentic domains: search and mathematical
+reasoning. Across both settings, our method consistently outperforms other training baselines. The
+results show that future-aware behavior in LLM agents is not well served by format supervision
+alone; it benefits from a training pipeline that first builds the capability, then elicits it, and
+finally optimizes it under reward.
+
+Our contributions are summarized as follows:
+
+  • •
+   
+    We identify the format-capability gap: post-training on look-ahead formats alone teaches LLM
+    agents to mimic the structure of foresight without reliably acquiring grounded future
+    prediction.
+
+  • •
+   
+    We propose a unified three-stage paradigm, consisting of WM-AMT, FE-SFT, and FC-RL, which
+    internalizes world-model planning inside a single autoregressive policy. Our method verbalizes
+    both future rollout and a plan-conditioned success estimate without introducing an explicit
+    value head, and this verbalized Q-like signal is explicitly trained and refined throughout the
+    pipeline.
+
+  • •
+   
+    We show on search and mathematical reasoning that this capability-first pipeline yields
+    consistent gains over other training baselines.
+
+2 Preliminaries
+
+2.1 World models in LLM agents
+
+We formulate LLM agents’ decision-making as a Markov Decision Process (MDP) [2], denoted by ℳ=
+⟨𝒮,𝒜,𝒫,ℛ,γ⟩\mathcal{M}=\langle\mathcal{S},\mathcal{A},\mathcal{P},\mathcal{R},\gamma\rangle. State
+st∈𝒮s_{t}\in\mathcal{S} includes the initial instruction, historical trajectory, and observations.
+Action at∈𝒜a_{t}\in\mathcal{A} represents discrete operations, e.g., text generation or tool
+invocation. Transition dynamics 𝒫⁡(st+1|st,at)\mathcal{P}(s_{t+1}|s_{t},a_{t}) and reward ℛ⁡(st,at)
+\mathcal{R}(s_{t},a_{t}) govern environmental feedback. The objective is to learn a parameterized
+policy πθ​(at|st)\pi_{\theta}(a_{t}|s_{t}) that maximizes the expected return discounted by γ∈[0,1]
+\gamma\in[0,1]. World models traditionally predict transition dynamics 𝒫^​(st+1|st,at)\hat{\mathcal
+{P}}(s_{t+1}|s_{t},a_{t}) and rewards ℛ^​(st,at)\hat{\mathcal{R}}(s_{t},a_{t}) [43]. However,
+applying token-level simulation to dense, low-level environmental feedback is computationally
+intractable. Autoregressively predicting fine-grained future trajectories τf​u​t​u​r​e=
+⟨st+1,at+1,ot+1,…,st+k⟩\tau_{future}=\langle s_{t+1},a_{t+1},o_{t+1},\dots,s_{t+k}\rangle may waste
+computational capacity on syntax rather than core causal dynamics, thus causing severe compounding
+errors [27]. Thus, we reconceptualize the World Model for LLM agents as an internal semantic
+simulator. It generates a condensed experience summary of anticipated consequences, defined as z^t=
+Ψ⁡(τf​u​t​u​r​e)\hat{z}_{t}=\Psi(\tau_{future}). Here, Ψ\Psi is a semantic compression function
+mapping raw rollouts into high-level predictive foresight. This empowers the agent to perform 
+look-ahead planning, transitioning from a reactive policy πθ​(at|st)\pi_{\theta}(a_{t}|s_{t}) to a
+foresight-conditioned policy πθ​(at|st,z^t)\pi_{\theta}(a_{t}|s_{t},\hat{z}_{t}). Ultimately, this
+enables the agent to evaluate consequences and prune suboptimal trajectories in the latent space
+before executing real-world actions.
+
+2.2 Mid-training in large language models
+
+To obtain strong initial policies in terms of both performance and exploration diversity,
+mid-training [32, 41] has become an essential step between general pre-training and post-training,
+which aims to adapt the LLM’s underlying data distribution toward the target domain. Recent
+theoretical analyses demonstrate that an effective mid-training stage not only establishes strong
+policy priors by efficiently pruning the decision space, but also allows the subsequent RL phase to
+effectively jump across multiple steps during Bellman backups, thus accelerating convergence speed
+and minimizing post-training regret [53]. By immersing the LLM in high-density, high-quality
+specialized sequences, mid-training provides a latent semantic foundation and contextually grounded
+initialization for post-training.
+
+2.3 Group-based RL
+
+Unlike traditional Actor-Critic methods (e.g., PPO [38]) that rely on a parameterized value network
+Vϕ​(s)V_{\phi}(s) to estimate advantages, group-based RL approaches [39, 51, 11] leverage the
+statistical distribution of rewards within a sampled batch to approximate the baseline. For a given
+task prompt xx, the agent samples a group of GG trajectories {τ1,τ2,…,τG}\{\tau_{1},\tau_{2},\dots,
+\tau_{G}\} from the current policy πθold\pi_{\theta_{\text{old}}}. Each trajectory τi\tau_{i}
+represents a full episode of interactions and is assigned a scalar reward R⁡(τi)R(\tau_{i})
+reflecting the task success. The advantage estimation A⁡(τi)A(\tau_{i}) is derived from the
+normalized reward in each group: A⁡(τi)=R⁡(τi)−μ⁡({R⁡(τj)}j=1G)σ⁡({R⁡(τj)}j=1G)A(\tau_{i})=\frac{R
+(\tau_{i})-\mu(\{R(\tau_{j})\}_{j=1}^{G})}{\sigma(\{R(\tau_{j})\}_{j=1}^{G})}, where μ\mu and σ\
+sigma denote the mean and standard deviation of rewards in the group, respectively.
+
+3 Methodology
+
+3.1 The format-capability gap in post-training
+
+A natural idea to internalize world model into the LLM policy is training the LLM with SFT data
+that explicitly includes anticipated futures, and then followed by RL. However, our preliminary
+experiments on the model mid-trained with routine agentic trajectories (see Appendix D.1 and E.1)
+reveal a format-capability gap. While the agent learns the format of look-ahead reasoning, it fails
+to simulate accurate future dynamics, often resulting in hallucinations. We attribute it to the
+inherent nature of post-training: while SFT and RL excel at eliciting latent capabilities, they
+struggle to inject fundamentally new ones. Without a prior understanding of future consequences,
+enforcing a look-ahead format merely triggers hallucinated pattern matching rather than genuine
+future simulation. It motivates us to intervene earlier in the training pipeline via mid-training
+to construct a foundational data distribution that intrinsically models the future. We propose a
+three-stage training paradigm to close the format-capability gap, as shown in Figure 2. Given an
+LLM policy, our goal is not only to produce a well-formed look-ahead trace, but also to internalize
+transition-aware foresight that improves policy capability. The paradigm consists of: (i) World
+Model Agentic Mid-Training (WM-AMT) for policy prior formation, (ii) Format-Eliciting Supervised
+Fine-Tuning (FE-SFT) for structured elicitation, and (iii) Foresight-Conditioned Reinforcement
+Learning (FC-RL) for reward-aligned policy optimization.
+
+3.2 World model agentic mid-training
+
+Standard pre-training and agentic SFT trajectory data primarily consist of observational
+trajectories. While this paradigm trains the model to predict the next action given the historical
+context, we aim to instill look-ahead capabilities in LLM agents via WM-AMT (Algorithm 1). Let 𝒟raw
+={τi}i=1N\mathcal{D}_{\text{raw}}=\{\tau_{i}\}_{i=1}^{N} denote a large-scale dataset of agentic
+trajectories, where each trajectory is defined as a sequence of state-action pairs: τ=
+(s1,a1,s2,a2,…,sT,aT)\tau=(s_{1},a_{1},s_{2},a_{2},\dots,s_{T},a_{T}). Instead of relying on
+human-annotated chain-of-thought data, we systematically augment 𝒟raw\mathcal{D}_{\text{raw}}
+through a trajectory summarization mapping.
+
+Formally, for a given trajectory τ\tau of length TT, we sample a set of indices ℐ∼𝒰⁡(1,T−1)\mathcal
+{I}\sim\mathcal{U}(1,T-1). For each step t∈ℐt\in\mathcal{I}, we construct a structured world model
+block ztz_{t}. We define a summarization function Φ⁡(⋅)\Phi(\cdot), which maps the current
+observation sts_{t} and the future trajectory τ>t\tau_{>t} into a composite textual representation:
+zt=[zt(traj)⊕zt(eval)]z_{t}=[z_{t}^{(\text{traj})}\oplus z_{t}^{(\text{eval})}]. Here, zt(traj)z_
+{t}^{(\text{traj})} serves as an abstracted roadmap of the simulated future. zt(eval)z_{t}^{(\text
+{eval})} provides a semantic gap analysis and a QQ-value estimation q∈[0,100]%q\in[0,100]\%,
+denoting the confidence score of successfully resolving the initial task following this roadmap.
+While accurately estimating qq for merely a single step of a trajectory ideally requires dozens of
+Monte Carlo rollouts, it is computationally prohibitive given the massive scale of mid-training
+data. Consequently, we adopt an LLM to heuristically estimate this success probability. Though this
+estimation may be not accurate enough, it is acceptable because these confidence priors are
+ultimately grounded and calibrated against true execution outcomes during subsequent RL training.
+
+We then inject ztz_{t} into the original agentic trajectory, producing an augmented trajectory τ~\
+tilde{\tau}, which is defined by τ~=(…,st,zt,at,st+1,…)\tilde{\tau}=(\dots,s_{t},z_{t},a_{t},s_
+{t+1},\dots). The WM-AMT stage optimizes the policy θ\theta via the standard autoregressive
+negative log-likelihood objective over the augmented dataset 𝒟WM-AMT\mathcal{D}_{\text{WM-AMT}}:
+ℒWM-AMT​(θ)=−𝔼τ~∼𝒟WM-AMT​[∑i=1|τ~|log⁡Pθ​(ui|u<i)]\mathcal{L}_{\text{WM-AMT}}(\theta)=-\mathbb{E}_
+{\tilde{\tau}\sim\mathcal{D}_{\text{WM-AMT}}}\left[\sum_{i=1}^{|\tilde{\tau}|}\log P_{\theta}(u_{i}
+|u_{<i})\right], where uiu_{i} denotes the ii-th token in τ~\tilde{\tau}. By forcing the model to
+autoregressively reconstruct the composite block ztz_{t} conditioned strictly on the history up to
+sts_{t}, the objective functions as an implicit world model, equipping the agent with both causal
+prediction and value evaluation capabilities.
+
+3.3 Format-eliciting supervised fine-tuning
+
+While WM-AMT successfully injects latent look-ahead capabilities into LLM agents, the base policy
+lacks the structural schema to autonomously and reliably invoke this predictive capability during
+inference. The FE-SFT stage bridges this gap by aligning the generated trajectory with a
+predefined, explicit look-ahead reasoning structure. We curate a filtered task-specific
+instruction-tuning dataset 𝒟FE-SFT\mathcal{D}_{\text{FE-SFT}}. Given a current observation sts_{t},
+the policy is trained to project its internal world model into a textual representation of
+anticipated future states and estimated QQ-values, i.e., world model block z^t\hat{z}_{t}. While
+adopting a similar generation pipeline for these instances, FE-SFT strictly encloses z^t\hat{z}_{t}
+within distinct structural delimiters. Following z^t\hat{z}_{t}, the policy generates the
+corresponding executable action ata_{t}. Since WM-AMT has established a robust causal prior via a
+large-scale general agentic trajectories, FE-SFT avoids the hallucinations typical of world
+modeling from scratch. We also use the standard autoregressive negative log-likelihood objective to
+optimize the agent on 𝒟FE-SFT\mathcal{D}_{\text{FE-SFT}}.
+
+Refer to caption
+Figure 2: Overview of our three-stage training paradigm.
+
+3.4 Foresight-conditioned RL
+
+The policy may still suffer from compounding errors during long-horizon inference or produce
+miscalibrated foresight after WM-AMT and FE-SFT. To jointly optimize the internalized world model
+and the policy, we introduce FC-RL (Algorithm 2). The agent serves as two roles and generates a
+structured trajectory in an interaction loop: imaginary→keyword→analysis→confidence​(qt)⏟World
+Model Span ​(𝒯WM)→think→action​(at)⏟Policy Span ​(𝒯Policy)\underbrace{\textit{imaginary}\rightarrow
+\textit{keyword}\rightarrow\textit{analysis}\rightarrow\textit{confidence}\ (q_{t})}_{\text{World
+Model Span }(\mathcal{T}_{\text{WM}})}\rightarrow\underbrace{\textit{think}\rightarrow\textit
+{action}\ (a_{t})}_{\text{Policy Span }(\mathcal{T}_{\text{Policy}})}.
+
+To jointly optimize final task success and intermediate foresight quality, we decompose the
+training objective into world model optimization and policy optimization. For a given prompt, we
+sample a group of NN trajectories {τ1,…,τN}\{\tau_{1},\dots,\tau_{N}\}.
+
+World model optimization: foresight grounding and calibration
+
+To ensure the internal world model provides reliable planning rather than hallucinations, we
+optimize it from two complementary dimensions: causal accuracy and value calibration.
+
+First, to penalize hallucinated simulations, we introduce a grounding reward RgroundR_{\text
+{ground}}. The agent abstracts its look-ahead trajectory into milestones, denoted as keywords KtK_
+{t}. We define Rgroundi,t=Rmatch​(Kt(i),τ>t(i))R_{\text{ground}}^{i,t}=R_{\text{match}}(K_{t}^
+{(i)},\tau_{>t}^{(i)}), a verification function that rewards the model only if its predicted
+keywords successfully manifest in the actual execution.
+
+Second, to ensure the accuracy of the agent’s internal QQ-value estimation and explicitly penalize
+miscalibrated foresight, we apply a Brier score penalty [13] to the confidence qt(i)q_{t}^{(i)}.
+Upon episode completion, the environment provides a terminal correctness evaluation, yielding a
+binary outcome indicator 𝐈\mathbf{I}, i.e., 𝐈y≡y∗\mathbf{I}_{y\equiv y^{*}}, where yy is the
+predicted answer and y∗y^{*} is the ground truth. From a Monte Carlo (MC) perspective, 𝐈\mathbf{I}
+serves as an unbiased, single-sample empirical return for the trajectory from step tt. To calibrate
+qtq_{t}, we treat this MC return as the ground truth and apply a Brier score-based calibration
+reward:
+
+ Rcalibi,t=Rcalib​(yi,qt(i),yi∗)=𝐈−(qt(i)−𝐈)2R_{\text{calib}}^{i,t}=R_{\text{calib}}(y_{i},q_   (1)
+ {t}^{(i)},y_{i}^{*})=\mathbf{I}-(q_{t}^{(i)}-\mathbf{I})^{2}
+
+By utilizing the terminal correctness to calibrate the intermediate qtq_{t}, it forces the agent to
+align its self-assessed QQ-values, i.e., confidence on future, with the empirical success rate.
+
+Finally, we compute a combined step-level world model reward RWM​(τit)=Rcalibi,t+Rgroundi,tR^{\text
+{WM}}(\tau_{i}^{t})=R_{\text{calib}}^{i,t}+R_{\text{ground}}^{i,t}. We obtain the final world model
+advantage A⁡(τ​[world_model]it)A(\tau[\text{world\_model}]_{i}^{t}) by normalizing these combined
+rewards across all the corresponding steps {RWM​(τit)}i=1N\{R^{\text{WM}}(\tau_{i}^{t})\}_{i=1}^{N}
+within the group.
+
+Policy optimization: execution success
+
+For long-horizon tasks, relying solely on the terminal global advantage may suffer from sparse and
+delayed credit assignment, so we introduce a local (step) reward RS​(τit)=qt(i)R^{S}(\tau_{i}^{t})=
+q_{t}^{(i)}. Let AE​(τi)A^{E}(\tau_{i}) denote the global advantage computed by normalizing the
+episode rewards RiER^{E}_{i} across the group. Similarly, let AS​(τit)A^{S}(\tau_{i}^{t}) represent
+the step-level advantage, normalized across all the confidence of corresponding steps {qt(i)}i=1N\
+{q_{t}^{(i)}\}_{i=1}^{N} within the group. The final combined advantage for the policy is defined
+as:
+
+ A⁡(τ​[policy]it)=AE​(τi)+ω⋅AS​(τit)A(\tau[\text{policy}]_{i}^{t})=A^{E}(\tau_{i})+\omega\cdot  (2)
+ A^{S}(\tau_{i}^{t})
+
+where ω\omega balances global task success and local foresight alignment. Crucially, since qt(i)q_
+{t}^{(i)} is explicitly calibrated via world model optimization, it mitigates the risk of reward
+hacking and serves as a reliable proxy for the policy. The policy πϕ\pi_{\phi} is then updated by
+maximizing the clipped GRPO surrogate objective utilizing the advantage A⁡(τ​[policy]it)A(\tau[\
+text{policy}]_{i}^{t}).
+
+4 Related Work
+
+4.1 World models in autonomous agents
+
+World models are core to model-based RL, where agents learn transition and reward for look-ahead
+control [43, 33]. Classical lines focus on latent-dynamics learning in visually observed
+environments [16, 17, 18, 19] and more recently, embodied agent for future action-conditioned
+simulation [12]. It enables models to improve sample efficiency in a latent space or simulate
+outcomes without real-world interaction. The idea has shifted from pixel-space simulation to
+language-mediated future prediction and planning due to the rise of LLMs [20, 3]; it also extends
+to code-generation settings, where world modeling is used to study long-horizon program synthesis
+and repair [8]. Despite these advancements, most existing systems treat the world model as an
+explicit simulator or external module [47, 15]. For example, WebDreamer [15] and WebEvolver [9]
+construct explicit world models to simulate the environmental feedback, which improve deliberation
+quality but may introduce additional inference overhead and possible simulator-policy mismatch. In
+parallel, recent implicit world modeling strategies suggest that early experiences can improve
+downstream agent behavior without relying on another simulator [4, 52]. Extending this implicit
+world modeling line, our work targets a unified agentic training pipeline for world model planning.
+
+4.2 Agentic data synthesis and mid-training
+
+The scarcity of expert-level demonstrations has motivated the synthetic data for training LLM
+agents [52]. Early imitation-based distillation from stronger teachers [34, 7] aids initial
+alignment but suffers from limited diversity and weak on-policy coverage. Subsequent works, such as
+AgentSynth [49] and SCA [54], broaden task synthesis to expand the exploration space for agentic
+RL. Another direction shifts from trajectory synthesis to environment synthesis, e.g., classical
+world-model methods in Section 4.1, which uses learned environments to generate scalable
+interaction data. However, translating these synthetic interactions into reusable decision-making
+capabilities necessitates a dedicated training phase. Consequently, mid-training [32] is
+increasingly adopted to bridge general pre-training and task-level alignment [41, 53]. Unlike SFT,
+mid-training scales to vastly larger, diverse corpora of expert rollouts, such as human
+demonstrations in device control, tool-use records and code writing [37, 22, 1]. Our perspective is
+to synthesize agentic data with compressed future experience summary, and internalize a robust 
+predict-then-act policy prior via mid-training.
+
+5 Experiments
+
+5.1 Experiment setup
+
+We select an intermediate checkpoint of Youtu-LLM-2B [29] as our foundation model, and refer to it
+as Youtu-LLM-2B-Init. This selection is motivated by two practical considerations: (1) the
+Youtu-LLM family inherently possesses strong native agentic capabilities; (2) a lightweight 2B
+scale makes our extensive mid-training computationally feasible. To validate the effectiveness of
+our method, we initialize from the Youtu-LLM-2B-Init immediately following its general pre-training
+and compare two mid-training variants: (1) Youtu-LLM-2B-Base is trained with standard agentic
+mid-training on 200B tokens of high-quality agentic trajectory data without changing its structure;
+(2) Youtu-LLM-2B-Base (WM-AMT, ours) augments the same agentic trajectory data by inserting an
+explicit world model block into a random split of multi-turn interaction trajectories, which
+provides supervised signals for future-state prediction. We conduct experiments on two
+representative agentic tasks: search and mathematical reasoning.
+
+Search
+
+Following Jin et al. [23], we evaluate our training paradigm on 7 search-augmented QA tasks,
+including single-hop QA datasets (NQ [26], TriviaQA [24], and PopQA [31]) and multi-hop QA datasets
+(HotpotQA [50], 2Wiki [21], MuSiQue [44], and Bamboogle [35]). For retrieval, we use the 2018
+Wikipedia dump [25] as the knowledge source and E5 [46] as the retriever, and set the number of
+retrieved passages to 3 across all retrieval-based methods. During evaluation, the results are
+obtained via greedy sampling, and the metrics are computed via LLM-as-a-judge using DeepSeek V3.1 [
+6].
+
+Mathematical reasoning
+
+Following Feng et al. [10], we evaluate our paradigm on AIME2024/2025/2026 [30]. We repeat the
+evaluation set AIME2024&2025&2026 30 times and report both mean@3030 and pass@3030. The evaluation
+hyperparameters of evaluation are set to temperature 1.0 and top-p 0.6.
+
+Baselines and configurations
+
+(1) Post-Training Only*: Our preliminary experiments are conducted directly on Youtu-LLM-2B-Base,
+serving as a vanilla baseline that only applies post-training without any world-model-augmented
+mid-training. (2) State-Only Prediction (Post-Training Only)†\dagger: The agent is trained only via
+post-training to predict future states but omits the verbalized QQ-values. This setup mirrors other
+methods of predicting only state transitions [4]. (3) State-Only Prediction (With Mid-Training)‡\
+ddagger: The agent is trained via mid-training and post-training to predict future states but omits
+the verbalized QQ-values. This setup mirrors other methods introducing large-scale mid-training for
+world modeling [8]. (4) IWM: We apply the core world-modeling data generation pipeline of [52] to
+our task. Detailed training hyperparameters are presented in Appendix C.3.3.
+
+Method Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue Bamboogle 
+Youtu-LLM-2B-Base SFT* 41.8 56.6 31.0 44.8 26.4 21.0 45.6 38.2 FE-SFT* 41.6 51.4 30.6 42.2 27.2 
+23.2 45.6 37.4 IWM 44.4 57.6 31.8 46.0 28.8 25.4 47.2 40.2 Youtu-LLM-2B-Base (WM-AMT, ours) SFT 
+46.0 58.2 32.6 44.6 31.2 20.6 46.4 39.9 FE-SFT 45.6 58.8 33.8 45.8 35.8 25.6 47.2 41.8
+
+
+(a) Performance up to the SFT stage
+
+Method Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue Bamboogle 
+Youtu-LLM-2B-Base SFT & RL* 48.0 58.2 35.2 53.8 45.0 30.2 52.0 46.1 FE-SFT & RL* 49.4 60.0 38.2 
+55.4 42.0 29.8 54.4 47.0 State-SFT & RL†\dagger 48.2 58.8 40.8 55.2 40.8 31.4 54.4 47.1 IWM & RL 
+50.0 62.2 38.8 55.0 46.0 33.2 53.6 48.4 Youtu-LLM-2B-Base (WM-AMT, ours) SFT & RL 50.2 59.8 35.6 
+53.6 46.0 25.4 45.6 45.2 FE-SFT & RL 52.6 63.2 40.8 57.0 44.4 32.6 52.8 49.1 State-SFT & RL‡\
+ddagger 52.8 64.4 42.8 54.6 42.2 30.4 53.6 48.7 FE-SFT & FC-RL 53.4 62.6 42.6 59.0 46.2 34.2 56.0 
+50.6
+
+
+(b) Performance with the RL stage (the final performance)
+
+
+Table 1: Main results on search: performance on 7 QA datasets. SFT uses only think and action
+segments, excluding world model block injections. RL denotes the standard GRPO algorithm. State-SFT
+corresponds to (2) and (3) in the Baselines; these models predict future state transitions but omit
+verbalized Q-values. These denotations remain the same as in Table 2. The bold text represents the
+best, while underlined represents the second best.
+
+5.2 Main results
+
+Necessity of our three phases.
+
+(1) WM-AMT: At the SFT stage, replacing standard agentic mid-training with our WM-AMT improves the
+average score under the same SFT method (e.g., in Table 1, 38.2 →\rightarrow 39.9 for SFT and 37.4
+→\rightarrow 41.8 for FE-SFT). We provide a case study in Appendix E.1: under the same FE-SFT
+format, our WM-AMT model generates more coherent, causally accurate world model blocks, while the
+base model fails. These results indicate that FE-SFT is substantially effective when the model has
+internalized future-dynamics priors via WM-AMT. (2) FE-SFT: Under our WM-AMT model, our FE-SFT
+outperforms standard SFT (e.g. 39.9 →\rightarrow 41.8 in Table 1), showing that explicitly
+eliciting structured foresight is beneficial after the world-model capability is established. (3)
+FC-RL: In RL-stage comparisons, our FE-SFT & FC-RL achieves the best overall average (50.6 in Table
+1, mean@30: 29.5 and pass@30: 60.0 in Table 2), outperforming all the other baselines.
+
+Stage dependency.
+
+The overall results exhibit a progressive dependency: WM-AMT provides a capability foundation,
+FE-SFT activates this capability in a structured format, and FC-RL optimizes end-task behavior with
+grounded foresight. Removing or replacing any stage weakens the final performance, confirming the
+need for the full pipeline.
+
+Comparison with other world modeling methods.
+
+In Table 1, the highest average score of state-only baselines is 48.7; while in Table 2, it
+achieves a pass@30 of 56.7 and a mean@30 of 27.7. By adding the verbalized QQ-value and applying
+our FC-RL to jointly optimize the policy and its internalized world model, our final model (WM-AMT
+& FE-SFT & FC-RL) increases these scores to 50.6 in Table 1, 60.0 (pass@30) and 29.5 (mean@30) in
+Table 2, respectively. It proves that simply predicting future states is not enough for world
+modeling. Instead, explicitly adding the confidence estimation and utilizing the calibrated
+confidence to guide the policy are crucial for making better decisions. Notably, IWM (+RL) achieves
+strong performance on Youtu-LLM-2B-Base, but our final model still shows a significant and
+consistent improvement.
+
+Efficacy on complex multi-hop reasoning.
+
+Another notable fact is that our proposed paradigm yields particularly pronounced improvements on
+complex, multi-step reasoning tasks in Table 1. Up to the SFT stage, the transition from SFT to 
+FE-SFT under our WM-AMT model brings a significant improvement (MuSiQue: 20.6 →\rightarrow 25.6,
+2WikiMultiHopQA: 31.2 →\rightarrow 35.8). Our final model also demonstrates substantial superiority
+on multi-hop datasets compared to the other baselines, e.g., HotpotQA (59.0), MuSiQue (34.2) and
+Bamboogle (56.0). It indicates that the internalized world model and foresight-conditioned planning
+are especially critical for tasks requiring long-horizon reasoning, whereas simple factual
+retrieval (single-hop) relies less heavily on future simulation.
+
+Method mean@30 pass@30 AIME 24 AIME 25 AIME 26 Avg. AIME 24 AIME 25 AIME 26 Avg. Youtu-LLM-2B-Base 
+SFT* 9.1 9.9 8.9 9.3 46.7 33.3 40.0 40.0 FE-SFT* 12.0 9.9 8.0 10.0 53.3 36.7 40.0 43.3 IWM 13.0 
+10.6 10.2 11.3 56.7 33.3 43.3 44.4 Youtu-LLM-2B-Base (WM-AMT, ours) SFT 10.9 10.6 8.8 10.1 56.7 
+36.7 33.3 42.2 FE-SFT 12.2 12.2 9.7 11.4 53.3 36.7 40.0 43.3
+
+
+(a) Performance up to the SFT stage
+
+Method mean@30 pass@30 AIME 24 AIME 25 AIME 26 Avg. AIME 24 AIME 25 AIME 26 Avg. Youtu-LLM-2B-Base 
+SFT & RL* 35.1 24.3 24.6 28.0 56.7 46.7 53.3 52.2 FE-SFT & RL* 31.9 26.4 25.7 28.0 60.0 46.7 46.7 
+51.1 State-SFT & RL†\dagger 32.2 22.1 27.0 27.1 60.0 50.0 60.0 56.7 IWM & RL 33.2 24.9 27.6 28.6 
+66.7 50.0 56.7 57.8 Youtu-LLM-2B-Base (WM-AMT, ours) SFT & RL 34.2 23.4 25.9 27.8 63.3 53.3 53.3 
+56.6 FE-SFT & RL 33.6 25.6 26.0 28.4 60.0 53.3 50.0 55.5 State-SFT & RL‡\ddagger 33.2 24.8 25.0 
+27.7 63.3 56.7 50.0 56.7 FE-SFT & FC-RL 34.6 26.8 27.1 29.5 66.7 53.3 60.0 60.0
+
+
+(b) Performance with the RL stage (the final performance)
+
+
+Table 2: Main results on mathematical reasoning. The bold text and underlined represent the same as
+in Table 1.
+
+Qualitative analysis of world model blocks.
+
+We provide examples in Appendix E.2 and E.3 to analyze the world model blocks. Two key capabilities
+emerge: (1) Long-horizon planning coherence: these blocks establish reasoning frameworks that
+persist across multiple turns, even when intermediate errors require correction; and (2) Calibrated
+confidence quantification: confidence estimates correlate meaningfully with the actual task
+success, decreasing upon error detection and remaining low for inherently challenging problems.
+
+Additional ablation studies, sensitivity analyses on ω\omega in FC-RL, and analyses on the response
+length are provided in Appendix D.2, D.3 and D.4.
+
+6 Conclusion
+
+We address the limitations of reactive LLM agents by internalizing future-aware planning into the
+policy. We identify the format-capability gap, wherein post-training on look-ahead formats merely
+teaches structural mimicry instead of grounded prediction. To bridge this gap, we propose a unified
+three-stage training paradigm consisting of WM-AMT, FE-SFT and FC-RL. Evaluations across search and
+mathematical reasoning show the superiority of our approach over other training baselines. Our
+results underscore that effective internal world modeling in LLM agents demands a capability-first
+paradigm to achieve truly grounded and calibrated foresight.
+
+Contributions
+
+Authors
+
+Xuan Zhang^1,2,3 Zhijian Zhou^1,2,3 LingFeng Qiao ^3  Yulei Qin^3 Ke Li^3 Xing Sun^3
+Xiaoyu Tan^3 †\dagger  Chao Qu^1 †\dagger  Yuan Qi^1,2 †\dagger
+
+Affiliations
+
+^1Fudan University ^2Shanghai Innovation Institute ^3Tencent Youtu Lab
+
+^†Corresponding Authors
+
+Xiaoyu Tan  Chao Qu  Yuan Qi
+
+Acknowledgments
+
+We greatly thank the VeRL [40] and the VeRL-agent [11] communities for their implementation of
+various RL training and inference frameworks.
+
+References
+
+  • [1] H. Bai, Y. Zhou, M. Cemri, J. Pan, A. Suhr, S. Levine, and A. Kumar (2024) DigiRL: training
+    in-the-wild device-control agents with autonomous reinforcement learning. In Advances in Neural
+    Information Processing Systems, A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J.
+    Tomczak, and C. Zhang (Eds.), Vol. 37, pp. 12461–12495. External Links: Document, Link Cited
+    by: §4.2.
+  • [2] R. Bellman A markovian decision process. Indiana University Mathematics Journal, 
+    pp. 679–684 (en-US). External Links: Link, Document Cited by: §2.1.
+  • [3] H. Chae, N. Kim, K. T. Ong, M. Gwak, G. Song, J. Kim, S. Kim, D. Lee, and J. Yeo (2025) Web
+    agents with world models: learning and leveraging environment dynamics in web navigation. In 
+    The Thirteenth International Conference on Learning Representations, External Links: Link Cited
+    by: §1, §4.1.
+  • [4] S. Chen, T. Zhu, Z. Wang, J. Zhang, K. Wang, S. Gao, T. Xiao, Y. W. Teh, J. He, and M. Li
+    (2025) Internalizing world models via self-play finetuning for agentic rl. External Links: 
+    2510.15047, Link Cited by: §1, §4.1, §5.1.
+  • [5] K. Craik (1944) The nature of explanation. External Links: Link Cited by: §1.
+  • [6] DeepSeek-AI, A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang, C.
+    Ruan, D. Dai, D. Guo, D. Yang, D. Chen, D. Ji, E. Li, F. Lin, F. Dai, F. Luo, G. Hao, G. Chen,
+    and G. Li (2025) DeepSeek-v3 technical report. External Links: 2412.19437, Link Cited by: §B.1,
+    §5.1.
+  • [7] X. Deng, Y. Gu, B. Zheng, S. Chen, S. Stevens, B. Wang, H. Sun, and Y. Su (2023) Mind2Web:
+    towards a generalist agent for the web. In Thirty-seventh Conference on Neural Information
+    Processing Systems Datasets and Benchmarks Track, External Links: Link Cited by: §4.2.
+  • [8] M. FAIR CodeGen Team (2025) CWM: an open-weights llm for research on code generation with
+    world models. External Links: Link Cited by: §1, §4.1, §5.1.
+  • [9] T. Fang, H. Zhang, Z. Zhang, K. Ma, W. Yu, H. Mi, and D. Yu (2025) WebEvolver: enhancing
+    web agent self-improvement with coevolving world model. External Links: 2504.21024, Link Cited
+    by: §4.1.
+  • [10] J. Feng, S. Huang, X. Qu, G. Zhang, Y. Qin, B. Zhong, C. Jiang, J. Chi, and W. Zhong
+    (2025) ReTool: reinforcement learning for strategic tool use in llms. External Links: 
+    2504.11536, Link Cited by: §5.1.
+  • [11] L. Feng, Z. Xue, T. Liu, and B. An (2025) Group-in-group policy optimization for LLM agent
+    training. In The Thirty-ninth Annual Conference on Neural Information Processing Systems, 
+    External Links: Link Cited by: §2.3, Acknowledgments.
+  • [12] P. Fung, Y. Bachrach, A. Celikyilmaz, K. Chaudhuri, D. Chen, W. Chung, E. Dupoux, H. Gong,
+    H. Jégou, A. Lazaric, A. Majumdar, A. Madotto, F. Meier, F. Metze, L. Morency, T. Moutakanni,
+    J. Pino, B. Terver, J. Tighe, P. Tomasello, and J. Malik (2025) Embodied ai agents: modeling
+    the world. External Links: 2506.22355, Link Cited by: §4.1.
+  • [13] W. B. Glenn et al. (1950) Verification of forecasts expressed in terms of probability. 
+    Monthly weather review 78 (1), pp. 1–3. Cited by: §3.4.
+  • [14] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A.
+    Mathur, A. Schelten, A. Vaughan, A. Yang, A. Fan, A. Goyal, A. Hartshorn, A. Yang, A. Mitra, A.
+    Sravankumar, A. Korenev, and et.al. Arthur Hinsvark (2024) The llama 3 herd of models. External
+    Links: 2407.21783, Link Cited by: §D.1.
+  • [15] Y. Gu, K. Zhang, Y. Ning, B. Zheng, B. Gou, T. Xue, C. Chang, S. Srivastava, Y. Xie, P.
+    Qi, H. Sun, and Y. Su (2025) Is your llm secretly a world model of the internet? model-based
+    planning for web agents. Transactions on Machine Learning Research. Cited by: §1, §4.1.
+  • [16] D. Ha and J. Schmidhuber (2018) Recurrent world models facilitate policy evolution. 
+    Advances in neural information processing systems 31. Cited by: §1, §4.1.
+  • [17] D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi (2020) Dream to control: learning behaviors
+    by latent imagination. In International Conference on Learning Representations, External Links:
+    Link Cited by: §1, §4.1.
+  • [18] D. Hafner, T. P. Lillicrap, M. Norouzi, and J. Ba (2021) Mastering atari with discrete
+    world models. In International Conference on Learning Representations, External Links: Link 
+    Cited by: §1, §4.1.
+  • [19] D. Hafner, J. Pasukonis, J. Ba, and T. Lillicrap (2024) Mastering diverse domains through
+    world models. External Links: 2301.04104, Link Cited by: §1, §4.1.
+  • [20] S. Hao, Y. Gu, H. Ma, J. Hong, Z. Wang, D. Wang, and Z. Hu (2023) Reasoning with language
+    model is planning with world model. In Proceedings of the 2023 Conference on Empirical Methods
+    in Natural Language Processing, H. Bouamor, J. Pino, and K. Bali (Eds.), Singapore, 
+    pp. 8154–8173. External Links: Link, Document Cited by: §1, §4.1.
+  • [21] X. Ho, A. D. Nguyen, S. Sugawara, and A. Aizawa (2020) Constructing a multi-hop qa dataset
+    for comprehensive evaluation of reasoning steps. External Links: 2011.01060, Link Cited by:
+    §5.1.
+  • [22] S. Huang, T. Cheng, J. K. Liu, W. Xu, J. Hao, L. Song, Y. Xu, J. Yang, J. Liu, C. Zhang,
+    L. Chai, R. Yuan, X. Luo, Q. Wang, Y. Fan, Q. Zhu, Z. Zhang, Y. Gao, J. Fu, Q. Liu, H. Li, G.
+    Zhang, Y. Qi, X. Yinghui, W. Chu, and Z. Wang (2025) OpenCoder: the open cookbook for top-tier
+    code large language models. In Proceedings of the 63rd Annual Meeting of the Association for
+    Computational Linguistics (Volume 1: Long Papers), W. Che, J. Nabende, E. Shutova, and M. T.
+    Pilehvar (Eds.), Vienna, Austria, pp. 33167–33193. External Links: Link, Document, ISBN
+    979-8-89176-251-0 Cited by: §4.2.
+  • [23] B. Jin, H. Zeng, Z. Yue, J. Yoon, S. O. Arik, D. Wang, H. Zamani, and J. Han (2025) 
+    Search-r1: training LLMs to reason and leverage search engines with reinforcement learning. In 
+    Second Conference on Language Modeling, External Links: Link Cited by: §5.1.
+  • [24] M. Joshi, E. Choi, D. S. Weld, and L. Zettlemoyer (2017) TriviaQA: a large scale distantly
+    supervised challenge dataset for reading comprehension. External Links: 1705.03551, Link Cited
+    by: §5.1.
+  • [25] V. Karpukhin, B. Oguz, S. Min, P. Lewis, L. Wu, S. Edunov, D. Chen, and W. Yih (2020) 
+    Dense passage retrieval for open-domain question answering. In Proceedings of the 2020
+    Conference on Empirical Methods in Natural Language Processing (EMNLP), B. Webber, T. Cohn, Y.
+    He, and Y. Liu (Eds.), Online, pp. 6769–6781. External Links: Link, Document Cited by: §5.1.
+  • [26] T. Kwiatkowski, J. Palomaki, O. Redfield, M. Collins, A. Parikh, C. Alberti, D. Epstein,
+    I. Polosukhin, M. Kelcey, J. Devlin, K. Lee, K. N. Toutanova, L. Jones, M. Chang, A. Dai, J.
+    Uszkoreit, Q. Le, and S. Petrov (2019) Natural questions: a benchmark for question answering
+    research. Transactions of the Association of Computational Linguistics. Cited by: §5.1.
+  • [27] Y. LeCun et al. (2022) A path towards autonomous machine intelligence version 0.9. 2,
+    2022-06-27. Open Review 62 (1), pp. 1–62. Cited by: §2.1.
+  • [28] Y. Li, H. Wang, J. Qiu, Z. Yin, D. Zhang, C. Qian, Z. Li, P. Ma, G. Chen, H. Ji, and M.
+    Wang (2025) From word to world: can large language models be implicit text-based world models?.
+    External Links: 2512.18832, Link Cited by: §1.
+  • [29] J. Lu, J. Qin, L. Qiao, Y. Li, X. Dai, B. Ke, J. He, R. Qiao, D. Yin, X. Sun, Y. Wu, Y.
+    Liu, S. Liu, M. Tang, H. Lin, J. Kuang, F. Meng, X. Tang, Y. Xi, J. Huang, H. Yang, Z. Shen, Y.
+    Li, Q. Zhang, Y. Yu, S. An, J. Dong, Q. Wang, J. Wang, K. Chen, W. Wen, T. Guo, Z. Shen, D. Yu,
+    J. Li, K. Li, Z. Li, and X. Tan (2026) Youtu-llm: unlocking the native agentic potential for
+    lightweight large language models. External Links: 2512.24618, Link Cited by: §5.1.
+  • [30] MAA (2025) American invitational mathematics examination (aime). Note: https://maa.org/ 
+    Cited by: §5.1.
+  • [31] A. Mallen, A. Asai, V. Zhong, R. Das, D. Khashabi, and H. Hajishirzi (2023) When not to
+    trust language models: investigating effectiveness of parametric and non-parametric memories. 
+    External Links: 2212.10511, Link Cited by: §5.1.
+  • [32] K. Mo, Y. Shi, W. Weng, Z. Zhou, S. Liu, H. Zhang, and A. Zeng (2025) Mid-training of
+    large language models: a survey. External Links: 2510.06826, Link Cited by: §2.2, §4.2.
+  • [33] T. M. Moerland, J. Broekens, A. Plaat, and C. M. Jonker (2023) Model-based reinforcement
+    learning: a survey. Found. Trends Mach. Learn. 16 (1), pp. 1–118. External Links: ISSN
+    1935-8237, Link, Document Cited by: §4.1.
+  • [34] V. Pahuja, Y. Lu, C. Rosset, B. Gou, A. Mitra, S. Whitehead, Y. Su, and A. Awadallah
+    (2025) Explorer: scaling exploration-driven web trajectory synthesis for multimodal web agents.
+    External Links: 2502.11357, Link Cited by: §4.2.
+  • [35] O. Press, M. Zhang, S. Min, L. Schmidt, N. A. Smith, and M. Lewis (2023) Measuring and
+    narrowing the compositionality gap in language models. External Links: 2210.03350, Link Cited
+    by: §5.1.
+  • [36] Qwen, :, A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F. Huang, H.
+    Wei, H. Lin, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Lin, K. Dang, K. Lu, K.
+    Bao, K. Yang, L. Yu, M. Li, M. Xue, P. Zhang, Q. Zhu, R. Men, R. Lin, T. Li, T. Tang, T. Xia,
+    X. Ren, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Wan, Y. Liu, Z. Cui, Z. Zhang, and Z. Qiu (2025) 
+    Qwen2.5 technical report. External Links: 2412.15115, Link Cited by: §D.1.
+  • [37] C. Rawles, A. Li, D. Rodriguez, O. Riva, and T. P. Lillicrap (2023) AndroidInTheWild: a
+    large-scale dataset for android device control. In Thirty-seventh Conference on Neural
+    Information Processing Systems Datasets and Benchmarks Track, External Links: Link Cited by:
+    §4.2.
+  • [38] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov (2017) Proximal policy
+    optimization algorithms. External Links: 1707.06347, Link Cited by: §2.3.
+  • [39] Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, M. Zhang, Y.K. Li, Y. Wu, and D. Guo (2024) 
+    DeepSeekMath: pushing the limits of mathematical reasoning in open language models. Vol. abs/
+    2402.03300. External Links: Link Cited by: §2.3.
+  • [40] G. Sheng, C. Zhang, Z. Ye, X. Wu, W. Zhang, R. Zhang, Y. Peng, H. Lin, and C. Wu (2025) 
+    HybridFlow: a flexible and efficient rlhf framework. In Proceedings of the Twentieth European
+    Conference on Computer Systems, EuroSys ’25, pp. 1279–1297. External Links: Link, Document 
+    Cited by: Acknowledgments.
+  • [41] L. Su, Z. Zhang, G. Li, Z. Chen, C. Wang, M. Song, X. Wang, K. Li, J. Wu, X. Chen, Z.
+    Qiao, Z. Zhang, H. Yin, S. Cai, R. Fang, Z. Tao, W. Yin, C. Qian, Y. Jiang, P. Xie, F. Huang,
+    and J. Zhou (2025) Scaling agents via continual pre-training. External Links: 2509.13310, Link 
+    Cited by: §2.2, §4.2.
+  • [42] T. Sumers, S. Yao, K. R. Narasimhan, and T. L. Griffiths (2024) Cognitive architectures
+    for language agents. Transactions on Machine Learning Research. Note: Survey Certification,
+    Featured Certification External Links: ISSN 2835-8856, Link Cited by: §1.
+  • [43] R. S. Sutton (1991) Dyna, an integrated architecture for learning, planning, and reacting.
+    SIGART Bull. 2 (4), pp. 160–163. External Links: ISSN 0163-5719, Link, Document Cited by: §1,
+    §2.1, §4.1.
+  • [44] H. Trivedi, N. Balasubramanian, T. Khot, and A. Sabharwal (2022) MuSiQue: multihop
+    questions via single-hop question composition. Transactions of the Association for
+    Computational Linguistics. Cited by: §5.1.
+  • [45] L. Wang, C. Ma, X. Feng, Z. Zhang, H. Yang, J. Zhang, Z. Chen, J. Tang, X. Chen, Y. Lin,
+    W. X. Zhao, Z. Wei, and J. Wen (2023) A survey on large language model based autonomous agents.
+    Frontiers of Computer Science 18. External Links: Link Cited by: §1.
+  • [46] L. Wang, N. Yang, X. Huang, B. Jiao, L. Yang, D. Jiang, R. Majumder, and F. Wei (2024) 
+    Text embeddings by weakly-supervised contrastive pre-training. External Links: 2212.03533, Link
+    Cited by: §5.1.
+  • [47] Y. Wang, D. Yin, Y. Cui, R. Zheng, Z. Li, Z. Lin, D. Wu, X. Wu, C. Ye, Y. Zhou, and K.
+    Chang (2025) LLMs as scalable, general-purpose simulators for evolving digital agent training. 
+    External Links: 2510.14969, Link Cited by: §1, §4.1.
+  • [48] J. Wei, X. Wang, D. Schuurmans, M. Bosma, b. ichter, F. Xia, E. Chi, Q. V. Le, and D. Zhou
+    (2022) Chain-of-thought prompting elicits reasoning in large language models. In Advances in
+    Neural Information Processing Systems, S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho,
+    and A. Oh (Eds.), Vol. 35, pp. 24824–24837. External Links: Link Cited by: §1.
+  • [49] J. Xie, D. Xu, X. Zhao, and D. Song (2025) AgentSynth: scalable task generation for
+    generalist computer-use agents. arXiv preprint arXiv:2506.14205. Cited by: §4.2.
+  • [50] Z. Yang, P. Qi, S. Zhang, Y. Bengio, W. W. Cohen, R. Salakhutdinov, and C. D. Manning
+    (2018) HotpotQA: a dataset for diverse, explainable multi-hop question answering. External
+    Links: 1809.09600, Link Cited by: §5.1.
+  • [51] Q. Yu, Z. Zhang, R. Zhu, Y. Yuan, X. Zuo, Y. Yue, W. Dai, T. Fan, G. Liu, L. Liu, et al.
+    (2025) Dapo: an open-source llm reinforcement learning system at scale. arXiv preprint
+    arXiv:2503.14476. Cited by: §2.3.
+  • [52] K. Zhang, X. Chen, B. Liu, T. Xue, Z. Liao, Z. Liu, X. Wang, Y. Ning, Z. Chen, X. Fu, J.
+    Xie, Y. Sun, B. Gou, Q. Qi, Z. Meng, J. Yang, N. Zhang, X. Li, A. Shah, D. Huynh, H. Li, Z.
+    Yang, S. Cao, L. Jang, S. Zhou, J. Zhu, H. Sun, J. Weston, Y. Su, and Y. Wu (2025) Agent
+    learning via early experience. External Links: 2510.08558, Link Cited by: §1, §4.1, §4.2, §5.1.
+  • [53] S. Zhang, D. Yu, Y. Feng, B. Jin, Z. Wang, J. Peebles, and Z. Wang (2026) Learning to
+    reason as action abstractions with scalable mid-training RL. In The Fourteenth International
+    Conference on Learning Representations, External Links: Link Cited by: §2.2, §4.2.
+  • [54] Y. Zhou, S. Levine, J. Weston, X. Li, and S. Sukhbaatar (2025) Self-challenging language
+    model agents. External Links: 2506.01716, Link Cited by: §4.2.
+
+Appendix A Addition descriptions for our method
+
+A.1 World model agentic mid-training
+
+Our algorithmic description for WM-AMT is shown in Algorithm 1.
+
+
+Algorithm 1 World Model Agentic Mid-Training (WM-AMT)
+0:  Raw trajectory dataset 𝒟raw={τi}i=1N\mathcal{D}_{\text{raw}}=\{\tau_{i}\}_{i=1}^{N}, policy θ\
+theta, summarization function Φ\Phi.
+ Initialize the augmented dataset 𝒟WM-AMT←∅\mathcal{D}_{\text{WM-AMT}}\leftarrow\emptyset.
+ for each multi-turn interaction trajectory τ=(s1,a1,…,sT,aT)\tau=(s_{1},a_{1},\dots,s_{T},a_{T})
+in 𝒟raw\mathcal{D}_{\text{raw}} do
+  Sample a set of indices ℐ∼𝒰⁡(1,T−1)\mathcal{I}\sim\mathcal{U}(1,T-1).
+  for each step t∈ℐt\in\mathcal{I} do
+   Generate a structured world model block zt=Φ⁡(st,τ>t)z_{t}=\Phi(s_{t},\tau_{>t}), composed of zt
+=[zt(traj)⊕zt(eval)]z_{t}=[z_{t}^{(\text{traj})}\oplus z_{t}^{(\text{eval})}].
+   Estimate a Q-value confidence score q∈[0,100]%q\in[0,100]\% via an LLM to represent task success
+probability, and incorporate it into zt(eval)z_{t}^{(\text{eval})}.
+  end for
+  Inject generated {zt}t∈ℐ\{z_{t}\}_{t\in\mathcal{I}} into τ\tau, yielding an augmented trajectory
+τ~=(…,st,zt,at,st+1,…)\tilde{\tau}=(\dots,s_{t},z_{t},a_{t},s_{t+1},\dots).
+  Add τ~\tilde{\tau} to the augmented dataset 𝒟WM-AMT\mathcal{D}_{\text{WM-AMT}}.
+ end for
+ Optimization Phase:
+ while not converged do
+  Sample a batch of trajectories τ~∼𝒟WM-AMT∪{τ|τ∈𝒟raw∧τ∉𝒟WM-AMT}\tilde{\tau}\sim\mathcal{D}_{\text
+{WM-AMT}}\cup\{\tau|\tau\in\mathcal{D}_{\text{raw}}\ \wedge\tau\notin\mathcal{D}_{\text{WM-AMT}}\}.
+  Compute the autoregressive negative log-likelihood loss: ℒWM-AMT​(θ)=−𝔼τ~​[∑i=1|τ~|log⁡Pθ​(ui|u
+<i)]\mathcal{L}_{\text{WM-AMT}}(\theta)=-\mathbb{E}_{\tilde{\tau}}\left[\sum_{i=1}^{|\tilde{\tau}|}
+\log P_{\theta}(u_{i}|u_{<i})\right].
+  Update the policy θ\theta to minimize ℒWM-AMT​(θ)\mathcal{L}_{\text{WM-AMT}}(\theta).
+ end while
+ Mid-trained policy model θ\theta.
+
+A.2 Foresight-conditioned reinforcement learning
+
+Our algorithmic description for FC-RL is shown in Algorithm 2.
+
+
+Algorithm 2 Foresight-Conditioned Reinforcement Learning (FC-RL)
+0:  Policy model πϕ\pi_{\phi}, prompt dataset 𝒟\mathcal{D}, group size NN, balance weight ω\omega.
+ for each prompt xx in 𝒟\mathcal{D} do
+  % Phase 1: Group Trajectory Generation
+  for i=1i=1 to NN do
+   Generate trajectory τi\tau_{i} autoregressively via an interaction loop:
+   while task not terminated at step tt do
+    Generate World Model Span 𝒯WM\mathcal{T}_{\text{WM}}: imagine and predict keywords Kt(i)K_{t}^
+{(i)} and confidence qt(i)q_{t}^{(i)}.
+    Generate Policy Span 𝒯Policy\mathcal{T}_{\text{Policy}}: think and execute action at(i)a_{t}^
+{(i)}.
+   end while
+   Obtain terminal correctness indicator 𝟏yi≡yi∗\mathbf{1}_{y_{i}\equiv y_{i}^{*}} and episode
+reward RiER^{E}_{i}.
+  end for
+  % Phase 2: Grounding & Calibration (Group-wise)
+  Compute global advantage AE​(τi)A^{E}(\tau_{i}) by normalizing {RiE}i=1N\{R^{E}_{i}\}_{i=1}^{N}
+across the group.
+  for i=1i=1 to NN do
+   for each step tt in τi\tau_{i} do
+    # 2.1 World Model Optimization (Foresight grounding and calibration)
+    Verification of grounding: Rgroundi,t=Rmatch​(Kt(i),τ>t(i))R_{\text{ground}}^{i,t}=R_{\text
+{match}}(K_{t}^{(i)},\tau_{>t}^{(i)}).
+    Brier score penalty: Rcalibi,t=𝟏yi≡yi∗−(qt(i)−𝟏yi≡yi∗)2R_{\text{calib}}^{i,t}=\mathbf{1}_{y_{i}
+\equiv y_{i}^{*}}-(q_{t}^{(i)}-\mathbf{1}_{y_{i}\equiv y_{i}^{*}})^{2}.
+    Combined WM reward: RWM​(τit)=Rcalibi,t+Rgroundi,tR^{\text{WM}}(\tau_{i}^{t})=R_{\text{calib}}^
+{i,t}+R_{\text{ground}}^{i,t}.
+    Compute WM advantage A⁡(τ​[world_model]it)A(\tau[\text{world\_model}]_{i}^{t}) by normalizing
+{RWM​(τjt)}j=1N\{R^{\text{WM}}(\tau_{j}^{t})\}_{j=1}^{N}.
+    # 2.2 Policy Optimization (Execution success)
+    Compute step advantage AS​(τit)A^{S}(\tau_{i}^{t}) by normalizing confidence scores {qt(j)}j=1N
+\{q_{t}^{(j)}\}_{j=1}^{N}.
+    Combined policy advantage: A⁡(τ​[policy]it)=AE​(τi)+ω⋅AS​(τit)A(\tau[\text{policy}]_{i}^{t})=A^
+{E}(\tau_{i})+\omega\cdot A^{S}(\tau_{i}^{t}).
+   end for
+  end for
+  % Phase 3: Policy Update
+  Apply A⁡(τ​[world_model]it)A(\tau[\text{world\_model}]_{i}^{t}) to optimize the 𝒯WM\mathcal{T}_{\
+text{WM}} spans.
+  Apply A⁡(τ​[policy]it)A(\tau[\text{policy}]_{i}^{t}) to optimize the 𝒯Policy\mathcal{T}_{\text
+{Policy}} spans.
+ end for
+ Optimized policy model πϕ\pi_{\phi}.
+
+Appendix B Data construction
+
+B.1 World model agentic mid-training
+
+To construct the structured world model Block ztz_{t} during the World Model Agentic Mid-Training
+(WM-AMT) phase, we employ an LLM acting as the summarization function Φ⁡(⋅)\Phi(\cdot). The prompt
+enforces abstract planning to prevent future-state data leakage and explicitly requires confidence
+estimation for QQ-value modeling. The exact prompt template is provided below:
+
+Prompt Template for Summarization (Φ\Phi)
+
+Act as an agent’s "World Model". Based on the **FUTURE GROUND TRUTH** (the
+verified success path), generate the internal reasoning.
+
+**CRITICAL RULES:**
+1. **NO SPOILERS:** Plan the future steps using *abstract placeholders* (e.g.,
+   "expect to find a candidate name"), NOT specific entities found in the future.
+2. **BE SPECIFIC:** In the Action Plan, specify exact keywords/intents,
+   avoiding generic phrases like "Proceed".
+
+**OUTPUT FORMAT (Markdown Only):**
+
+## World Model Simulation
+- **Trajectory:** Step-by-step roadmap to the answer based on the Future Truth.
+- **Gap:** Why the current state is insufficient.
+- **Confidence:** [0-100]%. (High=Direct path, Low=Complex/Trial-error).
+  Brief reason.
+
+## Immediate Action Plan
+- The precise intent for the *immediate next action* in the
+  Ground Truth.
+
+**DATA:**
+[Current Obs]:
+{current_obs}
+[FUTURE TRUTH]:
+{future_traj}
+
+We leverage DeepSeek V3.1 [6] as the foundational data generator for World Model Agentic
+Mid-Training. The model is queried using the above prompt, with generation parameters set to a
+temperature of 0.6, a top-p of 0.95, and a maximum response length of 32768 tokens.
+
+The original agentic trajectory data consists of 200B tokens of high-quality trajectory data,
+including 25B Agentic-CoT trajectories, 20B mathematical trajectories, 70B code execution
+trajectories, 60B Deep Research trajectories, and 25B other trajectories (e.g., tool using,
+function calling, and planning).
+
+In WM-AMT, we augment the original agentic trajectory data by inserting an explicit world model
+block into a random split of multi-turn interaction trajectories, which are primarily concentrated
+in Deep Research trajectories and mathematical trajectories. After our data augmentation, we
+obtained roughly ∼62\sim 62B tokens for Deep Research trajectories and ∼21\sim 21B for mathematics,
+whereas the remaining trajectory categories remained unaltered.
+
+Some training samples constructed by this way are shown as follows:
+
+(A) A Deepresearch Trajectory Sample (Trajectory + World Model Block) User Question Under which
+record label was the 17th studio album of the Ivory Coast reggae musician known as the ’Bob Marley
+of Africa’ released in 2015, who also performed at the Street Mode Festival in Greece and
+collaborated with Harry Roselmack on a tribute song in 2014? You start with one or more cycles of
+(thinking about which tool to use →\rightarrow performing tool call →\rightarrow waiting for tool
+response), and end with (thinking about the answer →\rightarrow answer of the question). The
+thinking processes, tool calls, tool responses, and answer are enclosed within their tags. There
+could be multiple thinking processes, tool calls, tool call parameters and tool response
+parameters. When you finally reach the conclusion, put your final answer enclosed with <<answer>>
+your final answer here <</answer>>. Turn 1: World Model Block **Trajectory:** 1. Identify the
+musician via search using the descriptive title ”Ivory Coast reggae musician known as the ’Bob
+Marley of Africa’”. 2. Confirm the artist’s name (Alpha Blondy) from the initial search results. 3.
+Execute a refined search for the specific details: the 17th studio album (2015 release), the
+festival performance, and the collaboration. 4. Extract the album title and record label from the
+detailed results about the 2015 release. 5. Synthesize the information to provide the final answer.
+**Gap:** The current observation only contains the user’s question. No information about the
+artist’s identity, discography, or specific events is available to answer the query directly. 
+**Confidence:** 85%. The question provides multiple unique, verifiable identifiers (specific album
+number, year, festival, collaboration) that create a direct path to the answer through targeted
+searches. The primary complexity is confirming the artist’s name first. **Intent:** Identify the
+correct musician by searching for the unique descriptive title.” Turn 1: Action search(”query”:
+[”Ivory Coast reggae musician known as the ’Bob Marley of Africa’”, ”17th studio album of the ’Bob
+Marley of Africa’ released in 2015”, ”Street Mode Festival Greece reggae musician Ivory Coast”,
+”Ivory Coast reggae musician collaborated with Harry Roselmack 2014”]) Turn 1: Feedback Results for
+query ”Ivory Coast reggae musician known as the ’Bob Marley of Africa’”: …… Results for query ”17th
+studio album of the ’Bob Marley of Africa’ released in 2015”: …… Results for query ”Street Mode
+Festival Greece reggae musician Ivory Coast”: …… Results for query ”Ivory Coast reggae musician
+collaborated with Harry Roselmack 2014”: …… Turn 2: World Model Block **Trajectory:** 1. Confirm
+the candidate’s identity as the verified ”Bob Marley of Africa” from the initial search results. 2.
+Search specifically for the candidate’s 17th studio album released in 2015 using their confirmed
+name. 3. Search specifically for the candidate’s performance at the Street Mode Festival using
+their confirmed name. 4. Search specifically for the candidate’s collaboration with Harry Roselmack
+in 2014 using their confirmed name. 5. Extract the album title, festival performance year, and
+collaboration details from the targeted results. **Gap:** The current queries using descriptive
+placeholders (”Bob Marley of Africa”) instead of the confirmed name are returning irrelevant
+results about Bob Marley himself and failing to find festival/collaboration specifics due to low
+specificity. **Confidence:** 85%. The path is direct once the candidate’s identity is confirmed,
+but requires precise query formulation to bypass noise about the original Bob Marley’s discography
+and vague festival/collaboration references. **Immediate Action Plan** Execute a search with the
+exact query: ”Alpha Blondy 17th studio album 2015” to identify the album title and label. Execute a
+search with the exact query: ”Alpha Blondy Street Mode Festival” to confirm the performance year. 
+Execute a search with the exact query: ”Alpha Blondy Harry Roselmack 2014” to identify the
+collaboration project. Turn 2: Think The search results indicate that the musician referred to as
+the ”Bob Marley of Africa” is Alpha Blondy from Ivory Coast. However, the results do not provide
+specific details about his 17th studio album released in 2015, his performance at the Street Mode
+Festival in Greece, or his collaboration with Harry Roselmack in 2014. To gather more precise
+information, I will refine the search queries to focus on Alpha Blondy’s 17th studio album and his
+collaborations. Turn 2: Action search(”query”: [”Alpha Blondy 17th studio album 2015”, ”Alpha
+Blondy Street Mode Festival Greece”, ”Alpha Blondy collaboration with Harry Roselmack 2014”]) Turn
+2: Feedback Results for query ”Alpha Blondy 17th studio album 2015” …… Results for query ”Alpha
+Blondy Street Mode Festival Greece” …… Results for query ”Alpha Blondy collaboration with Harry
+Roselmack 2014” …… Turn 3: Think The search results provide the following information: 1. **Alpha
+Blondy’s 17th Studio Album (2015)**: The album is titled *Positive Energy*, released on May 18,
+2015, under the label **Wagram Music** (as mentioned in the [World A Reggae article](https:……/) and
+[Discogs entry](https:……)). 2. **Performance at Street Mode Festival (Greece)**: Alpha Blondy
+performed at the Street Mode Festival in Thessaloniki, Greece, in 2016 (as per [Setlist.fm]
+(https:……) and the festival’s [history page](https:……/)). 3. **Collaboration with Harry Roselmack
+(2014)**: Alpha Blondy collaborated with Harry Roselmack and other artists on the song *On n’oublie
+pas* in 2014, a tribute song (as mentioned in [Tanya St Val’s profile](https:……) and [TikTok
+references](https:……)). ### Final Answer: <<answer>> The 17th studio album of Alpha Blondy, the
+”Bob Marley of Africa,” released in 2015 was *Positive Energy*, under the record label **Wagram
+Music**. He performed at the Street Mode Festival in Greece in 2016 and collaborated with Harry
+Roselmack on the tribute song *On n’oublie pas* in 2014. <</answer>>
+(B) A Mathematical Trajectory Sample (Trajectory + World Model Block) User Question A bear eats up
+to 90 pounds of food per day to prepare for hibernation. If Victor weighs 126 pounds, how many
+”Victors” worth of food would a bear eat in 3 weeks? Turn 1: World Model Block **Reasoning Flow:** 
+1. Calculate total days in 3 weeks (3 × 7 = 21 days) 2. Compute total food consumed over 21 days
+(daily consumption × 21) 3. Determine the ratio of total food to Victor’s weight (total_food /
+victor_weight) 4. Output the final unitless count representing ”Victors” worth **Gap:** The current
+state only provides the problem statement without numerical computation. The solution requires
+executing the mathematical operations to transform inputs (90 lbs/day, 126 lbs, 3 weeks) into the
+requested ratio. **Confidence:** 100%. The problem is straightforward with a direct mathematical
+path: multiplication followed by division. No branching logic or approximations are needed. 
+**Action to Take** Calculate total days in 3 weeks: Multiply 3 by 7 Compute total food consumption:
+Multiply daily food (90) by total days Derive the Victor ratio: Divide total food by Victor’s
+weight (126) Output the final value as the answer Turn 1: Think Alright, let’s break this problem
+down step by step. **Step 1:** Calculate how much food a bear eats in one day. This is given as 90
+pounds. **Step 2:** Calculate how much food a bear eats in 3 weeks. There are 7 days in a week, so
+in 3 weeks, there are 3×7=213\times 7=21 days. So, the total food a bear eats in 3 weeks is 21×
+(food eaten in one day)21\times\text{(food eaten in one day)}. **Step 3:** Calculate how many
+”Victors” worth of food a bear would eat in 3 weeks. This is calculated by dividing the total food
+a bear eats in 3 weeks (from Step 2) by Victor’s weight. Let’s now calculate these using the code
+interpreter. Turn 1: Action # Given data food_per_day = 90 # pounds victor_weight = 126 # pounds #
+Step 2: Calculate total food in 3 weeks total_food_3_weeks = 21 * food_per_day # Step 3: Calculate
+how many ”Victors” worth of food in 3 weeks victors_worth = total_food_3_weeks / victor_weight 
+victors_worth Turn 1: Feedback 15.0 Turn 2: Think The bear would eat the equivalent of ( 15 )
+”Victors” worth of food in 3 weeks.
+
+B.2 Format-eliciting supervised fine-tuning
+
+The prompt and generation configurations for foresight block construction in FE-SFT is as the same
+as the prompt in WM-AMT, with only additional formatting applied. Particularly, the seperate prompt
+for extracting keywords from the foresight block is as follows:
+
+Prompt Template for Keywords Extraction
+
+Please identify the top 5 keywords
+from the text below. Provide only the
+keywords, separated by commas.
+
+We also leverage DeepSeek V3.1 for extracting keywords, with generation parameters set to a
+temperature of 0.6, a top-p of 0.95, and a maximum response length of 4096 tokens.
+
+We constructed ∼4​k\sim 4k trajectories for the search task, reformulated into ∼13​k\sim 13k
+single-turn samples to align with the verl-agent framework for SFT. For the mathematical reasoning
+task, we curated ∼2​k\sim 2k trajectories specifically for SFT.
+
+Some training samples constructed by this way are shown as follows:
+
+(A) An example of Search task User Question Answer the given question step by step. Start by
+drawing a plan inside <<imaginary>>Your imagination, which predicts the subsequent steps and plans
+you will take<</imaginary>>. Then, you should summarize your plans with words/phrases inside
+<<keyword>> and <</keyword>>, and evaluate your plans inside <<analysis>>Your analysis on your
+plans<</analysis>> and <<confidence>>Your confidence<</confidence>>. Following the above
+imagination and plan, you can reason inside <<think>>Your thought<</think>>. Evert time you get new
+information, you should plan and reason again. If you lack knowledge, search using <<search>>Your
+query<</search>> and it will return the top searched results in <<information>>Your information<</
+information>>. You can search multiple times as needed and each search should only search for one
+information about only one entity. For questions concerning more than one entities, break them down
+into steps and search for each piece of information. Finally, if you find no further external
+knowledge needed, you can directly provide the answer in <<answer>>Your answer<</answer>> without
+detailed explanations. For example, <<answer>>Beijing<</answer>>. Let’s search step by step. 
+Question: In what year was the clown who, together with Vladimir Olshansky, founded the clown
+theatre comany Litsedei born? Below is the interaction history: Turn 1: Action <<imaginary>>The
+path involves two sequential information retrieval steps. First, identify the name of the
+co-founder of the Litsedei clown theatre company. Second, locate the specific birth year for that
+identified individual. The process is a straightforward lookup once the correct entity is found.
+The current state lacks the identity of the co-founder and, consequently, the data point (birth
+year) associated with that individual.<</imaginary>> <<keyword>>information, retrieval, co-founder,
+Litsedei, theatre<</keyword>> <<analysis>>The task is a direct factual query with a high
+probability of finding the answer in standard biographical sources. The only minor uncertainty is
+in the initial search correctly identifying the co-founder’s name.<</analysis>> <<confidence>>95%
+<</confidence>> <<think>>I need to find information about the clown who co-founded the Litsedei
+clown theatre company with Vladimir Olshansky, and specifically determine their birth year. Let me
+start by searching for information about Litsedei theatre and its founders.<</think>> <<search>>
+Litsedei clown theatre company founders Vladimir Olshansky<</search>> Turn 1: Observation 
+<<information>> Doc 1: ”Vladimir Olshansky” Vladimir Olshansky Vladimir Olshansky (9 August 1947 in
+St. Petersburg, Russia) is a performing artist, director, composer, sculptor, graduate of the
+Moscow State Circus School, together with clown Slava Polunin, he is the founder of the clown
+theatre company Litsedei. He creates numerous one man shows and performs at the Leningrad’s State
+Variety Theatre, In parallel he studies directing at the Leningrad’s State Theatre and Cinema
+Institute. At the end of 1980s Vladimir moves to New York, where he becomes a supervisor hospital
+clown, working with … Doc 2: ”Vladimir Olshansky” 2017 ”Manuale di clownterapia”, Rome, Italy
+Edizione Dino Audino Ann-Kathrin Soder ”Arena Spots” Erlangen, Germany 2/06/07 Vladimir Olshansky
+Vladimir Olshansky (9 August 1947 in St. Petersburg, Russia) is a performing artist, director,
+composer, sculptor, graduate of the Moscow State Circus School , together with clown Slava Polunin,
+he is the founder of the clown theatre company Litsedei. He creates numerous one man shows and
+performs at the Leningrad’s State Variety Theatre , In parallel he studies directing at the
+Leningrad’s State Theatre and Cinema Institute At the end … Doc 3: ”Vladimir Olshansky” Engibarov
+who makes a great impression on him inspiring his dream to create, one day, his own clown-theatre.
+Engibarov was the first clown to combine the arts of both the circus and the theatre. During the
+period, from the early 1970s to the 1980s, Olshansky collaborates with the Russian directors: Lev
+Stukalov (now artistic director of St. Petersburg’s ”Our Theatre” , Vlad Druzinin and Yuri Gerzman,
+Victor Charitonov, the artist and papet maker Natalia Lazareva, set designers: Simon Pastuch, Emil
+Kapelush, caricaturist Victor Bogorad, and creates his sketch ”The Swan” becoming a winner at … <</
+information>> Turn 2: Action <<imaginary>>The trajectory is complete. The agent has successfully
+identified the target individual (the co-founder) and now needs to retrieve a specific biographical
+fact about that individual. The next step is to execute a targeted search for that fact. The
+information retrieved will be scanned to locate the specific data point, which will conclude the
+task. The current state is insufficient because the agent possesses the identity of the co-founder
+but lacks the specific biographical data (birth year) required to answer the final question.<</
+imaginary>> <<keyword>>agent, target, biographical, fact, search<</keyword>> <<analysis>>The path
+is direct and low-risk. The target entity is clearly identified, and the required data point is a
+standard, well-documented fact that is highly likely to be present in the top results of a precise
+search.<</analysis>> <<confidence>>95%<</confidence>> <<think>>Great! I found that the co-founder
+of Litsedei clown theatre company with Vladimir Olshansky is clown Slava Polunin. Now I need to
+find Slava Polunin’s birth year.<</think>> <<search>>Slava Polunin birth year<</search>> Turn 2:
+Observation <<information>> Doc 1: ”Slava Polunin” Slava Polunin Vyacheslav Ivanovich Slava Polunin
+PAR (born 12 June 1950) is a Russian performance artist and clown. He is the creator of the stage
+spectacles ”Asisyai-revue”, ”Slava’s Snowshow” and ”Diabolo”. Polunin was born in the town of
+Novosil, Oryol Oblast, Russia, into the family of a shop assistant. He was successful in his school
+theatre, imitating Charlie Chaplin, but was refused entry to the Leningrad Theater Institute due to
+poor pronunciation. After a few years’ study at an engineering school, he graduated from the
+Leningrad Institute for Soviet Culture, where … Doc 2: ”Slava Polunin” many prestigious awards
+including Gold Angle (Scotland), Gold Nose (Spain), Triumph (Russia) and the Laurence Olivier Award
+for Best Entertainment (1998). Polunin voiced a character in the Russian animated feature film
+”Gofmaniada”. Slava Polunin Vyacheslav Ivanovich Slava Polunin PAR () (born 12 June 1950) is a
+Russian performance artist and clown. He is the creator of the stage spectacles ”Asisyai-revue”,
+”Slava’s Snowshow” and ”Diabolo”. Polunin was born in the town of Novosil, Oryol Oblast, Russia,
+into the family of a shop assistant. He was successful … Doc 3: ”Sergei Polunin” Sergei Polunin
+Sergei Vladimirovich Polunin (”Serhiy Volodymyrovych Polunin”; ”Sergey Vladimirovich Polunin”; born
+20 November 1989) is a Ukrainian and Russian ballet dancer, actor and model. As a freelance
+principal dancer, Polunin is guest artist at various theaters worldwide such as Royal Ballet,
+Sadler’s Wells Theatre, Bolshoi Theatre, Stanislavski and Nemirovich-Danchenko Moscow Academic
+Music Theatre, La Scala Theatre, Teatro San Carlo and is currently permanent guest artist for the
+Bayerisches Staatsballet. Sergei Polunin was born in Kherson, Ukrainian SSR. From the age of four
+to eight, he … <</information>> Turn 3: Action <<imaginary>>The agent has successfully identified
+the target individual and retrieved their date of birth. The final step is to extract the specific
+year component from the full date string to provide the answer. The current observation contains
+the full date of birth (day, month, year). The final answer requires isolating only the year
+component from this data.<</imaginary>> <<keyword>>agent, target, date of birth, year, component<</
+keyword>> <<analysis>>The required information is present in the agent’s immediate context. The
+final step is a simple data extraction task with no ambiguity or need for further search.<</
+analysis>> <<confidence>>100%<</confidence>> <<think>>Perfect! I found the information I need. The
+clown who co-founded the Litsedei clown theatre company with Vladimir Olshansky is Slava Polunin
+(Vyacheslav Ivanovich Polunin), and he was born on June 12, 1950.<</think>> <<answer>>1950<</
+answer>>
+(B) An example of mathematical reasoning task User Question Solve the following math problem step
+by step. The last line of your response should be of the form Answer: $Answer (without quotes)
+where $Answer is the answer to the problem. How many different positive, six-digit integers can be
+formed using the digits 2, 2, 5, 5, 9 and 9? Remember to put your answer on its own line after
+”Answer:”. Turn 1: Think **imaginary** 1. Identify that this is a permutation problem with repeated
+digits 2. Calculate total permutations of 6 digits (6!) 3. Account for repeated digits by dividing
+by factorials of repetition counts 4. Apply the multiset permutation formula: n!/(n1!​n2!​n3!)n!/
+(n_{1}!n_{2}!n_{3}!) 5. Compute the final count of distinct permutations Need to calculate the
+actual numerical value using the multiset permutation formula **keyword** permutation, repeated,
+digits, multiset, formula **analysis** This is a standard permutation problem with a clear
+mathematical approach. **confidence** 90% **think** This is a permutation problem with repeated
+elements. There are 6 digits total, with each digit (2, 5, 9) appearing exactly twice. I’ll use the
+multiset permutation formula to calculate the number of distinct arrangements. Turn 1: Action from
+math import factorial # Calculate number of distinct permutations # Formula: total! / (count_2! *
+count_5! * count_9!) total_digits = 6 count_2 = 2 count_5 = 2 count_9 = 2 result = factorial
+(total_digits) // (factorial(count_2) * factorial(count_5) * factorial(count_9)) print(f”Number of
+distinct positive six-digit integers: result”) Turn 1: Observation Number of distinct positive
+six-digit integers: 90 Turn 2: Think **imaginary** Verified the answer makes sense (90 distinct
+permutations) None - the calculation is complete and verified **keyword** permutation, multiset,
+formula, digits, Python **analysis** The calculation is straightforward and the result is
+reasonable for this type of problem. **confidence** 95% **think** The calculation shows there are
+90 distinct positive six-digit integers that can be formed using the digits 2, 2, 5, 5, 9, and 9.
+This makes sense as it’s a standard multiset permutation problem. 90
+
+Appendix C Detailed training configurations
+
+C.1 World model agentic mid-training
+
+We use the hyperparameters in Table 3 for Agentic Mid-Training. During training, the system and 
+feedback fields are masked, encouraging the model to internalize future summaries, reasoning
+patterns and solution trajectories.
+
+Hyperparameter          Value
+Optimizer               AdamW
+Learning rate           5e-5
+Learning rate scheduler cosine scheduler with minimum learning rate
+Minimum learning rate   1e-7
+Epoch                   1
+Training batch size     752
+Data max Length         32768
+
+
+Table 3: Our training configurations for Agentic Mid-Training.
+
+C.2 Format-eliciting supervised fine-tuning
+
+We use the hyperparameters in Table 4 for Supervised Fine-Tuning.
+
+Hyperparameter          Value
+Optimizer               AdamW
+Learning rate           5e-5 (Search) & 1e-5 (Tool-Integrated Reasoning)
+Learning rate scheduler cosine scheduler
+Epoch                   2 (Search) & 6 (Tool-Integrated Reasoning)
+Training batch size     256
+Data max Length         18000 (Search) & 20000 (Tool-Integrated Reasoning)
+
+
+Table 4: Our training configurations for Supervised Fine-Tuning.
+
+C.3 Foresight-conditioned reinforcement learning
+
+C.3.1 Prompt
+
+Search
+
+For both our train dataset and test dataset, we use the following prompt:
+
+Prompt Answer the given question step by step. Start by drawing a plan inside <<imaginary>>Your
+imagination, which predicts the subsequent steps and plans you will take<</imaginary>>. Then, you
+should summarize your plans with words/phrases inside <<keyword>> and <</keyword>>, and evaluate
+your plans inside <<analysis>>Your analysis on your plans<</analysis>> and <<confidence>>Your
+confidence<</confidence>>. Following the above imagination and plan, you can reason inside
+<<think>>Your thought<</think>>. Evert time you get new information, you should plan and reason
+again. If you lack knowledge, search using <<search>>Your query<</search>> and it will return the
+top searched results in <<information>>Your information<</information>>. You can search multiple
+times as needed and each search should only search for one information about only one entity. For
+questions concerning more than one entities, break them down into steps and search for each piece
+of information. Finally, if you find no further external knowledge needed, you can directly provide
+the answer in <<answer>>Your answer<</answer>> without detailed explanations. For example,
+<<answer>>Beijing<</answer>>.
+
+Mathematical reasoning
+
+For both our train dataset and test dataset, we use the following system prompt:
+
+System Prompt # Tools You may call one or more functions to assist with the user query. You are
+provided with function signatures within <<tools>><</tools>> XML tags: <<tools>> {”type”:
+”function”, ”function”: {”name”: ”code_interpreter”, ”description”: ”A tool for executing code.”,
+”parameters”: {”type”: ”object”, ”properties”: {”code”: {”type”: ”string”, ”description”: ”The code
+to execute.”}}, ”required”: [”code”]}}} <</tools>> For each function call, return a json object
+with function name and arguments within <<tool_call>><</tool_call>> XML tags: <<tool_call>> 
+{”name”: <<function-name>>, ”arguments”: <<args-json-object>>} <</tool_call>>
+
+Besides, we add the following content in the user prompt:
+
+Prompt Solve the following math problem step by step. The last line of your response should be of
+the form Answer: $Answer (without quotes) where $Answer is the answer to the problem. Question 
+Remember to put your answer on its own line after ”Answer:”. The answer format must be: ’The final
+answer goes here.’
+
+C.3.2 Outcome reward function
+
+Search
+
+We adopt an LLM-as-a-judge outcome reward as follows:
+
+ R⁡(a,a^)={1,if exact_match​(a,a^)LLM_judge​(a,a^),otherwise\small R(a,\hat{a})=\begin{cases}1,&\
+ text{if exact\_match}(a,\hat{a})\\ \text{LLM\_judge}(a,\hat{a}),&\text{otherwise}\end{cases}
+
+where aa and a^\hat{a} represent the ground-truth answer and the predicted answer, respectively. A
+reward of 1 is assigned directly for an Exact Match (EM), while in other cases, an LLM-as-a-judge
+(DeepSeek-V3.1 in our experiments) is employed to evaluate the response and determine the reward,
+such that LLM_judge​(a,a^)∈{0,1}\text{LLM\_judge}(a,\hat{a})\in\{0,1\}.
+
+The prompt for LLM-as-a-judge is as follows:
+
+Prompt for LLM-as-a-judge
+
+You are an evaluation assistant. Please determine if the predicted answer is
+equivalent to the labeled answer.
+
+Question: {question}
+
+Labeled Answer: {gt_answer}
+
+Predicted Answer: {pred_answer}
+
+Did the model give an answer **equivalent** to the labeled answer? Please
+respond with "Correct" if they are equivalent, or "Incorrect" if they are not
+equivalent.
+
+The output should in the following json format:
+"‘json
+{{
+    "judgement": your judgement result, can only be "Correct" or "Incorrect",
+}}
+"‘
+
+The generation parameters are set to a temperature of 0.6, a top-p of 0.95, and a maximum response
+length of 1024 tokens.
+
+Particularly, invalid actions are penalized with a reward of -0.01.
+
+Mathematical reasoning
+
+We adopt a composite outcome reward function that evaluates both the final answer correctness and
+the agent’s intermediate tool utilization. We require the model to present final answers in a
+specified format (e.g., within \boxed{}), enabling reliable rule-based correctness verification.
+The reward is formulated as:
+
+ Rbase​(a,a^)={1,is_equivalent​(a,a^)−1,otherwiseR_{\text{base}}(a,\hat{a})=\begin{cases}1,&\text
+ {is\_equivalent}(a,\hat{a})\\ -1,&\text{otherwise}\end{cases}
+
+where aa and a^\hat{a} represent the ground-truth answer and the predicted answer, respectively.
+
+To encourage the model to engage in multi-turn reasoning and actively call tools, we also introduce
+a tool utilization reward, denoted as RtoolR_{\text{tool}}, which scales linearly with the number
+of conversation turns NN:
+
+ Rtool=0.05×(N−2)R_{\text{tool}}=0.05\times(N-2)
+
+The final reward SfinalS_{\text{final}} integrates the base score and the tool reward through a
+conditional aggregation strategy to prevent reward hacking:
+
+ Sfinal={min⁡(0,Sbase+Rtool),if ​Sbase<0Sbase+𝕀⁡(N>2),otherwiseS_{\text{final}}=\begin{cases}\min
+ (0,S_{\text{base}}+R_{\text{tool}}),&\text{if }S_{\text{base}}<0\\ S_{\text{base}}+\mathbb{I}(N>
+ 2),&\text{otherwise}\end{cases}
+
+where 𝕀⁡(⋅)\mathbb{I}(\cdot) is an indicator function that yields 11 if the condition is met and 00
+otherwise.
+
+C.3.3 Training hyperparameters
+
+Search
+
+We use the hyperparameters in Table 5 for RL training on Search tasks.
+
+Hyperparameter                Value
+Optimizer                     AdamW
+Policy learning rate          1e-6
+Training batch size           256
+Samples per prompt            5
+Mini-batch size               256
+Max prompt length             16384
+Max response length           2048
+Rollout temperature           1.0
+Max turn                      10
+Step advantage coeff ω\omega  0.2
+
+
+Table 5: Our RL training configurations on Search tasks.
+
+Mathematical reasoning
+
+We use the hyperparameters in Table 6 for RL training on mathematical reasoning tasks.
+
+Hyperparameter                Value
+Optimizer                     AdamW
+Policy learning rate          1e-6
+Training batch size           128
+Samples per prompt            16
+Mini-batch size               32
+Max prompt length             2048
+Max response length           20000
+Rollout temperature           1.0
+Max turn                      15
+Step advantage coeff ω\omega  0.1
+
+
+Table 6: Our RL training configurations on mathematical reasoning tasks.
+
+Method Search Task Math Reasoning Task Format Adherence Avg. Score Format Adherence Avg. mean@30 
+Avg. pass@30 Standard SFT - 38.2 - 9.3 40.0 FE-SFT 99.86% 37.4 98.63% 10.0 43.3 Standard SFT + RL -
+46.1 - 28.0 52.2 FE-SFT + RL 99.97% 47.0 96.76% 28.0 51.1
+
+
+Table 7: Preliminary investigation on the format-capability gap using Youtu-LLM-2B-Base.
+
+Method Format Adherence Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue 
+Bamboogle Llama-3.2-3B-Instruct Standard SFT - 24.8 47.4 8.6 24.6 17.6 15.4 42.4 25.8 FE-SFT 95.60%
+25.8 46.0 10.6 27.0 17.4 13.8 41.6 26.0 Standard SFT + RL - 45.0 57.0 29.0 39.6 40.6 22.8 47.2 40.2
+FE-SFT + RL 96.85% 44.2 55.4 29.2 42.0 36.8 26.2 48.0 40.3 Qwen2.5-7B-Instruct Standard SFT - 50.4 
+60.8 40.0 48.0 38.8 28.0 52.8 45.5 FE-SFT 96.14% 47.0 64.0 38.4 50.4 37.6 28.6 54.4 45.8 Standard
+SFT + RL - 57.4 67.4 48.6 62.8 49.8 40.0 57.6 54.8 FE-SFT + RL 97.31% 54.6 67.4 46.6 61.2 47.6 38.0
+59.2 53.5
+
+
+Table 8: Detailed performance of Llama-3.2-3B-Instruct and Qwen2.5-7B-Instruct on the Search task
+across 7 QA datasets.
+
+Appendix D Additional experimental results
+
+D.1 The format-capability gap in post-training
+
+The results for post-training on Youtu-LLM-2B-Base mid-trained with routine agentic trajectories
+(preliminary experiments mentioned in Section 5.1) are shown in Table 7. As the tables show,
+directly applying post-training methods on the standard base model (Youtu-LLM-2B-Base) does not
+yield significant improvements. This indicates that post-training alone is not enough to teach the
+model how to plan and reason accordingly.
+
+To ensure that the format-capability gap is a general phenomenon rather than an artifact of the
+particular model, we conducted parallel preliminary experiments on two other distinct models: 
+Llama-3.2-3B-Instruct [14] and Qwen2.5-7B-Instruct [36]. The results shown in Table 8 consistently
+reproduced our initial observation, confirming that direct post-training on these standard models
+similarly fails to elicit genuine planning capabilities. However, due to the prohibitive
+computational resources required for the extensive mid-training phase, coupled with the practical
+constraint that intermediate, pre-mid-training checkpoints for these model families are publicly
+unavailable to establish a controlled baseline, we do not execute the full mid-training process on
+these architectures for the subsequent stages.
+
+ω\omega Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue Bamboogle 
+Youtu-LLM-2B-Base (WM-AMT & FE-SFT & FC-RL) 0 52.6 63.2 40.8 57.0 44.4 32.6 52.8 49.1 0.1 53.0 62.4
+40.8 55.6 46.4 34.8 56.8 50.0 0.2 53.4 62.6 42.6 59.0 46.2 34.2 56.0 50.6 0.5 51.6 62.2 40.4 57.4 
+46.0 33.4 53.6 49.2
+
+
+Table 9: Experimental results with different values of ω\omega for the search task. ω=0\omega=0
+represents the standard GRPO algorithm.
+
+The model trained solely via SFT and RL on reasoning-enhanced data may achieve high ”format
+accuracy” but low ”semantic accuracy”. The predicted futures possibly diverge from the ground truth
+or hallucinate non-existent state transitions, as examples in Appendix E.1 show. Instead of
+providing useful guidance, these inaccurate predictions introduce noise into the reasoning process,
+leading to suboptimal policy performance.
+
+Method Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue Bamboogle 
+Youtu-LLM-2B-Base (WM-AMT & FE-SFT & FC-RL) w RgroundR_{\text{ground}} 53.4 62.6 42.6 59.0 46.2 
+34.2 56.0 50.6 w/o RgroundR_{\text{ground}} 52.2 63.4 42.8 56.0 46.0 34.8 55.2 50.1
+
+
+Table 10: Ablation studies on RgroundR_{\text{ground}} in FC-RL for the search task.
+
+D.2 Sensitivity analysis on ω\omega
+
+Table 9 shows the results of our experiments with different values of ω\omega, which balances the
+policy objective in our FC-RL, for the search task.
+
+We observe that the performance initially improves as ω\omega increases, reaching an optimal
+average score of 50.6 at ω=0.2\omega=0.2. This represents a 1.5% absolute improvement over the
+baseline (ω=0\omega=0), particularly excelling in multi-hop tasks like HotpotQA. However, a further
+increase to ω=0.5\omega=0.5 leads to a performance drop (but comparable to the baseline),
+suggesting that an excessively high ww is not advisable since it may distract the agent from
+fundamental reasoning capabilities.
+
+Method        Search (Avg. Tokens) Mathematical Reasoning (Avg. Tokens)
+Standard SFT  2603.8               4601.2
+FE-SFT (Ours) 3084.5 (+18.5%)      4749.1 (+3.2%)
+
+
+Table 11: Comparison of average response length (tokens) between standard SFT and FE-SFT.
+
+D.3 Ablation studies on RgroundR_{\text{ground}} in FC-RL
+
+We conduct ablation studies on RgroundR_{\text{ground}} in FC-RL for the search task, and the
+results are presented in Table 10.
+
+The results demonstrate the effectiveness of the grounding reward RgroundR_{\text{ground}} in
+enhancing the agent’s factuality and reasoning stability. By incorporating RgroundR_{\text
+{ground}}, we observe that the average score increases from 50.1 to 50.6, where the model benefits
+significantly from the fine-grained guidance provided by the grounding reward to align its outputs
+with retrieved evidence.
+
+
+Figure 3: The episode length of the RL-only setting during RL phase.
+
+D.4 Analysis of response length
+
+To evaluate whether the internalized world model introduces excessive inference overhead, we
+compare the average response length (total number of tokens per agentic trajectory) of our FE-SFT
+model against a standard SFT baseline.
+
+The results in Table 11 show that the inclusion of explicit world model blocks leads to only a
+marginal increase in response length (under 19% across both tasks). This minimal expansion
+indicates that the model learns to generate highly distilled future simulations rather than verbose
+reasoning traces. Therefore, our paradigm enhances the agent’s foresight capabilities while
+maintaining an inference efficiency comparable to standard reactive policies.
+
+D.5 Analysis of the RL-only baseline and the necessity of SFT
+
+Method Single-Hop QA Multi-Hop QA Avg. NQ TriviaQA PopQA HotpotQA 2Wiki MuSiQue Bamboogle 
+Youtu-LLM-2B-Base RL only 22.4 33.0 27.2 24.2 26.8 8.0 21.6 23.3 SFT & RL 48.0 58.2 35.2 53.8 45.0 
+30.2 52.0 46.1 FE-SFT & RL 49.4 60.0 38.2 55.4 42.0 29.8 54.4 47.0 Youtu-LLM-2B-Base (WM-AMT, ours)
+RL only 23.8 33.8 29.2 24.4 25.2 9.6 20.0 23.7 SFT & RL 50.2 59.8 35.6 53.6 46.0 25.4 45.6 45.2 
+FE-SFT & RL 52.6 63.2 40.8 57.0 44.4 32.6 52.8 49.1 FE-SFT & FC-RL 53.4 62.6 42.6 59.0 46.2 34.2 
+56.0 50.6
+
+
+Table 12: Performance with the RL stage (the final performance)
+
+To address the concern regarding whether success-driven RL alone is sufficient, we introduce and
+evaluate the RL only baseline across both the standard base model and our mid-trained architecture.
+As summarized in Table 12, directly applying RL (GRPO) optimization without a preparatory SFT phase
+results in severe performance degradation in the search task.
+
+Crucially, our results in Figure 3 reveals a severe optimization pathology during the RL-only
+training loop on tool-integrated search tasks. Without a preliminary SFT phase to anchor the
+structural tool-calling syntax and reasoning schema, the model suffers from an alignment collapse
+in the later stages of training. Specifically, the agent completely forgets how to interact with
+external search tools. Driven by the sparse success rewards, the policy prematurely converges on a
+degenerative local optimum: it collapses into a naive single-turn generation format, directly
+outputing what it speculates to be the answer while entirely bypassing the necessary multi-hop tool
+invocation sequences. This finding firmly demonstrates that success-driven RL alone cannot robustly
+bootstrap complex, structured action sequences from scratch. Consequently, a warm-start SFT phase
+(such as standard SFT or our proposed FE-SFT) is crucial to establish a s structural prior before
+exposing the agent to RL.
+
+Appendix E Case study
+
+E.1 An example of the format-capability gap in post-training
+
+In the following case (A), the base model without our WM-AMT exhibits a format-capability gap in
+post-training, where it adopts the required output format but fails to demonstrate actual
+look-ahead capability. Its imaginary content is dominated by repetitive, low-information phrases
+such as execute a search query or search results will provide a direct answe. These statements
+function as generic templates rather than specific task plans and simulations. This suggests that
+without WM-AMT, the model merely fills a structural template with filler text without understanding
+the information gap between the current state and the goal. Furthermore, the base model
+demonstrates poor calibration in its self-assessment, assigning a ”100% confidence” score to a
+vague and logically inconsistent plan.
+
+(A) An example of the format-capability gap in post-training User Question Answer the given
+question step by step. Start by drawing a plan inside <<imaginary>>Your imagination, which predicts
+the subsequent steps and plans you will take<</imaginary>>. Then, you should summarize your plans
+with words/phrases inside <<keyword>> and <</keyword>>, and evaluate your plans inside <<analysis>>
+Your analysis on your plans<</analysis>> and <<confidence>>Your confidence<</confidence>>.
+Following the above imagination and plan, you can reason inside <<think>>Your thought<</think>>.
+Evert time you get new information, you should plan and reason again. If you lack knowledge, search
+using <<search>>Your query<</search>> and it will return the top searched results in
+<<information>>Your information<</information>>. You can search multiple times as needed and each
+search should only search for one information about only one entity. For questions concerning more
+than one entities, break them down into steps and search for each piece of information. Finally, if
+you find no further external knowledge needed, you can directly provide the answer in <<answer>>
+Your answer<</answer>> without detailed explanations. For example, <<answer>>Beijing<</answer>>.
+Let’s search step by step. Question: who threw the overalls in mistress murphy’s chowder? Response
+with formatted world model block <<imaginary>>The immediate next step is to execute a search query
+designed to resolve the primary question. The search results will provide a direct answer that
+clarifies the nature of the character responsible for the action. The current observation contains
+the final answer but is presented as a future state (the result of a successful search). The
+internal state is missing the initial query that was formulated to arrive at this figure.<</
+imaginary>> <<keyword>>search query, search results, answer, character, action<</keyword>> 
+<<analysis>>The future path shows a single, direct action (a search) that immediately succeeds,
+providing the complete answer. There is no indication of trial and error or multi-step reasoning.
+<</analysis>> <<confidence>>100%<</confidence>> <<think>>I’m not getting the right results. Let me
+try a more focused search on the story itself.<</think>> <<search>>Mistress Murphy’s Chowder Hannah
+Potter<</search>>
+
+In contrast, the model enhanced by our WM-AMT moves beyond simple imitation to achieve substantive
+future trajectory projection in post-training. As shown in the following case (B), its content is
+no longer composed of empty procedural descriptions but includes highly specific task-oriented
+foresights. For instance, it accurately identifies the missing actor identifier and explicitly
+plans to extract a specific character name. Most importantly, the model demonstrates a proactive
+error-handling capability by anticipating potential ambiguity in search results and proposing a
+conditional follow-up step. Besides, the model enhanced by our WM-AMT provides a high but
+non-absolute confidence score (e.g., 90%), acknowledging the inherent variables in external
+information retrieval. This transition to a multi-step, verifiable, and calibrated reasoning
+process confirms that WM-AMT enables the model to effectively imagine and evaluate its future
+execution path in post-training.
+
+(B) An example of the capability-first performance in post-training after WM-AMT User Question 
+Answer the given question step by step. Start by drawing a plan inside <<imaginary>>Your
+imagination, which predicts the subsequent steps and plans you will take<</imaginary>>. Then, you
+should summarize your plans with words/phrases inside <<keyword>> and <</keyword>>, and evaluate
+your plans inside <<analysis>>Your analysis on your plans<</analysis>> and <<confidence>>Your
+confidence<</confidence>>. Following the above imagination and plan, you can reason inside
+<<think>>Your thought<</think>>. Evert time you get new information, you should plan and reason
+again. If you lack knowledge, search using <<search>>Your query<</search>> and it will return the
+top searched results in <<information>>Your information<</information>>. You can search multiple
+times as needed and each search should only search for one information about only one entity. For
+questions concerning more than one entities, break them down into steps and search for each piece
+of information. Finally, if you find no further external knowledge needed, you can directly provide
+the answer in <<answer>>Your answer<</answer>> without detailed explanations. For example,
+<<answer>>Beijing<</answer>>. Let’s search step by step. Question: who threw the overalls in
+mistress murphy’s chowder? Response with formatted world model block <<imaginary>>1. Execute a
+search to identify the character who threw the overalls in ”Misty Murphy’s Chowder”. 2. Analyze the
+search results to find a specific character name associated with the action. 3. If the initial
+results are ambiguous, execute a follow-up search using the candidate character name and the dish
+to confirm the detail. 4. Extract and synthesize the information from the confirmed sources to
+provide the final answer. The current state lacks any specific information. The query contains a
+performative action (throwing overalls) but no identifier for the actor or the specific dish name
+to refine the search. An initial broad search is required to establish context.<</imaginary>> 
+<<keyword>>search, character, accident, overalls, Chowder<</keyword>> <<analysis>>The path is
+direct: a search will yield character names from the show’s descriptions, and a confirmatory search
+will solidify the fact. The reliability of the sources (TV guides, episode descriptions) is high
+for this type of factual drama information.<</analysis>> <<confidence>>90%<</confidence>> <<think>>
+I need to search for information about who threw the overalls in Misty Murphy’s Chowder.<</think>> 
+<<search>>who threw overalls in misty murphy’s chowder<</search>>
+
+E.2 A search example of the reasoning flow with internalized world model
+
+(A) Example demonstrating multi-step planning adherence with high confidence User Question Answer
+the given question step by step. Start by drawing a plan inside <<imaginary>>Your imagination,
+which predicts the subsequent steps and plans you will take<</imaginary>>. Then, you should
+summarize your plans with words/phrases inside <<keyword>> and <</keyword>>, and evaluate your
+plans inside <<analysis>>Your analysis on your plans<</analysis>> and <<confidence>>Your confidence
+<</confidence>>. Following the above imagination and plan, you can reason inside <<think>>Your
+thought<</think>>. Every time you get new information, you should plan and reason again. If you
+lack knowledge, search using <<search>>Your query<</search>> and it will return the top searched
+results in <<information>>Your information<</information>>. You can search multiple times as needed
+and each search should only search for one information about only one entity. For questions
+concerning more than one entities, break them down into steps and search for each piece of
+information. Finally, if you find no further external knowledge needed, you can directly provide
+the answer in <<answer>>Your answer<</answer>> without detailed explanations. For example,
+<<answer>>Beijing<</answer>>. Let’s search step by step. Question: What RPG game developed from
+Powered by the Apocalypse is known for its handling of sexuality and queer content? Below is the
+interaction history: Initial Planning Phase: Turn 1: Action <<imaginary>>The future path shows a
+clear, two-step process. First, a search is performed to identify the RPG game developed from the
+specified intellectual property. The results from this search will provide a candidate name.
+Second, a verification search is performed to confirm that the candidate’s reputation matches the
+specific descriptor for handling mature content (sexuality and queer content). This second search
+will yield information that confirms the candidate’s status as a game known for this. The current
+state only contains the initial query. There is no information yet on the connection between the
+intellectual property and a specific game, nor any information on the content handling reputation
+of any candidate game.<</imaginary>> <<keyword>>search, identify, verify, candidate, game<</
+keyword>> <<analysis>>The path is direct: find the game linked to the intellectual property, then
+verify its known characteristics. The only minor uncertainty is whether the verification will find
+explicit confirmation or just general information about the candidate’s reputation.<</analysis>> 
+<<confidence>>90%<</confidence>> <<think>>I need to search for RPG games that were developed from
+”Powered by the Apocalypse” and are known for handling sexuality and queer content.<</think>> 
+<<search>>RPG game developed from Powered by the Apocalypse sexuality queer content<</search>> Turn
+1: Observation …Search results skipped… Following the initial plan established in the imaginary
+block, the agent systematically refines its search queries through multiple iterations, maintaining
+adherence to the two-step verification strategy outlined at the outset. Turn 2: Action (After
+Multiple Search Attempts) <<imaginary>>The agent’s trajectory is to first identify the specific
+game developed using the ”Powered by the Apocalypse” (PbtA) system. The initial search will confirm
+that ”Dungeon World” is a candidate. The agent will then need to verify a specific claim about that
+game’s content handling. A second search will be conducted to find evidence that this game is
+indeed known for its handling of sexuality and queer content. The final step is to synthesize this
+information to provide the answer. The current state only identifies that PbtA is a system used for
+multiple games, including ”Dungeon World.” It lacks specific information about the content handling
+of ”Dungeon World” which is the core of the query.<</imaginary>> <<keyword>>Powered by the
+Apocalypse, Dungeon World, game, content handling, sexuality<</keyword>> <<analysis>>The path is
+direct: the agent has a candidate game and now needs to verify a specific attribute about it. The
+search terms are well-defined, and the information is likely to be found in game reviews or
+descriptions.<</analysis>> <<confidence>>90%<</confidence>> <<think>>The search results show that
+Powered by the Apocalypse (PbtA) is a role-playing game system that was developed for Apocalypse
+World and also used for Dungeon World, Monsterhearts, and other RPGs. I need to search for more
+specific information about Dungeon World and its handling of sexuality and queer content.<</think>>
+<<search>>Dungeon World sexuality queer content<</search>> Turn 2: Observation …Search results
+skipped… Turn 3-6 …Skipped… After multiple search attempts, the agent successfully identifies the
+correct answer, demonstrating persistent adherence to the original verification plan established in
+the initial imaginary block. Turn 7 (Final Turn): Action <<imaginary>>The current search has
+successfully identified the correct game title. The next step is to formulate a final, concise
+answer that directly addresses the user’s question. This involves extracting the confirmed answer
+from the search results and presenting it clearly. The current state contains the confirmed
+information but has not yet synthesized it into a final, direct response for the user. The
+information needs to be formatted as a definitive answer.<</imaginary>> <<keyword>>search,
+identified, game title, final answer, response<</keyword>> <<analysis>>The answer has been directly
+confirmed by the search results, leaving no ambiguity. The remaining step is purely presentational.
+<</analysis>> <<confidence>>95%<</confidence>> <<think>>Perfect! The search results confirm that
+Monsterhearts is the RPG game that was developed from Powered by the Apocalypse and is known for
+its handling of sexuality and queer content. The first document specifically mentions that
+Monsterhearts ”gleefully encourages people of all identities to explore sexuality in every
+permutation” and is ”remarkably free of sexism” while not slut-shaming.<</think>> <<answer>>
+Monsterhearts<</answer>>
+
+The case (A) exemplifies the policy’s capacity to maintain long-horizon planning coherence. The
+agent’s initial imaginary block established a two-step verification protocol (identify candidate
+game →\rightarrow verify content characteristics), which was systematically executed across
+multiple search iterations spanning 6-7 information retrieval steps. Notably, the final imaginary
+block at Turn 7 explicitly references the verification completion, demonstrating that the strategic
+framework established in Turn 1 remained cognitively active and guided the reasoning process
+throughout the multi-step trajectory. The consistently high confidence scores (90%-95%) correlate
+with the eventual correct answer, indicating well-calibrated confidence estimation for successfully
+executed plans. Score: 1.0 (Correct).
+
+(B) Example demonstrating very low confidence with incorrect outcome User Question Answer the given
+question step by step. Start by drawing a plan inside <<imaginary>>Your imagination, which predicts
+the subsequent steps and plans you will take<</imaginary>>. Then, you should summarize your plans
+with words/phrases inside <<keyword>> and <</keyword>>, and evaluate your plans inside <<analysis>>
+Your analysis on your plans<</analysis>> and <<confidence>>Your confidence<</confidence>>.
+Following the above imagination and plan, you can reason inside <<think>>Your thought<</think>>.
+Every time you get new information, you should plan and reason again. If you lack knowledge, search
+using <<search>>Your query<</search>> and it will return the top searched results in
+<<information>>Your information<</information>>. You can search multiple times as needed and each
+search should only search for one information about only one entity. For questions concerning more
+than one entities, break them down into steps and search for each piece of information. Finally, if
+you find no further external knowledge needed, you can directly provide the answer in <<answer>>
+Your answer<</answer>> without detailed explanations. Question: Something Wicked This Way Comes and
+Toby Tyler, have which mutual organization in common? Below is the interaction history: Initial
+Planning Phase: Turn 1: Action <<imaginary>>The future path shows the agent will execute a search
+query designed to find a shared organizational affiliation between the two named entities. The
+search results will contain documents that explicitly state the connection. The agent will then
+parse these documents to extract the specific, shared organization name, which is the definitive
+answer. The current state only contains the names of the two entities. There is no internal
+knowledge of their potential shared affiliations. The connection is not stated and must be actively
+sought out.<</imaginary>> <<keyword>>search query, shared organizational affiliation, documents,
+connection, shared organization name<</keyword>> <<analysis>>The search query is highly specific
+and directly targets the relationship, making it very likely the results will contain the answer
+explicitly. The path is straightforward.<</analysis>> <<confidence>>95%<</confidence>> <<think>>I
+need to search for information about something wicked this way Comes and Toby Tyler to find their
+mutual organization.<</think>> <<search>>Something Wicked This Way Comes Toby Tyler mutual
+organization<</search>> Turn 1: Observation …Search results skipped… Turn 2-9: Multiple Failed
+Search Attempts Search attempts include: • ”Something Wicked This Way Comes Toby Tyler mutual
+organization” • ”Something Wicked This Way Comes book Toby Tyler” • ”Toby Tyler something wicked
+this way comes” • ”Toby Tyler fraternity” • ”Toby Tyler Delta Tau Delta” • ”Toby Tyler Macbeth” • 
+”Toby Tyler Macbeth organization” Throughout these iterations, the agent’s confidence scores
+fluctuate dramatically (95% →\rightarrow 40% →\rightarrow 90% →\rightarrow 60% →\rightarrow 60%),
+indicating unstable confidence estimation as the search strategy fails to converge on relevant
+information. Final Turn: Action <<imaginary>>The immediate next step is to execute a search for the
+organization’s name. The search results will return information about the organization’s history,
+membership, and connection to a specific literary work. The final step will be to extract the name
+of the organization from the search results to confirm the answer. The current observation only
+contains the final answer but no information about the search process or the specific organization
+name. The path to this answer is unknown.<</imaginary>> <<keyword>>search, organization, name,
+results, extract<</keyword>> <<analysis>>The final answer is provided, but the search path and
+information structure are unknown, making the initial step highly uncertain and likely to require
+trial and error.<</analysis>> <<confidence>>5%<</confidence>> <<think>>Based on the search results,
+I can now provide the answer. The mutual organization that something wicked this way Comes and Toby
+Tyler have in common is Delta Tau Delta (Δ​τ​Δ\Delta\tau\Delta).<</think>> <<answer>>Delta Tau
+Delta<</answer>>
+
+This case (B) demonstrates a reasoning failure where the agent’s initial high-confidence prediction
+(95%) ultimately converges on an answer with merely 5% confidence. Critically, the extremely low
+confidence (5%) serves as an effective failure signal, correctly indicating that the answer lacks
+evidential support. The actual connection (both are Disney productions/properties) was never
+discovered through the search process. This case validates the hypothesis that confidence scores
+effectively correlate with answer correctness: the 5% confidence appropriately predicts the
+incorrect outcome. Score: 0.0 (Incorrect).
+
+The two cases collectively demonstrate two key behavioral patterns of our policy with internalized
+world model:
+
+ 1. 1.
+   
+    Long-horizon planning coherence: In Case A, the initial imaginary block established a
+    verification protocol that remained operationally effective across 6-7 reasoning steps. The
+    agent systematically refined search queries while maintaining adherence to the original
+    strategic framework, indicating that the imaginary planning mechanism successfully encodes
+    persistent goal structures that guide subsequent policy decisions even when separated by
+    multiple intermediate actions.
+
+ 2. 2.
+   
+    Calibrated QQ-value quantification: The confidence scores exhibit strong correlation with task
+    success: Case A (95% confidence, correct answer), and Case B (5% confidence, incorrect answer).
+    Notably, the confidence degradation in Cases B appropriately reflects the quality of retrieved
+    evidence and the coherence of the reasoning trajectory, suggesting that the confidence
+    estimation mechanism effectively reflects the QQ-value rather than merely expressing arbitrary
+    numerical values.
+
+E.3 A mathematical reasoning example of the reasoning flow with internalized world model
+
+(A) An example demonstrating persistent planning across multi-step reasoning User Question Find the
+sum of all integer bases b>9b>9 for which 17b17_{b} is a divisor of 97b97_{b}. The answer format
+must be: \\backslashboxed{’The final answer goes here.’} Turn 1: Think **imaginary** 1. Understand
+the representation: numbers are in base bb, with digits given as 17 and 97 2. Convert 17b17_{b} and
+97b97_{b} to base-10 expressions 3. Set up the divisibility condition: 17b17_{b} divides 97b97_{b} 
+4. Solve for integer b>9b>9 that satisfies the condition 5. Sum all valid bb values 6. Verify the
+result Need to properly interpret the notation and convert the base representations to mathematical
+expressions. **keyword** base, numbers, divisibility, condition, convert **analysis** The problem
+involves base conversion and divisibility, but requires careful interpretation of the notation. 
+**confidence** 80% **think** I need to understand what 17b17_{b} and 97b97_{b} mean. These appear
+to be numbers in base bb, where the digits are 1, 7 and 9, 7 respectively. So 17b=1×b1+7×b0=b+717_
+{b}=1\times b^{1}+7\times b^{0}=b+7, and 97b=9×b1+7×b0=9​b+797_{b}=9\times b^{1}+7\times b^{0}=
+9b+7. The condition is that (b+7)(b+7) divides (9​b+7)(9b+7). Turn 1: Action # Convert the base
+representations to mathematical expressions # 17​_​b=1∗b+7=b+717\_b=1*b+7=b+7 # 97​_​b=9∗b+797\_b=
+9*b+7 # The condition is: (b+7)(b+7) divides (9​b+7)(9b+7) # That is: (9∗b+7)%​(b+7)==0(9*b+7)\%
+(b+7)==0 valid_b = [] for b in range(10, 1000): # Check a reasonable range if (9*b + 7) % (b + 7) =
+= 0: valid_b.append(b) print(”Valid bases b >> 9 where 17​_​b17\_b divides 97​_​b97\_b:”) print
+(valid_b) print(f”Sum of valid bases: {sum(valid_b)}”) Turn 1: Observation Valid bases b>9b>9 where
+17b17_{b} divides 97b97_{b}: [21, 49] Sum of valid bases: 70 Turn 2: Think **imaginary** 1.
+Verified the base conversion logic 2. Checked divisibility condition for b>9b>9 3. Found two valid
+bases: 21 and 49 4. Calculated their sum: 70 5. Need to verify if these are the only valid bases 
+Should verify that these are indeed the only solutions and that the interpretation of the notation
+is correct. **keyword** base conversion, divisibility condition, valid bases, sum, verification 
+**analysis** The solution appears correct but should be double-checked. **confidence** 95% 
+**think** I should verify my mathematical approach. The condition (9​b+7)(9b+7) divisible by (b+7)
+(b+7) can be solved algebraically. Let me perform polynomial division or use modular arithmetic to
+find all solutions. Turn 2: Action # Alternative verification using algebraic manipulation # We
+want: (9​b+7)≡0(mod(b+7))(9b+7)\equiv 0\pmod{(b+7)} # Solve: 9​b+7=k⁡(b+7)9b+7=k(b+7) for integer
+kk # 9​b+7=k​b+7​k9b+7=kb+7k # (9−k)​b=7​k−7(9-k)b=7k-7 # b=(7​k−7)/(9−k)b=(7k-7)/(9-k) 
+valid_b_algebraic = [] for k in range(-10, 11): numerator = 7*k - 7 denominator = 9 - k if
+denominator == 0: continue b = numerator / denominator if b.is_integer() and b ¿ 9: 
+valid_b_algebraic.append(int(b)) print(”Valid bases from algebraic approach:”) print
+(valid_b_algebraic) print(f”Sum: {sum(valid_b_algebraic)}”) Turn 2: Observation Valid bases from
+algebraic approach: [21, 49] Sum: 70 Turn 3: Think **imaginary** 1. Identified an error in the
+algebraic approach 2. Need to re-evaluate the modular arithmetic step 3. Correctly solve (9​b+7)≡0
+(modb+7)(9b+7)\equiv 0\pmod{b+7} 4. Find all b>9b>9 satisfying the condition 5. Recalculate the sum
+The algebraic manipulation was incorrect. Need to properly handle the modular arithmetic. 
+**keyword** modular arithmetic, algebraic manipulation, re-evaluate, correct, condition 
+**analysis** The initial brute-force search gave a clear answer, but verification suggests a
+discrepancy. **confidence** 60% **think** I made an error in the algebraic manipulation. Let me
+reconsider: (9​b+7)mod(b+7)(9b+7)\mod(b+7) means I need to express 9​b+79b+7 in terms of (b+7)
+(b+7). Let me use polynomial division properly. Turn 3: Action # Final verification with a
+comprehensive check valid_b_final = [] for b in range(10, 1001): if (9*b + 7) % (b + 7) == 0: 
+valid_b_final.append(b) print(f”Final verification - valid bases: {valid_b_final}”) print(f”Final
+sum: {sum(valid_b_final)}”) print(f”Answer: {sum(valid_b_final)}”) Turn 3: Observation Final
+verification - valid bases: [21, 49] Final sum: 70 Answer: 70 Turn 4: Think **imaginary** 1.
+Corrected the algebraic approach using proper division 2. Found the same two valid bases: 21 and 49
+3. Verified their sum is 70 4. Confirm that the initial brute-force result was correct 5. Ready to
+finalize the answer All approaches consistently yield the same result: sum is 70. **keyword** 
+algebraic approach, valid bases, sum, confirmed, final answer **analysis** Multiple verification
+methods give consistent results. **confidence** 99% **think** All verification methods consistently
+show that the valid bases are 21 and 49, giving a sum of 70. The initial brute-force search was
+correct, and the algebraic verification confirms it. The answer is ready. 70\boxed{70}
+
+Analysis of Case (A): This example demonstrates persistent planning across multi-step reasoning.
+The core framework established in Turn 1 (base conversion →\rightarrow divisibility condition →\
+rightarrow enumeration →\rightarrow verification) persists throughout all four turns. Notably, when
+an algebraic error is detected in Turn 3 (confidence drops to 60%), the agent maintains its
+planning structure while correcting the specific erroneous component. The confidence trajectory
+(80%→95%→60%→99%80\%\rightarrow 95\%\rightarrow 60\%\rightarrow 99\%) reflects appropriate
+quantification. Score: 1.0 (Correct).
+
+(B) An example demonstrating low confidence on challenging problems User Question Solve the
+following math problem step by step. The last line of your response should be of the form Answer:
+$Answer (without quotes) where $Answer is the answer to the problem. On △​A​B​C\triangle ABC,
+points A,D,EA,D,E, and BB lie in that order on side A​B¯\overline{AB} with A​D=4AD=4, D​E=16DE=16,
+and E​B=8EB=8. Points A,F,GA,F,G, and CC lie in that order on side A​C¯\overline{AC} with A​F=13AF=
+13, F​G=52FG=52, and G​C=26GC=26. Let MM be the reflection of DD through FF, and let NN be the
+reflection of GG through EE. Quadrilateral D​E​G​FDEGF has area 288. Find the area of heptagon
+A​F​N​B​C​E​MAFNBCEM. Remember to put your answer on its own line after ”Answer:”. Turn 1: Think 
+**imaginary** 1. Place triangle A​B​CABC in a coordinate system with AA at origin 2. Locate points
+DD, EE on A​BAB and FF, GG on A​CAC using given segment lengths 3. Calculate reflection points MM
+and NN 4. Use the constraint that quadrilateral D​E​G​FDEGF has area 288 5. Compute the area of
+heptagon A​F​N​B​C​E​MAFNBCEM Need to establish coordinate system and calculate all point
+positions. **keyword** coordinate system, reflection, quadrilateral, heptagon, area **analysis** 
+Complex geometric relationships requiring careful calculation. **confidence** 20% **think** I’ll
+start by placing triangle A​B​CABC in a coordinate system. Since we have specific segment lengths
+along sides A​BAB and A​CAC, I’ll position points AA, BB, CC appropriately and then locate DD, EE,
+FF, GG based on the given segment lengths. Turn 1: Action import numpy as np # Place A at origin, B
+on x-axis A = np.array([0, 0]) B = np.array([28, 0]) # AB = AD + DE + EB = 4 + 16 + 8 = 28 # AC =
+AF + FG + GC = 13 + 52 + 26 = 91 # Place C at (0, 91) for simplicity C = np.array([0, 91]) #
+Calculate positions of D, E on AB D = A + (4/28) * (B - A) # AD = 4 E = A + (20/28) * (B - A) # AE
+= AD + DE = 20 # Calculate positions of F, G on AC F = A + (13/91) * (C - A) # AF = 13 G = A + (65/
+91) * (C - A) # AG = AF + FG = 65 print(f”D: {D}, E: {E}”) print(f”F: {F}, G: {G}”) Turn 1:
+Observation D: [4. 0.], E: [20. 0.] F: [0. 13.], G: [0. 65.] Turn 2: Think **imaginary** 1. Points
+positioned correctly on coordinate system 2. Need to verify area of quadrilateral D​E​G​FDEGF
+equals 288 3. Calculate reflection points MM (reflection of DD through FF) and NN (reflection of GG
+through EE) 4. Determine triangle orientation to satisfy area constraint 5. Compute heptagon area 
+The current coordinate placement may not satisfy the area constraint. **keyword** quadrilateral
+area, reflection, coordinate verification, constraint **analysis** Need to verify geometric
+constraints and adjust if necessary. **confidence** 15% **think** I notice that the verification
+distances don’t match exactly. The triangle placement needs to satisfy the constraint that
+quadrilateral D​E​G​FDEGF has area 288. Let me recalculate with proper geometric relationships. 
+Turn 3,4 …Skipped… Turn 5: Think **imaginary** 1. Multiple coordinate system attempts have failed
+to satisfy constraints 2. The problem requires finding the correct triangle orientation 3. Need to
+use the area constraint more directly 4. Consider alternative geometric approaches The coordinate
+approach is becoming increasingly complex. **keyword** geometric constraints, area calculation,
+alternative approach **analysis** The problem complexity exceeds initial expectations. 
+**confidence** 5% **think** The coordinate geometry approach is proving difficult. The constraint
+that D​E​G​FDEGF has area 288 must be used to determine the triangle’s shape. Let me try a more
+systematic approach using ratios and area relationships. Turn 6-11 …Skipped… Turn 12: Think 
+**imaginary** 1. After extensive calculation, obtained a candidate answer 2. Verification remains
+uncertain due to problem complexity 3. Final answer computed but confidence remains low The
+calculation is complete but verification is difficult. **keyword** final calculation, heptagon
+area, uncertainty **analysis** Complex geometric problem with multiple interdependent constraints. 
+**confidence** 15% **think** After extensive geometric analysis and coordinate calculations, the
+area of heptagon A​F​N​B​C​E​MAFNBCEM appears to be 1274. However, due to the complexity of the
+problem and potential for accumulated errors, confidence in this answer remains low. 1274\boxed
+{1274}
+
+Analysis of Case (B): This example illustrates the agent’s behavior on inherently challenging
+problems. The confidence trajectory (20%→15%→10%→5%→⋯→15%20\%\rightarrow 15\%\rightarrow 10\%\
+rightarrow 5\%\rightarrow\cdots\rightarrow 15\%) remains consistently low throughout the 12-turn
+reasoning process. Unlike Case (A), where confidence recovered after error correction, the low
+confidence persists here, indicating the agent’s awareness of unreliability. Score: 0.0 (Incorrect)
+.
+
+(C) An example demonstrating declining confidence with discovered complexity User Question Solve
+the following math problem step by step. The last line of your response should be of the form
+Answer: $Answer (without quotes) where $Answer is the answer to the problem. The 9 members of a
+baseball team went to an ice cream parlor after their game. Each player had a single-scoop cone of
+chocolate, vanilla, or strawberry ice cream. At least one player chose each flavor, and the number
+of players who chose chocolate was greater than the number of players who chose vanilla, which was
+greater than the number of players who chose strawberry. Let NN be the number of different ways
+this could have happened. Find the remainder when NN is divided by 1000. Remember to put your
+answer on its own line after ”Answer:”. Turn 1: Think **imaginary** 1. Define variables for number
+of players choosing each flavor (chocolate, vanilla, strawberry) 2. Set up constraints: total
+players = 9, at least one of each flavor 3. Apply ordering constraint: chocolate >> vanilla >>
+strawberry 4. Generate all possible distributions 5. Calculate NN and compute remainder modulo 1000
+Standard combinatorics problem with ordering constraints. **keyword** combinatorics, permutation,
+constraints, distribution, counting **analysis** This appears to be a straightforward constrained
+counting problem. **confidence** 90% **think** This is a combinatorics problem. I need to count the
+number of ways to distribute 9 players among 3 flavors with the constraint c>v>sc>v>s where c+v+s=
+9c+v+s=9 and c,v,s≥1c,v,s\geq 1. Then for each valid distribution, count the number of player
+arrangements. Turn 1: Action from math import factorial from itertools import
+combinations_with_replacement def multinomial(n, groups): ”””Calculate multinomial coefficient””” 
+result = factorial(n) for g in groups: result //= factorial(g) return result # Find all valid (c,
+v, s) where c >> v >> s >>= 1 and c + v + s = 9 valid_distributions = [] for s in range(1, 9): for
+v in range(s + 1, 9): c = 9 - v - s if c >> v: valid_distributions.append((c, v, s)) print(”Valid
+distributions (c, v, s):”) print(valid_distributions) Turn 1: Observation Valid distributions (c,
+v, s): [(6, 2, 1), (5, 3, 1), (4, 3, 2)] Turn 2-4 …Skipped… Turn 5: Think **imaginary** 1. Realize
+that ”NN” may represent the number of valid distributions rather than total assignments 2. The
+problem asks for remainder when NN is divided by 1000, suggesting NN is a count 3. Re-evaluate
+whether we need to count ordered or unordered assignments 4. Consider combinatorial interpretation
+more carefully Problem interpretation may be incorrect. **keyword** problem interpretation,
+counting method, ordered vs unordered **analysis** The problem statement requires more careful
+analysis. **confidence** 40% **think** I’m now uncertain about the correct interpretation. The
+phrase ”different ways this could have happened” is ambiguous—does it refer to the number of
+distributions, or the number of specific player-flavor assignments? Let me reconsider both
+interpretations. Turn 6-9 …Skipped… Turn 10: Think **imaginary** 1. After multiple calculation
+attempts, answer appears to be 49 2. The problem involves subtle counting considerations 3.
+Verification of the approach remains uncertain Final answer obtained but confidence is low. 
+**keyword** final calculation, remainder, uncertainty **analysis** The combinatorial problem proved
+more nuanced than initially expected. **confidence** 25% **think** After careful reconsideration of
+the problem, the remainder when NN is divided by 1000 appears to be 49. However, the complexity of
+the counting argument and potential for interpretation errors leaves significant uncertainty. 49\
+boxed{49}
+
+Analysis of Case (C): This example demonstrates declining confidence as the agent expects a lower
+chance of problem-solving success. The initial high confidence (90%) reflects the apparent
+simplicity of the combinatorial setup. However, as reasoning progresses and interpretation
+ambiguities emerge, confidence declines progressively (90%→95%→80%→⋯→25%90\%\rightarrow 95\%\
+rightarrow 80\%\rightarrow\cdots\rightarrow 25\%). This pattern suggests the agent appropriately
+revises its QQ-value estimates in response to the lower expected success rate. Score: 0.0
+(Incorrect).
+
+These case studies presented above also provide empirical evidence for two key capabilities of our
+policy with internalized world model:
+
+ 1. 1.
+   
+    Long-horizon planning coherence: As demonstrated in Case (A), the high-level reasoning
+    framework established in the initial imaginary planning block persists across multiple tool-use
+    iterations. Notably, when intermediate errors occur (e.g., incorrect algebraic manipulation in
+    Turn 3), the agent maintains its core planning structure while selectively revising the
+    erroneous components, rather than abandoning the overall problem-solving strategy.
+
+ 2. 2.
+   
+    Calibrated confidence quantification: The confidence estimates exhibit meaningful correlation
+    with actual task success and solution reliability. In Case (A), confidence appropriately
+    decreases upon error detection (95%→\rightarrow60%) and recovers after successful verification
+    (60%→\rightarrow99%). In Case (B), consistently low confidence (5%–20%) throughout the
+    trajectory reflects the agent’s awareness of inherent unreliability. In Case (C), the
+    progressive confidence decline (90%→\rightarrow25%) demonstrates appropriate uncertainty
+    revision as unexpected complexity is discovered during reasoning.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

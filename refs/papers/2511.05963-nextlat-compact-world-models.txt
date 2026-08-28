@@ -1,0 +1,2037 @@
+source: https://arxiv.org/html/2511.05963
+arxiv: https://arxiv.org/abs/2511.05963
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. Self-Supervised Learning.
+     2. Belief States.
+     3. World Models.
+     4. Beyond Next-Token Prediction.
+     5. Speculative Decoding.
+ 4. 3 Methodology: Next-Latent Prediction
+     1. 3.1 Why Next-Latent Prediction?
+         1. Better Data Efficiency.
+     2. 3.2 Learning to Predict Next-Latent States
+     3. 3.3 Variable-Length Self-Speculative Decoding
+ 5. 4 Experiments
+     1. 4.1 World Modeling
+         1. Setup.
+         2. Results.
+     2. 4.2 Reasoning
+         1. Setup.
+         2. Results.
+     3. 4.3 Planning
+         1. Setup.
+         2. Results.
+         3. Setup.
+         4. Results.
+     4. 4.4 Language Modeling
+         1. Setup.
+         2. Results.
+ 6. 5 Discussions
+     1. 5.1 Comparison Against Current Approaches
+         1. Computational Costs.
+         2. Belief State Learning.
+         3. Myopic Nature of Token-level Predictions.
+     2. 5.2 NextLat vs. Recurrent Neural Networks
+         1. Training RNNs without recurrence.
+         2. Computational Efficiency and Relation to Backpropagation Through Time.
+         3. Expressivity of the Recurrence.
+         4. Hybrids Attention Models.
+ 7. 6 Limitations and Future Work
+ 8. 7 Conclusion
+ 9. References
+10. A Belief States in Sequence Modeling
+     1. Belief State Transformer.
+     2. Joint Multi-Token Prediction.
+11. B Formal Proof of
+12. C More Details on NextLat Implementation
+13. D Ablation Studies
+14. E NextLat Pretraining Quirks
+15. F Extra Experiment Details
+     1. F.1 Manhattan Taxi Rides
+         1. Training.
+         2. Evaluation.
+     2. F.2 Countdown
+     3. F.3 Path-Star
+     4. F.4 TinyStories
+     5. F.5 𝐀𝟓\mathbf{A_{5}} State Tracking
+     6. F.6 FineWeb-Edu Pretraining
+         1. F.6.1 Results with MTP/JTP (d=4)
+
+License: CC BY 4.0
+arXiv:2511.05963v4 [cs.LG] 15 Jun 2026
+
+Next-Latent Prediction Transformers Learn Compact
+World Models
+
+Jayden Teoh^1^1 1 Correspondence to: jayden_t[at]mit[dot]edu    Manan Tomar    Kwangjun Ahn    
+Edward S. Hu    Tim Pearce    Pratyusha Sharma    Akshay Krishnamurthy    Riashat Islam    Alex
+Lamb    John Langford
+Microsoft Research
+
+Abstract
+
+Transformers replace recurrence with a memory that grows with sequence length and self-attention
+that enables ad-hoc lookups over past tokens. Consequently, they lack an inherent incentive to
+compress history into compact latent states with consistent transition rules. This often leads to
+learning solutions that generalize poorly. We introduce Next-Latent Prediction (NextLat), which
+extends standard next-token training with self-supervised predictions in the latent space.
+Specifically, NextLat trains a transformer to learn latent representations that are predictive of
+the next latent state given the next token. Theoretically, we show that these latents provably
+converge towards belief states, compressed information about the history necessary to predict the
+future. This simple auxiliary objective injects a recurrent inductive bias into transformers while
+leaving their architecture, parallel training efficiency, and inference unchanged. NextLat
+effectively encourages transformers to form compact internal world models with coherent belief
+states and transition dynamics—crucial properties not guaranteed by standard next-token prediction
+alone. Empirically, across benchmarks in world modeling, reasoning, planning, and language
+modeling, NextLat demonstrates significant gains over standard next-token prediction and other
+baselines in downstream accuracy, representation compression, and lookahead planning. Furthermore,
+NextLat enables variable-length self-speculative decoding, accelerating inference by up to 3.3×3.3\
+times in language modeling. NextLat offers a simple yet effective paradigm for learning compact,
+predictive representations in transformers that generalize better. Our code is available at https:/
+/github.com/JaydenTeoh/NextLat.
+
+Refer to caption
+Figure 1: Illustration of different predictive mechanisms. Other methods supervise only in token
+space, leaving intermediate latent representations implicit. In contrast, NextLat explicitly trains
+the model to predict the next latent state (ht+1h_{t+1}) given the current latent state (hth_{t})
+and next token (Xt+1X_{t+1}). Token supervision is then applied to the latent prediction (h^t+1\hat
+{h}_{t+1}). Therefore, accurate multi-token predictions emerge from faithful latent dynamics
+modeling.
+
+1 Introduction
+
+Ptolemy’s geocentric model was able to accurately predict observations of the solar system from
+Earth’s viewpoint, yet it was structurally convoluted: at times implying that the Moon came twice
+as close to Earth as other times. It was later supplanted by Copernicus’s simpler, more compact
+heliocentric model, which provided accurate predictions that generalized beyond Earth’s
+perspective. In learning theory, it is well known that simpler explanations of training
+observations tend to generalize better (Blumer et al., 1986; Langford and Schapire, 2005).
+
+Modern transformers (Vaswani et al., 2017) stand in contrast to this principle. By replacing
+recurrence with a memory that scales with sequence length and self-attention that enables flexible
+lookups over past tokens, they achieve exceptional parallelization and predictive power. Yet, this
+very capability removes any inherent pressure to compress history into compact latent
+representations with consistent update rules. As a result, transformers often learn complex,
+task-specific shortcuts that fit the training data well but generalize poorly (Anil et al., 2022;
+Dziri et al., 2023; Liu et al., 2023; Wu et al., 2024). How can we encourage transformers to form
+simpler, more principled explanations that avoid such shortcuts? A natural approach is to reinstate
+a key property of recurrent models: the ability to learn compact world models that channel future
+prediction through compressed representations of the past. We will show that this inductive bias
+can be reintroduced while also retaining the parallel training efficiency of transformers.
+
+In this paper, we introduce Next-Latent Prediction (NextLat), which extends the standard next-token
+prediction objective with self-supervised predictions in latent space. NextLat jointly trains a
+transformer and a latent dynamics model: the transformer learns to encode past tokens into compact
+latent summaries such that the dynamics model can predict the transformer’s next latent state given
+only the current latent state and the next token (i.e., the “action”). This objective encourages
+the transformer to form a compact internal world model with coherent recurrent-like dynamics, while
+avoiding the sequential processing overhead of recurrent architectures. Importantly, NextLat leaves
+the transformer’s architecture, inference procedure, and parallel training efficiency unchanged,
+adding only a lightweight auxiliary loss on latent representations during training. By augmenting
+sparse one-hot token targets with dense latent-state supervision, NextLat provides richer learning
+signals and improves data efficiency compared to next-token prediction and other token-level
+supervision methods. Our approach is inspired by the self-predictive learning paradigm in
+reinforcement learning (RL), a family of algorithms that learn representations by minimizing the
+prediction error of their own future latent states (Tang et al., 2023; Ni et al., 2024).
+
+Beyond representation learning, latent dynamics also provides an inference advantage: future states
+can be recursively predicted directly in latent space without invoking the main transformer. This
+recursive multi-step lookahead using the lightweight dynamics model enables variable-length
+self-speculative decoding: the model can speculate a flexible number of future tokens and
+accelerate inference without requiring separate multi-token prediction heads.
+
+The core contributions of this paper are threefold. First, we establish a theoretical foundation
+showing that NextLat provably shapes transformer representations into belief states—compact
+summaries of past information sufficient for predicting future observations. Such representations
+are important for planning and generalization, yet are not guaranteed to emerge from next-token
+prediction alone. Second, we present a practical implementation of NextLat that preserves the
+transformer’s architecture, inference procedure, and parallel training efficiency. Finally, we
+empirically demonstrate NextLat’s effectiveness across diverse domains spanning world modeling,
+reasoning, planning, and language modeling. Our results show that NextLat improves representation
+compactness, lookahead planning, and downstream accuracy over standard next-token prediction and
+other baselines. In language modeling, NextLat achieves up to 3.3×3.3\times faster inference
+through variable-length self-speculative decoding. Together, these results position NextLat as an
+efficient framework for learning compact, predictive, and generalizable representations in
+transformers.
+
+2 Related Work
+
+We are motivated by a long line of prior works in representation learning for prediction and
+control. Of close interest are self-supervised learning methods, belief states for decision making,
+and world models.
+
+Self-Supervised Learning.
+
+Self-supervised learning (SSL) is a framework for learning from unlabeled data, where a model
+generates its own supervisory signals from the structure of raw inputs. Across modalities such as
+vision, audio, and time series, SSL has proven highly effective for pretraining useful features,
+enabling downstream transfer that rivals, or even surpasses, models trained on labeled data (Liu et
+al., 2022; Balestriero et al., 2023; Zhang et al., 2024). There are several approaches to SSL. Our
+method falls under self-predictive representation learning, which jointly learns latent
+representations and a transition function that models how these representations evolve over a
+sequence. Self-prediction has driven state-of-the-art advances in RL (Gelada et al., 2019; Zhang et
+al., 2020; Ye et al., 2021; Schwarzer et al., 2021; Hansen et al., 2022). However, latent-space SSL
+remains underexplored in language modeling. A recent effort, LLM-JEPA (Huang et al., 2025),
+minimizes distances between embeddings of paired text–code data, but relies on manually curated
+pairs and therefore does not generalize to raw text. In contrast, our method introduces a fully
+self-supervised latent prediction objective requiring no paired data, making it broadly applicable
+for training transformers across arbitrary sequence modeling domains and data sources.
+
+Belief States.
+
+In both sequence modeling and RL, models must reason over long histories of observations. To
+mitigate this curse of dimensionality, prior work focuses on compressing history into latent
+representations that capture all information necessary for future prediction. In RL, this latent
+summary is formalized by Kaelbling et al. (1998) as a belief state, defined as: “a sufficient
+statistic for the past history … no additional data about its past actions or observations would
+supply any further information about the current state of the world”. In stochastic control, the
+same notion of sufficient statistics appears as “information state” (Striebel, 1965). The idea of
+sufficient statistics is also key to learning state abstractions in RL (Li et al., 2006). While
+recurrent neural networks naturally enforce such compression, transformers have no such
+constraint—their internal state, or memory, grows linearly with sequence length. Recently, Belief
+State Transformers (BST; (Hu et al., 2025)) extended the notion of belief states to transformers,
+and demonstrated benefits in planning tasks. Compared to BST, NextLat learns belief states without
+requiring a separate transformer and is much more computationally efficient. We compare these
+methods further in Section 5.
+
+World Models.
+
+Loosely, a world model is an internal predictive model of how the world works, with varying
+interpretations across cognitive science (Craik, 1967; Johnson-Laird, 1983), neuroscience (Miall
+and Wolpert, 1996; Friston, 2010), control theory (Francis and Wonham, 1976; Conant and Ross Ashby,
+1970) and reinforcement learning (Sutton, 1991; Schmidhuber, 1990; Ha and Schmidhuber, 2018).
+Whether transformer language models implicitly learn world models remains a debate; some studies
+report emergent world understanding (Patel and Pavlick, 2022; Li et al., 2023; Gurnee and Tegmark,
+2024), while others find incoherent world structure (Vafa et al., 2024; Vafa et al., 2025).
+However, successful world modeling approaches such as MuZero (Schrittwieser et al., 2020) for
+achieving superhuman performance in video and board games, Dreamer (Hafner et al., 2019; Hafner et
+al., 2021; Hafner et al., 2025) for model-based RL, and Genie (Bruce et al., 2024) for interactive
+video generation share a common principle: they learn a latent dynamics model that takes a latent
+state (an encoding of past observations), an action, and predicts the next latent state. Yet,
+learning such latent dynamics for transformer-based language modeling remains underexplored.
+NextLat addresses this gap by explicitly learning a latent dynamics model that governs how the
+transformer’s latent states evolve given new tokens (i.e., “actions”), enabling the transformer to
+learn compact latent abstractions of the world with consistent dynamics.
+
+Beyond Next-Token Prediction.
+
+In the domain of language modeling, a growing body of work has highlighted the myopic nature of the
+next-token prediction objective, which limits the model’s capability in downstream tasks such as
+planning and reasoning (Bachmann and Nagarajan, 2024; Nagarajan et al., 2025). Recent works have
+also found improvements from richer supervision signals that predict further into the future (
+Gloeckle et al., 2024; Liu et al., 2024; Hu et al., 2025; Ahn et al., 2025). However, these
+approaches operate predominantly in the token space. NextLat takes a different approach: it shifts
+prediction into the latent space, enforcing coherent dynamics over the model’s latent
+representations rather than its token outputs. As we discuss later in Section 3.1, this
+latent-space supervision provides richer gradient signals than token-level supervision.
+
+Speculative Decoding.
+
+Speculative decoding (Leviathan et al., 2022; Chen et al., 2023) accelerates inference by using a
+lightweight draft model to propose multiple tokens, which are then verified in parallel by a target
+model. Closely related, Li et al. (2024b); Li et al. (2024a) train a draft model on top of a frozen
+language model to predict its high-level latent features. Unlike our approach, this is done
+post-hoc, whereas we study latent prediction as a pretraining objective to directly shape
+representations. Moreover, their draft model relies on full attention over past features and
+therefore does not learn belief states, i.e., compact summaries of past tokens. Self-speculative
+decoding removes the need for a separate draft model by having a single model act as both draft and
+verifier. A common implementation uses the multi-token prediction (MTP) objective, where the model
+is trained to predict multiple future tokens that can be verified in parallel (Gloeckle et al.,
+2024). However, MTP operates in token space and is therefore typically constrained to a fixed
+speculative horizon determined during training. In contrast, NextLat learns a latent dynamics model
+that can be recursively composed in latent space, enabling variable-length self-speculative
+decoding and faster inference.
+
+3 Methodology: Next-Latent Prediction
+
+In this section, we introduce a simple, yet powerful, method for learning belief states in
+transformers via next-latent prediction (or more specifically, via next-hidden state prediction^1^1
+1 In the sequence modeling literature, intermediate latent representations are often referred to as
+“hidden states”. To disambiguate, we use the term “latent state” to broadly refer to learned
+representations within the transformer’s residual stream, and “hidden state” to refer to a subset
+of this representation—specifically, the final layer’s output at each time step (i.e., the
+pre-logit activations).). We begin by defining belief states in sequence modeling.
+
+Definition 3.1 (Belief states in sequence modeling).
+
+Let X1:TX_{1:T} denote a token sequence X1,…,XTX_{1},\dots,X_{T}. A random variable 𝐛t=g(X1:t)\
+mathbf{b}_{t}=g(X_{1:t}) is a belief state for the history X1:tX_{1:t} if, for every bounded
+measurable function ff of the future,
+
+ 𝔼[f(Xt+1:T)∣𝐛t]=𝔼[f(Xt+1:T)∣X1:t]a.s.\displaystyle\mathbb{E}[f(X_{t+1:T})\mid\mathbf{b}_{t}]=\
+ mathbb{E}[f(X_{t+1:T})\mid X_{1:t}]\quad\text{a.s.}
+
+Equivalently, 𝐛t\mathbf{b}_{t} is a sufficient statistic (Striebel, 1965) of the history X1:tX_
+{1:t} for predicting the future tokens, i.e., from which we can sample from the distribution ℙ
+(Xt+1:T∣X1:t)\mathbb{P}(X_{t+1:T}\mid X_{1:t}). Next, we describe how next-latent prediction
+enables transformers to learn belief states and improves data efficiency.
+
+3.1 Why Next-Latent Prediction?
+
+Here we analyze an idealized next-latent prediction transformer which successfully optimizes both
+next-token prediction and next-latent prediction with respect to an underlying data distribution.
+
+Theorem 3.2.
+
+Consider the joint learning of three components:
+
+ 1. 1.
+   
+    a transformer with parameters θ\theta that produces hidden states 𝐡t\mathbf{h}_{t} at each time
+    step tt,
+
+ 2. 2.
+   
+    an output head pθp_{\theta} modeling the next-token distribution, and
+
+ 3. 3.
+   
+    a latent dynamics model pψp_{\psi} modeling the transition dynamics of the transformer’s hidden
+    states.
+
+If NextLat successfully optimizes the following objectives:
+
+ (Next-Token    pθ(Xt+1∣𝐡t)=ℙ(Xt+1∣X1:t),\displaystyle p_{\theta}(X_{t+1}\mid\mathbf{h}_{t})=\  (1)
+ Consistency):  mathbb{P}(X_{t+1}\mid X_{1:t}),
+ (Transition    pψ(𝐡t+1∣𝐡t,Xt+1)=ℙ(𝐡t+1∣X1:t+1),\displaystyle p_{\psi}(\mathbf{h}_{t+1}\mid\    (2)
+ Consistency):  mathbf{h}_{t},X_{t+1})=\mathbb{P}(\mathbf{h}_{t+1}\mid X_{1:t+1}),
+
+then 𝐡t\mathbf{h}_{t} must be a belief state for the sequence X1:tX_{1:t}. Note that the right-hand
+side of Equation 2 is the transition law induced by the transformer’s weights^2^2 2 We adopt a
+probabilistic formulation to retain generality with respect to stochastic transformer models, e.g. 
+Fleuret (2025)..
+
+Proof Sketch. A formal proof by backward induction is provided in Appendix B. Intuitively,
+optimizing for next-token (Equation 1) and transition (Equation 2) consistency ensures existence of
+measurable maps, i.e., pθp_{\theta} and pψp_{\psi}, that allow recursive decoding of future tokens
+from 𝐡t\mathbf{h}_{t}:
+
+ 𝐡t\          →decode tokenpθXt+1→update statepψ𝐡t+1→decode tokenpθXt+2→update statepψ𝐡t+2⋯→pθXT.\
+ displaystyle displaystyle\xrightarrow[\text{decode token}]{p_{\theta}}X_{t+1}\xrightarrow[\text
+ \mathbf{h}_  {update state}]{p_{\psi}}\mathbf{h}_{t+1}\xrightarrow[\text{decode token}]{p_{\
+ {t}          theta}}X_{t+2}\xrightarrow[\text{update state}]{p_{\psi}}\mathbf{h}_{t+2}\;\cdots\;\
+              xrightarrow{p_{\theta}}X_{T}.
+
+For these maps to exist, and be learned, 𝐡t\mathbf{h}_{t} must jointly optimize toward a belief
+state—a sufficient statistic for the history to predict the future.
+
+Remark. Optimizing only next-token consistency (i.e., Equation 1) in standard autoregressive
+transformers does not guarantee that 𝐡t\mathbf{h}_{t} forms a belief state (see Theorem 3 in Hu et
+al. (2025)). Intuitively, self-attention enables ad-hoc lookup of past tokens, so there is no
+pressure to compress all necessary information about the past into compact latent summaries at
+every time step.
+
+Better Data Efficiency.
+
+A distinctive feature of NextLat is the richness of its learning signal. In prior methods that
+supervise in token space (see Figure 1), the learning signal is only anchored to the next token, or
+multiple tokens. NextLat additionally supervises in latent space. Specifically, the model is
+trained to predict its own next hidden state 𝐡t+1\mathbf{h}_{t+1}, which parameterizes the full
+predictive distribution over Xt+2X_{t+2}. This shifts supervision from individual one-hot token
+labels to distribution-level alignment. Moreover, because the latent dynamics compose
+recursively—each latent is trained to predict the next—𝐡t+1\mathbf{h}_{t+1} implicitly carries
+information about future states 𝐡t+2,𝐡t+3,…\mathbf{h}_{t+2},\mathbf{h}_{t+3},\dots. As a result,
+NextLat not only provides learning signals that are dense in the vocabulary space, but also
+propagates information about future tokens into earlier representations. By augmenting sparse
+one-hot targets with dense latent-state supervision, NextLat extracts more learning signal from
+each training sequence, leading to improved data efficiency.
+
+3.2 Learning to Predict Next-Latent States
+
+We now describe the practical implementation of NextLat, which augments standard next-token
+prediction with a self-supervised predictions in the latent space. Our NextLat implementation
+operates primarily on the hidden states (i.e., the final-layer outputs) as they provide compact,
+fixed-dimensional vectors through which gradients can be propagated through the entire transformer
+efficiently. As usual, we optimize the transformer and output head for next-token prediction (
+Equation 1) using the cross-entropy loss:
+
+ ℒnext-token​(θ)=𝔼t<T​[−log⁡pθ​(Xt+1∣𝐡t)].\displaystyle\mathcal{L}_{\text{next-token}}(\theta)=\
+ mathbb{E}_{t<T}\big[-\log p_{\theta}(X_{t+1}\mid\mathbf{h}_{t})\big].
+
+NextLat additionally enforces transition consistency (Equation 2) of the hidden states by
+introducing a latent dynamics model pψp_{\psi} that predicts the next hidden state 𝐡t+1\mathbf{h}_
+{t+1} directly from (𝐡t,Xt+1)(\mathbf{h}_{t},X_{t+1}). For a deterministic transformer model, ℙ⁡
+(𝐡t+1∣𝐡t,Xt+1)\mathbb{P}(\mathbf{h}_{t+1}\mid\mathbf{h}_{t},X_{t+1}) is a Dirac distribution, and
+we can optimize pψp_{\psi} via regression^3^3 3 If considering a stochastic transformer model, pψp_
+{\psi} can be optimized through variational inference.. Moreover, observe that an ideal latent
+dynamics model should admit recursive consistency: its one-step map should compose correctly across
+multiple steps. Let 𝐡^t+d=pψ(𝐡t,Xt+1:t+d)\hat{\mathbf{h}}_{t+d}=p_{\psi}(\mathbf{h}_{t},X_
+{t+1:t+d}) denote the recursive rollout of pψp_{\psi} over a dd-step horizon using teacher-forced
+tokens Xt+1:t+dX_{t+1:t+d}. We supervise all dd intermediate rollouts using the Smooth L1 loss:
+
+ ℒnext-h​(θ,ψ,d)=𝔼t​[1d​∑i=1dSmoothL1Loss⁡(sg​[𝐡t+i],𝐡^t+i)],\displaystyle\mathcal{L}_{\text
+ {next-h}}(\theta,\psi;d)=\mathbb{E}_{t}\Big[\frac{1}{d}\sum_{i=1}^{d}\mathrm{SmoothL1Loss}\    (3)
+ big(\textbf{sg}[\mathbf{h}_{t+i}],\hat{\mathbf{h}}_{t+i}\big)\Big],
+
+where sg​[⋅]\textbf{sg}[\cdot] denotes the stop-gradient operator, used to prevent representational
+collapse in self-predictive learning (Ni et al., 2024)^4^4 4 Technically speaking, the next-token
+prediction objective already provides grounding against representational collapse. However, in our
+ablations, we empirically observe better performance when applying the stop-gradient.. Note that
+belief state convergence (i.e., Theorem 3.2) already holds for d=1d=1. Multi-step supervision
+serves only to provide richer learning signal. To further align the semantics of predicted states 𝐡
+^\hat{\mathbf{h}} with true states, we introduce a complementary KL objective enforcing agreement
+in token-prediction space:
+
+ ℒKL(θ,ψ;d)=𝔼t[1d∑i=1dDKL(pθsg(⋅∣sg[𝐡t+i])∥pθsg(⋅∣𝐡^t+i))],\displaystyle\mathcal{L}_{\mathrm
+ {KL}}(\theta,\psi;d)=\mathbb{E}_{t}\Big[\frac{1}{d}\sum_{i=1}^{d}D_{\mathrm{KL}}\!\left(p_{\   (4)
+ theta}^{\textbf{sg}}(\cdot\mid{\textbf{sg}[\mathbf{h}_{t+i}]})\;\|\;p_{\theta}^{\textbf{sg}}
+ (\cdot\mid{\hat{\mathbf{h}}_{t+i}})\right)\Big],
+
+where the output head pθsg​(⋅)p_{\theta}^{\textbf{sg}}(\cdot) is frozen so that gradients flow only
+through the latent dynamics model. This KL acts similarly to knowledge distillation (Hinton et al.,
+2015), providing soft supervision that guides learning of pψp_{\psi}. It also resembles observation
+reconstruction in self-predictive RL (Subramanian et al., 2022; Ni et al., 2024), encouraging 𝐡^t+i
+\hat{\mathbf{h}}_{t+i} to reproduce the distribution over next observations (i.e., the output
+head’s logits).
+
+Overall Objective. The final NextLat objective combines all components, minimizing the following
+loss:
+
+ ℒNextLat​(θ,ψ,d,λnext-h,λKL)=ℒnext-token​(θ)+λnext-h​ℒnext-h​(θ,ψ,d)+λKL​ℒKL​(θ,ψ,d),\
+ displaystyle\mathcal{L}_{\text{NextLat}}(\theta,\psi;d,\lambda_{\text{next-h}},\lambda_{\      (5)
+ mathrm{KL}})=\mathcal{L}_{\text{next-token}}(\theta)+\lambda_{\text{next-h}}\,\mathcal{L}_{\
+ text{next-h}}(\theta,\psi;d)+\lambda_{\mathrm{KL}}\,\mathcal{L}_{\mathrm{KL}}(\theta,\psi;d),
+
+where λnext-h,λKL>0\lambda_{\text{next-h}},\lambda_{\mathrm{KL}}>0 are scalar coefficients.
+Importantly, during inference, the learned transformer can decode independently; pψp_{\psi} is only
+needed during training to shape the transformer representations.
+
+In the experiments that follow, we parameterize pψp_{\psi} using simple MLPs as our goal is to
+demonstrate that NextLat yields significant performance gains over baselines even without
+sophisticated latent dynamics architectures. Additional implementation details and ablations of key
+NextLat design choices are provided in Appendices C and D, respectively. To illustrate the
+simplicity of our approach, we also include a PyTorch-style pseudocode of the NextLat objective in
+Algorithm 1.
+
+3.3 Variable-Length Self-Speculative Decoding
+
+Refer to caption
+Figure 2: Illustration comparing self-speculative decoding with multi-token prediction (MTP) vs.
+NextLat. MTP uses a fixed draft length per step (e.g., d=2d=2 tokens here), whereas NextLat enables
+variable-length self-speculative decoding, reducing draft-verification cycles and accelerating
+inference.
+
+In Figure 2, we illustrate the difference in self-speculative decoding capabilities between MTP
+methods and NextLat^5^5 5 The figure illustrates the potential for adaptive draft lengths with
+NextLat. In the scope of this work, however, we do not implement adaptive drafting strategies; once
+selected, the draft length remains static throughout decoding. Instead, we exploit the ability to
+vary these fixed draft lengths to extend beyond the training horizon dd in order to maximize
+inference speedup.. MTP models are trained to predict the next dd tokens and are therefore limited
+to drafting at most dd tokens per draft–verification cycle. In contrast, even when trained with
+just d=1d=1 (i.e., no multi-step supervision), NextLat can recursively compose predictions via its
+latent dynamics:
+
+ 𝐡t→decode tokenpθXt+1→update statepψ𝐡t+1→decode tokenpθXt+2→update statepψ𝐡t+2⋯,\displaystyle\
+ mathbf{h}_{t}\xrightarrow[\text{decode token}]{p_{\theta}}X_{t+1}\xrightarrow[\text{update
+ state}]{p_{\psi}}\mathbf{h}_{t+1}\xrightarrow[\text{decode token}]{p_{\theta}}X_{t+2}\xrightarrow
+ [\text{update state}]{p_{\psi}}\mathbf{h}_{t+2}\;\cdots\;,
+
+enabling variable-length drafting during self-speculative decoding. We demonstrate in Section 4.4
+that, even with shallow training horizons (d=1,2d=1,2) in the language domain, NextLat’s latent
+dynamics remain coherent far beyond the training horizon, enabling longer drafts and much faster
+inference than MTP baselines.
+
+4 Experiments
+
+Modeling coherent latent dynamics and compact beliefs about the underlying data-generating process
+is fundamental to both algorithmic and human reasoning. Therefore, in this section, we evaluate
+NextLat on four key axes where such capabilities matter most: world modeling, reasoning, planning,
+and language modeling.
+
+Our baseline comparisons include transformer-based belief-learning methods, i.e., BST (Hu et al.,
+2025) and JTP (Ahn et al., 2025). Further discussions and detailed comparisons with these methods
+are provided in Section 5 and Appendix A. For completeness, we also report the performances of
+standard next-token prediction (GPT) and multi-token prediction (MTP). The MTP baseline follows the
+implementation of Gloeckle et al. (2024), and we follow the nanoGPT codebase (Karpathy, 2022) for
+our decoder-only transformer implementations. Hereafter, we use the term “horizon” to refer to the
+multi-step prediction horizon dd in JTP, MTP and NextLat, and we match horizon across these methods
+in all experiments to ensure fair comparisons. For specific experiment details such as
+hyperparameters, evaluation procedure, etc., please refer to Appendix F.
+
+4.1 World Modeling
+
+                  Next-Token   Valid          Sequence       Effective      Detour
+                  Test         Trajectories   Compression    Latent Rank    Robustness
+
+                 (↑)(\uparrow) (↑)(\uparrow) (↑)(\uparrow) (↓)(\downarrow) (↑)(\uparrow)
+      GPT        100%          97.0%         0.65          160.1           85.0%
+      MTP        100%          98.1%         0.64          57.7            95.0%
+      JTP        100%          97.1%         0.32          215.8           87.0%
+    NextLat      100%          98.7%         0.71          52.7            95.0%
+True world model 100%          100%          1.00          —               100%
+
+
+Table 1: Comparison of GPT, MTP, JTP, and NextLat trained on Manhattan taxi rides against the true
+world model across several metrics.
+
+Vafa et al. (2024) introduced a dataset of turn-by-turn taxi rides in Manhattan, where the true
+world model (i.e., the city’s street map) is visually interpretable. Their study revealed that
+transformers trained on such trajectories can achieve near-perfect next-token accuracy, yet their
+internal maps remain incoherent; they reconstruct streets with impossible orientations and even
+flyovers above other roads.
+
+Setup.
+
+We use the random walks dataset from Vafa et al. (2024), which consists of random Manhattan
+traversals (91M sequences, 4.7B tokens) between taxi pickup and dropoff points. Models are trained
+for 6 epochs (vs. 1 epoch in their study) as we observe performance does not converge within a
+single epoch. Due to its high computational cost, BST is excluded from this benchmark. For JTP,
+MTP, and NextLat, we set the multi-step prediction horizon at d=8d=8. We evaluate world-modeling
+performance using five comprehensive metrics:
+
+ 1. 1.
+   
+    Next-Token Test: Percentage of top-1 token predictions corresponding to legal turns under
+    teacher-forcing on in-distribution validation sequences.
+
+ 2. 2.
+   
+    Valid Trajectories: Percentage of valid traversals for out-of-distribution (OOD) pickup–dropoff
+    pairs.
+
+ 3. 3.
+   
+    Sequence Compression: Percentage of cases where the model produces identical continuations when
+    prompted with two different traversals arriving at the same state and sharing the same
+    destination.
+
+ 4. 4.
+   
+    Effective Latent Rank: Effective rank/dimension of hidden states measured as the exponentiated
+    Shannon entropy of the normalized singular values (Roy and Vetterli, 2007); lower values
+    indicate better compression.
+
+ 5. 5.
+   
+    Detour Robustness: Percentage of valid traversals for OOD pickup–dropoff pairs when we
+    substitute the model’s top-1 prediction with random detours (legal turns) 75% of the time.
+
+The results are shown in Table 1. More details on training and evaluation are provided in Appendix 
+F. We also refer motivated readers to Vafa et al. (2024) for further explanations of the next-token
+test, valid trajectories, sequence compression, and detour robustness metrics.
+
+Refer to caption
+((a)) GPT
+
+Refer to caption
+((b)) MTP
+
+Refer to caption
+((c)) JTP
+
+Refer to caption
+((d)) NextLat (ours)
+
+
+Figure 3: Reconstructed maps from transformers trained on Manhattan taxi rides using different
+objectives.
+
+Results.
+
+Similar to the original study, all models achieved 100% accuracy on the next-token test. However,
+next-token accuracy is a limited diagnostic and cannot meaningfully assess the quality of a model’s
+learned world model. In Figure 3, we visualize each model’s internal map using the reconstruction
+algorithm proposed by Vafa et al. (2024). Visibly, the transformer trained with NextLat exhibits an
+internal map more consistent with the true world model. Although not perfect, its inconsistencies
+(red edges) are sparse and mostly local. Beyond this qualitative evidence, NextLat consistently
+outperforms all baselines across all metrics. On the trajectory validity and detour robustness
+metrics, NextLat demonstrates the strongest generalization to OOD pickup–dropoff pairs, even when
+random detours are introduced.
+
+Next, we analyze the compactness of the learned world models using two compression metrics. A model
+that accurately captures the underlying states and transitions should assign identical
+continuations to trajectories that end in the same state (i.e., intersection in Manhattan). By this
+criterion, NextLat achieves the highest sequence compression of 0.71. The true Manhattan graph
+comprises only 4,580 intersections and 9,846 edges, and therefore an effective world model should
+require only a modest latent dimensionality. Indeed, NextLat has the lowest effective latent rank
+of 52.7—over 3x smaller than GPT’s. The combination of stronger planning performance and more
+compact latent representations reinforces the view that NextLat, by promoting belief state
+representations and coherent latent dynamics, enables transformers to learn substantially better
+world models—ones that are both accurate in their predictive structure and efficient in their
+internal representation of the environment.
+
+4.2 Reasoning
+
+Model   Horizon (𝐝\mathbf{d})  Accuracy (%)
+GPT     –                      33.1
+BST     –                      42.3
+        1                      39.2
+MTP     4                      49.7
+        8                      57.3
+        1                      39.0
+JTP     4                      49.4
+        8                      55.0
+        1                      54.8
+NextLat 4                      57.6
+        8                      58.7
+
+
+Figure 4: Performance on Countdown. Best result is bolded, and second best is underlined.
+
+Countdown (Countdown, 2025) is a mathematical reasoning task and a generalized version of the Game
+of 24, which even frontier models such as GPT-4 (Achiam et al., 2023) have struggled with,
+achieving 4% by default (Yao et al., 2023). The goal of the task is to combine a set of given
+numbers with basic arithmetic operations (+,−,×,÷)(+,-,\times,\div) to obtain a target number. For
+example, given the numbers {90,8,20,50}\{90,8,20,50\}, the target number 2424 can be obtained using
+the following sequence of equations: 90×8=720, 50−20=30, 720÷30=2490\times 8=720,\>50-20=30,\>720\
+div 30=24. Countdown poses a difficult combinatorial search problem due to its large branching
+factor and the need to efficiently explore the solution space to reach the target number.
+
+Setup.
+
+Following Gandhi et al. (2024), we generate 500k training problems with target numbers ranging from
+10 to 100 and reserve 10% of the targets for out-of-distribution evaluation. During both training
+and testing, we insert eight ‘pause tokens’ (Goyal et al., 2023) after the target number, allowing
+models additional computation to plan before generating a solution. Performance is measured as the
+percentage of 10k test problems for which a model produces a valid sequence of equations that
+correctly reaches the target number. The reported results average over three random seeds per
+baseline.
+
+
+Figure 5: Validity of equations (i.e., LHS = RHS) generated on Countdown. All models in this plot
+use d=1d=1.
+
+Results.
+
+As shown in Figure 4, NextLat consistently outperforms all baselines in Countdown. Notably, even
+with a shallow supervision horizon of d=1d=1, NextLat substantially surpasses MTP and JTP trained
+with the same horizon (>35.7% improvement). To better understand this gap, we analyzed the
+equations generated by each model and evaluated their equation validity, i.e., whether the computed
+left-hand side equals the right-hand side. As shown in Figure 5, most calculation errors occur in
+the final equation (Eq. 3). This indicates that the model’s lack of planning capability results in
+its realization of being unable to achieve the goal only at the end. Unable to revise earlier
+missteps, it forces an invalid final equation to match the desired outcome—a behavior termed the
+regretful compromise by Ye et al. (2025). NextLat demonstrates stronger lookahead planning: even
+with d=1d=1, it achieves substantially higher mean validity in the final equation (54.854.8%)
+compared to the next best baseline (42.342.3%). This suggests that the latent-state prediction
+objective may help the model anticipate long-range dependencies and form globally consistent plans,
+reducing the tendency to make myopic errors. NextLat also achieves leading performance with
+horizons d=4d=4 and 88.
+
+4.3 Planning
+
+
+Figure 6: Accuracy on Path-Star graph task. Unlike the baselines, NextLat maintains close to 100%
+solve rate for all graphs.
+
+Refer to caption
+Figure 7: Illustration of a G5,5G_{5,5} Path-Star graph (Bachmann and Nagarajan, 2024).
+
+A Path-Star graph (Bachmann and Nagarajan, 2024) Gd,ℓG_{d,\ell} consists of a center node and dd
+disjoint arms, each consisting of ℓ−1\ell-1 nodes. Figure 7 depicts an instantiation of the G5,5G_
+{5,5} topology. A training instance is a tokenized sequence that contains the edge list, the start
+and end nodes, and the correct path from start to end. This task represents a minimal instance of
+lookahead planning, a core capability underlying more complex behaviors such as storytelling. Yet,
+despite its apparent simplicity, next-token prediction models struggle to solve it.
+
+Setup.
+
+Following Bachmann and Nagarajan (2024), we generate 200k training samples and set N=100N=100, such
+that node values in each graph are randomly drawn from 1,…,100{1,\dots,100}. For MTP, JTP, and
+NextLat, we set the multi-step prediction horizon to d=ℓ−2d=\ell-2, ensuring that the target (end)
+node lies within the multi-step prediction horizon of the center node. We evaluate performance
+across three graph configurations: G2,10G_{2,10}, G5,5G_{5,5}, and G7,7G_{7,7} across five random
+seeds per baseline.
+
+Results.
+
+As shown in Figure 6, NextLat maintains close to 100% solve rate for all topologies of the
+Path-Star graphs. BST, while able to solve G2,10G_{2,10} and G5,5G_{5,5}, begins to fail at the
+larger graph G7,7G_{7,7}. Note that our results differ from that presented in Hu et al. (2025)
+(BST) and Ahn et al. (2025) (JTP). In their setup, they use a much smaller problem settings of N=
+50N=50, and generate a fresh batch of graphs every iteration. On the other hand, we use the
+original (and more difficult) setup which has a fixed sample size of 200k and N=100N=100.
+
+The Path-Star graph task is specifically designed to reveal the myopic behavior of teacher-forced
+next-token prediction models, which tend to exploit local shortcuts instead of learning to perform
+lookahead planning necessary to solve the task. This phenomenon, termed the Clever Hans cheat (
+Bachmann and Nagarajan, 2024), is related to the difficulty of learning parity (Hu et al., 2025)
+and has motivated methods such as BST and JTP that attempt to mitigate shortcut learning through
+multi-token predictions. However, these approaches operate in token space, making them still
+susceptible to local nn-gram regularities that do not capture the underlying transition structure
+required for long-horizon planning. In contrast, NextLat performs prediction in latent space,
+enforcing recurrent transition consistency at the representation level. NextLat’s success across
+all graph configurations, unlike MTP, JTP, and BST, suggests that latent-space prediction better
+avoids shortcut learning and yields more generalizable solutions. Furthermore, given the limited
+training samples (i.e., 200k) in this task, data efficiency is crucial. NextLat’s strong
+performance in this low-data regime suggests that it extracts more useful supervision from each
+training sequence than token-prediction baselines, consistent with our analysis in Section 3.1.
+
+Refer to caption
+Figure 8: Cross-entropy loss difference relative to GPT, obtained from linear probes trained on
+frozen hidden states to predict tokens at varying token offsets (x-axis values) ahead. Lower values
+indicate better predictive performance.
+
+Next, we compare the models on TinyStories (Eldan and Li, 2023), a dataset consisting of synthetic
+short stories. Storytelling is inherently a long-horizon planning problem; a coherent narrative
+requires maintaining persistent entities, tracking causal relationships, resolving conflicts and
+delayed resolutions, and satisfying narrative constraints across many timesteps. Generating such
+sequences therefore depends not only on next-token prediction, but on belief-state–like
+abstractions that encode information predictive of future story trajectories.
+
+Setup.
+
+Following Hu et al. (2025), we tokenize the dataset of 2.7 million stories into a vocabulary of
+1,000 tokens and construct training sequences of length 256. All models are trained for 100k steps,
+which is sufficient for convergence. We include comparisons of transformers trained using MTP, JTP,
+and NextLat with multi-step prediction horizons d∈{1,8}d\in\{1,8\}. After training, we freeze the
+model parameters and train 20 independent linear probes, one per token offset, to predict tokens at
+offsets 1,…,201,\dots,20 steps ahead from the hidden states of the frozen models using the same
+dataset. This allows us to assess whether the models’ representations encode information predictive
+of future tokens, or just local token correlations.
+
+Results.
+
+We plot the difference in probe performance relative to probes trained on GPT’s hidden states in
+Figure 8. For clarity, we display only selected token offsets here (see Figure 16 in the appendix
+for full results). Observe that the additional token-level prediction objectives in BST, MTP, and
+JTP consistently cause significant degradation in next-token prediction (i.e., token offset = 1).
+Moreover, probe performance on JTP and MTP representations declines sharply with increasing token
+offset. This indicates that these multi-token prediction models, lacking guarantees of learning
+belief states, could encode information useful only for short-horizon prediction. In contrast,
+NextLat matches GPT’s next-token performance across both d∈{1,8}d\in\{1,8\} and exhibits the
+strongest long-range predictive capability (up to 20 tokens ahead) for both d=1d=1 and d=8d=8.
+These results suggest that NextLat’s latent-state objective induces belief-like representations
+that encode predictive information about future events—an ability essential for maintaining
+coherence in long-range narrative generation tasks like TinyStories.
+
+4.4 Language Modeling
+
+        FW-Edu    Wiki.     LAMB.     LAMB.   PIQA    HellaS. Wino.   ARC-e   ARC-c   SIQA    SciQ    
+ Model  ppl ↓\    ppl ↓\    ppl ↓\    acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  Avg.
+        downarrow downarrow downarrow uparrow uparrow uparrow uparrow uparrow uparrow uparrow uparrow
+
+  GPT   10.52     17.93     20.26     42.07   73.45   58.79   60.46   68.18   39.16   42.32   86.10   58.82
+JTP (d= 11.08     19.28     21.88     41.35   74.92   57.43   58.64   68.73   39.25   42.99   87.30   58.83
+  1)
+JTP (d= 11.18     19.60     22.11     41.37   73.34   56.84   59.98   68.86   38.57   43.35   86.70   58.63
+  2)
+MTP (d= 10.90     18.82     20.23     41.26   74.32   58.05   60.54   68.52   38.91   42.84   85.40   58.76
+  1)
+MTP (d= 11.00     18.61     18.34     43.43   72.80   57.92   59.35   68.35   39.08   41.97   86.60   58.69
+  2)
+NextLat 10.83     18.39     19.77     41.08   73.07   58.35   59.27   69.65   39.68   43.24   86.00   58.79
+ (d=1)
+NextLat 10.88     18.44     17.83     43.86   73.61   57.79   59.20   69.74   40.10   41.91   87.50   59.21
+ (d=2)
+
+
+Table 2: Downstream language modeling evaluation on 1.3B-parameter models trained on 100B
+FineWeb-Edu tokens. Best scores are in bold and second-best are underlined.
+
+Setup.
+
+We pretrain 1.3B-parameter models on 100B tokens from the FineWeb-Edu dataset (Penedo et al., 2024
+), excluding BST due to its high computational cost. After pretraining, we use the LM Evaluation
+Harness (Gao et al., 2024) to evaluate the zero-shot accuracy of the models on multiple-choice
+language modeling benchmarks. We also evaluate the self-speculative decoding performance of the
+multi-step prediction models, i.e., JTP, MTP, and NextLat, across Wikipedia, Books, Code, and Math
+domains. For each dataset, we sample 1024 prompts of length 512 tokens and generate 512-token
+continuations using the speculative sampling algorithm of Leviathan et al. (2022). For each model,
+we report the average number of accepted tokens per drafting step, as well as the inference speedup
+relative to standard autoregressive sampling from the base transformer, measured on 8×8\timesNVIDIA
+B200 GPUs. For multi-step prediction models, we primarily focus our analysis on training with
+horizons of d=1d=1 and d=2d=2. MTP and JTP operate in token space and are therefore usually limited
+to speculative decoding within the fixed multi-token horizon used during training. Our aim is to
+highlight the advantages of NextLat’s variable-length self-speculative decoding, which enables
+drafting beyond the training horizon. To this end, we vary NextLat’s speculative draft length
+between 2 and 10 tokens and report the highest inference speedup achieved for each domain.
+
+            Wikipedia             Books                 Code                  Math
+   Model    Speedup Accepted      Speedup Accepted      Speedup Accepted      Speedup Accepted
+                    Tokens                Tokens                Tokens                Tokens
+ JTP (d=1)  1.46    0.96          1.47    0.97          1.47    0.98          1.46    0.97
+ JTP (d=2)  1.88    1.84          1.90    1.89          1.88    1.85          1.89    1.86
+ MTP (d=1)  1.38    0.91          1.39    0.95          1.40    0.97          1.39    0.95
+ MTP (d=2)  1.68    1.72          1.72    1.83          1.75    1.91          1.72    1.84
+NextLat (d= 2.68    3.52          2.72    3.64          2.29    2.66          2.30    2.72
+    1)
+NextLat (d= 3.21    4.59          3.32    4.86          2.38    2.83          2.87    3.94
+    2)
+
+
+Table 3: Relative speedup and average accepted tokens per drafting steps over diverse domains. Note
+that “Accepted Tokens" excludes the next-token prediction which is always accepted.
+
+Results.
+
+In Table 2, we present the language modeling perplexity (ppl) and zero-shot accuracy (acc) of the
+pretrained models across several benchmarks. Consistent with observations in Gloeckle et al. (2024)
+, we do not observe significant improvements in multiple-choice task accuracy over standard
+next-token training (GPT) when using multi-token prediction objectives. NextLat (d=2d=2) does show
+a modest gain in average accuracy over GPT (59.21 vs. 58.82), but these improvements are not
+consistent across tasks. Larger model sizes might be necessary to see more significant
+improvements. Notably, NextLat better preserves next-token perplexity compared to MTP and JTP
+across FineWebEdu, Wikitext, and LAMBADA. This is consistent with our earlier observations on
+TinyStories in Section 4.3. Preserving high fidelity in next-token prediction is arguably
+important, as prior work shows that lower pretraining perplexity correlates with improved aggregate
+downstream and post-fine-tuning performance at larger model scales (Gadre et al., 2024; Zhang et
+al., 2026).
+
+Next, in Table 3, we show the self-speculative decoding results. Observe that the average accepted
+tokens per drafting steps for NextLat far exceeds its training horizon dd, indicating that the
+learned latent dynamics remains coherent over extended rollouts. This further highlights the strong
+long-range predictive capability of the induced belief state representations. Crucially, this
+ability to support variable-length self-speculative decoding enables NextLat to achieve 
+substantially higher inference speedups than MTP and JTP across all domains. Figure 9 further shows
+speedup and cumulative acceptance rate versus draft length on the FineWeb-Edu validation set.
+Speedup increases sublinearly with draft length, reaching up to 3.3×3.3\times, and fully valid
+(i.e., all tokens accepted) drafts persist even at length 10. This demonstrates a clear benefit to
+drafting tokens beyond the training horizon with NextLat. In Section F.6.1, we extend our
+comparisons to include JTP and MTP trained with larger horizons (d=4d=4). Note that the training
+cost of JTP and MTP increases substantially with larger dd (see Table 4), making JTP (d=4d=4) and
+MTP (d=4d=4) significantly more expensive to train than NextLat (d=1,2d=1,2). Still, even with
+longer multi-token supervision, these baselines still fail to surpass NextLat in speculative
+decoding performance. This highlights a key advantage of NextLat’s variable-length speculative
+decoding: it enables long speculative drafts while requiring training only at shallow,
+computationally efficient horizons.
+
+Refer to caption
+((a))
+
+Refer to caption
+((b))
+
+
+Figure 9: (a) Inference speedup ratio of JTP, MTP, and NextLat on the FineWeb-Edu validation set.
+(b) Cumulative acceptance rate of draft tokens (product of per-position acceptance probabilities),
+indicating how likely the entire speculative draft remains valid (i.e., all tokens accepted) as
+draft length increases.
+
+5 Discussions
+
+5.1 Comparison Against Current Approaches
+
+                     GPT      BST           MTP                  JTP               NextLat
+Training parameters                         1.37B / 1.42B /                        
+(d=1,2,8d=1,2,8)     1.32B    2.57B         1.72B                1.34B             1.40B
+
+Inference parameters 1.32B    1.32B / 2.57B 1.32B                1.34B             1.32B
+Training steps/                                                                    
+second               3.09     0.89          2.80 / 2.58 / 1.70   3.15 / 2.92 /     3.09 / 2.79 /
+(d=1,2,8d=1,2,8)                                                 2.02              1.73
+
+     Gradients       O⁡(T)O   O⁡(T2)O(T^    O⁡(T​d)O(Td)         O⁡(T​d)O(Td)      O⁡(T​d)O(Td)
+                     (T)      {2})
+
+
+Table 4: Comparison of training speed, parameter count and gradient signals provided on FineWeb-Edu
+pretraining. For training parameter numbers and training iterations/second, we report values for
+prediction horizons d=1,2,8d=1,2,8. If only a single value is shown, it means that the values are
+the same for all horizons. All training speeds are measured on a single NVIDIA B200 GPU with batch
+size of 33k tokens.
+
+In this section, we discuss the advantages of NextLat compared to prior transformer learning
+approaches, focusing discussions on belief-learning methods, i.e., BST and JTP. We provide brief
+descriptions of these methods and their training objectives in Appendix A. Motivated readers
+interested in further details beyond the scope of this work may refer to Hu et al. (2025) and Ahn
+et al. (2025). Table 4 summarizes the training and inference parameters, training speed (in
+iterations per second), and gradient signal characteristics for each method on FineWeb-Edu
+pretraining, providing context for the discussions that follow.
+
+Computational Costs.
+
+While BST benefits from O⁡(T2)O(T^{2}) gradient signals per token sequence, this is a double-edged
+sword. Even with the optimized implementation of Hu et al. (2025), training remains extremely
+costly because gradients must be accumulated over all O⁡(T2)O(T^{2}) predictions of different
+prefix–suffix pairs. Moreover, BST trains two transformer encoders, further increasing compute and
+parameter cost. During inference, BST also uses both transformer encoders, one for generation and
+the other for scoring the likelihood of the generated sequence. On FineWeb-Edu pretraining, BST is
+over 3×3\times slower than NextLat in training speed (see Table 4). Note that this result already
+uses 10% subsampling of prefix-suffix pairs to prevent out-of-memory issues; the training speed of
+BST would be much slower if all pairs were used for training. In contrast, NextLat with d=1d=1
+incurs negligible overhead relative to GPT while achieving the same belief-state learning
+guarantees as BST.
+
+We next compare the compute costs of the multi-step prediction methods, i.e., MTP, JTP, and
+NextLat. The MTP implementation of Gloeckle et al. (2024), as well as other variants such as the
+one introduced in Liu et al. (2024), require additional transformer layers as the prediction
+horizon dd increases, whereas JTP and NextLat keep parameter counts fixed across horizons. JTP and
+NextLat exhibit similar training speeds for d=1d=1^6^6 6 JTP exhibiting a slightly faster training
+speed than GPT at d=1d=1 is likely an artifact of torch.compile() due to differences in the
+computation graph., while MTP lags behind. At d=8d=8, JTP is substantially faster than NextLat
+because NextLat sequentially unrolls its latent dynamics model pψp_{\psi} to compute multi-step
+losses, while JTP computes them in parallel. Nonetheless, this modest increase in computation for
+NextLat yields substantially better performance than JTP across all benchmarks. Importantly,
+NextLat’s sequential computation remains far more efficient than that of recurrent neural networks
+(RNN), which we discuss further in Section 5.2.
+
+Belief State Learning.
+
+GPT and MTP lack any theoretical learning pressure to form belief-state representations, which
+means that they do not necessarily learn sufficient representations predictive of future
+observations. JTP can learn belief states but only under the restrictive condition that the
+prediction horizon satisfies d≥kd\geq k, where kk denotes the observability horizon of the
+underlying data-generating process (see Definition A.1 in appendix). In long-context sequence
+modeling, however, the underlying process is often kk-observable for a very large kk, rendering
+this condition impractical. NextLat, on the other hand, learns belief-state representations
+independently of dd and larger multi-step prediction horizons are used only to provide richer
+gradient signals. It also avoids the expensive O⁡(T2)O(T^{2}) gradient computation required by BST
+to learn belief states. As such, NextLat stands as a simple, computationally efficient, and
+theoretically grounded alternative to existing belief-state learning approaches (i.e., BST and JTP)
+in autoregressive sequence modeling.
+
+Myopic Nature of Token-level Predictions.
+
+Token-level supervision is often myopic. Next-token prediction transformers tend to prioritize
+short-term dependencies, and studies have shown that early training can often resemble nn-gram
+modeling, which can delay or even prevent learning of the true Markov kernel (Edelman et al., 2024;
+Makkuva et al., 2025). Bachmann and Nagarajan (2024) further showed that the myopic nature of
+next-token prediction training can trap models in suboptimal local minima, undermining long-horizon
+planning. In our experiments, we find that adding additional token-level prediction objectives, as
+in BST, JTP, and MTP, not only degrades next-token performance but also fails to yield consistent
+gains in generalization. In contrast, NextLat, which emphasizes latent transition modeling as its
+primary objective, minimizes degradation in next-token performance and improves downstream
+generalization by encouraging the learning of predictive representations rather than shallow
+token-level correlations. Moreover, as discussed in Section 3.1, latent-space supervision provides
+denser gradient signals than token-level supervision. Overall, NextLat offers a compelling
+alternative to conventional token-level prediction objectives for transformer training.
+
+5.2 NextLat vs. Recurrent Neural Networks
+
+Algorithmic reasoning requires capabilities most naturally understood through recurrent models of
+computation, like the Turing machine. However, strict recurrence imposes a sequential computation
+bottleneck at training time. NextLat introduces a recurrent inductive bias for the learned
+representations via latent transition prediction without turning the transformer into a strictly
+sequential model.
+
+Refer to caption
+Figure 10: Length Generalization for A5A_{5} word problem.
+
+Training RNNs without recurrence.
+
+Intuitively, NextLat (d=1d=1) can be viewed as fully parallel co-training of a transformer and a
+recurrent neural network (RNN). The transformer forecasts latent states across the sequence in
+parallel, while the latent dynamics model (the RNN) is trained using only one-step latent
+predictions. This co-training process does not require any sequential computation across time.
+
+To study this interaction, we consider the A5A_{5} word problem, a difficult state-tracking task
+involving even permutations of five elements. The problem is NC1\text{NC}^{1}-complete and
+therefore inexpressible by constant depth, fixed-precision transformers, which are restricted to
+the TC0⊂NC1\text{TC}^{0}\subset\text{NC}^{1} circuit complexity class (Merrill and Sabharwal, 2023)
+^7^7 7 This assumes the widely held conjecture that TC0≠NC1\text{TC}^{0}\neq\text{NC}^{1}.. We
+train 2-layer transformers using next-token prediction (GPT) and next-latent prediction (NextLat, d
+=1d=1) on the A5A_{5} word problem with a sequence length of 12 tokens (permutations). We then
+tested the transformers and the latent dynamics model (RNN) on their length generalization to
+sequences of length 36. Note that during inference, the RNN only uses the transformer backbone to
+initialize the hidden state for the first token, after which subsequent hidden state transitions
+and token predictions are generated independently by the RNN without invoking the transformer.
+Importantly, the RNN also has substantially fewer parameters than the transformer (2.62M vs. 6.43M
+parameters).
+
+Figure 10 shows interesting results. First, the transformer trained with NextLat exhibits better
+state-tracking performance than GPT within the 12-token training horizon. More surprisingly, while
+the transformer itself fails to generalize beyond the 12-token horizon, the learned latent dynamics
+model successfully generalizes to 36-token sequences (>95>95% accuracy). This is particularly
+striking because even a GPT model trained directly on 36-token sequences (“GPT (36 tokens)”) is
+unable to solve the task, consistent with previous results (Merrill et al., 2025). In other words,
+although the transformer itself cannot solve the 36-token A5A_{5} problem, it is nevertheless able
+to train an RNN that can.
+
+From a circuit complexity perspective, solving problems in NC1\text{NC}^{1} requires transformers
+with O⁡(log⁡T)O(\log T) depth (Merrill and Sabharwal, 2023; Liu et al., 2023), where TT is the
+sequence length. This explains why the shallow 2-layer transformers (both GPT and NextLat) are
+unable to solve problems beyond 12 tokens. What is surprising, however, is that under NextLat
+training, the co-trained RNN can generalize far beyond the expressivity limits of the underlying
+transformer, despite being trained entirely in parallel. This raises an intriguing question:
+
+    Given inputs of length TT, can a transformer with O⁡(log⁡T)O(\log T) depth co-train (in
+    parallel) an RNN that generalizes to sequences of length ≫T\gg T? More specifically, can the
+    co-trained RNN learn NC1\text{NC}^{1} computations, even though it is supervised using
+    representations from a transformer in TC0\text{TC}^{0}?
+
+Intuitively, this seems plausible. As long as the transformer has sufficient depth to express and
+forecast hidden states within the TT-length training context window, it makes sense for the latent
+dynamics model (RNN) to learn reusable computational circuits that extrapolate far beyond it, as
+empirically suggested by Figure 10. In this view, NextLat may offer a mechanism for partially
+escaping the practical limitations imposed by the parallelism tradeoff (Merrill and Sabharwal, 2023
+): the transformer provides efficient parallel representation learning, while the RNN focuses on
+learning generalizable sequential update rules.
+
+Computational Efficiency and Relation to Backpropagation Through Time.
+
+Now, we further compare NextLat against traditional RNNs trained using backpropagation through
+time. Tranditional RNNs incur O⁡(T)O(T) sequential dependence during training. In contrast, NextLat
+adds only an additional sequential cost proportional to the rollout horizon d≪Td\ll T,
+corresponding to unrolling the latent dynamics model pψp_{\psi} for dd steps. This allows NextLat
+to largely retain the transformer’s parallel training efficiency while also inheriting a recurrent
+inductive bias.
+
+Conceptually, the one-step and multi-step prediction in NextLat resembles truncated backpropagation
+through time (TBPTT) in RNNs, with truncation windows of 11 and dd, respectively. However, a key
+distinction lies in how gradients are propagated. In TBPTT for RNNs, gradient computation is
+truncated beyond the chosen window, yielding biased gradient estimates that lack convergence
+guarantees. In contrast, the theoretical convergence of belief-state learning in NextLat, as shown
+in Theorem 3.2, is irrespective of dd, since it requires only one-step prediction optimality.
+Intuitively, NextLat performs full backpropagation through the transformer’s computation graph,
+where self-attention connects all past tokens. The latent dynamics model operates in an “outer
+loop”, aligning the transformer’s hidden states to be temporally consistent across steps.
+Crucially, this outer-loop supervision does not truncate gradient flow within the transformer, and
+therefore avoids bias with respect to dd. Larger prediction horizons simply provide richer
+supervision and faster empirical convergence.
+
+Expressivity of the Recurrence.
+
+Modern state-space models (SSMs), such as S4 and Mamba, implement efficient linear recurrent
+updates while remaining highly parallelizable (Gu et al., 2022; Gu and Dao, 2024). In contrast to
+SSMs, the latent dynamics model pψp_{\psi} in NextLat can express nonlinear transitions. Moreover,
+NextLat does not explicitly perform recurrence in the forward computation. Instead, recurrent-like
+dynamics emerge implicitly through one-step or multi-step unrolling of the pψp_{\psi} and aligning
+successive hidden states via regression. This induces temporal consistency within the latent space
+without altering the transformer architecture. However, it is important to note that NextLat
+modifies the learned representations, not the underlying circuit complexity. The overall
+computational expressivity of the fixed-depth transformer trained with NextLat remains bounded by
+that of constant-depth threshold circuits, i.e., within the TC^0 complexity class (Merrill et al.,
+2022). However, earlier results in Figure 10 question whether the co-trained latent dynamics model
+(RNN) is subject to the same TC0\text{TC}^{0} limitations.
+
+Hybrids Attention Models.
+
+NextLat differs fundamentally from hybrid Transformer–SSM architectures (Park et al., 2024; Lieber
+et al., 2024; Ren et al., 2025), which explicitly interleave SSM and attention layers. NextLat
+requires no architectural changes and operates purely as an auxiliary training objective on the
+model’s latent representations. As such, it is broadly compatible with diverse sequence-modeling
+architectures. In fact, NextLat could complement hybrid models by encouraging compression and
+consistency in the residual attention pathways that fall outside the SSM’s recurrent structure,
+potentially improving representation efficiency and generalization.
+
+6 Limitations and Future Work
+
+While NextLat shows strong empirical performance, several limitations remain in our work. First, we
+do not explore the design space of the latent dynamics model; all experiments use simple MLPs to
+isolate and demonstrate the effectiveness of the core NextLat approach. More expressive
+architectures may further improve performance. We also do not study how the width of the hidden
+layers in the latent dynamics MLP affects learning, even though it effectively acts as a bottleneck
+that constrains belief-state capacity and may influence performance across tasks. Empirically, we
+observe that using smaller latent dimensions is beneficial on tasks such as Path-Star graph and
+Countdown.
+
+Second, the design of the NextLat objective (e.g., stop-gradients, KL self-distillation, Smooth L1
+loss) is guided largely by small-scale ablations in Appendix D and empirical intuition. It remains
+unclear whether multi-step supervision (d>1d>1) and KL token-level supervision are even necessary
+at larger model and data scales. More systematic studies are needed to better understand how these
+components interact. Third, due to computational constraints, we did not evaluate against more
+recent or specialized MTP variants such as the one introduced in Liu et al. (2024). Finally, we did
+not fully exploit the variable-length nature of NextLat’s speculative decoding. In our experiments,
+the draft length remained fixed throughout decoding for each prompt; we only varied the static
+draft length between 2 and 10 tokens to identify the configuration with the highest inference
+speedup. We leave the exploration of more creative adaptive-length speculative decoding strategies
+for NextLat to future work.
+
+On the analysis side, we do not study the structure of the learned representations under NextLat,
+leaving open questions about how the method shapes latent spaces. In Appendix E, we also highlight
+several quirks observed during pretraining with NextLat, such as increases in Smooth L1 loss
+(ℒnext-h\mathcal{L}_{\text{next-h}}) during training and differing loss trajectories across
+optimizers. These observations suggest that NextLat can be sensitive to optimization dynamics.
+Better understanding of how to scale and parameterize the NextLat objective remains an important
+direction for future work.
+
+This work represents only an preliminary study of next-latent prediction, leaving many promising
+directions for future research. Since the method requires no architectural changes beyond a
+lightweight latent dynamics model for shaping representations, an interesting direction is to apply
+it as a post-hoc finetuning objective for pretrained transformers. This could potentially improve
+reasoning, planning, and world-modeling capabilities of existing models without retraining from
+scratch. Moreover, because NextLat effectively organizes latent representations with recurrent-like
+dynamics, an interesting question is whether transformers trained with NextLat are better suited
+for RL post-training, where value estimation (be it implicit or explicit) benefits from such
+recursive “Bellman-like" latent structure. Finally, it would be valuable to explore richer latent
+architectures, such as higher-dimensional or hierarchical belief states spanning multiple layers or
+tokens, which may further improve long-horizon reasoning and planning.
+
+7 Conclusion
+
+In this paper, we introduced Next-Latent Prediction (NextLat), a simple yet powerful framework that
+augments next-token training with self-supervised latent-space prediction, enabling transformers to
+learn belief-state representations. Theoretically, we show that the pressure to form concise latent
+summaries of past information sufficient to predict the future arises naturally from the NextLat
+objective. Empirically, NextLat yields more compact, predictive, and generalizable representations
+across tasks in world modeling, reasoning, planning, and language modeling—all without changing the
+transformer’s architecture, parallel training efficiency, or inference procedure. By reintroducing
+a recurrent inductive bias through self-predictive latent dynamics, NextLat unifies the inherent
+bias toward compact and temporally consistent representations of recurrent models with the
+scalability and parallelism of transformers. Our method is broadly applicable for training
+transformers in autoregressive sequence modeling domains. Looking ahead, we view NextLat as a step
+toward training objectives that endow autoregressive sequence models with simpler, more compact,
+and therefore more generalizable representations of complex systems.
+
+Acknowledgements
+
+We thank Jason Eisner, Jordan T. Ash, Pradeep Varakantham, Andrea Zanette, Michael C. Mozer, Ying
+Fan, and the MSR AI Frontiers team for their valuable discussions and support.
+
+References
+
+  • Achiam et al. (2023) J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D.
+    Almeida, J. Altenschmidt, S. Altman, S. Anadkat, et al. Gpt-4 technical report. arXiv preprint
+    arXiv:2303.08774. Cited by: §4.2.
+  • Ahn et al. (2025) K. Ahn, A. Lamb, and J. Langford Efficient joint prediction of multiple
+    future tokens. External Links: 2503.21801, Link Cited by: Appendix A, Appendix A, §F.1, §F.3,
+    §2, §4.3, §4, §5.1.
+  • Allal et al. (2025) L. B. Allal, A. Lozhkov, E. Bakouch, G. M. Blázquez, G. Penedo, L.
+    Tunstall, A. Marafioti, H. Kydlíček, A. P. Lajarín, V. Srivastav, J. Lochner, C. Fahlgren, X.
+    Nguyen, C. Fourrier, B. Burtenshaw, H. Larcher, H. Zhao, C. Zakka, M. Morlon, C. Raffel, L. von
+    Werra, and T. Wolf SmolLM2: when smol goes big – data-centric training of a small language
+    model. External Links: 2502.02737, Link Cited by: §F.6.
+  • Anil et al. (2022) C. Anil, Y. Wu, A. Andreassen, A. Lewkowycz, V. Misra, V. Ramasesh, A.
+    Slone, G. Gur-Ari, E. Dyer, and B. Neyshabur Exploring length generalization in large language
+    models. In Advances in Neural Information Processing Systems, S. Koyejo, S. Mohamed, A.
+    Agarwal, D. Belgrave, K. Cho, and A. Oh (Eds.), Vol. 35, pp. 38546–38556. Cited by: §1.
+  • Ba et al. (2016) J. L. Ba, J. R. Kiros, and G. E. Hinton Layer normalization. External Links: 
+    1607.06450, Link Cited by: Appendix C.
+  • Bachmann and Nagarajan (2024) G. Bachmann and V. Nagarajan The pitfalls of next-token
+    prediction. In Proceedings of the 41st International Conference on Machine Learning, R.
+    Salakhutdinov, Z. Kolter, K. Heller, A. Weller, N. Oliver, J. Scarlett, and F. Berkenkamp
+    (Eds.), Proceedings of Machine Learning Research, Vol. 235, pp. 2296–2318. External Links: Link
+    Cited by: §F.3, §2, Figure 7, Figure 7, §4.3, §4.3, §4.3, §5.1.
+  • Balestriero et al. (2023) R. Balestriero, M. Ibrahim, V. Sobal, A. Morcos, S. Shekhar, T.
+    Goldstein, F. Bordes, A. Bardes, G. Mialon, Y. Tian, A. Schwarzschild, A. G. Wilson, J.
+    Geiping, Q. Garrido, P. Fernandez, A. Bar, H. Pirsiavash, Y. LeCun, and M. Goldblum A cookbook
+    of self-supervised learning. External Links: 2304.12210, Link Cited by: §2.
+  • Bisk et al. (2020) Y. Bisk, R. Zellers, J. Gao, Y. Choi, et al. Piqa: reasoning about physical
+    commonsense in natural language. In Proceedings of the AAAI conference on artificial
+    intelligence, Vol. 34, pp. 7432–7439. Cited by: §F.6.
+  • Blumer et al. (1986) A. Blumer, A. Ehrenfeucht, D. Haussler, and M. Warmuth Classifying
+    learnable geometric concepts with the vapnik-chervonenkis dimension. In Proceedings of the
+    eighteenth annual ACM symposium on Theory of computing, pp. 273–282. Cited by: §1.
+  • Bruce et al. (2024) J. Bruce, M. Dennis, A. Edwards, J. Parker-Holder, Y. (. Shi, E. Hughes, M.
+    Lai, A. Mavalankar, R. Steigerwald, C. Apps, Y. Aytar, S. Bechtle, F. Behbahani, S. Chan, N.
+    Heess, L. Gonzalez, S. Osindero, S. Ozair, S. Reed, J. Zhang, K. Zolna, J. Clune, N. De
+    Freitas, S. Singh, and T. Rocktäschel Genie: generative interactive environments. In 
+    Proceedings of the 41st International Conference on Machine Learning, ICML’24. Cited by: §2.
+  • Chen et al. (2023) C. Chen, S. Borgeaud, G. Irving, J. Lespiau, L. Sifre, and J. Jumper 
+    Accelerating large language model decoding with speculative sampling. External Links: 
+    2302.01318, Link Cited by: §2.
+  • Clark et al. (2018) P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and
+    O. Tafjord Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+    arXiv preprint arXiv:1803.05457. Cited by: §F.6.
+  • Conant and Ross Ashby (1970) R. C. Conant and W. Ross Ashby Every good regulator of a system
+    must be a model of that system. International journal of systems science 1 (2), pp. 89–97. 
+    Cited by: §2.
+  • Countdown (2025) Countdown Countdown (game show). Note: [Online; accessed 12-October-2025] 
+    External Links: Link Cited by: §4.2.
+  • Craik (1967) K. J. W. Craik The nature of explanation. Vol. 445, CUP Archive. Cited by: §2.
+  • Dziri et al. (2023) N. Dziri, X. Lu, M. Sclar, X. L. Li, L. Jiang, B. Y. Lin, S. Welleck, P.
+    West, C. Bhagavatula, R. L. Bras, J. D. Hwang, S. Sanyal, X. Ren, A. Ettinger, Z. Harchaoui,
+    and Y. Choi Faith and fate: limits of transformers on compositionality. In Thirty-seventh
+    Conference on Neural Information Processing Systems, External Links: Link Cited by: §1.
+  • Edelman et al. (2024) E. Edelman, N. Tsilivis, B. L. Edelman, E. Malach, and S. Goel The
+    evolution of statistical induction heads: in-context learning markov chains. In Advances in
+    Neural Information Processing Systems, A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet,
+    J. Tomczak, and C. Zhang (Eds.), Vol. 37, pp. 64273–64311. External Links: Link Cited by: §5.1.
+  • Eldan and Li (2023) R. Eldan and Y. Li Tinystories: how small can language models be and still
+    speak coherent english?. arXiv preprint arXiv:2305.07759. Cited by: §4.3.
+  • Face (2021) H. Face Dataset card for bookcorpusopen. External Links: Link Cited by: §F.6.
+  • Fleuret (2025) F. Fleuret The free transformer. External Links: 2510.17558, Link Cited by:
+    footnote 2.
+  • [21] W. FoundationWikimedia downloads(Website) External Links: Link Cited by: §F.6.
+  • Francis and Wonham (1976) B. A. Francis and W. M. Wonham The internal model principle of
+    control theory. Automatica 12 (5), pp. 457–465. Cited by: §2.
+  • Friston (2010) K. Friston The free-energy principle: a unified brain theory?. Nature reviews
+    neuroscience 11 (2), pp. 127–138. Cited by: §2.
+  • Gadre et al. (2024) S. Y. Gadre, G. Smyrnis, V. Shankar, S. Gururangan, M. Wortsman, R. Shao,
+    J. Mercat, A. Fang, J. Li, S. Keh, R. Xin, M. Nezhurina, I. Vasiljevic, J. Jitsev, L. Soldaini,
+    A. G. Dimakis, G. Ilharco, P. W. Koh, S. Song, T. Kollar, Y. Carmon, A. Dave, R. Heckel, N.
+    Muennighoff, and L. Schmidt Language models scale reliably with over-training and on downstream
+    tasks. External Links: 2403.08540, Link Cited by: §4.4.
+  • Gandhi et al. (2024) K. Gandhi, D. Lee, G. Grand, M. Liu, W. Cheng, A. Sharma, and N. D.
+    Goodman Stream of search (sos): learning to search in language. arXiv preprint arXiv:2404.03683
+    . Cited by: §F.2, §4.2.
+  • Gao et al. (2024) L. Gao, J. Tow, B. Abbasi, S. Biderman, S. Black, A. DiPofi, C. Foster, L.
+    Golding, J. Hsu, A. Le Noac’h, H. Li, K. McDonell, N. Muennighoff, C. Ociepa, J. Phang, L.
+    Reynolds, H. Schoelkopf, A. Skowron, L. Sutawika, E. Tang, A. Thite, B. Wang, K. Wang, and A.
+    Zou The language model evaluation harness. Zenodo. External Links: Document, Link Cited by:
+    §4.4.
+  • Gelada et al. (2019) C. Gelada, S. Kumar, J. Buckman, O. Nachum, and M. G. Bellemare DeepMDP:
+    learning continuous latent space models for representation learning. In Proceedings of the 36th
+    International Conference on Machine Learning, K. Chaudhuri and R. Salakhutdinov (Eds.), 
+    Proceedings of Machine Learning Research, Vol. 97, pp. 2170–2179. External Links: Link Cited
+    by: §2.
+  • Gloeckle et al. (2024) F. Gloeckle, B. Y. Idrissi, B. Rozière, D. Lopez-Paz, and G. Synnaeve 
+    Better & faster large language models via multi-token prediction. In Proceedings of the 41st
+    International Conference on Machine Learning, ICML’24. Cited by: §F.4, §2, §2, §4.4, §4, §5.1.
+  • Goyal et al. (2023) S. Goyal, Z. Ji, A. S. Rawat, A. K. Menon, S. Kumar, and V. Nagarajan Think
+    before you speak: training language models with pause tokens. arXiv preprint arXiv:2310.02226. 
+    Cited by: §F.2, §4.2.
+  • Gu and Dao (2024) A. Gu and T. Dao Mamba: linear-time sequence modeling with selective state
+    spaces. External Links: 2312.00752, Link Cited by: §5.2.
+  • Gu et al. (2022) A. Gu, K. Goel, and C. Ré Efficiently modeling long sequences with structured
+    state spaces. External Links: 2111.00396, Link Cited by: §5.2.
+  • Gurnee and Tegmark (2024) W. Gurnee and M. Tegmark Language models represent space and time. In
+    The Twelfth International Conference on Learning Representations, External Links: Link Cited
+    by: §2.
+  • Ha and Schmidhuber (2018) D. Ha and J. Schmidhuber World models. arXiv preprint
+    arXiv:1803.10122 2 (3). Cited by: §2.
+  • Hafner et al. (2019) D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi Dream to control: learning
+    behaviors by latent imagination. arXiv preprint arXiv:1912.01603. Cited by: §2.
+  • Hafner et al. (2021) D. Hafner, T. P. Lillicrap, M. Norouzi, and J. Ba Mastering atari with
+    discrete world models. In 9th International Conference on Learning Representations, ICLR 2021,
+    Virtual Event, Austria, May 3-7, 2021, External Links: Link Cited by: §2.
+  • Hafner et al. (2025) D. Hafner, J. Pasukonis, J. Ba, and T. Lillicrap Mastering diverse control
+    tasks through world models. 640 (8059), pp. 647–653. External Links: ISSN 1476-4687, Document,
+    Link Cited by: §2.
+  • Hansen et al. (2022) N. Hansen, X. Wang, and H. Su Temporal difference learning for model
+    predictive control. External Links: 2203.04955, Link Cited by: §2.
+  • Hendrycks and Gimpel (2023) D. Hendrycks and K. Gimpel Gaussian error linear units (gelus). 
+    External Links: 1606.08415, Link Cited by: Appendix C.
+  • Hinton et al. (2015) G. Hinton, O. Vinyals, and J. Dean Distilling the knowledge in a neural
+    network. arXiv preprint arXiv:1503.02531. Cited by: §3.2.
+  • Hu et al. (2025) E. S. Hu, K. Ahn, Q. Liu, H. Xu, M. Tomar, A. Langford, J. Teoh, B. Xu, D.
+    Yan, D. Jayaraman, A. Lamb, and J. Langford The belief state transformer. External Links: 
+    2410.23506, Link Cited by: Appendix A, Appendix A, §F.3, §F.4, §2, §2, §3.1, §4.3, §4.3, §4.3,
+    §4, §5.1, §5.1.
+  • Hu et al. (2024) S. Hu, Y. Tu, X. Han, C. He, G. Cui, X. Long, Z. Zheng, Y. Fang, Y. Huang, W.
+    Zhao, et al. Minicpm: unveiling the potential of small language models with scalable training
+    strategies. arXiv preprint arXiv:2404.06395. Cited by: §F.6.
+  • Huang et al. (2025) H. Huang, Y. LeCun, and R. Balestriero LLM-jepa: large language models meet
+    joint embedding predictive architectures. arXiv preprint arXiv:2509.14252. Cited by: §2.
+  • Johnson-Laird (1983) P. N. Johnson-Laird Mental models: towards a cognitive science of
+    language, inference, and consciousness. Harvard University Press. Cited by: §2.
+  • Jordan et al. (2024) K. Jordan, Y. Jin, V. Boza, Y. Jiacheng, F. Cesista, L. Newhouse, and J.
+    Bernstein Muon: an optimizer for hidden layers in neural networks. External Links: Link Cited
+    by: Appendix E.
+  • Kaelbling et al. (1998) L. P. Kaelbling, M. L. Littman, and A. R. Cassandra Planning and acting
+    in partially observable stochastic domains. Artificial intelligence 101 (1-2), pp. 99–134. 
+    Cited by: §2.
+  • Karpathy (2022) A. Karpathy NanoGPT. GitHub. Note: https://github.com/karpathy/nanoGPT Cited
+    by: §4.
+  • Kazemnejad et al. (2023) A. Kazemnejad, I. Padhi, K. Natesan, P. Das, and S. Reddy The impact
+    of positional encoding on length generalization in transformers. In Thirty-seventh Conference
+    on Neural Information Processing Systems, External Links: Link Cited by: §F.5.
+  • Langford and Schapire (2005) J. Langford and R. Schapire Tutorial on practical prediction
+    theory for classification.. Journal of machine learning research 6 (3). Cited by: §1.
+  • Leviathan et al. (2022) Y. Leviathan, M. Kalman, and Y. Matias Fast inference from transformers
+    via speculative decoding, 2023. URL https://arxiv. org/abs/2211.17192 1 (2). Cited by: §F.6, §2
+    , §4.4.
+  • Li et al. (2023) K. Li, A. K. Hopkins, D. Bau, F. Viégas, H. Pfister, and M. Wattenberg 
+    Emergent world representations: exploring a sequence model trained on a synthetic task. ICLR. 
+    Cited by: §2.
+  • Li et al. (2006) L. Li, T. J. Walsh, and M. L. Littman Towards a unified theory of state
+    abstraction for mdps.. AI&M 1 (2), pp. 3. Cited by: §2.
+  • Li et al. (2024a) Y. Li, F. Wei, C. Zhang, and H. Zhang Eagle-2: faster inference of language
+    models with dynamic draft trees. In Proceedings of the 2024 conference on empirical methods in
+    natural language processing, pp. 7421–7432. Cited by: §2.
+  • Li et al. (2024b) Y. Li, F. Wei, C. Zhang, and H. Zhang Eagle: speculative sampling requires
+    rethinking feature uncertainty. arXiv preprint arXiv:2401.15077. Cited by: §2.
+  • Lieber et al. (2024) O. Lieber, B. Lenz, H. Bata, G. Cohen, J. Osin, I. Dalmedigos, E. Safahi,
+    S. Meirom, Y. Belinkov, S. Shalev-Shwartz, O. Abend, R. Alon, T. Asida, A. Bergman, R. Glozman,
+    M. Gokhman, A. Manevich, N. Ratner, N. Rozen, E. Shwartz, M. Zusman, and Y. Shoham Jamba: a
+    hybrid transformer-mamba language model. External Links: 2403.19887, Link Cited by: §5.2.
+  • Liu et al. (2024) A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang,
+    C. Ruan, et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437. Cited by: §2,
+    §5.1, §6.
+  • Liu et al. (2023) B. Liu, J. T. Ash, S. Goel, A. Krishnamurthy, and C. Zhang Transformers learn
+    shortcuts to automata. In The Eleventh International Conference on Learning Representations, 
+    External Links: Link Cited by: §1, §5.2.
+  • Liu et al. (2025) J. Liu, J. Su, X. Yao, Z. Jiang, G. Lai, Y. Du, Y. Qin, W. Xu, E. Lu, J. Yan,
+    et al. Muon is scalable for llm training. arXiv preprint arXiv:2502.16982. Cited by: Appendix E
+    .
+  • Liu et al. (2022) S. Liu, A. Mallol-Ragolta, E. Parada-Cabeleiro, K. Qian, X. Jing, A. Kathan,
+    B. Hu, and B. W. Schuller Audio self-supervised learning: a survey. External Links: 2203.01205,
+    Link Cited by: §2.
+  • Loshchilov and Hutter (2019) I. Loshchilov and F. Hutter Decoupled weight decay regularization.
+    External Links: 1711.05101, Link Cited by: Appendix E, Table 5.
+  • Makkuva et al. (2025) A. V. Makkuva, M. Bondaschi, A. Girish, A. Nagle, M. Jaggi, H. Kim, and
+    M. Gastpar Attention with markov: a curious case of single-layer transformers. In The
+    Thirteenth International Conference on Learning Representations, External Links: Link Cited by:
+    §5.1.
+  • Merity et al. (2016) S. Merity, C. Xiong, J. Bradbury, and R. Socher Pointer sentinel mixture
+    models. arXiv preprint arXiv:1609.07843. Cited by: §F.6.
+  • Merrill et al. (2025) W. Merrill, J. Petty, and A. Sabharwal The illusion of state in
+    state-space models. External Links: 2404.08819, Link Cited by: §F.1, §F.5, §5.2.
+  • Merrill et al. (2022) W. Merrill, A. Sabharwal, and N. A. Smith Saturated transformers are
+    constant-depth threshold circuits. Transactions of the Association for Computational
+    Linguistics 10, pp. 843–856. External Links: Link, Document Cited by: §5.2.
+  • Merrill and Sabharwal (2023) W. Merrill and A. Sabharwal The parallelism tradeoff: limitations
+    of log-precision transformers. External Links: 2207.00729, Link Cited by: §5.2, §5.2, §5.2.
+  • Miall and Wolpert (1996) R. C. Miall and D. M. Wolpert Forward models for physiological motor
+    control. Neural networks 9 (8), pp. 1265–1279. Cited by: §2.
+  • Nagarajan et al. (2025) V. Nagarajan, C. H. Wu, C. Ding, and A. Raghunathan Roll the dice &
+    look before you leap: going beyond the creative limits of next-token prediction. arXiv preprint
+    arXiv:2504.15266. Cited by: §2.
+  • Ni et al. (2024) T. Ni, B. Eysenbach, E. SeyedSalehi, M. Ma, C. Gehring, A. Mahajan, and P.
+    Bacon Bridging state and history representations: understanding self-predictive RL. In The
+    Twelfth International Conference on Learning Representations, External Links: Link Cited by: §1
+    , §3.2, §3.2.
+  • Paperno et al. (2016) D. Paperno, G. Kruszewski, A. Lazaridou, N. Pham, R. Bernardi, S.
+    Pezzelle, M. Baroni, G. Boleda, and R. Fernández The lambada dataset: word prediction requiring
+    a broad discourse context. In Proceedings of the 54th annual meeting of the association for
+    computational linguistics (volume 1: Long papers), pp. 1525–1534. Cited by: §F.6.
+  • Park et al. (2024) J. Park, J. Park, Z. Xiong, N. Lee, J. Cho, S. Oymak, K. Lee, and D.
+    Papailiopoulos Can mamba learn how to learn? a comparative study on in-context learning tasks. 
+    External Links: 2402.04248, Link Cited by: §5.2.
+  • Paster et al. (2023) K. Paster, M. D. Santos, Z. Azerbayev, and J. Ba OpenWebMath: an open
+    dataset of high-quality mathematical web text. External Links: 2310.06786 Cited by: §F.6.
+  • Patel and Pavlick (2022) R. Patel and E. Pavlick Mapping language models to grounded conceptual
+    spaces. In International conference on learning representations, Cited by: §2.
+  • Penedo et al. (2024) G. Penedo, H. Kydlíček, A. Lozhkov, M. Mitchell, C. Raffel, L. Von Werra,
+    T. Wolf, et al. The fineweb datasets: decanting the web for the finest text data at scale. 
+    Advances in Neural Information Processing Systems 37, pp. 30811–30849. Cited by: §4.4.
+  • Power et al. (2022) A. Power, Y. Burda, H. Edwards, I. Babuschkin, and V. Misra Grokking:
+    generalization beyond overfitting on small algorithmic datasets. External Links: 2201.02177,
+    Link Cited by: §F.1.
+  • Ren et al. (2025) L. Ren, Y. Liu, Y. Lu, Y. Shen, C. Liang, and W. Chen Samba: simple hybrid
+    state space models for efficient unlimited context language modeling. External Links: 
+    2406.07522, Link Cited by: §5.2.
+  • Roy and Vetterli (2007) O. Roy and M. Vetterli The effective rank: a measure of effective
+    dimensionality. In 2007 15th European signal processing conference, pp. 606–610. Cited by: §F.1
+    , item 4.
+  • Sakaguchi et al. (2021) K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi Winogrande: an
+    adversarial winograd schema challenge at scale. Communications of the ACM 64 (9), pp. 99–106. 
+    Cited by: §F.6.
+  • Sap et al. (2019) M. Sap, H. Rashkin, D. Chen, R. Le Bras, and Y. Choi Social iqa: commonsense
+    reasoning about social interactions. In Proceedings of the 2019 conference on empirical methods
+    in natural language processing and the 9th international joint conference on natural language
+    processing (EMNLP-IJCNLP), pp. 4463–4473. Cited by: §F.6.
+  • Schmidhuber (1990) J. Schmidhuber Making the world differentiable: on using self supervised
+    fully recurrent neural networks for dynamic reinforcement learning and planning in
+    non-stationary environments. Forschungsberichte Künstliche Intelligenz, Inst. für Informatik. 
+    Cited by: §2.
+  • Schrittwieser et al. (2020) J. Schrittwieser, I. Antonoglou, T. Hubert, K. Simonyan, L. Sifre,
+    S. Schmitt, A. Guez, E. Lockhart, D. Hassabis, T. Graepel, et al. Mastering atari, go, chess
+    and shogi by planning with a learned model. Nature 588 (7839), pp. 604–609. Cited by: §2.
+  • Schwarzer et al. (2021) M. Schwarzer, A. Anand, R. Goel, R. D. Hjelm, A. Courville, and P.
+    Bachman Data-efficient reinforcement learning with self-predictive representations. External
+    Links: 2007.05929, Link Cited by: §2.
+  • Striebel (1965) C. Striebel Sufficient statistics in the optimum control of stochastic systems.
+    Journal of Mathematical Analysis and Applications 12 (3), pp. 576–592. Cited by: §2, §3.
+  • Su et al. (2023) J. Su, Y. Lu, S. Pan, A. Murtadha, B. Wen, and Y. Liu RoFormer: enhanced
+    transformer with rotary position embedding. External Links: 2104.09864, Link Cited by: §F.5.
+  • Subramanian et al. (2022) J. Subramanian, A. Sinha, R. Seraj, and A. Mahajan Approximate
+    information state for approximate planning and reinforcement learning in partially observed
+    systems. Journal of Machine Learning Research 23 (12), pp. 1–83. Cited by: §3.2.
+  • Sutton (1991) R. S. Sutton Dyna, an integrated architecture for learning, planning, and
+    reacting. ACM Sigart Bulletin 2 (4), pp. 160–163. Cited by: §2.
+  • Tang et al. (2023) Y. Tang, Z. D. Guo, P. H. Richemond, B. Á. Pires, Y. Chandak, R. Munos, M.
+    Rowland, M. G. Azar, C. L. Lan, C. Lyle, A. György, S. Thakoor, W. Dabney, B. Piot, D.
+    Calandriello, and M. Valko Understanding self-predictive learning for reinforcement learning. 
+    In Proceedings of the 40th International Conference on Machine Learning, ICML’23. Cited by: §1.
+  • Vafa et al. (2025) K. Vafa, P. G. Chang, A. Rambachan, and S. Mullainathan What has a
+    foundation model found? using inductive bias to probe for world models. In International
+    Conference on Machine Learning, pp. 60727–60747. Cited by: §2.
+  • Vafa et al. (2024) K. Vafa, J. Y. Chen, A. Rambachan, J. Kleinberg, and S. Mullainathan 
+    Evaluating the world model implicit in a generative model. Advances in Neural Information
+    Processing Systems 37, pp. 26941–26975. Cited by: §F.1, §F.1, §F.1, §2, §4.1, §4.1, §4.1, §4.1.
+  • Vaswani et al. (2017) A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+    Ł. Kaiser, and I. Polosukhin Attention is all you need. In Advances in Neural Information
+    Processing Systems, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan,
+    and R. Garnett (Eds.), Vol. 30, pp. . External Links: Link Cited by: §1.
+  • Welbl et al. (2017) J. Welbl, N. F. Liu, and M. Gardner Crowdsourcing multiple choice science
+    questions. In Proceedings of the 3rd Workshop on Noisy User-generated Text, pp. 94–106. Cited
+    by: §F.6.
+  • Wu et al. (2024) Z. Wu, L. Qiu, A. Ross, E. Akyürek, B. Chen, B. Wang, N. Kim, J. Andreas, and
+    Y. Kim Reasoning or reciting? exploring the capabilities and limitations of language models
+    through counterfactual tasks. In Proceedings of the 2024 Conference of the North American
+    Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume
+    1: Long Papers), K. Duh, H. Gomez, and S. Bethard (Eds.), Mexico City, Mexico, pp. 1819–1862. 
+    External Links: Link, Document Cited by: §1.
+  • Yao et al. (2023) S. Yao, D. Yu, J. Zhao, I. Shafran, T. Griffiths, Y. Cao, and K. Narasimhan 
+    Tree of thoughts: deliberate problem solving with large language models. In Advances in Neural
+    Information Processing Systems, A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S.
+    Levine (Eds.), Vol. 36, pp. 11809–11822. External Links: Link Cited by: §4.2.
+  • Ye et al. (2025) J. Ye, J. Gao, S. Gong, L. Zheng, X. Jiang, Z. Li, and L. Kong Beyond
+    autoregression: discrete diffusion for complex reasoning and planning. In The Thirteenth
+    International Conference on Learning Representations, External Links: Link Cited by: §F.2, §4.2
+    .
+  • Ye et al. (2021) W. Ye, S. Liu, T. Kurutach, P. Abbeel, and Y. Gao Mastering atari games with
+    limited data. Advances in neural information processing systems 34, pp. 25476–25488. Cited by:
+    §2.
+  • Zellers et al. (2019) R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi Hellaswag: can
+    a machine really finish your sentence?. In Proceedings of the 57th annual meeting of the
+    association for computational linguistics, pp. 4791–4800. Cited by: §F.6.
+  • Zhang et al. (2020) A. Zhang, R. McAllister, R. Calandra, Y. Gal, and S. Levine Learning
+    invariant representations for reinforcement learning without reconstruction. arXiv preprint
+    arXiv:2006.10742. Cited by: §2.
+  • Zhang et al. (2026) G. Zhang, R. Dominguez-Olmedo, and M. Hardt Train-before-test harmonizes
+    language model rankings. In The Fourteenth International Conference on Learning Representations
+    , External Links: Link Cited by: §4.4.
+  • Zhang et al. (2024) K. Zhang, Q. Wen, C. Zhang, R. Cai, M. Jin, Y. Liu, J. Zhang, Y. Liang, G.
+    Pang, D. Song, and S. Pan Self-supervised learning for time series analysis: taxonomy,
+    progress, and prospects. External Links: 2306.10125, Link Cited by: §2.
+
+Appendix A Belief States in Sequence Modeling
+
+Recent work has introduced variants of sequence modeling architectures based on the principle of
+learning belief states, i.e., BST and JTP. We review these methods here. Let θ\theta denote the
+parameters of a transformer-based model. Let 𝐡s:t\mathbf{h}_{s:t} denote the hidden states produced
+by the transformer encoder for a token sequence Xs:tX_{s:t}, where s≤ts\leq t. When we use the
+notation 𝐡t\mathbf{h}_{t}, it is shorthand for 𝐡1:t\mathbf{h}_{1:t}. The model’s output head
+produces a categorical distribution over the token vocabulary conditioned on some hidden state
+representation, i.e., pθ(⋅∣𝐡s:t)p_{\theta}(\cdot\mid\mathbf{h}_{s:t}).
+
+Belief State Transformer.
+
+The Belief State Transformer (BST; Hu et al. [2025]) learns compact belief states by jointly
+training a next-token predictor and a previous-token predictor across all possible prefix–suffix
+decompositions of a sequence, including cases where either the prefix or suffix is empty.
+Concretely, given a prefix X1:tX_{1:t} and a suffix Xt+k:TX_{t+k:T} with k≥1k\geq 1, BST aims to
+minimize the cross-entropy loss
+
+ ℒBST(θ)=𝔼t<T[−logpθ(Xt+1∣𝐡1:t,𝐡t+k:T)⏟next-token prediction−logpθ(Xt+k−1∣𝐡1:t,𝐡t+k:T)
+ ⏟previous-token prediction],\displaystyle\mathcal{L}_{\text{BST}}(\theta)=\mathbb{E}_{t<T}\
+ Big[-\log\underbrace{p_{\theta}(X_{t+1}\mid\mathbf{h}_{1:t},\mathbf{h}_{t+k:T})}_{\text        (6)
+ {next-token prediction}}-\log\underbrace{p_{\theta}(X_{t+k-1}\mid\mathbf{h}_{1:t},\mathbf{h}_
+ {t+k:T})}_{\text{previous-token prediction}}\Big],
+
+where 𝐡1:t\mathbf{h}_{1:t} and 𝐡t+k:T\mathbf{h}_{t+k:T} are produced by separate transformers. This
+bidirectional training shapes the hidden representations of the BST into belief states.
+
+Joint Multi-Token Prediction.
+
+Joint multi-token prediction (JTP; Ahn et al. [2025]) aims to learn the joint distribution over the
+next d+1d+1 tokens conditioned on 𝐡t\mathbf{h}_{t}, where dd is the multi-step prediction horizon
+beyond the next token. Specifically, JTP minimizes the loss
+
+ ℒJTP(θ;d,λMTP)=𝔼t<T[−logpθ​(Xt+1∣𝐡t)⏟next-token prediction−λMTP⋅1d∑i=1dlogpθ(Xt+i+1∣Fetch
+ (𝐡t,Xt+1:t+i))⏟joint multi-token prediction],\displaystyle\mathcal{L}_{\text{JTP}}(\theta;d,\
+ lambda_{\text{MTP}})=\mathbb{E}_{t<T}\Big[-\log\underbrace{p_{\theta}(X_{t+1}\mid\mathbf{h}_   (7)
+ {t})}_{\text{next-token prediction}}-\lambda_{\text{MTP}}\cdot\frac{1}{d}\sum_{i=1}^{d}\log\
+ underbrace{p_{\theta}(X_{t+i+1}\mid\mathrm{Fetch}(\mathbf{h}_{t},X_{t+1:t+i}))}_{\text{joint
+ multi-token prediction}}\Big],
+
+where an additional module Fetch(𝐡t,Xt+1:t+i)\mathrm{Fetch}(\mathbf{h}_{t},X_{t+1:t+i}) is used to
+create an embedding combining the teacher-forced tokens Xt+1:t+iX_{t+1:t+i} with 𝐡t\mathbf{h}_{t}
+and λMTP>0\lambda_{\text{MTP}}>0 balances next- and multi-token prediction losses. Although Ahn et
+al. [2025] suggest that their method learn “short-horizon belief states”, they do not formally
+define the conditions under which this occurs. To understand how JTP learns belief states, we start
+by defining a kk-observable system.
+
+Definition A.1 (kk-observability for sequences).
+
+A system is kk-observable if for any two sequences H=X1:tH=X_{1:t} and H′=X1:jH^{\prime}=X_{1:j}
+that induce the same joint distribution over the next-kk tokens, i.e., ℙ(Xt+1:t+k∣H)=ℙ(Xt+1:t+k∣H′)
+\mathbb{P}(X_{t+1:t+k}\mid H)=\mathbb{P}(X_{t+1:t+k}\mid H^{\prime}), it follows that their
+full-horizon conditionals match:
+
+ ℙ(Xt+1:T∣H)=ℙ(Xt+1:T∣H′).\displaystyle\mathbb{P}(X_{t+1:T}\mid H)=\mathbb{P}(X_{t+1:T}\mid H^  (8)
+ {\prime}).
+
+In other words, the distribution of all future observations is determined by the distribution of
+the next kk observations.
+
+Proposition A.2 (JTP forms belief states in kk-observable systems).
+
+Assume the system is kk-observable and let k=d+1k=d+1. Suppose the joint multi-token prediction
+model recovers the true joint next-kk conditional, i.e. pθ(Xt+1∣𝐡t)pθ(Xt+2∣𝐡t,Xt+1)…pθ
+(Xt+k∣𝐡t,Xt+1:t+k−1)=ℙ(Xt+1:t+k∣X1:t)p_{\theta}(X_{t+1}\mid\mathbf{h}_{t})p_{\theta}(X_{t+2}\mid\
+mathbf{h}_{t},X_{t+1})\dots p_{\theta}(X_{t+k}\mid\mathbf{h}_{t},X_{t+1:t+k-1})=\mathbb{P}(X_
+{t+1:t+k}\mid X_{1:t}) a.s. for all tt, then 𝐡t\mathbf{h}_{t} is a belief state for X1:tX_{1:t}.
+
+Proof.
+
+By kk-observability (Definition A.1), there exists a measurable map GG taking the joint next-kk
+conditional distribution to the full-horizon conditional:
+
+ ℙ(Xt+1:T∣X1:t)=G(ℙ(Xt+1:t+k∣X1:t)).\displaystyle\mathbb{P}(X_{t+1:T}\mid X_{1:t})=G\Big(\mathbb
+ {P}(X_{t+1:t+k}\mid X_{1:t})\Big).
+
+By the premise that JTP recovers the true next-kk joint, conditioning on 𝐡T\mathbf{h}_{T} is
+equivalent to conditioning on X1:tX_{1:t} for all bounded measurable functionals of the future.
+Hence 𝐡t\mathbf{h}_{t} is a belief state for all t<Tt<T. ∎
+
+Intuitively, if all possible futures can be distinguished by the next kk tokens, then a JTP model
+that accurately predicts the joint next-kk distribution would encode all information necessary to
+distinguish future trajectories. Note that both next-token prediction and multi-token prediction do
+not guarantee belief state representations (see Hu et al. [2025]).
+
+Appendix B Formal Proof of Theorem 3.2
+
+The proof follows the intuition illustrated below. Optimizing for next-token and transition
+consistency (Equations 1 and 2) ensures the existence of measurable maps pθp_{\theta} and pψp_{\
+psi} that allow recursive decoding of future tokens:
+
+ 𝐡t\          →decode tokenpθXt+1→update statepψ𝐡t+1→decode tokenpθXt+2→update statepψ𝐡t+2⋯→pθXT.\
+ displaystyle displaystyle\xrightarrow[\text{decode token}]{p_{\theta}}X_{t+1}\xrightarrow[\text
+ \mathbf{h}_  {update state}]{p_{\psi}}\mathbf{h}_{t+1}\xrightarrow[\text{decode token}]{p_{\
+ {t}          theta}}X_{t+2}\xrightarrow[\text{update state}]{p_{\psi}}\mathbf{h}_{t+2}\;\cdots\;\
+              xrightarrow{p_{\theta}}X_{T}.
+
+Proof.
+
+A formal proof proceeds by backward induction on tt. For the base case t=T−1t=T-1, the claim
+follows directly from Equation 1, since 𝐡T−1\mathbf{h}_{T-1} suffices to predict XTX_{T}.
+
+Now assume 𝐡k+1\mathbf{h}_{k+1} is a belief state for X1:k+1X_{1:k+1}. By Definition 3.1, this
+implies that Xk+2:TX_{k+2:T} is conditionally independent of X1:k+1X_{1:k+1} given 𝐡k+1\mathbf{h}_
+{k+1}. We will show that 𝐡k\mathbf{h}_{k} is also a belief state for X1:kX_{1:k}. From 𝐡k\mathbf{h}
+_{k}, one can generate
+
+ Xk+1\displaystyle X_{k+1}     ∼pθ(⋅∣𝐡k),\displaystyle\sim p_{\theta}(\cdot\mid\mathbf{h}_{k}),
+ 𝐡k+1\displaystyle\mathbf{h}_  ∼pψ(⋅∣𝐡k,Xk+1).\displaystyle\sim p_{\psi}(\cdot\mid\mathbf{h}_
+ {k+1}                         {k},X_{k+1}).
+
+By next-token and transition consistency (Equations 1 and 2), we have
+
+ ℙ(Xk+1:T∣𝐡k)\         =ℙ(Xk+2:T∣Xk+1,𝐡k)ℙ⁡(Xk+1∣𝐡k)⏟Equation 1\displaystyle=\mathbb{P}(X_{k+2:T}\
+ displaystyle\mathbb   mid X_{k+1},\mathbf{h}_{k})\,\underbrace{\mathbb{P}(X_{k+1}\mid\mathbf{h}_
+ {P}(X_{k+1:T}\mid\    {k})}_{\text{\lx@cref{creftype~refnum}{eq:emission_correctness}}}
+ mathbf{h}_{k})
+                       =ℙ(Xk+2:T∣Xk+1,𝐡k)ℙ(Xk+1∣X1:k)\displaystyle=\mathbb{P}(X_{k+2:T}\mid X_
+                       {k+1},\mathbf{h}_{k})\,\mathbb{P}(X_{k+1}\mid X_{1:k})
+                       =[∫ℙ(Xk+2:T,𝐡k+1∣Xk+1,𝐡k)d𝐡k+1]ℙ(Xk+1∣X1:k)\displaystyle=\biggl[\int\mathbb
+                       {P}(X_{k+2:T},~\mathbf{h}_{k+1}\mid X_{k+1},\mathbf{h}_{k})\,d\mathbf{h}_
+                       {k+1}\biggr]\,\mathbb{P}(X_{k+1}\mid X_{1:k})
+                       =[∫ℙ(Xk+2:T∣𝐡k+1,Xk+1,𝐡k)⏟ℙ⁡(𝐡k+1∣Xk+1,𝐡k)⏟Equation 2d𝐡k+1]ℙ(Xk+1∣X1:k)\
+                       displaystyle=\biggl[\int\underbrace{\mathbb{P}(X_{k+2:T}\mid\mathbf{h}_
+                       {k+1},X_{k+1},\mathbf{h}_{k})}\underbrace{\mathbb{P}(\mathbf{h}_{k+1}\mid
+                       X_{k+1},\mathbf{h}_{k})}_{\text{\lx@cref{creftype~refnum}
+                       {eq:transition_correctness}}}\,d\mathbf{h}_{k+1}\biggr]\,\mathbb{P}(X_{k+1}
+                       \mid X_{1:k})
+                       =[∫ℙ(Xk+2:T∣𝐡k+1)⏟Induction hypothesisℙ(𝐡k+1∣X1:k+1)d𝐡k+1]ℙ(Xk+1∣X1:k)\
+                       displaystyle=\biggl[\int\underbrace{\mathbb{P}(X_{k+2:T}\mid\mathbf{h}_
+                       {k+1})}_{\text{Induction hypothesis}}\mathbb{P}(\mathbf{h}_{k+1}\mid X_
+                       {1:k+1})\,d\mathbf{h}_{k+1}\biggr]\,\mathbb{P}(X_{k+1}\mid X_{1:k})
+                       =ℙ(Xk+2:T∣X1:k+1)ℙ(Xk+1∣X1:k)=ℙ(Xk+1:T∣X1:k).\displaystyle=\mathbb{P}(X_
+                       {k+2:T}\mid X_{1:k+1})\,\mathbb{P}(X_{k+1}\mid X_{1:k})=\mathbb{P}(X_
+                       {k+1:T}\mid X_{1:k}).
+
+This proves that 𝐡k\mathbf{h}_{k} is also a belief state. ∎
+
+Appendix C More Details on NextLat Implementation
+
+Refer to caption
+Figure 11: Illustration of the latent transition model pψp_{\psi}.
+
+We parameterize the latent transition model pψp_{\psi} with a three-layer MLP using GELU [Hendrycks
+and Gimpel, 2023] activations. The latent transition model takes as input the layer-normalized [Ba
+et al., 2016] concatenation of the current hidden state 𝐡t\mathbf{h}_{t} and next-token embedding
+Xt+1X_{t+1}, and outputs a delta update applied via residual connection:
+
+ 𝐡^t+1=pψ​(𝐡t,Xt+1)=fψ​(𝐡t,Xt+1)+𝐡t\displaystyle\hat{\mathbf{h}}_{t+1}=p_{\psi}(\mathbf{h}_     (9)
+ {t},X_{t+1})=f_{\psi}(\mathbf{h}_{t},X_{t+1})+\mathbf{h}_{t}
+
+where fψ​(⋅)f_{\psi}(\cdot) predicts the modification to 𝐡t\mathbf{h}_{t} (see Figure 11). This
+paper aims to demonstrate that NextLat yields significant performance gains even with a simple MLP
+latent transition. We foresee even better performances with more sophiscated latent transition
+model architectures, but we leave that exploration to future work.
+
+Following standard training, we mask token-level losses (i.e., ℒnext-token\mathcal{L}_{\text
+{next-token}} and ℒKL\mathcal{L}_{\mathrm{KL}}) corresponding to context or prompt tokens. However,
+we do not apply masking for ℒnext-h\mathcal{L}_{\text{next-h}} on context tokens, ensuring that
+belief state representations develop even during context processing. When using sequence packing
+(e.g., for Manhattan, TinyStories, and FineWeb-Edu), we mask ℒKL\mathcal{L}_{\mathrm{KL}} and
+ℒnext-h\mathcal{L}_{\text{next-h}} terms that cross document boundaries.
+
+
+Algorithm 1 Pseudocode for NextLat’s loss function in PyTorch syntax. The loss functions 
+cross_entropy_loss(), smooth_l1_loss(), and KL_loss() are implemented externally.
+⬇
+1 import torch.nn as nn
+2 from copy import deepcopy
+3
+4 def loss(batch, targets):
+5 # batch:(B,T), targets: (B,T)
+6 # embedding dimension = D, vocabulary size = V
+7 batch_size, seq_len = batch.shape
+8
+9 # Encode sequences into latent states
+10 hidden_states = Transformer(batch) # (B,T,D)
+11
+12 # Compute next-token loss
+13 logits_post = Output_Head(hidden_states) # (B,T,V)
+14 loss_next = cross_entropy_loss(logits_post, targets)
+15
+16 next_tokens = batch
+17 next_states = hidden_states
+18 current_states = hidden_states
+19 loss_next_h = 0
+20 loss_kl = 0
+21
+22 # Recursive multi-step predictions, default multi_step_horizon=1;
+23 # only 1-step prediction
+24 for _ in range(multi_step_horizon):
+25 # Shift hidden states back by 1
+26 current_states = current_states[:, :-1]
+27 # Shift next tokens and hidden state targets forward by 1
+28 next_tokens = next_tokens[:, 1:]
+29 next_states = next_states[:, 1:]
+30 logits_post = logits_post[:, 1:]
+31 # Predict next hidden state using latent dynamics model
+32 # i.e., (h_t, x_{t+1}) -> \hat{h}_{t+1}
+33 pred_next_states = Latent_Dynamics(current_states, next_tokens) #(B,T,D)
+34 # Compute next-hidden loss using detached next states as targets
+35 # i.e., ||h_{t+1} - \hat{h}_{t+1}||^2
+36 loss_next_h += smooth_l1_loss(pred_next_states, next_states.detach())
+37
+38 # Compute KL loss using detached output head
+39 # i.e., KL[p(h_{t+1}) || p(\hat{h}_{t+1})]
+40 logits_prior = deepcopy(Output_Head)(pred_next_states) # (B,T,V)
+41 loss_kl += KL_loss(logits_post.detach(), logits_prior) # detach posterior
+42
+43 current_states = pred_next_states
+44
+45 loss_next_h = loss_next_h / multi_step_horizon
+46 loss_kl = loss_kl / multi_step_horizon
+47 # overall NextLat loss
+48 return loss_next + next_h_lambda * loss_next_h + kl_lambda * loss_kl
+
+Appendix D Ablation Studies
+
+In this section, we ablate the key design choices of NextLat. Specifically, we study the effects of
+the KL (ℒKL\mathcal{L}_{\mathrm{KL}}) and Smooth L1 (ℒnext-h\mathcal{L}_{\text{next-h}}) losses, as
+well as the use of stop-gradients on the target (sg​[𝐡t+i]\textbf{sg}[\mathbf{h}_{t+i}]) in the
+Smooth L1 loss (Equation 3) and on the output head (pθsg​(⋅)p_{\theta}^{\textbf{sg}}(\cdot)) in the
+KL loss (Equation 4). We focus our investigations primarily on TinyStories, analyzing how these
+design choices affect the predictive quality of learned hidden states under linear probing and
+validation loss behavior.
+
+Refer to caption
+((a))
+
+Refer to caption
+((b))
+
+
+Figure 12: KL and Smooth L1 Loss Ablations: (a) TinyStories probe performance under ablations of
+the KL and Smooth L1 losses. (b) TinyStories validation Smooth L1 and KL losses.
+
+We first isolate the effects of the KL and Smooth L1 losses in NextLat. Note that ℒnext-h\mathcal
+{L}_{\text{next-h}} is required for belief-state convergence, while ℒKL\mathcal{L}_{\mathrm{KL}}
+serves as a complementary supervision signal. In Figure 12(a), we observe that at d=1d=1, using
+Smooth L1 loss alone achieves the strongest probe performance 20 tokens ahead relative to GPT. At d
+=8d=8, however, the combined KL + Smooth L1 objective (i.e., the full NextLat design) performs
+best, suggesting that the Smooth L1 loss is critical for learning long-range predictive
+representations, while the KL loss becomes increasingly beneficial at larger horizons. Furthermore,
+Figure 12(b) shows that the combined KL + Smooth L1 objective achieves lower validation KL and
+Smooth L1 losses than optimizing either objective alone. This confirms that the two losses are
+complementary and provide mutually beneficial supervision.
+
+Refer to caption
+((a))
+
+Refer to caption
+((b))
+
+
+Figure 13: KL and CE Loss Ablations: (a) TinyStories probe performance when replacing the KL loss
+in NextLat with a CE loss. (b) TinyStories validation Smooth L1 and KL losses.
+
+Next, we compare the KL loss against cross-entropy (CE) as the complementary token-space
+supervision signal. Note that the CE loss corresponds exactly to the multi-token prediction
+objective used in JTP and MTP. Unlike the KL loss, which performs self-distillation by matching the
+predicted token distribution to the model’s own softmax distribution under the target hidden state
+(see Equation 4), the CE loss directly supervises the predicted latent state using the ground-truth
+next token. As shown in Figure 13(a), the original NextLat objective (KL + Smooth L1) achieves
+substantially better probe performance than CE + Smooth L1 at d=1d=1, though the gap becomes
+marginal at d=8d=8. Figure 13(b) shows that across both d=1d=1 and d=8d=8, KL + Smooth L1 achieves
+lower validation KL loss, but slightly worse Smooth L1 loss, than CE + Smooth L1. Overall, these
+results suggest that at shallow multi-step prediction horizons, the dense distribution-level
+supervision provided by KL matching induces more predictive representations than CE. However, this
+advantage appears to diminish at larger horizons. It is also important to note that the KL loss
+incurs higher memory overhead than CE loss. This is because KL requires materializing full logits
+and softmax distributions over the vocabulary, whereas modern fused CE implementations only need to
+materialize probabilities at the target token index. More systematic studies are needed, especially
+at larger model scales, to determine whether KL or CE is preferable as a complementary supervision
+signal. For the scope of this work, we stick to using KL loss in all experiments.
+
+Refer to caption
+((a))
+
+Refer to caption
+((b))
+
+
+Figure 14: Stop-Gradient Ablations: (a) TinyStories probe performance under different stop-gradient
+configurations. (b) TinyStories validation Smooth L1 and KL losses. Note that all models here use
+both KL and Smooth L1 losses and differ only in where stop-gradients are applied in those loss
+components. “Stop-Gradient (Smooth L1)” applies stop-gradient only to the target hidden state in
+the Smooth L1 loss, “Stop-Gradient (KL)” applies stop-gradient only to the output head in the KL
+loss, and “Stop-Gradient (KL + Smooth L1)” applies stop-gradients to both components. All models
+use d=1d=1 here.
+
+Next, we study the use of stop-gradients in Figure 14 with d=1d=1. While Figure 14(b) shows that
+removing the stop-gradient on the Smooth L1 loss improves validation Smooth L1 and KL losses
+slightly (∼0.02\sim 0.02), it does not improve the predictive quality of the learned
+representations. As shown in Figure 14(a), applying stop-gradients to both the target in the Smooth
+L1 loss and the output head (pθsg​(⋅)p_{\theta}^{\textbf{sg}}(\cdot)) in the KL loss yields the
+best probing performance across all token offsets. Stop-gradients also improve efficiency by
+reducing the number of backward passes through the transformer. In particular, the KL loss
+introduces an additional forward and backward pass through the output head, which can be
+computationally expensive in language models due to large vocabulary sizes^8^8 8 Note that
+multi-token prediction models also incur an additional forward+backward pass through the output
+head for each extra token prediction.. Removing this extra backward pass significantly improves
+both speed and memory efficiency. Empirically, on tasks like Countdown and Path-Star graph, we also
+observe that the stop-gradient (especially on the Smooth L1 loss) is essentially for high accuracy.
+
+Overall, these ablations suggest that NextLat’s effectiveness arises from the combination of Smooth
+L1 and KL losses together with carefully placed stop-gradients, all of which contribute to learning
+predictive belief-state representations in transformers.
+
+Appendix E NextLat Pretraining Quirks
+
+Refer to caption
+((a))
+
+Refer to caption
+((b))
+
+Refer to caption
+((c))
+
+
+Figure 15: FineWeb-Edu Pretraining Curves: (a) Validation smooth L1 loss during training. (b)
+Validation KL loss during training. (c) Speculative decoding acceptance rate over a 5-token
+lookahead horizon (excluding the next-token prediction).
+
+In this section, we expose some optimization quirks that we faced during pretraining with NextLat.
+First, Figure 15(a) shows vastly different Smooth L1 loss trajectories when using Muon [Jordan et
+al., 2024] versus AdamW [Loshchilov and Hutter, 2019] optimizer under the same learning rate
+schedule (using the Muon update scaling rule proposed by Liu et al. [2025]). One possible
+explanation is that Muon’s orthogonalized update rule enables more efficient latent representation
+shaping and next-latent prediction optimization. However, Figure 15(b) shows that AdamW achieves
+better KL loss optimization than Muon.
+
+Importantly, both optimizers exhibit an increase in Smooth L1 loss near the end of training
+corresponding to the learning rate cooldown stage, though the effect is substantially more
+pronounced for AdamW. The cause of this behavior remains unclear. We explored several potential
+fixes to no avail, including:
+
+ 1. 1.
+   
+    replacing Smooth L1 with MSE loss,
+
+ 2. 2.
+   
+    removing stop-gradients from ℒnext-h\mathcal{L}_{\text{next-h}},
+
+ 3. 3.
+   
+    tuning loss coefficients λnext-h\lambda_{\text{next-h}} and λKL\lambda_{\mathrm{KL}},
+
+ 4. 4.
+   
+    disabling learning rate decay for the latent transition model, and
+
+ 5. 5.
+   
+    disabling weight decay for the latent transition model.
+
+We leave a deeper investigation of this phenomenon to future work. To our reassurance, the increase
+in smooth L1 loss does not appear to degrade the coherence of the latent transition model. As shown
+in Figure 15(c), the speculative decoding acceptance rate over a lookahead horizon of 5 tokens
+continues to improve throughout training, even during the phase where the smooth L1 loss increases
+under AdamW. This suggests that the rise in smooth L1 loss may reflect changes in the scale or
+geometry of the latent states, rather than degradation in the token-level coherence of the latent
+transition dynamics.
+
+On a side note, we observed gradient norm spikes that led to training instability when training MTP
+with Muon, which unfortunately limited our pretraining analysis to AdamW (despite Muon showing a
+more favorable learning trajectory with NextLat).
+
+Appendix F Extra Experiment Details
+
+In this section, we provide additional experimental setup details and supplementary results for the
+experiments in the main body. All experiments were run on NVIDIA RTX A5000, NVIDIA H100 NVL, and
+NVIDIA B200 GPUs. Table 5 summarizes the training, model, and NextLat hyperparameters across all
+experimental domains.
+
+                       Manhattan   Countdown    Path-Star   TinyStories  𝐀𝟓\mathbf{A_ FineWeb-Edu
+                                                                         {5}}
+                                 Training Parameters                                  
+        Steps          400k (6     100k (204    20k (51     100k (8.5    400k (512    191k (100B
+                       epochs)     epochs)      epochs)     epochs)      epochs)      tokens)
+      Batch Size       256         1024         512         256          1024         512
+    Learning Rate      1e-4        3e-4         5e-4        3e-4         1e-4         4e-4
+Learning Rate Schedule Constant    Constant     Constant    Constant     Constant     WSD
+     Weight Decay      0.01        0.1          0.1         0.1          0.01         0.1
+  Clip Gradient Norm   -           1            100         1            1            1
+      Optimizer        AdamW [Loshchilov and Hutter, 2019] with β1=0.9,β2=0.95\beta_{1}=0.9,\;\
+                       beta_{2}=0.95
+                                  Model Parameters                                    
+        Layers         48          12           12          8            2            22
+        Heads          8           12           6           8            8            16
+   Hidden Dimension    384         768          384         768          512          2048
+                                 NextLat Parameters                                   
+λnext-h\lambda_{\text  1.0         2.0          1.0         1.0          1.0          1.0
+      {next-h}}
+ λKL\lambda_{\mathrm   0.1         1.0          1.0         1.0          0.0          1.0
+        {KL}}
+pψp_{\psi} MLP Hidden  1536        768          384         2048         1024         6528
+      Dimension
+pψp_{\psi} MLP Layers  3           3            3           3            3            3
+
+
+Table 5: Training, Model, and NextLat hyperparameters across all benchmarks.
+
+The hyperparameters reported in Table 5 were chosen through a small-scale search, exploring
+λnext-h∈{1.0,2.0}\lambda_{\text{next-h}}\in\{1.0,2.0\} and λKL∈{0.1,1.0}\lambda_{\mathrm{KL}}\in\
+{0.1,1.0\}, guided by empirical observations and intuition. Encouragingly, we find that NextLat
+performs robustly over a wide range of settings. In particular, λKL\lambda_{\mathrm{KL}} requires
+minimal tuning; λKL=1.0\lambda_{\mathrm{KL}}=1.0 works decently across all tasks. After all, it
+primarily serves as a complementary alignment objective. Likewise, λnext-h=1.0\lambda_{\text
+{next-h}}=1.0 is effective in most cases, though slightly higher values (e.g., λnext-h=2.0\lambda_
+{\text{next-h}}=2.0) was beneficial when the next-latent regression loss is of much smaller scale
+than the token-level losses (i.e., ℒnext-token\mathcal{L}_{\text{next-token}} and ℒKL\mathcal{L}_{\
+mathrm{KL}}).
+
+For MTP and JTP, we sweep multi-token prediction loss weights λMTP∈{0.1,0.2,0.4,0.6,0.8,1.0}\
+lambda_{\text{MTP}}\in\{0.1,0.2,0.4,0.6,0.8,1.0\} to ensure fair baseline comparisons. For
+FineWeb-Edu pretraining, extensive hyperparameter tuning is computationally prohibitive, so we use
+uniform loss weights across all methods (i.e., λnext-h=λKL=λMTP=1.0\lambda_{\text{next-h}}=\lambda_
+{\mathrm{KL}}=\lambda_{\text{MTP}}=1.0) to provide the fairest comparison possible under our
+compute constraints.
+
+F.1 Manhattan Taxi Rides
+
+Here, we provide additional details on our training and evaluation setups for the Manhattan Taxi
+Rides benchmark and clarify key differences from the original study of Vafa et al. [2024].
+
+Training.
+
+Since this task inherently requires state tracking (i.e., tracking position within Manhattan), and
+increasing model depth is known to benefit transformers on such tasks [Merrill et al., 2025], we
+employ 48-layer transformers with 384 hidden dimensions and 8 attention heads (88M parameters).
+This differs from Vafa et al. [2024], which used 12 layers, 768 hidden dimensions, and 12 heads for
+their smaller transformer variant. We found that increasing model depth yielded substantial
+performance gains, whereas increasing hidden dimensionality offered negligible improvement. As
+shown in Table 1, the effective latent rank of our models is substantially smaller than 384,
+suggesting that large hidden dimensions are unnecessary.
+
+Unlike the original study, which trained models for only one epoch, our models are trained for six
+epochs, as we observed that performances generally do not converge within a single epoch. This also
+helps rule out potential “grokking” phenomena [Power et al., 2022], where generalization improves
+only after extended periods of overfitting. To enable longer training without substantially
+increasing runtime, we apply sequence packing, i.e., concatenating multiple sequences into longer
+ones while masking cross-sequence attention. This enables efficient utilization of GPU memory and
+computation. Most models complete six training epochs in under three days on a single NVIDIA H100
+NVL GPU, except MTP, which has substantially more parameters than the others.
+
+Evaluation.
+
+Models are trained on random traversals of length 100 connected pickup and dropoff intersections.
+This task inherently requires not only state tracking but also planning, as models must reason over
+possible future paths to generate valid 100-step trajectories that reach the destination while
+avoiding dead ends, i.e., road segments disconnected from the goal due to the one-way streets.
+Random traversals rarely correspond to true shortest paths and do not provide an inductive bias
+toward learning the shortest path algorithm, which relies on dynamic programming. Consequently,
+unlike Vafa et al. [2024], who evaluated pairs with shortest paths of up to 100 steps, we limit
+evaluation pairs to paths of up to 50 steps. This adjustment ensures that evaluation pairs do not
+demand long-horizon planning beyond the training distribution, which might otherwise force the
+model to produce forced predictions to compensate for planning failure. This also ensures that
+inconsistencies in a model’s internal map are more reflective of world-model incoherence rather
+than artifacts of long-horizon planning limitations. These evaluation pairs are used to generate
+Figure 3 and to compute the sequence compression and detour robustness metrics, following the
+procedure of Vafa et al. [2024].
+
+For the effective latent rank, we pass a batch of 256 sequences (each of length 256) through the
+model to obtain the hidden state matrix. Singular values smaller than 1​e−121\mathrm{e}{-12} are
+discarded, and the effective rank is then computed following Roy and Vetterli [2007]. For GPT and
+NextLat, we use the final-layer hidden states. For JTP, we extract the hidden states immediately
+before the self-attention module in the Fetch head (see Equations 4–5 in Ahn et al. [2025]). For
+MTP, we use the output of the next-token prediction head to compute the effective rank.
+
+F.2 Countdown
+
+We largely follow Gandhi et al. [2024] for the Countdown training and evaluation setup. Each
+problem consists of four input numbers and a solution sequence comprising three equations,
+consistent with prior work [Gandhi et al., 2024, Ye et al., 2025]. A training example is formatted
+as
+
+ 14,83,88,91⏟inputs,23⏞target| 83−14=69, 91−88=3, 69/3=23⏟solution\underbrace{14,83,88,91}_{\text
+ {inputs}},\overbrace{23}^{\text{target}}\>|\underbrace{\>83-14=69,\>91-88=3,\>69/3=23}_{\text
+ {solution}}
+
+where the first four numbers are the inputs, the fifth is the target number, and the pipe symbol “|
+” separates the input prompt from the solution. During training, loss values corresponding to input
+prompt are masked out.
+
+Previous studies involving the Countdown benchmark used pretrained GPT-2 byte-pair encoding
+tokenizers, which do not necessarily tokenize multi-digit numbers as single units. In contrast, we
+construct a custom tokenizer that assigns each integer from 1 to 10,000 to a unique token, ensuring
+that every number in the sequence is represented atomically. The arithmetic operators and
+delimiters, i.e., {|,+,−,×,÷}\{\;|\;,\;+\;,\;-\;,\;\times\;,\;\div\;\}, are each assigned their own
+token indices. Due to the large branching factor of the Countdown problem, we insert eight pipe
+symbols (“|”) between the input and the solution as pause tokens [Goyal et al., 2023], allowing the
+model additional computation steps to plan before generating its answer.
+
+F.3 Path-Star
+
+Our Path-Star data preparation, training, and evaluation follow Bachmann and Nagarajan [2024],
+except that we increase the weight decay to 0.1, which we found helpful for stable convergence and
+higher solve rates in the multi-step prediction methods (i.e., MTP, JTP, and NextLat). We evaluate
+each model’s ability to generate the correct arm on 20k held-out test instances. Unlike Hu et al.
+[2025] and Ahn et al. [2025] which generate a fresh set of graphs every batch, we adopt the
+original, more challenging setup of Bachmann and Nagarajan [2024], which uses a fixed sample size
+of 200k and node values sampled from N=100N=100. This difference accounts for the performance gap
+observed in the BST and JTP baselines in Figure 6. The Path-Star experiment is designed to expose
+the myopic behavior of teacher-forced next-token prediction, which can encourage models to exploit
+superficial regularities—an effect referred to as the Clever Hans cheat [Bachmann and Nagarajan,
+2024]. Because the task’s sample space grows exponentially with graph size, identifying the correct
+algorithm that generalizes across all graph instances is highly nontrivial. While not conclusive,
+our results suggest that latent-space prediction and the inductive bias toward compressing history
+into belief states promote better discovery of generalizable solutions in data-constrained
+settings.
+
+F.4 TinyStories
+
+Refer to caption
+Figure 16: Full plot version of Figure 8 that shows probe performance across all 20 tokens offsets.
+
+Our TinyStories setup follows exactly Hu et al. [2025]. After pretraining on TinyStories, we train
+linear (one-layer) probes on the hidden states of the frozen transformer models for an additional
+20k steps on the same dataset. All probe training hyperparameters (e.g., learning rate, batch size)
+match those used during pretraining (see Table 5).
+
+For GPT, JTP, and NextLat, the choice of hidden states follows the setup used for measuring
+effective rank in the Manhattan taxi rides task, as described in Section F.1. For BST, we use the
+final-layer hidden states of the forward transformer encoder. For MTP [Gloeckle et al., 2024], we
+use the output of the shared transformer trunk, i.e., the hidden state before it branches into
+separate transformer heads for multi-token prediction, as this final shared representation contains
+the most predictive information about future tokens.
+
+F.5 𝐀𝟓\mathbf{A_{5}} State Tracking
+
+The group A5A_{5} consists of the even permutations of 5 elements. Intuitively, each token in the
+sequence represents a permutation operation that rearranges the five elements, and after each
+operation the model must output the resulting arrangement (i.e., state). The task is therefore
+fundamentally a state-tracking problem: the model must maintain and update an internal
+representation of the current state as new permutation operations are sequentially composed.
+
+Our training setup follows Merrill et al. [2025]. We trained the models on 1 million unique
+12-token sequences over the group A5A_{5}. We then evaluated their length generalization
+capabilities on approximately 100k 36-token sequences. For NextLat training, we used one-step
+supervision (d=1d=1) and optimized only the regression objective (λnext-h=1\lambda_{\text{next-h}}=
+1), without token-level supervision (λKL=0\lambda_{\mathrm{KL}}=0). This ensures that any observed
+length generalization of the latent dynamics model (RNN) arises purely from faithful next-latent
+prediction rather than auxiliary multi-token prediction signals.
+
+We also experimented with transformers without positional embeddings (NoPE), motivated by prior
+work suggesting improved length generalization [Kazemnejad et al., 2023]. However, we found that
+NoPE degraded performance in this setting, so all experiments use Rotary Position Embeddings (RoPE;
+Su et al. [2023]). Unlike RNNs, whose hidden states evolve sequentially and therefore implicitly
+encode token order, transformers process sequences in parallel and rely heavily on positional
+embeddings to represent token order information during training. Interestingly, despite positional
+embeddings being explicitly included in the transformer hidden states, the latent dynamics model
+trained on one-step latent transitions derived from the transformer still generalizes beyond the
+training sequence length. This suggests that the learned transition dynamics is robust to the
+transformer’s positional encodings.
+
+F.6 FineWeb-Edu Pretraining
+
+Following standard practices, all models are optimized with AdamW using a peak learning rate of
+4​e−44e{-4}, weight decay of 0.10.1, and gradient clipping at 1.01.0. We use a global batch size of
+500M tokens and a sequence length of 1024 tokens. The learning rate follows a Warmup-Stable-Decay
+(WSD) schedule [Hu et al., 2024], consisting of a 1B-token linear warmup followed by a 10B-token
+linear decay phase. All models use the GPT-2 tokenizer with a vocabulary size of 50,257.
+
+We evaluated the zero-shot accuracy of the pretrained models on nine standard language modeling
+benchmarks: Wikitext (Wiki; Merity et al. [2016]), LAMBADA (LAMB.; Paperno et al. [2016]) (standard
+version), PIQA [Bisk et al., 2020], HellaSwag (HellaS.; Zellers et al. [2019]), WinoGrande (Wino.;
+Sakaguchi et al. [2021]), ARC-easy (ARC-e) and ARC-challenge (ARC-c) [Clark et al., 2018], Social
+IQa (SIQA; Sap et al. [2019]), and SciQ [Welbl et al., 2017]. We also evaluate the self-speculative
+decoding performance of JTP, MTP, and NextLat across Wikipedia [Foundation, ], Books
+(BookCorpusOpen; Face [2021]), Code (Stack-Edu; Allal et al. [2025]), and Math (OpenWebMath; Paster
+et al. [2023]) domains. To do so, we sample 1024 prompts of length 512 tokens from each dataset and
+generate 512-token continuations using the speculative sampling algorithm of Leviathan et al.
+[2022]. We then measured the speedup in inference of each model using self-speculative decoding
+compared to naive autoregressive sampling from the transformer, measured on 8×8\timesNVIDIA B200
+GPUs.
+
+F.6.1 Results with MTP/JTP (d=4)
+
+        FW-Edu    Wiki.     LAMB.     LAMB.   PIQA    HellaS. Wino.   ARC-e   ARC-c   SIQA    SciQ    
+ Model  ppl ↓\    ppl ↓\    ppl ↓\    acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  acc ↑\  Avg.
+        downarrow downarrow downarrow uparrow uparrow uparrow uparrow uparrow uparrow uparrow uparrow
+
+  GPT   10.52     17.93     20.26     42.07   73.45   58.79   60.46   68.18   39.16   42.32   86.10   58.82
+JTP (d= 11.08     19.28     21.88     41.35   74.92   57.43   58.64   68.73   39.25   42.99   87.30   58.83
+  1)
+JTP (d= 11.18     19.60     22.11     41.37   73.34   56.84   59.98   68.86   38.57   43.35   86.70   58.63
+  2)
+JTP (d= 11.29     20.45     20.65     41.90   73.45   56.58   57.70   69.73   39.68   42.53   88.50   58.76
+  4)
+MTP (d= 10.90     18.82     20.23     41.26   74.32   58.05   60.54   68.52   38.91   42.84   85.40   58.76
+  1)
+MTP (d= 11.00     18.61     18.34     43.43   72.80   57.92   59.35   68.35   39.08   41.97   86.60   58.69
+  2)
+MTP (d= 11.10     18.97     22.75     40.69   73.72   57.39   58.33   70.20   39.51   42.12   85.90   58.48
+  4)
+NextLat 10.83     18.39     19.77     41.08   73.07   58.35   59.27   69.65   39.68   43.24   86.00   58.79
+ (d=1)
+NextLat 10.88     18.44     17.83     43.86   73.61   57.79   59.20   69.74   40.10   41.91   87.50   59.21
+ (d=2)
+
+
+Table 6: Downstream language modeling evaluation on 1.3B-parameter models trained on 100B
+FineWeb-Edu tokens. Best scores are in bold and second-best are underlined.
+
+Refer to caption
+Figure 17: Inference speedup ratio on the FineWeb-Edu validation set.
+
+In this section, we extend our comparisons to include JTP and MTP trained with larger horizons (d=
+4d=4). Note that the training cost of JTP and MTP increases substantially with larger dd (see Table
+ 4), making JTP (d=4d=4) and MTP (d=4d=4) significantly more expensive to train than NextLat (d=
+1,2d=1,2).
+
+Table 6 shows that increasing the multi-token prediction horizon to d=4d=4 still does not yield
+meaningful improvements on multiple-choice benchmarks; NextLat (d=2d=2) continues to achieve the
+best average accuracy overall. Table 7 shows that even when JTP and MTP are trained to be able to
+draft more tokens (i.e., 4 tokens ahead), they still fail to surpass the variable-length
+speculative decoding performance of NextLat across most domains, with the exception of the Code
+domain. Finally, Figure 17 shows that, on the FineWeb-Edu validation set, increasing the training
+horizon to d=4d=4 yields only modest speedup gains for JTP and MTP. Their speedup curves saturate
+earlier and remain below that of NextLat (d=2d=2), which continues to improve with longer draft
+lengths and achieves the highest overall speedup.
+
+            Wikipedia             Books                 Code                  Math
+   Model    Speedup Accepted      Speedup Accepted      Speedup Accepted      Speedup Accepted
+                    Tokens                Tokens                Tokens                Tokens
+ JTP (d=1)  1.46    0.96          1.47    0.97          1.47    0.98          1.46    0.97
+ JTP (d=2)  1.88    1.84          1.90    1.89          1.88    1.85          1.89    1.86
+ JTP (d=4)  2.58    3.32          2.62    3.43          2.61    3.43          2.42    3.02
+ MTP (d=1)  1.38    0.91          1.39    0.95          1.40    0.97          1.39    0.95
+ MTP (d=2)  1.68    1.72          1.72    1.83          1.75    1.91          1.72    1.84
+ MTP (d=4)  2.10    3.04          2.25    3.44          2.32    3.68          2.25    3.46
+NextLat (d= 2.68    3.52          2.72    3.64          2.29    2.66          2.30    2.72
+    1)
+NextLat (d= 3.21    4.59          3.32    4.86          2.38    2.83          2.87    3.94
+    2)
+
+
+Table 7: Relative speedup and average accepted tokens per drafting steps over diverse domains. Note
+that “Accepted Tokens" excludes the next-token prediction which is always accepted.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

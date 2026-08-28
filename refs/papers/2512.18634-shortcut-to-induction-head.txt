@@ -1,0 +1,2472 @@
+source: https://arxiv.org/html/2512.18634
+arxiv: https://arxiv.org/abs/2512.18634
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Motivation.
+     2. 1.1 Our Contributions
+         1. Trigger-output Copying.
+         2. Main Findings.
+     3. 1.2 Related Works
+ 3. 2 Problem Setting
+     1. Notations.
+     2. 2.1 Data Generating Process
+         1. OOD Generalization.
+     3. 2.2 Gradient-based Training of Single-layer Transformer
+         1. Architecture and Embedding.
+         2. Gradient-based Learning Algorithm.
+ 4. 3 Main Result: Data-driven Transition Between Mechanisms
+     1. 3.1 Positional Shortcut vs. Induction Head
+         1. Interpretation of max-sum ratio.
+         2. Learning under Population Loss.
+         3. Learning under Empirical Loss.
+     2. 3.2 Mechanism of Algorithm Selection
+         1. Length distribution 𝒟ℓ\mathcal{D}_{\ell}.
+         2. Trigger size NtrgN_{\mathrm{trg}}.
+     3. 3.3 Tradeoff between Context Length and OOD Generalization
+ 5. 4 Numerical Experiments
+     1. 4.1 Experiments for Theoretical Setting
+         1. 4.1.1 Experimental Setup
+             1. Dataset.
+             2. Model architecture, embedding, and training.
+         2. 4.1.2 Empirical Observations
+             1. OOD Accuracy.
+             2. Error Visualization.
+     2. 4.2 Experiments for Practical Settings
+         1. Empirical Observations.
+ 6. 5 Conclusion
+ 7. References
+ 8. A Preliminaries
+ 9. B Infinite Sample Analysis
+     1. B.1 Population Gradient of 𝐖V\mathbf{W}_{V}
+     2. B.2 Population Gradient of 𝐖K​Q\mathbf{W}_{KQ}
+         1. B.2.1 Preparations
+         2. B.2.2 Detailed Calculations
+     3. B.3 Max-sum Ratio and Algorithm Selection
+     4. B.4 Proof of Theorem 
+10. C Finite Sample Analysis
+     1. Proof Sketch.
+     2. C.1 Value Matrix
+     3. C.2 Key-Query matrix
+11. D Proof of Proposition 
+12. E Detailed Experimental Setting
+     1. E.1 Detailed Settings for Section 
+         1. Architecture.
+         2. Training.
+
+License: CC BY 4.0
+arXiv:2512.18634v1 [cs.LG] 21 Dec 2025
+
+From Shortcut to Induction Head: How Data Diversity Shapes Algorithm Selection in Transformers
+
+Ryotaro Kawata ^†^†thanks: Equal contribution. Email: kawata-ryotaro725@g.ecc.u-tokyo.ac.jp;    
+Yujin Song^1^1footnotemark: 1 Email: nishikawa-naoki259@g.ecc.u-tokyo.ac.jp;    Alberto Bietti 
+Email: y.song.research@gmail.com;abietti    Naoki Nishikawa Email: dwu@flatironinstitute.org;    
+Taiji Suzuki    Samuel Vaiter Affiliation: The University of Tokyo,    RIKEN AIP,    Flatiron
+Institute,    CNRS Email: taiji@mist.i.u-tokyo.ac.jp;samuel.vaiter@cnrs.fr    Denny Wu 
+Affiliation: Université Côte d’Azur, Laboratoire J.A. Dieudonné,    New York University
+
+Abstract
+
+Transformers can implement both generalizable algorithms (e.g., induction heads) and simple
+positional shortcuts (e.g., memorizing fixed output positions). In this work, we study how the
+choice of pretraining data distribution steers a shallow transformer toward one behavior or the
+other. Focusing on a minimal trigger-output prediction task – copying the token immediately
+following a special trigger upon its second occurrence – we present a rigorous analysis of
+gradient-based training of a single-layer transformer. In both the infinite and finite sample
+regimes, we prove a transition in the learned mechanism: if input sequences exhibit sufficient
+diversity, measured by a low “max-sum” ratio of trigger-to-trigger distances, the trained model
+implements an induction head and generalizes to unseen contexts; by contrast, when this ratio is
+large, the model resorts to a positional shortcut and fails to generalize out-of-distribution
+(OOD). We also reveal a trade-off between the pretraining context length and OOD generalization,
+and derive the optimal pretraining distribution that minimizes computational cost per sample.
+Finally, we validate our theoretical predictions with controlled synthetic experiments,
+demonstrating that broadening context distributions robustly induces induction heads and enables
+OOD generalization. Our results shed light on the algorithmic biases of pretrained transformers and
+offer conceptual guidelines for data-driven control of their learned behaviors.
+
+1 Introduction
+
+
+Figure 1: Two mechanisms for the associative copying task [..., t, o, ..., t] ↦\mapsto o. In the
+pretraining data, the size of irrelevant tokens before the occurrence of the first and second
+trigger ℓ\ell remains fixed per sequence, hence allowing two solutions: (i)(i) positional shortcut
+that outputs the token at position (T+1)/2(T+1)/2 for input length TT; and (i​i)(ii) induction head
+using token embedding 𝒆\bm{e}, which finds the queried token and returns the ensuing token. Whereas
+on OOD sequences with varying ℓ1≠ℓ2\ell_{1}\neq\ell_{2}, only (i​i)(ii) remains a valid solution.
+
+Large language models (LLMs) leverage circuits of attention heads [37] to perform (implicit)
+algorithmic reasoning. Certain attention heads implement discrete algorithms — notably induction
+heads [11, 30], which scan for previously seen token patterns in the context to predict subsequent
+tokens. Such heads enable in-context learning behaviors [6], allowing a transformer to continue a
+sequence such as [A,B,…,A]→B[A,B,\dots,A]\rightarrow B purely by leveraging patterns in the
+context. By contrast, attention can also implement positional mechanisms that select tokens based
+solely on their location in the sequence [38, 1]. These mechanisms can yield contrasting
+generalization performance [8], and we expect the pretraining data distribution to play a central
+role in determining which mechanisms a model learns to rely on: depending on structural properties
+of the corpus, a transformer may either discover generalizable strategies (content-based retrieval)
+or adopt position-based shortcuts.
+
+Motivation.
+
+We theoretically study how pretraining data influences the implemented circuit and
+out-of-distribution (OOD) generalization performance of the transformer. This perspective is
+motivated from the empirical observation that pretrained models often leverage shortcut solutions
+that are brittle beyond the training distribution [25, 13, 21]. For instance, a transformer might
+utilize the aforementioned position-based attention head to memorize that a certain output tends to
+occur at a particular position in the training text, instead of learning the underlying association
+(induction head); such positional shortcut is a double-edge sword in algorithmic tasks:
+transformers can achieve near-perfect accuracy in distribution, but struggle on test sequences of
+unseen lengths or structures. Since it is empirically known that the learned mechanism heavily
+depends on the structure of pretraining data [12, 34, 33, 40], we ask the following question.
+
+How does the data structure decide whether a pretrained transformer implements a generalizable
+mechanism (e.g.,induction head) or a shortcut that fails OOD (e.g., positional memorization)?
+
+1.1 Our Contributions
+
+Trigger-output Copying.
+
+To investigate this question in a controlled setting, we introduce a minimal trigger-output copying
+task inspired by [5]. In this synthetic task, each input sequence contains a special trigger token
+that appears twice. The model must predict the token that immediately follows the first trigger
+when the trigger appears the second time. For example, given
+
+ …​[trigger]​[X]​…​[trigger]​[?]​…,\dots[\mathrm{\texttt{trigger}}][X]\dots[\mathrm{\texttt
+ {trigger}}][?]\dots,
+
+the correct prediction is XX. Depending on the structure of the input sequence, this task admits
+multiple solutions. We focus on two mechanisms — see Figure 1.
+
+  • •
+   
+    Induction head. The model attends back to the location of the previous trigger and copies the
+    token following it; this works for arbitrarily long gaps between trigger occurrences (up to
+    context-length limit).
+
+  • •
+   
+    Positional shortcut. When the position of the first trigger is inferable from the second (e.g.,
+    under periodic structure), the model may copy the token using positional information alone.
+    This shortcut is valid in-distribution but does not reflect the underlying association.
+
+For this task, we define out-of-distribution (OOD) generalization as performance on test sequence
+with altered structure, where the trigger appears at positions not seen during pretraining (e.g.,
+longer or aperiodic sequences). The induction head mechanism is robust to such shifts as it learns
+the correct association, whereas the positional shortcut typically fails OOD. Our goal is to
+identify a data-dependent transition between these two mechanisms that governs OOD generalization:
+intuitively, increasing the diversity of pretraining sequences — by varying the distances between
+trigger occurrences — dilutes positional signals and discourages the shortcut; conversely, as the
+number of trigger tokens in the data grows, the effective signal for induction weakens. We make
+these intuitions precise in our theoretical analysis.
+
+Main Findings.
+
+We provide a quantitative account of how pretraining data diversity shapes the mechanism learned by
+a pretrained transformer in the trigger-output copying task introduced above. Specifically, we
+rigorously analyze the in-distribution and out-of-distribution performance of a shallow
+(single-layer) transformer trained on this synthetic task. By studying an “early-phase”
+simplification of gradient descent in both the infinite-data (population loss) and finite-data
+(empirical loss) regimes, we show that the pretraining distribution directly selects the model’s
+algorithm: when pretraining data are sufficiently “diverse” – as measured by a max-sum ratio of
+trigger distances – the transformer learns an induction head; when diversity is low, the model
+adopts a positional shortcut that fails to generalize OOD. Using this diversity measure that
+governs the phase transition, we discuss various tradeoffs and how to choose a pretraining
+distribution that induces the desired induction mechanism with minimal computational cost. Finally,
+we empirically probe the learned circuits by visualizing attention scores, and present evidence
+that a similar mechanism transition arises under standard gradient-based training beyond our
+theoretical setting.
+
+1.2 Related Works
+
+The induction head mechanism in transformers was first presented in the mechanistic
+interpretability literature [11, 30], and followup theory investigates when such circuits emerge
+under simplified training dynamics and tasks [5, 10, 27, 35, 7]. Empirical studies on algorithmic
+tasks (copying, arithmetic, sorting) demonstrate that transformers often rely on spurious
+“shortcut” solutions that fail to generalize, often due to poor use of positional information [41,
+17, 42, 15]; the OOD brittleness of shortcut solution is also documented in [21]. A complementary
+thread links the structure of pretraining data to in-context behaviors: the function classes a
+transformer implements in context and the sensitivity of performance to data statistics such as
+corpus coverage and frequency [12, 34, 26] or task diversity [33, 23]. Our analysis aligns with
+this view by making explicit how diversity in trigger distances steers the learned mechanism.
+Methodologically, we borrow the “early-phase” simplification of training dynamics and study the
+loss improvement after the first few gradient descent step [3, 9, 31, 5].
+
+2 Problem Setting
+
+Notations.
+
+For a positive integer NN, we denote [N]:={1,2,…,N}[N]:=\{1,2,\dotsc,N\}. For integers N1≤N2N_{1}\
+leq N_{2}, we define [N1:N2]:={N1,N1+1,…,N2}[N_{1}:N_{2}]:=\{N_{1},N_{1}+1,\dotsc,N_{2}\}. The
+Softmax\mathrm{Softmax} function for an NN-dimensional vector 𝒗∈ℝN\bm{v}\in\mathbb{R}^{N} is
+defined as Softmax​(𝒗)i:=evi∑j=1Nevj.\mathrm{Softmax}(\bm{v})_{i}:=\frac{e^{v_{i}}}{\sum_{j=1}^{N}e
+^{v_{j}}}. For a vector 𝒗\bm{v}, we write 𝒗=O2​(f​(N))\bm{v}=O_{2}(f(N)) if ‖𝒗‖2=O⁡(f⁡(N))\|\bm{v}\
+|_{2}=O(f(N)), and 𝒗=O∞​(f​(N))\bm{v}=O_{\infty}(f(N)) if maxi⁡|vi|=O⁡(f⁡(N))\max_{i}|v_{i}|=O(f
+(N)). Similar notation is used for a matrix 𝑨\bm{A}, where ‖𝑨‖2\|\bm{A}\|_{2} and ‖𝑨‖∞\|\bm{A}\|_{\
+infty} denote its ℓ2→ℓ2\ell_{2}\to\ell_{2} spectral and max norms, respectively.
+
+2.1 Data Generating Process
+
+We study the trigger-output setting to investigate how transformers acquire the induction head
+mechanism. Let N∈ℕN\in\mathbb{N} denote the vocabulary size and L∈ℕL\in\mathbb{N} the maximum input
+sequence length. We designate special tokens as trigger tokens. We define our data model as
+follows:
+
+Definition 1 (Data Distribution).
+
+Let ℓ1,ℓ2∈ℕ\ell_{1},\ell_{2}\in\mathbb{N} such that T≔ℓ1+ℓ2+3≤L−1T\coloneqq\ell_{1}+\ell_{2}+3\leq
+L-1. Let Ntrg≤NN_{\mathrm{trg}}\leq N denote the number of trigger tokens. A sequence z1:T+1∈[N]
+T+1z_{1:T+1}\in[N]^{T+1} is sampled as follows:
+
+ 1. 1.
+   
+    Sample a trigger token t∈[Ntrg]t\in[N_{\mathrm{trg}}] and an output token o∈[Ntrg+1:N]o\in[N_{\
+    mathrm{trg}}+1:N] uniformly at random, where Ntrg=o⁡(N1/3)N_{\mathrm{trg}}=o(N^{1/3}).
+
+ 2. 2.
+   
+    Construct the sequence:
+
+     z1:T+1=(z1,…,zℓ1⏟ℓ1​irrelevant tokens,t,o⏟trigger-output pair,zℓ1+3,…,zℓ1+ℓ2+2⏟ℓ2​irrelevant
+     tokens,t,o⏟trigger-output pair)z_{1:T+1}=(\underbrace{z_{1},\dots,z_{\ell_{1}}}_{\ell_{1}~\
+     text{irrelevant tokens}},\ \underbrace{t,o}_{\text{trigger-output pair}},\ \underbrace{z_{\
+     ell_{1}+3},\dots,z_{\ell_{1}+\ell_{2}+2}}_{\ell_{2}~\text{irrelevant tokens}},\ \underbrace
+     {t,o}_{\text{trigger-output pair}})
+
+    where irrelevant token zi(i∈[1:ℓ1]∪[ℓ1+3:ℓ1+ℓ2+2])z_{i}~(i\in[1:\ell_{1}]\cup[\ell_{1}+3:\ell_
+    {1}+\ell_{2}+2]) is drawn i.i.d. from [Ntrg+1:N][N_{\mathrm{trg}}+1:N].
+
+We refer to such a sequence as a trigger-output model with subtext lengths ℓ1\ell_{1} and ℓ2\ell_
+{2}.
+
+In our data model, the task is to identify the output token zT+1=oz_{T+1}=o from the sequence z1:T=
+(z1,…,zℓ1,t,o,zℓ1+3,…,zℓ1+ℓ2+2,t)z_{1:T}=(z_{1},\dots,z_{\ell_{1}},\ t,\ o,\ z_{\ell_{1}+3},\
+dots,z_{\ell_{1}+\ell_{2}+2},\ t). This can be achieved by implementing the induction head
+mechanism [11, 30], which copies the token that follows the first occurrence of the trigger token
+and outputs it upon encountering the second occurrence of the same trigger.
+
+Due to structure of the input sequence, transformer may also rely on positional shortcuts to
+achieve low loss; in particular, when the lengths of irrelevant tokens are identical within each
+sequence, i.e., ℓ1=ℓ2=ℓ\ell_{1}=\ell_{2}=\ell, a transformer can achieve 100% training accuracy
+simply by inferring the correct position to attend to (T+1)/2=ℓ+2(T+1)/2=\ell+2 from the position
+of the second trigger T=2​ℓ+3T=2\ell+3. Such positional solution does not make use of the semantic
+information and generally fails when ℓ1≠ℓ2\ell_{1}\neq\ell_{2}.
+
+To study the phase transition between the two mechanisms, we assume the pretraining data consists
+of a mixture of sequences with different lengths determined by ℓ=ℓ1=ℓ2\ell=\ell_{1}=\ell_{2}.
+
+Definition 2.
+
+Consider a language model p𝛉(⋅|z1z2⋯zT)p_{\bm{\theta}}(\cdot\,|\,z_{1}z_{2}\cdots z_{T}) that is
+pretrained on MM sequences {z1:T(i)+1(i)}i=1M\big\{z^{(i)}_{1:T^{(i)}+1}\big\}_{i=1}^{M} generated
+as follows:
+
+  • •
+   
+    Sample ℓ(i)\ell^{(i)} from a distribution 𝒟ℓ\mathcal{D}_{\ell}.
+
+  • •
+   
+    Generate z(i)1:T(i)+1z^{(i)}_{1:T^{(i)}+1} according to Definition 1 with ℓ1=ℓ2=ℓ(i)\ell_{1}=\
+    ell_{2}=\ell^{(i)}, i.e.,
+
+     z1:T(i)+1(i)=(z1,…,zℓ(i),t,o,zℓ(i)+3,…,z2​ℓ(i)+2,t,o).z^{(i)}_{1:T^{(i)}+1}=(z_{1},\dots,z_{\
+     ell^{(i)}},\ t,\ o,\ z_{\ell^{(i)}+3},\dots,z_{2\ell^{(i)}+2},\ t,\ o).
+
+OOD Generalization.
+
+Note that the pretraining distribution (defined by 𝒟ℓ\mathcal{D}_{\ell}) may not cover all possible
+sequences. We say that p𝜽p_{\bm{\theta}} generalizes out-of-distribution (OOD) if it implements the
+correct copying mechanism across all possible ℓ\ell’s, that is, for any ℓ1,ℓ2\ell_{1},\ell_{2} such
+that ℓ1+ℓ2+3≤L−1\ell_{1}+\ell_{2}+3\leq L-1 (possibly ℓ1≠ℓ2\ell_{1}\neq\ell_{2}), and for any test
+sequence z1:T+1z_{1:T+1} generated from the trigger-output unigram model with subtext lengths ℓ1\
+ell_{1} and ℓ2\ell_{2} (Definition 1), we have
+
+ argmaxk∈[N]p𝜽(k∣z1z2⋯zT)=zT+1.\arg\max_{k\in[N]}p_{\bm{\theta}}(k\mid z_{1}z_{2}\cdots z_{T})=z_
+ {T+1}.
+
+2.2 Gradient-based Training of Single-layer Transformer
+
+Architecture and Embedding.
+
+We consider a single-layer transformer block fTFf_{\mathrm{TF}} defined as
+
+ fTF(𝑿1:t;𝑾K​Q,𝑾V)=𝑾V𝑿1:tSoftmax(𝑿1:t⊤𝑾K​Q𝒙t)∈ℝN,\displaystyle f_{\mathrm{TF}}(\bm{X}_{1:t};
+ \bm{W}_{KQ},\bm{W}_{V})=\bm{W}_{V}\bm{X}_{1:t}\,\mathrm{Softmax}(\bm{X}_{1:t}^{\top}\bm{W}_  (2.1)
+ {KQ}\bm{x}_{t})\in\mathbb{R}^{N},
+
+where 𝑾K​Q∈ℝD×D,𝑾V∈ℝN×D\bm{W}_{KQ}\in\mathbb{R}^{D\times D},\bm{W}_{V}\in\mathbb{R}^{N\times D} and
+𝑿1:t=(𝒙1⋯𝒙t)∈ℝD×t\bm{X}_{1:t}=\begin{pmatrix}\bm{x}_{1}&\cdots&\bm{x}_{t}\end{pmatrix}\in\mathbb{R}
+^{D\times t} denotes the input embeddings of z1:tz_{1:t}, with embedding dimension DD. We define
+the embedding as follows:
+
+Definition 3.
+
+Let D=L+2​ND=L+2N. Let 𝐩t∈ℝL\bm{p}_{t}\in\mathbb{R}^{L} denote the one-hot vector with a 1 at the
+tt-th position (representing the positional embedding), and let 𝐞z∈ℝN\bm{e}_{z}\in\mathbb{R}^{N}
+denote the one-hot vector with a 1 at the zz-th position (representing the token identity).
+
+We then construct the input embedding 𝐱t\bm{x}_{t} as
+
+ 𝒙t=[𝒑t𝒆zt𝒆zt−1]∈ℝL+2​N.\bm{x}_{t}=\begin{bmatrix}\bm{p}_{t}\\ \bm{e}_{z_{t}}\\ \bm{e}_{z_    (2.2)
+ {t-1}}\end{bmatrix}\in\mathbb{R}^{L+2N}.
+
+The prediction probability is given by
+
+ p(𝑾K​Q,𝑾V)(zT+1=k∣z1⋯zT)=[Softmax(fTF(𝑿1:t;𝑾K​Q,𝑾V))]k.p_{(\bm{W}_{KQ},\bm{W}_{V})}(z_{T+1}=k\mid
+ z_{1}\cdots z_{T})=\mathopen{}\mathclose{{\left[\mathrm{Softmax}\mathopen{}\mathclose{{\left(f_{\
+ mathrm{TF}}(\bm{X}_{1:t};\bm{W}_{KQ},\bm{W}_{V})}}\right)}}\right]_{k}.
+
+Remark 1.
+
+We make the following remarks on the design of our architecture and embedding.
+
+  • •
+   
+    The architecture (with the FFN is absorbed into the value matrix 𝑾V\bm{W}_{V}, and tied key and
+    query projections) is commonly used in theoretical analyses and mechanistic studies [20, 5, 27]
+    ; the simplification allows us to focus on the inductive bias by simple attention mechanisms,
+    while retaining sufficient expressiveness to implement algorithmic behaviors.
+
+  • •
+   
+    Two-layer architecture is typically needed to implement the induction head mechanism, where the
+    first layer often learns to detect the trigger and identify of the following token via
+    attention to the previous token [36]. To reflect this inductive step in our simplified
+    single-layer setting, we explicitly encode the identity of the previous token zt−1z_{t-1} in
+    the third component of the embedding 𝒙t\bm{x}_{t}. This choice also echoes recent empirical
+    developments that incorporate information of previous tokens directly into the current state,
+    such as Mamba [16], RWKV [32], and convolution augmentations [19, 2].
+
+Gradient-based Learning Algorithm.
+
+We use gradient descent (Algorithm 1) on the cross-entropy loss to pretrain our shallow transformer
+(2.1),
+
+ ℒ(𝑿1:T(i)(i);𝑾K​Q,𝑾V)=CrossEntropy(𝒆zT(i)+1,Softmax(fTF(𝑿1:T(i);𝑾K​Q,𝑾V))).\mathcal{L}(\bm{X}_
+ {1:T^{(i)}}^{(i)};\bm{W}_{KQ},\bm{W}_{V})=\mathrm{CrossEntropy}(\bm{e}_{z_{T^{(i)}+1}},\mathrm
+ {Softmax}(f_{\mathrm{TF}}(\bm{X}_{1:T^{(i)}};\bm{W}_{KQ},\bm{W}_{V}))).
+
+
+Algorithm 1 Gradient-based training of single-layer transformer
+Input : Learning rate ηK​Q,ηV\eta_{KQ},\eta_{V}
+Initialize 𝐖K​Q​(0)=𝐎(L+2​N)×(L+2​N),𝐖V​(0)=𝐎N×(L+2​N)\bm{W}_{KQ}(0)=\bm{O}_{(L+2N)\times(L+2N)},\
+bm{W}_{V}(0)=\bm{O}_{N\times(L+2N)}
+Gradient descent on WV\bm{W}_{V}
+   𝑾V(1)←𝑾V(0)−ηV∇𝑾V1MV∑i=1MVℒ(𝑿1:T(i)(i);𝑾K​Q(0),𝑾V(0))\bm{W}_{V}(1)\leftarrow\bm{W}_{V}(0)-\eta_
+{V}\nabla_{\bm{W}_{V}}\frac{1}{M_{V}}\sum_{i=1}^{M_{V}}\mathcal{L}(\bm{X}_{1:T^{(i)}}^{(i)};\bm{W}_
+{KQ}(0),\bm{W}_{V}(0))
+Gradient descent on WK​Q\bm{W}_{KQ}
+   𝑾K​Q(1)←𝑾K​Q(0)−ηK​Q∇𝑾K​Q1MK​Q∑i=MV+1MV+MK​Qℒ(𝑿1:T(i)(i);𝑾K​Q(0),𝑾V(1))\bm{W}_{KQ}(1)\leftarrow\
+bm{W}_{KQ}(0)-\eta_{KQ}\nabla_{\bm{W}_{KQ}}\frac{1}{M_{KQ}}\sum_{i=M_{V}+1}^{M_{V}+M_{KQ}}\mathcal
+{L}(\bm{X}_{1:T^{(i)}}^{(i)};\bm{W}_{KQ}(0),\bm{W}_{V}(1))
+Output : Prediction fTF​(⋅)f_{\mathrm{TF}}(\cdot)
+
+In Algorithm 1, we apply a single gradient descent step with large learning rate on the value and
+key-query matrices. This is motivated by recent studies [31, 5, 39] showing that the first gradient
+step can induce associative memory tied to specific components of the input embedding. In
+particular, the gradient can often be expressed as a linear combination of outer products 𝒘​𝒗⊤\bm
+{w}\bm{v}^{\top}, where either 𝒘\bm{w} or 𝒗\bm{v} corresponds to embedding vectors such as 𝒆zt\bm
+{e}_{z_{t}}, 𝒆zt−1\bm{e}_{z_{t-1}}, or 𝒑t\bm{p}_{t}. Such a gradient structure is sufficient to
+construct simple forms of associative memory within the model. We remark that similar single-step
+update is commonly used in the analysis of feature learning in shallow neural networks [3, 9, 4]
+and transformers [29, 28, 40].
+
+3 Main Result: Data-driven Transition Between Mechanisms
+
+3.1 Positional Shortcut vs. Induction Head
+
+In this section, we illustrate how the diversity of pretraining distribution influences which
+algorithm the trained transformer implements — either the positional shortcut or the induction
+head. The following quantity plays a central role in our characterization.
+
+Definition 4.
+
+For each ℓ\ell, let qℓq_{\ell} denote the probability mass assigned under 𝒟ℓ\mathcal{D}_{\ell}, and
+𝒮\mathcal{S} the support of 𝒟ℓ\mathcal{D}_{\ell}. We define the max-sum ratio as
+
+ R⁡(𝒟ℓ)=maxℓ∈𝒮⁡ℓ−1​qℓ∑ℓ∈𝒮ℓ−1​qℓ.R(\mathcal{D}_{\ell})=\frac{\max_{\ell\in\mathcal{S}}\ell^{-1}q_{\
+ ell}}{\sum_{\ell\in\mathcal{S}}\ell^{-1}q_{\ell}}.
+
+Interpretation of max-sum ratio.
+
+The max-sum ratio can be seen as a diversity measure of 𝒟ℓ\mathcal{D}_{\ell}. The following example
+provides an intuitive illustration:
+
+Example 1.
+
+Let 𝒟ℓ=Unif⁡({ℓ0,ℓ0+1,…,ℓ0+K−1})\mathcal{D}_{\ell}=\mathrm{Unif}(\{\ell_{0},\ell_{0}+1,\dotsc,\ell_
+{0}+K-1\}). Then the max-sum ratio is given by
+
+ R⁡(ℓ0,K)=ℓ0−1∑k=0K−1(ℓ0+k)−1,R(\ell_{0},K)=\frac{\ell_{0}^{-1}}{\sum_{k=0}^{K-1}(\ell_{0}    (3.1)
+ +k)^{-1}},
+
+which monotonically decreases with KK; hence greater diversity of 𝒟ℓ\mathcal{D}_{\ell} gives
+smaller max-sum ratio.
+
+Note that the max-sum ratio does not merely capture the width of the distribution: in Example 1,
+increasing ℓ0\ell_{0} while keeping KK fixed decreases the proportion of ℓ0−1\ell_{0}^{-1} in
+[ℓ0−1,…,(ℓ0+K−1)−1][\ell_{0}^{-1},\dotsc,(\ell_{0}+K-1)^{-1}], thus reducing the max-sum ratio.
+Hence, even with a narrow range, shifting the distribution rightward – placing more probability on
+larger ℓ\ell – naturally yields a smaller max-sum ratio. This is because the max-sum ratio weights
+each probability mass qℓq_{\ell} by ℓ−1\ell^{-1}.
+
+Learning under Population Loss.
+
+The next theorem shows the existence of a threshold in the max-sum ratio that determines whether
+OOD generalization is achieved, in the infinite-data limit.
+
+Theorem 5 (Infinite Sample Setting).
+
+Suppose we run Algorithm 1 on the expected loss 𝔼[ℒ(𝐗1:T;𝐖K​Q,𝐖V)]\mathbb{E}[\mathcal{L}(\bm{X}_
+{1:T};\bm{W}_{KQ},\bm{W}_{V})] with learning rates ηV≲1,ηV​ηK​Q≳N3Ntrg3​log⁡N\eta_{V}\lesssim 1,\
+eta_{V}\eta_{KQ}\gtrsim\frac{N^{3}}{N_{\mathrm{trg}}^{3}}\log N. Then, there exist ϵ1​(Ntrg),ϵ2​
+(Ntrg)=Θ⁡(Ntrg−1)\epsilon_{1}(N_{\mathrm{trg}}),\epsilon_{2}(N_{\mathrm{trg}})=\Theta(N_{\mathrm
+{trg}}^{-1}) such that:
+
+  • •
+   
+    If R⁡(𝒟ℓ)<ϵ1R(\mathcal{D}_{\ell})<\epsilon_{1}, then the pretrained transformer generalizes
+    OOD, as defined in Definition 2.
+
+  • •
+   
+    If R⁡(𝒟ℓ)>ϵ2R(\mathcal{D}_{\ell})>\epsilon_{2}, then there exist OOD test sequences such that
+    the pretrained transformer fails.
+
+Remark 2.
+
+  • •
+   
+    Note that the training data only contain sequences with ℓ1=ℓ2\ell_{1}=\ell_{2}, and thus a
+    positional shortcut (as illustrated in Figure 1) can still achieve 100% training accuracy.
+    However, since the OOD test data include sequences with ℓ1≠ℓ2\ell_{1}\neq\ell_{2}, such
+    shortcuts inevitably fail. Our main theorems show that the pretrained transformer avoids such
+    shortcuts when the max-sum ratio is below a certain threshold, i.e., when the data distribution
+    is sufficiently diverse.
+
+  • •
+   
+    We also provide a tight Θ⁡(Ntrg−1)\Theta(N_{\mathrm{trg}}^{-1}) characterization of the max-sum
+    ratio threshold, indicating that increasing the number of possible triggers makes OOD
+    generalization more difficult. The underlying mechanism is discussed in the ensuing subsection.
+
+Learning under Empirical Loss.
+
+Our next result establishes (via gradient concentration) similar transition behavior in the
+finite-sample setting.
+
+Theorem 6 (Finite Sample Setting).
+
+Suppose we run Algorithm 1 with the same learning rate scaling as in Theorem 5, and with sample
+sizes 𝑂𝑃𝐸𝑁𝑂𝑃𝐸𝑁MK​Q≳poly​log⁡N⋅N3Ntrg2​(∑ℓqℓ𝐶𝐿𝑂𝑆𝐸)2​and​MV≳poly​log⁡N⋅N5Ntrg2​
+(∑ℓ∈𝒮qℓ∑ℓ∈𝒮qℓ​ℓ−1𝐶𝐿𝑂𝑆𝐸)2M_{KQ}\gtrsim\mathrm{poly}\log N\cdot\frac{N^{3}}{N_{\mathrm{trg}}^{2}}\
+mathopen{}\mathclose{{\left(\sum_{\ell}\sqrt{q_{\ell}}}}\right)^{2}~~\text{and}~~M_{V}\gtrsim\
+mathrm{poly}\log N\cdot\frac{N^{5}}{N_{\mathrm{trg}}^{2}}\mathopen{}\mathclose{{\left(\frac{\sum_{\
+ell\in\mathcal{S}}\sqrt{q_{\ell}}}{\sum_{\ell\in\mathcal{S}}q_{\ell}\ell^{-1}}}}\right)^{2}. Then,
+with high probability there exist ϵ1′​(Ntrg),ϵ2′​(Ntrg)=Θ⁡(Ntrg−1)\epsilon^{\prime}_{1}(N_{\mathrm
+{trg}}),\epsilon^{\prime}_{2}(N_{\mathrm{trg}})=\Theta(N_{\mathrm{trg}}^{-1}) such that the
+assertion of Theorem 5 holds by substituting (ϵ1′,ϵ2′)(\epsilon^{\prime}_{1},\epsilon^{\prime}_{2})
+for (ϵ1,ϵ2)(\epsilon_{1},\epsilon_{2}).
+
+3.2 Mechanism of Algorithm Selection
+
+Now we take a closer look at how the positional shortcut and the induction head are implemented in
+the attention. We begin with the case where the support of 𝒟ℓ\mathcal{D}_{\ell} is a singleton and
+Ntrg=1N_{\mathrm{trg}}=1. After a single gradient step, the parameter matrix 𝑾K​Q\bm{W}_{KQ} can be
+shown to implement a form of associative memory over the relevant embedding vectors.
+
+Lemma 7 (Informal).
+
+Let 𝒟ℓ={ℓ}\mathcal{D}_{\ell}=\{\ell\}, and assume the trigger consists of a single token ww. After
+one gradient step of Algorithm 1, 𝐖K​Q\bm{W}_{KQ} takes the form
+
+ 𝑾K​Q\        ∝T​(ℓ)−1​[(𝒑ℓ+2+𝒑ℓ+3)𝟎𝒆w]​[𝒑T⁡(ℓ)⊤𝒆w⊤𝟎],\displaystyle\propto T(\ell)^{-1}\
+ displaystyle begin{bmatrix}(\bm{p}_{\ell+2}+\bm{p}_{\ell+3})\\ \mathbf{0}\\ \bm{e}_{w}\end   (3.2)
+ \bm{W}_{KQ}  {bmatrix}\begin{bmatrix}\bm{p}_{T(\ell)}^{\top}\!&\bm{e}_{w}^{\top}\!&\mathbf
+              {0}\end{bmatrix},
+
+where T⁡(ℓ)=2​ℓ+3T(\ell)=2\ell+3 denotes the position of the second occurrence of the trigger
+token.
+
+To further simplify the exposition, we ignore the cross terms between 𝒑\bm{p} and 𝒆\bm{e} and
+assume that 𝑾K​Q\bm{W}_{KQ} takes the following form:
+
+              ∝T​(ℓ)−1​[(𝒑ℓ+2+𝒑ℓ+3)𝟎𝟎]​[𝒑T⁡(ℓ)⊤𝟎⊤𝟎⊤]⏟positional shortcut+T​(ℓ)−1​[𝟎𝟎𝒆w]​
+              [𝒆w⊤𝟎]⏟induction head\displaystyle\propto\underbrace{T(\ell)^{-1}\begin
+ 𝑾K​Q\        {bmatrix}(\bm{p}_{\ell+2}+\bm{p}_{\ell+3})\\ \mathbf{0}\\ \mathbf{0}\end
+ displaystyle {bmatrix}\begin{bmatrix}\bm{p}_{T(\ell)}^{\top}\!&\mathbf{0}^{\top}\!&\mathbf   (3.3)
+ \bm{W}_{KQ}  {0}^{\top}\end{bmatrix}}_{\text{positional shortcut}}\;+\;\underbrace{T(\ell)^
+              {-1}\begin{bmatrix}\mathbf{0}\\ \mathbf{0}\\ \bm{e}_{w}\end{bmatrix}\begin
+              {bmatrix}\mathbf{0}\!&\bm{e}_{w}^{\top}\!&\mathbf{0}\end{bmatrix}}_{\text
+              {induction head}}
+
+Now consider an OOD test sequence as in Figure 1, whose total length matches the training sequence
+but whose first and second subtext lengths differ: ℓ1+ℓ2=2​ℓ\ell_{1}+\ell_{2}=2\ell, ℓ1≠ℓ2\ell_{1}\
+neq\ell_{2}. In this case, the two terms in (3.3) contribute to the attention score
+
+ Softmax(𝑿1:Ttest⊤𝑾K​Q𝒙Ttest)withTtest=ℓ1+ℓ2+3=T(ℓ)\mathrm{Softmax}\bigl(\bm{X}_{1:T_{\mathrm
+ {test}}}^{\top}\bm{W}_{KQ}\,\bm{x}_{T_{\mathrm{test}}}\bigr)\quad\text{with}\quad T_{\mathrm
+ {test}}=\ell_{1}+\ell_{2}+3=T(\ell)
+
+as follows (see Figure 2), noting that 𝒙Ttest=[𝒑T⁡(ℓ)𝒆w∗]⊤\bm{x}_{T_{\mathrm{test}}}=\begin
+{bmatrix}\bm{p}_{T(\ell)}&\bm{e}_{w}&*\end{bmatrix}^{\top}:
+
+  • •
+   
+    1st term (positional shortcut). Regardless of ℓ1\ell_{1}, it attends to the positions ℓ+2=
+    (Ttest+1)/2\ell+2=({T_{\mathrm{test}}}+1)/2 and ℓ+3=(Ttest+3)/2\ell+3=({T_{\mathrm{test}}}+3)/
+    2. In particular, for the former, even though ℓ1≠ℓ2\ell_{1}\neq\ell_{2}, the transformer
+    incorrectly associates the second trigger position TtestT_{\mathrm{test}} with (Ttest+1)/2({T_
+    {\mathrm{test}}}+1)/2 as if ℓ1=ℓ2\ell_{1}=\ell_{2}.^1^1 1 For the latter position (Ttest+3)/2
+    ({T_{\mathrm{test}}}+3)/2, the model also attends to the same token via the previous-token
+    embedding. This follows from a detailed computation of 𝑾V\bm{W}^{V}, which we omit here.
+
+  • •
+   
+    2nd term (induction head). It attends to tokens whose third embedding block equals 𝒆w\bm{e}_
+    {w}, i.e., tokens whose previous token is the trigger ww. In other words, it scans for the
+    trigger w=zTtestw=z_{T_{\mathrm{test}}} and then attends to its next token — this is precisely
+    the desired induction head behavior.
+
+Thus, the learned attention matrix implements a mixture of positional shortcut and induction head,
+and the relative strength of these components determines which algorithm is ultimately selected.
+Two factors affect this balance: the diversity of irrelevant token length ℓ\ell and the trigger
+size NtrgN_{\mathrm{trg}}.
+
+Length distribution 𝒟ℓ\mathcal{D}_{\ell}.
+
+Equation (3.3) describes the case where ℓ\ell is deterministic. When ℓ\ell is distributed according
+to 𝒟ℓ\mathcal{D}_{\ell}, 𝑾K​Q\bm{W}_{KQ} becomes a superposition over ℓ\ell:
+
+ 𝑾K​Q​(1)∝∑ℓqℓ​T​(ℓ)−1​[(𝒑ℓ+2+𝒑ℓ+3)𝟎𝟎]​[𝒑T⁡(ℓ)⊤𝟎⊤𝟎⊤]+𝔼⁡[T​(ℓ)−1]​[𝟎𝟎𝒆w]​[𝒆w⊤𝟎].\bm{W}_{KQ}
+ (1)\propto\sum_{\ell}q_{\ell}\,T(\ell)^{-1}\begin{bmatrix}(\bm{p}_{\ell+2}+\bm{p}_{\ell+3})
+ \\ \mathbf{0}\\ \mathbf{0}\end{bmatrix}\begin{bmatrix}\bm{p}_{T(\ell)}^{\top}\!&\mathbf{0}^  (3.4)
+ {\top}\!&\mathbf{0}^{\top}\end{bmatrix}\;+\;\mathbb{E}\!\bigl[T(\ell)^{-1}\bigr]\begin
+ {bmatrix}\mathbf{0}\\ \mathbf{0}\\ \bm{e}_{w}\end{bmatrix}\begin{bmatrix}\mathbf{0}\!&\bm
+ {e}_{w}^{\top}\!&\mathbf{0}\end{bmatrix}.
+
+Here, the first term spreads its mass across multiple positions and is consequently weakened,
+whereas the second term does not depend on ℓ\ell and retains its strength. As a result, the
+magnitude of the former is at most maxℓ⁡qℓ​T​(ℓ)−1\max_{\ell}q_{\ell}\,T(\ell)^{-1}, while that of
+the latter is ∑ℓqℓ​T​(ℓ)−1\sum_{\ell}q_{\ell}\,T(\ell)^{-1}. Since T⁡(ℓ)≍ℓT(\ell)\asymp\ell, the
+ratio between the strengths of positional memory and the induction head is nothing but the max-sum
+ratio R⁡(𝒟ℓ)R(\mathcal{D}_{\ell}). This explains why the max-sum ratio governs algorithm selection.
+
+Trigger size NtrgN_{\mathrm{trg}}.
+
+In (3.3), when the trigger size Ntrg≥2N_{\mathrm{trg}}\geq 2, the second term is replaced by
+
+ Ntrg−1​∑w∈[Ntrg]T​(ℓ)−1​[𝟎𝟎𝒆w]​[𝒆w⊤𝟎],N_{\mathrm{trg}}^{-1}\!\sum_{w\in[N_{\mathrm{trg}}]}T(\ell)
+ ^{-1}\begin{bmatrix}\mathbf{0}\\ \mathbf{0}\\ \bm{e}_{w}\end{bmatrix}\begin{bmatrix}\mathbf{0}\!&
+ \bm{e}_{w}^{\top}\!&\mathbf{0}\end{bmatrix},
+
+while the first term remains unchanged. Hence, the induction-head signal is split across trigger
+types and its strength decreases proportionally to Ntrg−1N_{\mathrm{trg}}^{-1}. This explains Θ⁡
+(Ntrg−1)\Theta(N_{\mathrm{trg}}^{-1}) threshold in Theorem 5.
+
+Refer to caption
+(a) Attention heatmap for ℓ∼Unif⁡({3})\ell\sim\mathrm{Unif}(\{3\}).
+
+Refer to caption
+(b) Attention heatmap for ℓ∼Unif⁡({3,4,5,6})\ell\sim\mathrm{Unif}(\{3,4,5,6\}).
+
+
+Figure 2: Attention heatmaps of 𝑾K​Q\bm{W}^{KQ} when the pretraining sequence diversity is small
+(left) and large (right). In the left figure, there is a strong positional shortcut that links
+position 9 to position 5 (the correct position in pretraining data), whereas in the right figure,
+the trigger positions are more dispersed, weakening this shortcut. Instead, a signal corresponding
+to induction head – detecting tokens after trigger – becomes dominant.
+
+The above intuition is visualized in an experiment reported in Figure 2.
+
+Example 2.
+
+In Figure 2, we set N=16N=16 and Ntrg=2N_{\mathrm{trg}}=2, train the model with 𝒟⁡(ℓ)=3\mathcal{D}
+(\ell)={3} and 𝒟(ℓ)=Unif([3:8])\mathcal{D}(\ell)=\mathrm{Unif}([3:8]), and visualize the resulting
+𝐖K​Q\bm{W}^{KQ}. The trigger-token set is {1,2}\{1,2\}. The training setting is the same as that in
+Section 4.1.
+
+  • •
+   
+    (Left): when 𝒟⁡(ℓ)={3}\mathcal{D}(\ell)=\{3\}, 𝑾K​Q\bm{W}^{KQ} has a strong component that maps
+    position 9 to position 5. Although it also contains an induction head component that maps
+    between trigger tokens, it is comparatively weak compared to the positional signal.
+
+  • •
+   
+    (Right): when 𝒟(ℓ)=Unif([3:8])\mathcal{D}(\ell)=\mathrm{Unif}([3:8]), 𝑾K​Q\bm{W}^{KQ} exhibits
+    a superposition of signals mapping position kk to (k+1)/2(k+1)/2, which results in each
+    individual signal being weakened. In contrast, the induction head signal does not diminish.
+
+3.3 Tradeoff between Context Length and OOD Generalization
+
+As discussed in Section 3.1, the max-sum ratio captures not only the overall “width” of the
+distribution but also decreases as mass shifts toward larger ℓ\ell. This effect becomes especially
+pronounced near the Θ⁡(Ntrg−1)\Theta(N_{\mathrm{trg}}^{-1}) threshold identified in Theorems 5 and 
+6:
+
+Example 3.
+
+Consider the max-sum ratio for the uniform distribution (3.1). If ℓ0=1\ell_{0}=1, then R⁡(ℓ0,K)=Θ⁡
+((log⁡K)−1)R(\ell_{0},K)=\Theta((\log K)^{-1}). To attain a max-sum ratio of order O⁡(Ntrg−1)O(N_{\
+mathrm{trg}}^{-1}) – the OOD generalization threshold in Theorems 5 and 6 – the support width must
+satisfy K≳𝑂𝑃𝐸𝑁exp⁡(Ntrg𝐶𝐿𝑂𝑆𝐸)K\gtrsim\exp(\Ntrg). By contrast, if ℓ0=Θ⁡(Ntrg)\ell_{0}=\Theta(N_{\
+mathrm{trg}}), then it suffices to take K=Θ⁡(Ntrg)K=\Theta(N_{\mathrm{trg}}) to obtain a max-sum
+ratio of O⁡(Ntrg−1)O(N_{\mathrm{trg}}^{-1}).
+
+Therefore, merely “widening” the distribution may not be efficient to reduce the max-sum ratio;
+biasing pretraining toward longer contexts is substantially more effective. This, in turn, suggests
+that reliably learning the induction-head mechanism (and hence achieving OOD generalization) may
+incur greater computational cost due to longer training sequences.
+
+We now consider the “optimal” shape of the pretraining sequence (under the constraint in
+Definition 2) that learns the induction-head mechanism with minimal compute. Since the forward-pass
+cost scales quadratically with context length, we seek short contexts while maintaining a favorable
+max-sum ratio. Formally, for U≥NtrgU\geq N_{\mathrm{trg}}, consider the optimization problem
+
+ ℙ:{minimize∑ℓ=1Uqℓ​ℓ2subject tomaxℓ=1U​qℓ​ℓ−1∑ℓ=1Uqℓ​ℓ−1≤Ntrg−1∑ℓ=1Uqℓ=1q1,…,qU≥0\mathbb
+ {P}:\begin{cases}\text{minimize}~~&{\sum_{\ell=1}^{U}{q_{\ell}}\ell^{2}}\\ \text{subject     (3.5)
+ to}~~&\frac{\max_{\ell=1}^{U}q_{\ell}\ell^{-1}}{\sum_{\ell=1}^{U}q_{\ell}\ell^{-1}}\leq N_
+ {\mathrm{trg}}^{-1}\\ &\sum_{\ell=1}^{U}q_{\ell}=1\\ &q_{1},\dotsc,q_{U}\geq 0\end{cases}
+
+This objective is the sample-average forward-pass cost in pretraining; the constraints enforce the
+OOD threshold from Theorem 7 and the normalization of (qℓ)ℓ=1U(q_{\ell})_{\ell=1}^{U}. This problem
+is a linear program whose optimizer is characterized below.
+
+Proposition 8.
+
+The optimal solution of problem ℙ\mathbb{P} assigns linearly increasing probability mass to the
+first NtrgN_{\mathrm{trg}} context lengths and zero to the remaining ones:
+
+ (q1,q2,…,qU)=Z−1​(1,2,…,Ntrg,0,…,0),(q_{1},q_{2},\dotsc,q_{U})=Z^{-1}{(1,2,\dotsc,N_{\mathrm
+ {trg}},0,\dotsc,0)},
+
+where the normalization constant is Z=Ntrg​(Ntrg+1)/2.Z=N_{\mathrm{trg}}(N_{\mathrm{trg}}+1)/2.
+
+In other words, to minimize average forward-pass cost per sample while meeting the OOD
+generalization constraint, the pretraining distribution should be linear in the context length,
+making qℓ​ℓ−1q_{\ell}\ell^{-1} uniform over ℓ≤Ntrg\ell\leq N_{\mathrm{trg}}. We note that if one
+optimizes a different objective (e.g., incorporating sample complexity), the optimal pretraining
+distribution may change.
+
+4 Numerical Experiments
+
+4.1 Experiments for Theoretical Setting
+
+To observe the transition from positional shortcut to induction head, we first consider the
+architecture defined in (2.1) and conduct experiments under the data model described in Definition 
+1.
+
+4.1.1 Experimental Setup
+
+Dataset.
+
+We generate training and test data according to the trigger-output setting in Definition 1.
+
+  • •
+   
+    In the pretraining data, the lengths of irrelevant tokens ℓ1\ell_{1}, ℓ2\ell_{2} are always
+    equal. We choose two integers ℓmin\ell_{\mathrm{min}} and ℓmax\ell_{\mathrm{max}} (ℓmin≤ℓmax\
+    ell_{\mathrm{min}}\leq\ell_{\mathrm{max}}), and length ℓ\ell is sampled from Unif⁡([ℓmin,ℓmax])
+    \mathrm{Unif}([\ell_{\mathrm{min}},\ell_{\mathrm{max}}]).
+
+  • •
+   
+    In the OOD test data, we shift the position of the first trigger to produce non-periodic
+    sequences. Specifically, we first sample ℓ∼Unif⁡([ℓmin+1,ℓmax])\ell\sim\mathrm{Unif}([\ell_{\
+    mathrm{min}}+1,\ell_{\mathrm{max}}]), and then sample ℓ1∼Unif⁡({1,…,2​ℓ−1}∖{ℓ})\ell_{1}\sim\
+    mathrm{Unif}(\{1,\dotsc,2\ell-1\}\setminus\{\ell\}), defining ℓ2=2​ℓ−ℓ1\ell_{2}=2\ell-\ell_{1}
+    so that ℓ1≠ℓ2\ell_{1}\neq\ell_{2}.
+
+Model architecture, embedding, and training.
+
+We implement a one-layer transformer architecture as defined in (2.1) with embeddings defined in (
+2.2). Training follows Algorithm 1, and the learning rates for 𝑾V\bm{W}^{V} and 𝑾K​Q\bm{W}^{KQ} are
+set to 10310^{3} and 10410^{4}, respectively. Both matrices are trained with the empirical cross
+entropy loss computed on 8192 training examples.
+
+4.1.2 Empirical Observations
+
+OOD Accuracy.
+
+We conduct experiments for all combinations of ℓmin∈[3,15]\ell_{\mathrm{min}}\in[3,15] and ℓmax∈
+[3,15]\ell_{\mathrm{max}}\in[3,15] such that ℓmin<ℓmax\ell_{\mathrm{min}}<\ell_{\mathrm{max}}, and
+evaluate all models on 1024 OOD test samples. The test accuracies (with different trigger size
+NtrgN_{\mathrm{trg}}) are presented in Figure 3.
+
+  • •
+   
+    OOD accuracy tends to increase as ℓmax\ell_{\mathrm{max}} increases (with ℓmin\ell_{\mathrm
+    {min}} fixed). This suggests that a greater diversity in the training data biases the model
+    towards the induction head.
+
+  • •
+   
+    Comparing the left and right figures, we see that as the trigger size increases, the region
+    where OOD generalization is achieved shifts rightward, suggesting an increased difficulty of
+    induction head learning with larger NtrgN_{\mathrm{trg}}, as predicted by Theorem 6.
+
+Error Visualization.
+
+Our theory predicts two characteristic error modes:
+
+  • •
+   
+    Pseudo trigger position. For non-periodic OOD evaluation data with ℓ1+ℓ2=2​ℓ\ell_{1}+\ell_{2}=2
+    \ell and ℓ1≠ℓ2\ell_{1}\neq\ell_{2}, let ℓ~=(ℓ1+ℓ2)/2\tilde{\ell}=(\ell_{1}+\ell_{2})/2. The
+    positional shortcut maps the second-trigger position ℓ1+ℓ2+3\ell_{1}+\ell_{2}+3 to the pseudo
+    output position ℓ~+2\tilde{\ell}+2. Accordingly, we measure the fraction of instances where the
+    model outputs zℓ~+2z_{\tilde{\ell}+2} and report this frequency as the pseudo accuracy rate.
+
+  • •
+   
+    Leftmost position. Since the leftmost trigger in the pretraining data typically provides the
+    strongest positional signal, the model may output zℓmin+2z_{\ell_{\mathrm{min}}+2} independent
+    of the second trigger position. This error mode is especially likely when NtrgN_{\mathrm{trg}}
+    is small. We record its frequency as the leftmost rate.
+
+Figure 4 illustrates the existence of these positional shortcuts. We observe that the error rate
+due to the pseudo-trigger mechanism is higher near the diagonal, and both errors decline as ℓmax\
+ell_{\mathrm{max}} increases.
+
+Refer to caption
+(a) number of triggers Ntrg=4N_{\mathrm{trg}}=4
+
+Refer to caption
+(b) number of triggers Ntrg=8N_{\mathrm{trg}}=8
+
+
+Figure 3: Out-of-distribution accuracy map over varying ℓmin\ell_{\mathrm{min}} (vertical) and ℓmax
+\ell_{\mathrm{max}} (horizontal); moving right indicates greater diversity of ℓ\ell in the
+pretraining distribution.
+
+Refer to caption
+(a) pseudo accuracy rate (z(ℓ1+ℓ2)/2+2z_{(\ell_{1}+\ell_{2})/2+2})
+
+Refer to caption
+(b) leftmost rate (zℓmin+2z_{\ell_{\mathrm{min}}+2})
+
+
+Figure 4: Map of two types of errors due to the positional shortcut. Note that both errors can
+probabilistically coincide with the correct answer, and such cases are not excluded.
+
+4.2 Experiments for Practical Settings
+
+Next we examine whether a similar transition from positional shortcut to induction head occurs in
+more standard gradient-based pretraining beyond our theoretical simplification. We consider a
+three-layer transformer architecture with separated key-query matrices, MLPs, and residual
+connections, where all parameters are learned jointly using the AdamW optimizer [18, 22]. The
+dataset is generated in the same way as in Section 4.1: we set N=32N=32 and Ntrg=1N_{\mathrm{trg}}=
+1, and varied ℓmin=4,8,…,20,ℓmax=4,8,…,40\ell_{\mathrm{min}}=4,8,\dotsc,20,\ell_{\mathrm{max}}=4,8,
+\dotsc,40. More experimental details can be found in Appendix E.
+
+Refer to caption
+(a) OOD accuracy
+
+Refer to caption
+(b) pseudo accuracy error rate
+
+Refer to caption
+(c) leftmost error rate
+
+
+Figure 5: Accuracy map over ℓmin\ell_{\mathrm{min}} (vertical), ℓmax\ell_{\mathrm{max}}
+(horizontal) for a 3-layer transformer trained with AdamW.​​
+
+Empirical Observations.
+
+Figure 5 shows the OOD accuracy, pseudo accuracy rate, and leftmost rate, following the same setup
+as in Section 4.1. Note that as the diversity of the pretraining distribution increases, the OOD
+generalization accuracy improves and the errors due to the positional shortcut decrease — this is
+consistent with our theoretical prediction in Section 3. We also observe that the transition point
+is less sharp compared to our theoretical setting.
+
+5 Conclusion
+
+In this work, using a simplified trigger–output task, we developed a theoretical analysis showing
+that gradient-based training implicitly selects between two distinct mechanisms with different
+out-of-distribution generalization properties — an induction head or a positional shortcut. We
+introduced the max-sum ratio as a key quantity governing this selection. Our results demonstrate
+that the statistical structure of pretraining data critically shapes the algorithms internalized by
+transformers, offering quantitative insights into steering learning via data design.
+
+We conclude with several directions for future work. First, beyond absolute positional embeddings,
+it is important to characterize which positional shortcuts can arise under relative position
+embeddings and related variants. Second, while our analysis centers on a single-layer architecture,
+a two-layer model naturally delegates retrieval to the first layer (recovering the token
+corresponding to 𝒆zt−1\bm{e}_{z_{t-1}}); analyzing the coupled dynamics that emerge from this
+decomposition is an intriguing next step. Finally, developing methods to analyze and quantify
+richer classes of algorithmic biases – beyond the induction–shortcut dichotomy – would deepen our
+understanding of how pretraining distributions induce specific computational circuits.
+
+Acknowledgements
+
+RK was partially supported by JST CREST (JPMJCR2115). NN was partially supported by JST ACT-X
+(JPMJAX24CK) and JST BOOST (JPMJBS2418). TS was partially supported by JSPS KAKENHI (24K02905) and
+JST CREST (JPMJCR2015). This research is supported by the National Research Foundation, Singapore,
+Infocomm Media Development Authority under its Trust Tech Funding Initiative, and the Ministry of
+Digital Development and Information under the AI Visiting Professorship Programme (award number
+AIVP-2024-004). Any opinions, findings and conclusions or recommendations expressed in this
+material are those of the author(s) and do not reflect the views of National Research Foundation,
+Singapore, Infocomm Media Development Authority, and the Ministry of Digital Development and
+Information.
+
+References
+
+  • [AWK+24] E. Akyürek, B. Wang, Y. Kim, and J. Andreas (2024) In-context language learning:
+    architectures and algorithms. arXiv preprint arXiv:2401.12973. Cited by: §1.
+  • [ALL25] Z. Allen-Zhu (2025) Physics of Language Models: Part 4.1, Architecture Design and the
+    Magic of Canon Layers. SSRN Electronic Journal. Cited by: 2nd item.
+  • [BES+22] J. Ba, M. A. Erdogdu, T. Suzuki, Z. Wang, D. Wu, and G. Yang (2022) High-dimensional
+    asymptotics of feature learning: how one gradient step improves the representation. In Advances
+    in Neural Information Processing Systems 35, Cited by: §1.2, §2.2.
+  • [BEG+22] B. Barak, B. Edelman, S. Goel, S. Kakade, E. Malach, and C. Zhang (2022) Hidden
+    progress in deep learning: sgd learns parities near the computational limit. Advances in Neural
+    Information Processing Systems 35, pp. 21750–21764. Cited by: §2.2.
+  • [BCB+23] A. Bietti, V. Cabannes, D. Bouchacourt, H. Jegou, and L. Bottou (2023) Birth of a
+    transformer: a memory viewpoint. In Advances in Neural Information Processing Systems, Cited
+    by: §B.1, §B.2.1, §1.1, §1.2, 1st item, §2.2.
+  • [BMR+20] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P.
+    Shyam, G. Sastry, A. Askell, et al. (2020) Language models are few-shot learners. Advances in
+    Neural Information Processing Systems 33. Cited by: §1.
+  • [CSW+24] S. Chen, H. Sheen, T. Wang, and Z. Yang (2024) Unveiling induction heads: provable
+    training dynamics and feature learning in transformers. In Advances in Neural Information
+    Processing Systems (NeurIPS), Cited by: §1.2.
+  • [CBK+24] H. Cui, F. Behrens, F. Krzakala, and L. Zdeborová (2024) A phase transition between
+    positional and semantic learning in a solvable model of dot-product attention. Advances in
+    Neural Information Processing Systems 37, pp. 36342–36389. Cited by: §1.
+  • [DLS22] A. Damian, J. Lee, and M. Soltanolkotabi (2022) Neural networks can learn
+    representations with gradient descent. In Conference on Learning Theory, pp. 5413–5452. Cited
+    by: §1.2, §2.2.
+  • [ETE+24] E. Edelman, N. Tsilivis, B. Edelman, E. Malach, and S. Goel (2024) The evolution of
+    statistical induction heads: in-context learning markov chains. In Advances in Neural
+    Information Processing Systems, Cited by: §1.2.
+  • [ENO+21] N. Elhage, N. Nanda, C. Olsson, T. Henighan, N. Joseph, B. Mann, A. Askell, Y. Bai, A.
+    Chen, T. Conerly, N. DasSarma, D. Drain, D. Ganguli, Z. Hatfield-Dodds, D. Hernandez, A. Jones,
+    J. Kernion, L. Lovitt, K. Ndousse, D. Amodei, T. Brown, J. Clark, J. Kaplan, S. McCandlish, and
+    C. Olah (2021) A mathematical framework for transformer circuits. Transformer Circuits Thread. 
+    Cited by: §1.2, §1, §2.1.
+  • [GTL+22] S. Garg, D. Tsipras, P. S. Liang, and G. Valiant (2022) What can transformers learn
+    in-context? a case study of simple function classes. Advances in neural information processing
+    systems 35, pp. 30583–30598. Cited by: §1, §1.2.
+  • [GJM+20] R. Geirhos, J. Jacobsen, C. Michaelis, R. Zemel, W. Brendel, M. Bethge, and F. A.
+    Wichmann (2020) Shortcut learning in deep neural networks. Nature Machine Intelligence 2 (11), 
+    pp. 665–673. Cited by: §1.
+  • [GB10] X. Glorot and Y. Bengio (2010) Understanding the difficulty of training deep feedforward
+    neural networks. In Proceedings of the Thirteenth International Conference on Artificial
+    Intelligence and Statistics, Y. W. Teh and M. Titterington (Eds.), Proceedings of Machine
+    Learning Research, Vol. 9, Chia Laguna Resort, Sardinia, Italy, pp. 249–256. External Links: 
+    Link Cited by: 2nd item.
+  • [GJB+25] N. Golowich, S. Jelassi, D. Brandfonbrener, S. M. Kakade, and E. Malach (2025) The
+    role of sparsity for length generalization in transformers. arXiv preprint arXiv:2502.16792. 
+    Cited by: §1.2.
+  • [GD23] A. Gu and T. Dao (2023) Mamba: linear-time sequence modeling with selective state spaces
+    . arXiv preprint arXiv:2312.00752. Cited by: 2nd item.
+  • [JdD+23] S. Jelassi, S. d’Ascoli, C. Domingo-Enrich, Y. Wu, Y. Li, and F. Charton (2023) Length
+    generalization in arithmetic transformers. arXiv preprint arXiv:2306.15400. Cited by: §1.2.
+  • [KB14] D. P. Kingma and J. Ba (2014) Adam: a method for stochastic optimization. arXiv preprint
+    arXiv:1412.6980. Cited by: §4.2.
+  • [LZH+25] M. Li, X. Zhang, Y. Huang, and S. Oymak (2025) On the power of convolution-augmented
+    transformer. In Proceedings of the AAAI Conference on Artificial Intelligence, Cited by: 2nd
+    item.
+  • [LLR23] Y. Li, Y. Li, and A. Risteski (2023) How do transformers learn topic structure: towards
+    a mechanistic understanding. In International Conference on Machine Learning, Cited by: 1st
+    item.
+  • [LAG+22] B. Liu, J. T. Ash, S. Goel, A. Krishnamurthy, and C. Zhang (2022) Transformers learn
+    shortcuts to automata. arXiv preprint arXiv:2210.10749. Cited by: §1, §1.2.
+  • [LH19] I. Loshchilov and F. Hutter (2019) Decoupled weight decay regularization. In 
+    International Conference on Learning Representations, External Links: Link Cited by: §4.2.
+  • [LLZ+25] Y. M. Lu, M. Letey, J. A. Zavatone-Veth, A. Maiti, and C. Pehlevan (2025) Asymptotic
+    theory of in-context learning by linear attention. Proceedings of the National Academy of
+    Sciences 122 (28), pp. e2502599122. Cited by: §1.2.
+  • [MAN79] O.L. Mangasarian (1979) Uniqueness of solution in linear programming. Linear Algebra
+    and its Applications 25, pp. 151–162. External Links: ISSN 0024-3795, Document, Link Cited by:
+    Appendix D.
+  • [MPL19] R. T. McCoy, E. Pavlick, and T. Linzen (2019) Right for the wrong reasons: diagnosing
+    syntactic heuristics in natural language inference. arXiv preprint arXiv:1902.01007. Cited by:
+    §1.
+  • [MLH+22] S. Min, X. Lyu, A. Holtzman, M. Artetxe, M. Lewis, H. Hajishirzi, and L. Zettlemoyer
+    (2022) Rethinking the role of demonstrations: what makes in-context learning work?. arXiv
+    preprint arXiv:2202.12837. Cited by: §1.2.
+  • [NDL24] E. Nichani, A. Damian, and J. D. Lee (2024) How transformers learn causal structure
+    with gradient descent. In International Conference on Machine Learning, Cited by: §1.2, 1st
+    item.
+  • [NSO+25] N. Nishikawa, Y. Song, K. Oko, D. Wu, and T. Suzuki (2025) Nonlinear transformers can
+    perform inference-time feature learning. In Forty-second International Conference on Machine
+    Learning, External Links: Link Cited by: §2.2.
+  • [OSS+24] K. Oko, Y. Song, T. Suzuki, and D. Wu (2024) Pretrained transformer efficiently learns
+    low-dimensional target functions in-context. In Advances in Neural Information Processing
+    Systems, A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang
+    (Eds.), Vol. 37, pp. 77316–77365. External Links: Link Cited by: §2.2.
+  • [OEN+22] C. Olsson, N. Elhage, N. Nanda, N. Joseph, N. DasSarma, T. Henighan, B. Mann, A.
+    Askell, Y. Bai, A. Chen, T. Conerly, D. Drain, D. Ganguli, Z. Hatfield-Dodds, D. Hernandez, S.
+    Johnston, A. Jones, J. Kernion, L. Lovitt, K. Ndousse, D. Amodei, T. Brown, J. Clark, J.
+    Kaplan, S. McCandlish, and C. Olah (2022) In-context learning and induction heads. Transformer
+    Circuits Thread. Cited by: §1.2, §1, §2.1.
+  • [ORS+23] S. Oymak, A. S. Rawat, M. Soltanolkotabi, and C. Thrampoulidis (2023) On the role of
+    attention in prompt-tuning. In International Conference on Machine Learning, Cited by: §1.2,
+    §2.2.
+  • [PAA+23] B. Peng, E. Alcaide, Q. Anthony, A. Albalak, S. Arcadinho, S. Biderman, H. Cao, X.
+    Cheng, M. Chung, M. Grella, et al. (2023) Rwkv: reinventing rnns for the transformer era. arXiv
+    preprint arXiv:2305.13048. Cited by: 2nd item.
+  • [RPC+23] A. Raventós, M. Paul, F. Chen, and S. Ganguli (2023) Pretraining task diversity and
+    the emergence of non-bayesian in-context learning for regression. Advances in neural
+    information processing systems 36, pp. 14228–14246. Cited by: §1, §1.2.
+  • [RLG+22] Y. Razeghi, R. L. Logan IV, M. Gardner, and S. Singh (2022) Impact of pretraining term
+    frequencies on few-shot reasoning. arXiv preprint arXiv:2202.07206. Cited by: §1, §1.2.
+  • [RED24] G. Reddy (2024) The mechanistic basis of data dependence and abrupt learning in an
+    in-context classification task. In International Conference on Learning Representations (ICLR),
+    Cited by: §1.2.
+  • [SHT24] C. Sanford, D. Hsu, and M. Telgarsky (2024) One-layer transformers fail to solve the
+    induction heads task. arXiv preprint arXiv:2408.14332. Cited by: 2nd item.
+  • [VSP+17] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and
+    I. Polosukhin (2017) Attention is all you need. In Advances in Neural Information Processing
+    Systems, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R.
+    Garnett (Eds.), Vol. 30, pp. . External Links: Link Cited by: §1.
+  • [VTM+19] E. Voita, D. Talbot, F. Moiseev, R. Sennrich, and I. Titov (2019) Analyzing multi-head
+    self-attention: specialized heads do the heavy lifting, the rest can be pruned. arXiv preprint
+    arXiv:1905.09418. Cited by: §1.
+  • [WS24] S. Wang and I. Sato (2024) Understanding knowledge hijack mechanism in in-context
+    learning through associative memory. External Links: 2412.11459, Link Cited by: §2.2.
+  • [WNB+25] Z. Wang, E. Nichani, A. Bietti, A. Damian, D. Hsu, J. D. Lee, and D. Wu (2025) 
+    Learning compositional functions with transformers from easy-to-hard data. arXiv preprint
+    arXiv:2505.23683. Cited by: §1, §2.2.
+  • [ZBB+22] Y. Zhang, A. Backurs, S. Bubeck, R. Eldan, S. Gunasekar, and T. Wagner (2022) 
+    Unveiling transformers with lego: a synthetic reasoning task. arXiv preprint arXiv:2206.04301. 
+    Cited by: §1.2.
+  • [ZBL+23] H. Zhou, A. Bradley, E. Littwin, N. Razin, O. Saremi, J. Susskind, S. Bengio, and P.
+    Nakkiran (2023) What algorithms can transformers learn? a study in length generalization. arXiv
+    preprint arXiv:2310.16028. Cited by: §1.2.
+
+Appendix A Preliminaries
+
+Throughout the paper, O⁡(⋅)O(\cdot) notation is taken with respect to the vocabulary size NN and we
+assume the following scaling:
+
+Assumption 1 (Scaling between problem parameters).
+
+Number of triggers NtrgN_{\mathrm{trg}} satisfies Ntrg=o⁡(N1/3)N_{\mathrm{trg}}=o(N^{1/3}). Context
+length TT satisfies T=o⁡(N/Ntrg2)T=o(N/N_{\mathrm{trg}}^{2}) almost surely.
+
+We also assume the following:
+
+Assumption 2.
+
+We assume ℓ≥4\ell\geq 4 almost surely at pretraining and L=poly⁡(N)L=\mathrm{poly}(N).
+
+𝕀⁡(A)\mathbb{I}(A) denotes the indicator function of the event AA, that is, 𝕀⁡(A)=1\mathbb{I}(A)=1
+if AA holds, and 00 otherwise. For a≤ba\leq b, 𝟏a:b\mathbf{1}_{a:b} denotes the vector whose
+a,a+1,…,ba,a+1,\dotsc,b-th entries are one and others are zero. For a matrix 𝑨∈ℝm×n\bm{A}\in\mathbb
+{R}^{m\times n}, we use the notation 𝑨[:,I:J]\bm{A}[:,I\!:\!J] to denote the submatrix consisting
+of all rows and columns from index II to JJ. For an arbitrary matrix 𝑨\bm{A}, λi​(𝑨)\lambda_{i}(\bm
+{A}) is the ii-th largest eigenvalue of 𝑨\bm{A}.
+
+Appendix B Infinite Sample Analysis
+
+In this section, we analyze Algorithm 1 with infinite sample size. Recall that we defined
+
+ fTF(𝑿1:t;𝑾K​Q,𝑾V)=𝑾V𝑿1:tSoftmax(𝑿1:t⊤𝑾K​Q𝒙t)∈ℝNf_{\mathrm{TF}}(\bm{X}_{1:t};\bm{W}_{KQ},\bm{W}_
+ {V})=\bm{W}_{V}\bm{X}_{1:t}\,\mathrm{Softmax}(\bm{X}_{1:t}^{\top}\bm{W}_{KQ}\bm{x}_{t})\in\mathbb
+ {R}^{N}
+
+and next token prediction loss
+
+ ℒ(𝑿1:T(i)(i);𝑾K​Q,𝑾V)=CrossEntropy(𝒆zT(i)+1,Softmax(fTF(𝑿1:T(i);𝑾K​Q,𝑾V))).\mathcal{L}(\bm{X}_
+ {1:T^{(i)}}^{(i)};\bm{W}_{KQ},\bm{W}_{V})=\mathrm{CrossEntropy}(\bm{e}_{z_{T^{(i)}+1}},\mathrm
+ {Softmax}(f_{\mathrm{TF}}(\bm{X}_{1:{T^{(i)}}};\bm{W}_{KQ},\bm{W}_{V}))).
+
+For simplicity, we denote the population loss as ¯ℒ(𝑾K​Q,𝑾V)≔𝔼T[𝔼𝑿1:T[ℒ(𝑿1:T;𝑾K​Q,𝑾V)]].\bar{}\
+mathcal{L}(\bm{W}_{KQ},\bm{W}_{V})\coloneqq\mathbb{E}_{T}[\mathbb{E}_{\bm{X}_{1:T}}[\mathcal{L}(\bm
+{X}_{1:T};\bm{W}_{KQ},\bm{W}_{V})]].
+
+B.1 Population Gradient of 𝐖V\mathbf{W}_{V}
+
+Note that Softmax(𝑿1:T⊤𝑾K​Q𝒙T)=[1/T,…,1/T]⊤\mathrm{Softmax}(\bm{X}_{1:T}^{\top}\bm{W}_{KQ}\bm{x}_
+{T})=[1/T,\dotsc,1/T]^{\top} and Softmax(fTF(𝑿1:t;𝑾K​Q,𝑾V))=[1/N,…,1/N]⊤\mathrm{Softmax}\mathopen{}
+\mathclose{{\left(f_{\mathrm{TF}}(\bm{X}_{1:t};\bm{W}_{KQ},\bm{W}_{V})}}\right)=[1/N,\dotsc,1/N]^{\
+top} is satisfied at initialization, for any 𝑿1:t\bm{X}_{1:t}. From [5, Lemma 1], the population
+loss can be calculated as
+
+              ∇𝑾V¯​ℒ​(𝑾K​Q,𝑾V)\displaystyle\nabla_{\bm{W}_{\!V}}\bar{}\mathcal{L}(\bm{W}_     (B.1)
+              {KQ},\bm{W}_{V})
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒙t]⊤]−∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝕀(zT+1=k)𝒙t⊤]].\
+ =\           displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{x}_{t}]^{\top}}}\      (B.2)
+ =            right]-\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+              mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\mathbb{I}(z_{T+1}=k)\bm
+              {x}_{t}^{\top}]}}\right].
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒙t]⊤]−1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒙t|zT+1=k]⊤].\
+ =\           displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{x}_{t}]^{\top}}}\      (B.3)
+ =            right]-\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\
+              mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}
+              [\bm{x}_{t}|z_{T+1}=k]^{\top}}}\right].
+
+We conduct block-wise calculation for the population gradient: let
+
+ 𝑾V=[𝑾V(1),𝑾V(2),𝑾V(3)]\bm{W}_{\!V}=\mathopen{}\mathclose{{\left[\bm{W}_{\!V}^{(1)},\bm{W}_{\!V}^
+ {(2)},\bm{W}_{\!V}^{(3)}}}\right]
+
+and let
+
+ 𝑾V∗=[𝑾V∗,(1),𝑾V∗,(2),𝑾V∗,(3)]\bm{W}_{\!V}^{*}=\mathopen{}\mathclose{{\left[\bm{W}_{\!V}^{*,(1)},\
+ bm{W}_{\!V}^{*,(2)},\bm{W}_{\!V}^{*,(3)}}}\right]
+
+be 𝑾V\bm{W}_{V} after one GD step, i.e., 𝑾V∗=−ηV​∇𝑾V¯​ℒ​(𝑾K​Q,𝑾V)\bm{W}_{V}^{*}=-\eta_{V}\nabla_{\
+bm{W}_{V}}\bar{}\mathcal{L}(\bm{W}_{KQ},\bm{W}_{V}), where 𝑾V(1)∈ℝN×D\bm{W}_{\!V}^{(1)}\in\mathbb
+{R}^{N\times D}, 𝑾V(2),𝑾V(3)∈ℝN×N\bm{W}_{\!V}^{(2)},\bm{W}_{\!V}^{(3)}\in\mathbb{R}^{N\times N}. In
+this section we show the following, using the rescaling ηV=N​ηV~\eta_{V}=N\tilde{\eta_{V}} for
+notation simplicity.
+
+Lemma 9.
+
+If we use stepsize N​ηV~N\tilde{\eta_{V}} for 𝐖V\bm{W}_{V}, then it holds that
+
+ ⟨𝒆k,𝑾V∗,(1)​𝒑t⟩={−αt​ηV~(k∈[Ntrg]),αt​ηV~​NtrgN−Ntrg(k∉[Ntrg]),\langle\bm{e}_{k},\bm{W}_{V}
+ ^{*,(1)}\bm{p}_{t}\rangle=\begin{cases}-\alpha_{t}\tilde{\eta_{V}}\quad&(k\in[N_{\mathrm     (B.4)
+ {trg}}]),\\ \frac{\alpha_{t}\tilde{\eta_{V}}N_{\mathrm{trg}}}{N-N_{\mathrm{trg}}}\quad&(k\
+ not\in[N_{\mathrm{trg}}]),\end{cases}
+
+ ⟨𝒆j,𝑾V∗,(2)​𝒆k⟩={−2​ηV~​𝔼​[T−1]​Ntrg−1(j,k∈[Ntrg])−ηV~​1−2​𝔼​[T−1]N−Ntrg(j∈[Ntrg],k∉[Ntrg])
+ 2​ηV~​𝔼⁡[T−1]N−Ntrg(j∉[Ntrg],k∈[Ntrg])ηV~​Ntrg+𝔼⁡[T−1]​(N⁡(N−1)−Ntrg​(N+2))(N−Ntrg)2(j=k∉
+ [Ntrg])ηV~​Ntrg−𝔼⁡[T−1]​(N+2​Ntrg)(N−Ntrg)2(j≠k,j,k∉[Ntrg])\langle\bm{e}_{j},\bm{W}_{V}^{*,
+ (2)}\bm{e}_{k}\rangle=\begin{cases}-2\tilde{\eta_{V}}\mathbb{E}[T^{-1}]N_{\mathrm{trg}}^
+ {-1}&(j,k\in[N_{\mathrm{trg}}])\\ -\tilde{\eta_{V}}\frac{1-2\mathbb{E}[T^{-1}]}{N-N_{\
+ mathrm{trg}}}&(j\in[N_{\mathrm{trg}}],k\not\in[N_{\mathrm{trg}}])\\ 2\tilde{\eta_{V}}\frac   (B.5)
+ {\mathbb{E}[T^{-1}]}{N-N_{\mathrm{trg}}}&(j\not\in[N_{\mathrm{trg}}],k\in[N_{\mathrm
+ {trg}}])\\ \tilde{\eta_{V}}\frac{N_{\mathrm{trg}}+\mathbb{E}[T^{-1}](N(N-1)-N_{\mathrm
+ {trg}}(N+2))}{(N-N_{\mathrm{trg}})^{2}}&(j=k\not\in[N_{\mathrm{trg}}])\\ \tilde{\eta_{V}}\
+ frac{N_{\mathrm{trg}}-\mathbb{E}[T^{-1}](N+2N_{\mathrm{trg}})}{(N-N_{\mathrm{trg}})^{2}}&(j
+ \neq k,~j,k\not\in[N_{\mathrm{trg}}])\end{cases}
+
+and
+
+ ⟨𝒆j,𝑾V∗,(3)​𝒆k⟩={−ηV~​𝔼​[T−1]​Ntrg−1(j,k∈[Ntrg])−ηV~​1−2​𝔼​[T−1]N−Ntrg(j∈[Ntrg],k∉[Ntrg])
+ ηV~​𝔼⁡[T−1]N−Ntrg(j∉[Ntrg],k∈[Ntrg])ηV~​Ntrg+𝔼⁡[T−1]​(N⁡(N−1)−Ntrg​(N+2))(N−Ntrg)2(j=k∉
+ [Ntrg])ηV~​Ntrg−𝔼⁡[T−1]​(N+2​Ntrg)(N−Ntrg)2(j≠k,j,k∉[Ntrg]),\langle\bm{e}_{j},\bm{W}_{V}^
+ {*,(3)}\bm{e}_{k}\rangle=\begin{cases}-\tilde{\eta_{V}}\mathbb{E}[T^{-1}]N_{\mathrm{trg}}^
+ {-1}&(j,k\in[N_{\mathrm{trg}}])\\ -\tilde{\eta_{V}}\frac{1-2\mathbb{E}[T^{-1}]}{N-N_{\
+ mathrm{trg}}}&(j\in[N_{\mathrm{trg}}],k\not\in[N_{\mathrm{trg}}])\\ \tilde{\eta_{V}}\frac{\  (B.6)
+ mathbb{E}[T^{-1}]}{N-N_{\mathrm{trg}}}&(j\not\in[N_{\mathrm{trg}}],k\in[N_{\mathrm{trg}}])\
+ \ \tilde{\eta_{V}}\frac{N_{\mathrm{trg}}+\mathbb{E}[T^{-1}](N(N-1)-N_{\mathrm{trg}}(N+2))}
+ {(N-N_{\mathrm{trg}})^{2}}&(j=k\not\in[N_{\mathrm{trg}}])\\ \tilde{\eta_{V}}\frac{N_{\
+ mathrm{trg}}-\mathbb{E}[T^{-1}](N+2N_{\mathrm{trg}})}{(N-N_{\mathrm{trg}})^{2}}&(j\neq
+ k,~j,k\not\in[N_{\mathrm{trg}}]),\end{cases}
+
+where we defined αt≔⟨𝔼T[T−1𝟏1:T],𝐩t⟩\alpha_{t}\coloneqq\mathopen{}\mathclose{{\left\langle\mathbb
+{E}_{T}\mathopen{}\mathclose{{\left[T^{-1}\mathbf{1}_{1:T}}}\right],\bm{p}_{t}}}\right\rangle:
+specifically, αt=𝔼T[T−1𝕀{t≤T}]≤𝔼T[T−1]\alpha_{t}=\mathbb{E}_{T}[T^{-1}\mathbb{I}\{t\leq T\}]\leq\
+mathbb{E}_{T}[T^{-1}] is satisfied.
+
+Proof. 
+
+For the first block, we have the following evaluation of the gradient of population loss ¯​ℒ\bar{}\
+mathcal{L}:
+
+              ∇𝑾V(1)¯​ℒ​(𝑾K​Q,𝑾V)\displaystyle\nabla_{\bm{W}_{\!V}^{(1)}}\bar{}\mathcal{L}(\  (B.7)
+              bm{W}_{KQ},\bm{W}_{V})
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒑t]⊤]−1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒑t|zT+1=k]⊤]\
+ =\           displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{p}_{t}]^{\top}}}\      (B.8)
+ =            right]-\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\
+              mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}
+              [\bm{p}_{t}|z_{T+1}=k]^{\top}}}\right]
+              1N∑k=1N𝒆k𝔼T[T−1∑t=1T𝒑t⊤]−1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[T−1∑t=1T𝒑t⊤].\displaystyle\frac
+ =\           {1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\mathclose{{\left[T^
+ displaystyle {-1}\sum_{t=1}^{T}\bm{p}_{t}^{\top}}}\right]-\frac{1}{N-N_{\mathrm{trg}}}\sum_  (B.9)
+ =            {k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\mathclose{{\left
+              [T^{-1}\sum_{t=1}^{T}\bm{p}_{t}^{\top}}}\right].
+
+This immediately yields (B.4).
+
+Now for the second block, we have
+
+              ∇𝑾V(2)¯​ℒ​(𝑾K​Q,𝑾V)\displaystyle\nabla_{\bm{W}_{\!V}^{(2)}}\bar{}\mathcal{L}   (B.10)
+              (\bm{W}_{KQ},\bm{W}_{V})
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt]⊤]−1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt|zT+1=k]⊤],\
+ =\           displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{e}_{z_{t}}]^{\top}}}  (B.11)
+ =            \right]-\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}
+              \mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb
+              {E}[\bm{e}_{z_{t}}|z_{T+1}=k]^{\top}}}\right],
+
+where the first term is evaluated as
+
+ 1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt]⊤]=\          1N∑k=1N𝒆k∑w=1Ntrg1Ntrg𝔼T[1T(2𝒆w+T−2N−Ntrg𝟏Ntrg+1:N)
+ displaystyle\frac{1}{N}\sum_{k=1}^{N}\ ⊤],\displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}
+ bm{e}_{k}\mathbb{E}_{T}\mathopen{}\    \sum_{w=1}^{N_{\mathrm{trg}}}\frac{1}{N_{\mathrm
+ mathclose{{\left[\frac{1}{T}\sum_{t=1} {trg}}}\mathbb{E}_{T}\mathopen{}\mathclose{{\left[\  (B.12)
+ ^{T}\mathbb{E}[\bm{e}_{z_{t}}]^{\      frac{1}{T}\mathopen{}\mathclose{{\left(2\bm{e}_{w}+
+ top}}}\right]=                         \frac{T-2}{N-N_{\mathrm{trg}}}\mathbf{1}_{N_{\
+                                        mathrm{trg}}+1:N}}}\right)^{\top}}}\right],
+
+and similarly for the second term
+
+              1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt|zT+1=k]⊤]\displaystyle\frac{1}{N-N_{\
+              mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen  (B.13)
+              {}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{e}_{z_{t}}|z_
+              {T+1}=k]^{\top}}}\right]
+              1N−Ntrg∑k=Ntrg+1N𝒆k1Ntrg∑w=1Ntrg𝔼T[1T(2𝒆w+T−3N−Ntrg𝟏Ntrg+1:N+𝒆k)⊤].\
+ =\           displaystyle\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}
+ displaystyle _{k}\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\mathbb{E}_{T}\     (B.14)
+ =            mathopen{}\mathclose{{\left[\frac{1}{T}\mathopen{}\mathclose{{\left(2\bm{e}_
+              {w}+\frac{T-3}{N-N_{\mathrm{trg}}}\mathbf{1}_{N_{\mathrm{trg}}+1:N}+\bm{e}_
+              {k}}}\right)^{\top}}}\right].
+
+Putting everything together yields (B.5).
+
+The third block can be computed in the same fashion as
+
+              ∇𝑾V(3)¯​ℒ​(𝑾K​Q,𝑾V)\displaystyle\nabla_{\bm{W}_{\!V}^{(3)}}\bar{}\mathcal{L}   (B.15)
+              (\bm{W}_{KQ},\bm{W}_{V})
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt−1]⊤]−1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt−1|zT+1=k]⊤],
+ =\           \displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{e}_{z_{t-1}}]^{\      (B.16)
+ =            top}}}\right]-\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm
+              {e}_{k}\mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\
+              mathbb{E}[\bm{e}_{z_{t-1}}|z_{T+1}=k]^{\top}}}\right],
+
+where we have the evaluations
+
+              1N∑k=1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt−1]⊤]\displaystyle\frac{1}{N}\sum_{k=1}^{N}\bm{e}_{k}
+              \mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb    (B.17)
+              {E}[\bm{e}_{z_{t-1}}]^{\top}}}\right]
+              1N∑k=1N𝒆k1Ntrg∑w=1Ntrg𝔼T[1T(𝒆w+T−2N−Ntrg𝟏Ntrg+1:N)⊤](∵𝒆0=𝟎)\displaystyle\frac
+ =\           {1}{N}\sum_{k=1}^{N}\bm{e}_{k}\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\
+ displaystyle mathrm{trg}}}\mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\mathopen   (B.18)
+ =            {}\mathclose{{\left(\bm{e}_{w}+\frac{T-2}{N-N_{\mathrm{trg}}}\mathbf{1}_{N_{\
+              mathrm{trg}}+1:N}}}\right)^{\top}}}\right]~(\because\bm{e}_{0}=\mathbf{0})
+
+and
+
+              1N−Ntrg∑k=Ntrg+1N𝒆k𝔼T[1T∑t=1T𝔼[𝒆zt−1|zT+1=k]⊤]\displaystyle\frac{1}{N-N_{\
+              mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\mathbb{E}_{T}\mathopen  (B.19)
+              {}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}[\bm{e}_{z_{t-1}}|z_
+              {T+1}=k]^{\top}}}\right]
+              1N−Ntrg∑k=Ntrg+1N𝒆k1Ntrg∑w=1Ntrg𝔼T[1T(𝒆w+T−3N−Ntrg𝟏Ntrg+1:N+𝒆k)⊤].\
+ =\           displaystyle\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{e}
+ displaystyle _{k}\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\mathbb{E}_{T}\     (B.20)
+ =            mathopen{}\mathclose{{\left[\frac{1}{T}\mathopen{}\mathclose{{\left(\bm{e}_
+              {w}+\frac{T-3}{N-N_{\mathrm{trg}}}\mathbf{1}_{N_{\mathrm{trg}}+1:N}+\bm{e}_
+              {k}}}\right)^{\top}}}\right].
+
+∎
+
+B.2 Population Gradient of 𝐖K​Q\mathbf{W}_{KQ}
+
+B.2.1 Preparations
+
+We denote the transformer’s predicted probability of token kk given an input sequence zz after
+one-step GD on 𝑾V\bm{W}_{V} as
+
+ p^(k|z)=Softmax(fTF(𝑿1:T;𝑾K​Q,𝑾V∗))k.\hat{p}(k|z)=\mathrm{Softmax}\mathopen{}\mathclose{{\left(f_
+ {\mathrm{TF}}(\bm{X}_{1:T};\bm{W}_{KQ},\bm{W}_{V}^{*})}}\right)_{k}.
+
+We can approximate p^​(k|z)\hat{p}(k|z) by considering sufficiently small ηV~\tilde{\eta_{V}}: The
+following corollary is obtained by Lemma 9.
+
+Corollary 10.
+
+If we set ηV~≲1/N\tilde{\eta_{V}}\lesssim 1/N, then |1/N−p^​(k|z)|=O⁡(𝔼⁡[T−1]/N2)|1/N-\hat{p}(k|z)|
+=O(\mathbb{E}[T^{-1}]/N^{2}) uniformly holds for any kk and zz.
+
+Proof.  From Lemma 9, it holds that |(fTF(𝑿1:T;𝑾K​Q,𝑾V∗))k|∈O(𝔼[T−1]/N+1/N2)∈O(𝔼[T−1]/N)
+(∵Assumption 1)|(f_{\mathrm{TF}}(\bm{X}_{1:T};\bm{W}_{KQ},\bm{W}_{V}^{*}))_{k}|\in O(\mathbb{E}[T^
+{-1}]/N+1/N^{2})\in O(\mathbb{E}[T^{-1}]/N)~(\because\text{Assumption~\ref{assumption:scaling}})
+for all kk. If vi=O⁡(𝔼⁡[T−1]/N)v_{i}=O(\mathbb{E}[T^{-1}]/N) for all i∈[N]i\in[N] where 𝒗∈ℝN\bm{v}\
+in\mathbb{R}^{N}, then it holds that
+
+ OPEN1N​OPENexp⁡(−O⁡(𝔼⁡[T−1]/N)CLOSE)≤Softmax⁡(𝒗CLOSE)i≤1N​OPENexp⁡(O⁡(𝔼⁡[T−1]/N)CLOSE).\frac{1}
+ {N}\exp(-O(\E[T^{-1}]/N))\leq\mathrm{Softmax}\mathopen{}\mathclose{{\left(\bm{v}}}\right)_{i}\leq
+ \frac{1}{N}\exp(O(\E[T^{-1}]/N)).
+
+From Taylor’s theorem we obtain the assertion. ∎
+Following [5, Lemma 4], starting from 𝑾K​Q=𝟎\bm{W}_{\!KQ}=\mathbf{0},
+
+              ∇𝑾K​Q¯​ℒ​(𝑾K​Q,𝑾V∗)\displaystyle\nabla_{\bm{W}_{\!KQ}}\bar{}\mathcal{L}(\bm    (B.21)
+              {W}_{KQ},\bm{W}_{V}^{*})
+              𝔼[∑k=1N(p^(k|z)−𝕀{zT+1=k})∇𝑾K​Q=𝟎⟨𝒆k,𝑾V∗𝑿1:TSoftmax(𝑿1:T⊤𝑾K​Q𝒙T)⟩],\
+ =\           displaystyle\mathbb{E}\mathopen{}\mathclose{{\left[\sum_{k=1}^{N}(\hat{p}(k|
+ displaystyle z)-\mathbbm{I}\{z_{T+1}=k\})\nabla_{\bm{W}_{\!KQ}\!=\mathbf{0}}\mathopen{}\    (B.22)
+ =            mathclose{{\left\langle\bm{e}_{k},\bm{W}_{\!V}^{*}\bm{X}_{1:T}\mathrm
+              {Softmax}(\bm{X}_{1:T}^{\top}\bm{W}_{\!KQ}\bm{x}_{T})}}\right\rangle}}\
+              right],
+
+where
+
+              ∇𝑾K​Q=𝟎(𝒆k⊤𝑾V∗∑t=1T𝒙tSoftmax(𝑿1:T⊤𝑾K​Q𝒙T)t)\displaystyle\nabla_{\bm{W}_{\!KQ}
+              \!=\mathbf{0}}\mathopen{}\mathclose{{\left(\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\  (B.23)
+              sum_{t=1}^{T}\bm{x}_{t}\mathrm{Softmax}(\bm{X}_{1:T}^{\top}\bm{W}_{\!KQ}\bm
+              {x}_{T})_{t}}}\right)
+ =\           ∑t=1T𝒆k⊤𝑾V∗𝒙t⋅∇𝑾K​Q=𝟎Softmax(𝑿1:T⊤𝑾K​Q𝒙T)t\displaystyle\sum_{t=1}^{T}\bm{e}_
+ displaystyle {k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot\nabla_{\bm{W}_{\!KQ}=\mathbf{0}}\    (B.24)
+ =            mathrm{Softmax}(\bm{X}_{1:T}^{\top}\bm{W}_{\!KQ}\bm{x}_{T})_{t}
+ =\           1T∑t=1T𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤,\displaystyle\frac{1}{T}\sum_{t=1}^{T}\bm{e}_
+ displaystyle {k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm    (B.25)
+ =            {x}_{T}^{\top},
+
+for 𝒙¯1:T=1T∑t=1T𝒙t\bar{\bm{x}}_{1:T}=\frac{1}{T}\sum_{t=1}^{T}\bm{x}_{t}. Hence the population
+gradient simplifies to, assuming ηV~≲1/N\tilde{\eta_{V}}\lesssim 1/N,
+
+              ∇𝑾K​Q¯​ℒ​(𝑾K​Q,𝑾V∗)\displaystyle\nabla_{\bm{W}_{\!KQ}}\bar{}\mathcal{L}(\bm    (B.26)
+              {W}_{KQ},\bm{W}_{V}^{*})
+              ∑k=1N𝔼T[1T∑t=1T𝔼𝑿[p^(k|z)𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle\sum_{k=1}^{N}\
+ =\           mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}
+ displaystyle _{\bm{X}}\mathopen{}\mathclose{{\left[\hat{p}(k|z)\bm{e}_{k}^{\top}\bm{W}_{\!  (B.27)
+ =            V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}}}\
+              right]}}\right]
+              −∑k=Ntrg+1N𝔼T[1T∑t=1Tp(zT+1=k)𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤|zT+1=k]]\
+              displaystyle-{\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_{T}\mathopen{}\
+              mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}p(z_{T+1}=k)\mathbb{E}_{\bm{X}}\     (B.28)
+              mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot
+              (\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}|z_{T+1}=k}}\right]}}\right]}
+              1N∑k=1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle\frac{1}{N}\sum_{k=
+ =\           1}^{N}\mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\
+ displaystyle mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^  (B.29)
+ =            {*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}}}\right]}}
+              \right]
+              −1N−Ntrg∑k=Ntrg+1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤|zT+1=k]]\displaystyle-\
+              frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_{T}\
+              mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\      (B.30)
+              mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot
+              (\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}|z_{T+1}=k}}\right]}}\right]
+              +∑k=1N𝔼T[1T∑t=1T𝔼𝑿[(p^​(k|z)−1NCLOSE)𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]⏟(∗1).\
+              displaystyle+\underbrace{\sum_{k=1}^{N}\mathbb{E}_{T}\mathopen{}\mathclose{{\
+              left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left  (B.31)
+              [\mathopen{}\mathclose{{\left(\hat{p}(k|z)-\frac{1}{N}}}\right)\bm{e}_{k}^{\
+              top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^
+              {\top}}}\right]}}\right]}_{(*1)}.
+
+Note that each entry of 𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm
+{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top} is of O⁡(ηV~​𝔼​[T−1])O(\tilde{\eta_{V}}\mathbb{E}[T^
+{-1}]) from Lemma 9, and |p^​(k|z)−1N|≲1/N2|\hat{p}(k|z)-\frac{1}{N}|\lesssim 1/N^{2} from
+Corollary 10. Therefore, using |𝔼⁡[a​b]|≤𝔼⁡[a2​b2]|\mathbb{E}[ab]|\leq\sqrt{\mathbb{E}[a^{2}b^{2}]}
+we can conclude that (*1) is of O∞​(ηV~​𝔼​[T−1]/N)O_{\infty}(\tilde{\eta_{V}}\mathbb{E}[T^{-1}]/N).
+
+Moreover, we have
+
+              1N∑k=1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle\frac{1}{N}\sum_{k=1}^{N}\
+              mathbb{E}_{T}\mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm
+              {X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\
+              bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}}}\right]}}\right]
+              1N−Ntrg∑k=Ntrg+1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle\frac{1}{N-N_{\
+ =\           mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_{T}\mathopen{}\mathclose{{\
+ displaystyle left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}
+ =            _{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^
+              {\top}}}\right]}}\right]
+              +1N−Ntrg∑k=1Ntrg𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle+\frac{1}{N-N_{\
+              mathrm{trg}}}\sum_{k=1}^{N_{\mathrm{trg}}}\mathbb{E}_{T}\mathopen{}\mathclose{{\left
+              [\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}
+              ^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\
+              top}}}\right]}}\right]
+              −NtrgN⁡(N−Ntrg)∑k=1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]].\displaystyle-\frac{N_{\
+              mathrm{trg}}}{N(N-N_{\mathrm{trg}})}\sum_{k=1}^{N}\mathbb{E}_{T}\mathopen{}\
+              mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\mathopen{}\mathclose
+              {{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_
+              {1:T})\bm{x}_{T}^{\top}}}\right]}}\right].
+
+Here, again using the fact that each entry of 𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤\bm{e}_{k}^{\top}\bm{W}_{\!V}^
+{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top} is of O⁡(ηV~​𝔼​[T−1])O(\tilde{\
+eta_{V}}\mathbb{E}[T^{-1}]), the second and third terms can be bounded by O∞​(η~V​𝔼​[T−1]⋅Ntrg/N)O_
+{\infty}(\tilde{\eta}_{V}\mathbb{E}[T^{-1}]\cdot N_{\mathrm{trg}}/N).
+
+In conclusion, we obtain
+
+              ∇𝑾K​Q¯​ℒ​(𝑾K​Q,𝑾V∗)\displaystyle\nabla_{\bm{W}_{\!KQ}}\bar{}\mathcal{L}(\bm    (B.32)
+              {W}_{KQ},\bm{W}_{V}^{*})
+              1N−Ntrg∑k=Ntrg+1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]]\displaystyle\frac{1}
+ =\           {N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_{T}\mathopen{}\
+ displaystyle mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\mathopen{}\      (B.33)
+ =            mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-
+              \bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}}}\right]}}\right]
+              −1N−Ntrg∑k=Ntrg+1N𝔼T[1T∑t=1T𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤|zT+1=k]]\displaystyle-\
+              frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_{T}\
+              mathopen{}\mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\mathbb{E}_{\bm{X}}\      (B.34)
+              mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot
+              (\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}|z_{T+1}=k}}\right]}}\right]
+              +O∞​(η~V​𝔼​[T−1]⋅Ntrg/N).\displaystyle+O_{\infty}(\tilde{\eta}_{V}\mathbb{E}   (B.35)
+              [T^{-1}]\cdot N_{\mathrm{trg}}/N).
+
+B.2.2 Detailed Calculations
+
+Let
+
+              𝚫⁡(k,T)\displaystyle\bm{\Delta}(k,T)                                           (B.36)
+              1T∑t=1T(𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤]−𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒙T⊤|zT+1=k])\
+              displaystyle\frac{1}{T}\sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_
+ ≔\           {\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_
+ displaystyle {t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}}}\right]-\mathbb{E}_  (B.37)
+ \coloneqq    {\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_
+              {t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{T}^{\top}|z_{T+1}=k}}\right]}}
+              \right)
+
+for Ntrg+1≤k≤NN_{\mathrm{trg}}+1\leq k\leq N. Then, it holds that OPEN∇𝑾K​Q¯​ℒ​(𝑾K​Q,𝑾V∗)=
+1N−Ntrg​∑k=Ntrg+1N𝔼T​[𝚫⁡(k,T)]+ηV~​𝔼​[T−1]​O∞​(Ntrg/NCLOSE)\nabla_{\bm{W}_{\!KQ}}\bar{}\mathcal{L}
+(\bm{W}_{KQ},\bm{W}_{V}^{*})=\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\mathbb{E}_
+{T}[\bm{\Delta}(k,T)]+{\tilde{\eta_{V}}\mathbb{E}[T^{-1}]O_{\infty}\mathopen{}\mathclose{{\left(N_
+{\mathrm{trg}}/N}}\right)}.
+
+For the first and second (block) columns, we have the following lemma:
+
+Lemma 11.
+
+Let 𝐖K​Q∗=−ηK​Q​∇𝐖K​Q¯​ℒ​(𝐖K​Q,𝐖V∗)\bm{W}_{KQ}^{*}=-\eta_{KQ}\nabla_{\bm{W}_{\!KQ}}\bar{}\mathcal
+{L}(\bm{W}_{KQ},\bm{W}_{V}^{*}). Then, it holds that
+
+              𝑾K​Q∗[:,1:L+N]\displaystyle\bm{W}_{KQ}^{*}[:,1:L+N]                            (B.38)
+              ηV~​ηK​Q​1Ntrg​∑w=1Ntrg∑ℓp⁡(ℓ)​(T​(ℓ)−1​[𝒑ℓ+2​𝔼ℓ′​[T​(ℓ′)−1]+𝒑ℓ+3​𝔼ℓ′​[T​(ℓ′)
+              −1]𝟎𝒆w​𝔼ℓ′​[T​(ℓ′)−1]]​[𝒑T⁡(ℓ)⊤𝒆w⊤]CLOSE\displaystyle\tilde{\eta_{V}}\eta_
+ =\           {KQ}\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\sum_{\ell}p(\ell)
+ displaystyle \bigg(T(\ell)^{-1}\begin{bmatrix}\bm{p}_{\ell+2}\mathbb{E}_{\ell^{\prime}}[T   (B.39)
+ =            (\ell^{\prime})^{-1}]+\bm{p}_{\ell+3}\mathbb{E}_{\ell^{\prime}}[T(\ell^{\
+              prime})^{-1}]\\ \bm{0}\\ \bm{e}_{w}\mathbb{E}_{\ell^{\prime}}[T(\ell^{\
+              prime})^{-1}]\end{bmatrix}\begin{bmatrix}\bm{p}_{T(\ell)}^{\top}&\bm{e}_{w}^
+              {\top}\end{bmatrix}
+              −2T(ℓ)−2[𝟏1:T⁡(ℓ)∖{ℓ+2,ℓ+3}𝔼ℓ′[T(ℓ′)−1]2​𝒆w​𝔼ℓ′​[T​(ℓ′)−1]𝟎][𝒑T⁡(ℓ)⊤𝒆w⊤])\
+              displaystyle-2T(\ell)^{-2}\begin{bmatrix}\bm{1}_{1:T(\ell)\setminus\{\ell+2,\
+              ell+3\}}\mathbb{E}_{\ell^{\prime}}[T(\ell^{\prime})^{-1}]\\ 2\bm{e}_{w}\       (B.40)
+              mathbb{E}_{\ell^{\prime}}[T(\ell^{\prime})^{-1}]\\ \bm{0}\end{bmatrix}\begin
+              {bmatrix}\bm{p}_{T(\ell)}^{\top}&\bm{e}_{w}^{\top}\end{bmatrix}\bigg)
+              +ηV~​ηK​Q​𝔼ℓ′​[T​(ℓ′)−1]​O​(Ntrg⋅N−1).\displaystyle+\tilde{\eta_{V}}\eta_{KQ}
+              \mathbb{E}_{\ell^{\prime}}[T(\ell^{\prime})^{-1}]O(N_{\mathrm{trg}}\cdot N^    (B.41)
+              {-1}).
+
+Here O⁡(Ntrg⋅N−1)O(N_{\mathrm{trg}}\cdot N^{-1}) denotes a matrix whose entries are all of O⁡
+(Ntrg⋅N−1)O(N_{\mathrm{trg}}\cdot N^{-1}) and p⁡(ℓ)p(\ell) is the probability of drawing ℓ\ell at
+pretraining data.
+
+Proof. [Proof of Lemma 11] Suppose 𝑾V\bm{W}_{V} is obtained by Lemma 9. Note that
+
+  𝚫(k,T)[:,:L]\displaystyle\bm{\Delta}(k,T)[:,:L]                                            (B.42)
+  =1T∑t=1T(𝔼𝑿[𝒆k⊤𝑾V𝒙t⋅(𝒙t−𝒙¯1:T)]−𝔼𝑿[𝒆k⊤𝑾V𝒙t⋅(𝒙t−𝒙¯1:T)|zT+1=k])𝒑T⊤\displaystyle=\frac{1}
+  {T}\sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\
+  left[\bm{e}_{k}^{\top}\bm{W}_{\!V}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})}}\right]  (B.43)
+  -\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}\bm{x}_{t}\
+  cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})|z_{T+1}=k}}\right]}}\right)\bm{p}_{T}^{\top}
+  =1Ntrg∑w=1Ntrg1T∑t=1T(𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|𝒙T=w]−𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|zT+1=k,𝒙T=w])𝑾V⊤𝒆k𝒑T⊤\
+  displaystyle=\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\frac{1}{T}\sum_{t=1}
+  ^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[(\bm{x}_  (B.44)
+  {t}-\bar{\bm{x}}_{1:T})\bm{x}_{t}^{\top}|\bm{x}_{T}=w}}\right]-\mathbb{E}_{\bm{X}}\
+  mathopen{}\mathclose{{\left[(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{t}^{\top}|z_{T+1}=k,\
+  bm{x}_{T}=w}}\right]}}\right){\bm{W}_{\!V}}^{\top}\bm{e}_{k}\bm{p}_{T}^{\top}
+
+and similarly
+
+              𝚫(k,T)[:,L+1:L+N]\displaystyle\bm{\Delta}(k,T)[:,L+1:L+N]                      (B.45)
+              1Ntrg∑w=1Ntrg[1T∑t=1T(𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|𝒙T=w]−𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|zT+1=k,𝒙T=w])
+              ⋅𝑾V⊤𝒆k𝒆w⊤].\displaystyle\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm
+ =\           {trg}}}\Bigg[\frac{1}{T}\sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}
+ displaystyle _{\bm{X}}\mathopen{}\mathclose{{\left[(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_   (B.46)
+ =            {t}^{\top}|\bm{x}_{T}=w}}\right]-\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\
+              left[(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{t}^{\top}|z_{T+1}=k,\bm{x}_{T}=
+              w}}\right]}}\right)\cdot{\bm{W}_{\!V}}^{\top}\bm{e}_{k}\bm{e}_{w}^{\top}\
+              Bigg].
+
+Now let us consider the difference
+
+              1T∑t=1T(𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|𝒙T=w]−𝔼𝑿[(𝒙t−𝒙¯1:T)𝒙t⊤|zT+1=k,𝒙T=w])\displaystyle\
+              frac{1}{T}\sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\
+              mathopen{}\mathclose{{\left[(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{x}_{t}^{\top}|  (B.47)
+              \bm{x}_{T}=w}}\right]-\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[(\bm{x}
+              _{t}-\bar{\bm{x}}_{1:T})\bm{x}_{t}^{\top}|z_{T+1}=k,\bm{x}_{T}=w}}\right]}}\
+              right)
+              OPEN1T​∑t=1T(𝔼𝑿[𝒙t𝒙t⊤|𝒙T=w]−𝔼𝑿[𝒙t𝒙t⊤|zT+1=k,𝒙T=w])\displaystyle\frac{1}{T}\
+ =\           sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\mathopen{}\
+ displaystyle mathclose{{\left[\bm{x}_{t}\bm{x}_{t}^{\top}|\bm{x}_{T}=w}}\right]-\mathbb{E}  (B.48)
+ =            _{\bm{X}}\mathopen{}\mathclose{{\left[\bm{x}_{t}\bm{x}_{t}^{\top}|z_{T+1}=k,\
+              bm{x}_{T}=w}}\right]}}\right)
+              −1T2∑t=1T∑t′=1T(𝔼𝑿[𝒙t𝒙t′⊤|𝒙T=w]−𝔼𝑿[𝒙t𝒙t′⊤|zT+1=k,𝒙T=w])\displaystyle-\frac{1}
+              {T^{2}}\sum_{t=1}^{T}\sum_{t^{\prime}=1}^{T}\mathopen{}\mathclose{{\left(\
+              mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{x}_{t}\bm{x}_{t^{\prime}}^  (B.49)
+              {\top}|\bm{x}_{T}=w}}\right]-\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left
+              [\bm{x}_{t}\bm{x}_{t^{\prime}}^{\top}|z_{T+1}=k,\bm{x}_{T}=w}}\right]}}\
+              right)
+              OPENOPEN(1T−1T2CLOSE)​∑t=1T(𝔼𝑿[𝒙t𝒙t⊤|𝒙T=w]−𝔼𝑿[𝒙t𝒙t⊤|zT+1=k,𝒙T=w])\
+ =\           displaystyle\mathopen{}\mathclose{{\left(\frac{1}{T}-\frac{1}{T^{2}}}}\right)
+ displaystyle \sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\mathopen{}\     (B.50)
+ =            mathclose{{\left[\bm{x}_{t}\bm{x}_{t}^{\top}}}\right|\bm{x}_{T}=w]-\mathbb{E}
+              _{\bm{X}}\mathopen{}\mathclose{{\left[\bm{x}_{t}\bm{x}_{t}^{\top}|z_{T+1}=k,\
+              bm{x}_{T}=w}}\right]}}\right)
+              −1T2∑t≠t′(𝔼𝑿[𝒙t𝒙t′⊤|𝒙T=w]−𝔼𝑿[𝒙t𝒙t′⊤|zT+1=k,𝒙T=w])\displaystyle-\frac{1}{T^
+              {2}}\sum_{t\neq t^{\prime}}\mathopen{}\mathclose{{\left(\mathbb{E}_{\bm{X}}\
+              mathopen{}\mathclose{{\left[\bm{x}_{t}\bm{x}_{t^{\prime}}^{\top}|\bm{x}_{T}=   (B.51)
+              w}}\right]-\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{x}_{t}\bm{x}_
+              {t^{\prime}}^{\top}|z_{T+1}=k,\bm{x}_{T}=w}}\right]}}\right)
+
+Then it suffices to calculate the vector
+
+ OPEN𝒅⁡(t,t′,k,w)=𝑴⁡(t,t′,k,w)​𝑾V⊤​𝒆k≔(𝔼[𝒙t𝒙t′⊤|𝒙T=w]−𝔼[𝒙t𝒙t′⊤|zT+1=k,𝒙T=w])​𝑾V⊤​𝒆k\bm{d}
+ (t,t^{\prime},k,w)=\bm{M}(t,t^{\prime},k,w)\bm{W}_{V}^{\top}\bm{e}_{k}\coloneqq\mathopen{}
+ \mathclose{{\left(\mathbb{E}[\bm{x}_{t}\bm{x}_{t^{\prime}}^{\top}|\bm{x}_{T}=w]-\mathbb{E}  (B.52)
+ [\bm{x}_{t}\bm{x}_{t^{\prime}}^{\top}|z_{T+1}=k,\bm{x}_{T}=w]}}\right)\bm{W}_{V}^{\top}\bm
+ {e}_{k}
+
+for each t,t′,kt,t^{\prime},k and ww. Recall
+
+ 𝑾V⊤​𝒆k=ηV~​[α1​NtrgN−NtrgαL​NtrgN−Ntrg2N−Ntrg​𝔼​[T−1]​𝟏Ntrg(−1N​𝔼​[T−1]+O⁡(Ntrg⋅N−2))
+ ​𝟏k−Ntrg−1𝔼⁡[T−1]+𝔼⁡[T−1]​O​(Ntrg⋅N−1)+O⁡(Ntrg⋅N−2)(−1N​𝔼​[T−1]+O⁡(Ntrg⋅N−2))
+ ​𝟏N−k1N−Ntrg​𝔼​[T−1]​𝟏Ntrg(−1N​𝔼​[T−1]+O⁡(Ntrg⋅N−2))​𝟏k−Ntrg−1𝔼⁡[T−1]+𝔼⁡[T−1]​O​(Ntrg⋅N−1)
+ +O⁡(Ntrg⋅N−2)(−1N​𝔼​[T−1]+O⁡(Ntrg⋅N−2))​𝟏N−k].\bm{W}_{V}^{\top}\bm{e}_{k}=\tilde{\eta_{V}}
+ \begin{bmatrix}\frac{\alpha_{1}N_{\mathrm{trg}}}{N-N_{\mathrm{trg}}}\\ \vdots\\ \frac{\
+ alpha_{L}N_{\mathrm{trg}}}{N-N_{\mathrm{trg}}}\\ \hline\cr\\ \frac{2}{N-N_{\mathrm{trg}}}\
+ mathbb{E}[T^{-1}]\bm{1}_{N_{\mathrm{trg}}}\\ (-\frac{1}{N}\mathbb{E}[T^{-1}]+O(N_{\mathrm   (B.53)
+ {trg}}\cdot N^{-2}))\bm{1}_{k-N_{\mathrm{trg}}-1}\\ \mathbb{E}[T^{-1}]+\mathbb{E}[T^{-1}]O
+ (N_{\mathrm{trg}}\cdot N^{-1})+O(N_{\mathrm{trg}}\cdot N^{-2})\\ (-\frac{1}{N}\mathbb{E}[T
+ ^{-1}]+O(N_{\mathrm{trg}}\cdot N^{-2}))\bm{1}_{N-k}\\ \hline\cr\\ \frac{1}{N-N_{\mathrm
+ {trg}}}\mathbb{E}[T^{-1}]\bm{1}_{N_{\mathrm{trg}}}\\ (-\frac{1}{N}\mathbb{E}[T^{-1}]+O(N_
+ {\mathrm{trg}}\cdot N^{-2}))\bm{1}_{k-N_{\mathrm{trg}}-1}\\ \mathbb{E}[T^{-1}]+\mathbb{E}
+ [T^{-1}]O(N_{\mathrm{trg}}\cdot N^{-1})+O(N_{\mathrm{trg}}\cdot N^{-2})\\ (-\frac{1}{N}\
+ mathbb{E}[T^{-1}]+O(N_{\mathrm{trg}}\cdot N^{-2}))\bm{1}_{N-k}\end{bmatrix}.
+
+For preparation, we define some vectors: let
+
+ 𝜶(k)=[0,0,…,0⏟Ntrg​zeros,1N−Ntrg,…,1N−Ntrg,N+Ntrg+1N−Ntrg⏟k​-th entry,1N−Ntrg,…,1N−Ntrg]
+ ⊤∈ℝN\bm{\alpha}(k)=\mathopen{}\mathclose{{\left[\underbrace{0,0,\dotsc,0}_{N_{\mathrm
+ {trg}}~\text{zeros}},{\frac{1}{N-N_{\mathrm{trg}}},\dotsc,\frac{1}{N-N_{\mathrm{trg}}}},\   (B.54)
+ underbrace{\frac{N+N_{\mathrm{trg}}+1}{N-N_{\mathrm{trg}}}}_{k\text{-th entry}},\frac{1}
+ {N-N_{\mathrm{trg}}},\dotsc,\frac{1}{N-N_{\mathrm{trg}}}}}\right]^{\top}\in\mathbb{R}^{N}
+
+for Ntrg+1≤k≤NN_{\mathrm{trg}}+1\leq k\leq N and
+
+ 𝜷=[0,0,…,0⏟Ntrg​zeros,1N−Ntrg,…,1N−Ntrg]⊤∈ℝN.\bm{\beta}=\mathopen{}\mathclose{{\left[\
+ underbrace{0,0,\dotsc,0}_{N_{\mathrm{trg}}~\text{zeros}},\frac{1}{N-N_{\mathrm{trg}}},\     (B.55)
+ dotsc,\frac{1}{N-N_{\mathrm{trg}}}}}\right]^{\top}\in\mathbb{R}^{N}.
+
+First, if t=t′t=t^{\prime}, then 𝑴⁡(t,t′,k,w)\bm{M}(t,t^{\prime},k,w) is zero unless t=ℓ+2t=\ell+2
+or t=ℓ+3t=\ell+3, as zT+1z_{T+1} is independent of zi​(i∈[T],i≠ℓ+2)z_{i}~(i\in[T],i\neq\ell+2) and
+only 𝒙ℓ+2\bm{x}_{\ell+2} and 𝒙ℓ+3\bm{x}_{\ell+3} include the information of zℓ+2z_{\ell+2}. For
+each case, we have
+
+ 𝑴⁡(ℓ+2,ℓ+2,k,w)=[𝑶L×L𝒑ℓ+2​𝜶​(k)⊤𝑶L×N𝜶⁡(k)​𝒑ℓ+2⊤diag⁡(𝜶⁡(k))𝜶⁡(k)​𝒆w⊤𝑶N×L𝒆w​𝜶​(k)⊤𝑶N×N]\bm
+ {M}(\ell+2,\ell+2,k,w)=\begin{bmatrix}\bm{O}_{L\times L}&\bm{p}_{\ell+2}\bm{\alpha}(k)^{\
+ top}&\bm{O}_{L\times N}\\ \bm{\alpha}(k)\bm{p}_{\ell+2}^{\top}&\mathrm{diag}(\bm{\alpha}    (B.56)
+ (k))&\bm{\alpha}(k)\bm{e}_{w}^{\top}\\ \bm{O}_{N\times L}&\bm{e}_{w}\bm{\alpha}(k)^{\top}&
+ \bm{O}_{N\times N}\end{bmatrix}
+
+and
+
+ 𝑴⁡(ℓ+3,ℓ+3,k,w)=[𝑶L×L𝑶L×N𝒑ℓ+3​𝜶​(k)⊤𝑶N×L𝑶N×N𝜷​𝜶​(k)⊤𝜶⁡(k)​𝒑ℓ+3⊤𝜶⁡(k)​𝜷⊤diag⁡(𝜶⁡(k))],\bm
+ {M}(\ell+3,\ell+3,k,w)=\begin{bmatrix}\bm{O}_{L\times L}&\bm{O}_{L\times N}&\bm{p}_{\
+ ell+3}\bm{\alpha}(k)^{\top}\\ \bm{O}_{N\times L}&\bm{O}_{N\times N}&\bm{\beta}\bm{\alpha}   (B.57)
+ (k)^{\top}\\ \bm{\alpha}(k)\bm{p}_{\ell+3}^{\top}&\bm{\alpha}(k)\bm{\beta}^{\top}&\mathrm
+ {diag}(\bm{\alpha}(k))\end{bmatrix},
+
+then we obtain
+
+ 𝒅⁡(ℓ+2,ℓ+2,k,w)=ηV~​[−𝒑ℓ+2​𝔼​[T−1]−𝒆k​𝔼​[T−1]−𝒆w​𝔼​[T−1]]+ηV~​O∞​(𝔼⁡[T−1]
+ ​Ntrg⋅N−1+Ntrg⋅N−2)\bm{d}(\ell+2,\ell+2,k,w)=\tilde{\eta_{V}}\begin{bmatrix}-\bm{p}_{\
+ ell+2}\mathbb{E}[T^{-1}]\\ -\bm{e}_{k}\mathbb{E}[T^{-1}]\\ -\bm{e}_{w}\mathbb{E}[T^{-1}]\   (B.58)
+ end{bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}[T^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_
+ {\mathrm{trg}}\cdot N^{-2})
+
+and
+
+ 𝒅⁡(ℓ+3,ℓ+3,k,w)=ηV~​[−𝒑ℓ+3​𝔼​[T−1]𝟎−𝒆k​𝔼​[T−1]]+ηV~​O∞​(𝔼⁡[T−1]​Ntrg⋅N−1+Ntrg⋅N−2).\bm{d}
+ (\ell+3,\ell+3,k,w)=\tilde{\eta_{V}}\begin{bmatrix}-\bm{p}_{\ell+3}\mathbb{E}[T^{-1}]\\ \   (B.59)
+ bm{0}\\ -\bm{e}_{k}\mathbb{E}[T^{-1}]\end{bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}[T
+ ^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_{\mathrm{trg}}\cdot N^{-2}).
+
+For the case t≠t′t\neq t^{\prime}, deal with the following three cases:
+
+ 1. (i)
+   
+    If (t,t′)=(ℓ+2,ℓ+3)(t,t^{\prime})=(\ell+2,\ell+3) or (t,t′)=(ℓ+3,ℓ+2)(t,t^{\prime})=(\ell+3,\
+    ell+2) then we have
+
+                  𝑴⁡(ℓ+2,ℓ+3,k,w)+𝑴⁡(ℓ+3,ℓ+2,k,w)\displaystyle\bm{M}(\ell+2,\ell+3,k,w)+\bm  (B.60)
+                  {M}(\ell+3,\ell+2,k,w)
+                  [𝑶L×L𝒑ℓ+3​𝜶​(k)⊤𝒑ℓ+2​𝜶​(k)⊤𝜶⁡(k)​𝒑ℓ+3⊤𝜶⁡(k)​𝜷⊤+𝜷​𝜶​(k)⊤diag⁡(𝜶⁡(k))𝜶⁡(k)
+                  ​𝒑ℓ+2⊤diag⁡(𝜶⁡(k))𝜶⁡(k)​𝒆w⊤+𝒆w​𝜶​(k)⊤]\displaystyle\begin{bmatrix}\bm{O}_
+     =\           {L\times L}&\bm{p}_{\ell+3}\bm{\alpha}(k)^{\top}&\bm{p}_{\ell+2}\bm{\
+     displaystyle alpha}(k)^{\top}\\ \bm{\alpha}(k)\bm{p}_{\ell+3}^{\top}&\bm{\alpha}(k)\bm  (B.61)
+     =            {\beta}^{\top}+\bm{\beta}\bm{\alpha}(k)^{\top}&\mathrm{diag}(\bm{\alpha}
+                  (k))\\ \bm{\alpha}(k)\bm{p}_{\ell+2}^{\top}&\mathrm{diag}(\bm{\alpha}(k))
+                  &\bm{\alpha}(k)\bm{e}_{w}^{\top}+\bm{e}_{w}\bm{\alpha}(k)^{\top}\end
+                  {bmatrix}
+
+    and
+
+                  𝒅⁡(ℓ+2,ℓ+3,k,w)+𝒅⁡(ℓ+3,ℓ+2,k,w)\displaystyle\bm{d}(\ell+2,\ell+3,k,w)+\bm  (B.62)
+                  {d}(\ell+3,\ell+2,k,w)
+                  ηV~​[−𝒑ℓ+2​𝔼​[T−1]−𝒑ℓ+3​𝔼​[T−1]−𝒆k​𝔼​[T−1]−𝒆k​𝔼​[T−1]−𝒆w​𝔼​[T−1]]+ηV~​O∞​
+     =\           (𝔼⁡[T−1]​Ntrg⋅N−1+Ntrg⋅N−2).\displaystyle\tilde{\eta_{V}}\begin{bmatrix}-
+     displaystyle \bm{p}_{\ell+2}\mathbb{E}[T^{-1}]-\bm{p}_{\ell+3}\mathbb{E}[T^{-1}]\\ -\   (B.63)
+     =            bm{e}_{k}\mathbb{E}[T^{-1}]\\ -\bm{e}_{k}\mathbb{E}[T^{-1}]-\bm{e}_{w}\
+                  mathbb{E}[T^{-1}]\end{bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}[T^
+                  {-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_{\mathrm{trg}}\cdot N^{-2}).
+
+ 2. (ii)
+   
+    For t≠ℓ+2,ℓ+3t\neq\ell+2,\ell+3 we have
+
+     𝑴⁡(t,ℓ+2,k,w)+𝑴⁡(ℓ+2,t,k,w)=[𝑶𝒑t​𝜶​(k)⊤𝑶𝜶⁡(k)​𝒑t⊤𝜸⁡(t)​𝜶​(k)⊤+𝜶⁡(k)​𝜸​(t)⊤𝜶⁡(k)
+     ​𝜷⊤𝑶𝜷​𝜶​(k)⊤𝑶]\bm{M}(t,\ell+2,k,w)+\bm{M}(\ell+2,t,k,w)=\begin{bmatrix}\bm{O}&\bm{p}_
+     {t}\bm{\alpha}(k)^{\top}&\bm{O}\\ \bm{\alpha}(k)\bm{p}_{t}^{\top}&\bm{\gamma}(t)\bm{\   (B.64)
+     alpha}(k)^{\top}+\bm{\alpha}(k)\bm{\gamma}(t)^{\top}&\bm{\alpha}(k)\bm{\beta}^{\top}\\
+     \bm{O}&\bm{\beta}\bm{\alpha}(k)^{\top}&\bm{O}\end{bmatrix}
+
+    where 𝜸⁡(t)=𝒆w\bm{\gamma}(t)=\bm{e}_{w} if t=ℓ+1t=\ell+1 or t=Tt=T and 𝜸⁡(t)=𝜷\bm{\gamma}(t)=\
+    bm{\beta} otherwise. To summarize,
+
+     𝒅⁡(t,ℓ+2,k,w)+𝒅⁡(ℓ+2,t,k,w)=ηV~​[−𝒑t​𝔼​[T−1]−𝒆w​𝔼​[T−1]𝟎]+ηV~​O∞​(𝔼⁡[T−1]
+     ​Ntrg⋅N−1+Ntrg⋅N−2).\bm{d}(t,\ell+2,k,w)+\bm{d}(\ell+2,t,k,w)=\tilde{\eta_{V}}\begin
+     {bmatrix}-\bm{p}_{t}\mathbb{E}[T^{-1}]\\ -\bm{e}_{w}\mathbb{E}[T^{-1}]\\ \bm{0}\end     (B.65)
+     {bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}[T^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_
+     {\mathrm{trg}}\cdot N^{-2}).
+
+    if t=ℓ+1t=\ell+1 or t=Tt=T and
+
+     𝒅⁡(t,ℓ+2,k,w)+𝒅⁡(ℓ+2,t,k,w)=ηV~​[−𝒑t​𝔼​[T−1]𝟎𝟎]+ηV~​O∞​(𝔼⁡[T−1]​Ntrg⋅N−1+Ntrg⋅N−2).\bm
+     {d}(t,\ell+2,k,w)+\bm{d}(\ell+2,t,k,w)=\tilde{\eta_{V}}\begin{bmatrix}-\bm{p}_{t}\      (B.66)
+     mathbb{E}[T^{-1}]\\ \bm{0}\\ \bm{0}\end{bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}
+     [T^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_{\mathrm{trg}}\cdot N^{-2}).
+
+    otherwise.
+
+ 3. (iii)
+   
+    For t≠ℓ+2,ℓ+3t\neq\ell+2,\ell+3 we have
+
+     𝑴⁡(t,ℓ+3,k,w)+𝑴⁡(ℓ+3,t,k,w)=[𝑶𝑶𝒑t​𝜶​(k)⊤𝑶𝑶𝜸⁡(t)​𝜶​(k)⊤𝜶⁡(k)​𝒑t⊤𝜶⁡(k)​𝜸​(t)⊤𝜷​𝜶​(k)⊤+𝜶⁡
+     (k)​𝜷⊤]\bm{M}(t,\ell+3,k,w)+\bm{M}(\ell+3,t,k,w)=\begin{bmatrix}\bm{O}&\bm{O}&\bm{p}_
+     {t}\bm{\alpha}(k)^{\top}\\ \bm{O}&\bm{O}&\bm{\gamma}(t)\bm{\alpha}(k)^{\top}\\ \bm{\    (B.67)
+     alpha}(k)\bm{p}_{t}^{\top}&\bm{\alpha}(k)\bm{\gamma}(t)^{\top}&\bm{\beta}\bm{\alpha}
+     (k)^{\top}+\bm{\alpha}(k)\bm{\beta}^{\top}\end{bmatrix}
+
+    and we obtain
+
+     𝒅⁡(t,ℓ+3,k,w)+𝒅⁡(ℓ+3,t,k,w)=ηV~​[−𝒑t​𝔼​[T−1]−𝒆w​𝔼​[T−1]𝟎]+ηV~​O∞​(𝔼⁡[T−1]
+     ​Ntrg⋅N−1+Ntrg⋅N−2)\bm{d}(t,\ell+3,k,w)+\bm{d}(\ell+3,t,k,w)=\tilde{\eta_{V}}\begin
+     {bmatrix}-\bm{p}_{t}\mathbb{E}[T^{-1}]\\ -\bm{e}_{w}\mathbb{E}[T^{-1}]\\ \bm{0}\end     (B.68)
+     {bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}[T^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_
+     {\mathrm{trg}}\cdot N^{-2})
+
+    if t=ℓ+1t=\ell+1 or t=Tt=T and
+
+     𝒅⁡(t,ℓ+3,k,w)+𝒅⁡(ℓ+3,t,k,w)=ηV~​[−𝒑t​𝔼​[T−1]𝟎𝟎]+ηV~​O∞​(𝔼⁡[T−1]​Ntrg⋅N−1+Ntrg⋅N−2).\bm
+     {d}(t,\ell+3,k,w)+\bm{d}(\ell+3,t,k,w)=\tilde{\eta_{V}}\begin{bmatrix}-\bm{p}_{t}\      (B.69)
+     mathbb{E}[T^{-1}]\\ \bm{0}\\ \bm{0}\end{bmatrix}+\tilde{\eta_{V}}O_{\infty}(\mathbb{E}
+     [T^{-1}]N_{\mathrm{trg}}\cdot N^{-1}+N_{\mathrm{trg}}\cdot N^{-2}).
+
+    otherwise.
+
+Now we are ready to calculate −1N−Ntrg∑k=Ntrg+1N𝚫(k,T)[:,:L+N]-\frac{1}{N-N_{\mathrm{trg}}}\sum_{k=
+N_{\mathrm{trg}}+1}^{N}\bm{\Delta}(k,T)[:,:L+N] as
+
+              −1N−Ntrg∑k=Ntrg+1N𝚫(k,T)[:,1:L+N]\displaystyle-\frac{1}{N-N_{\mathrm{trg}}}\   (B.70)
+              sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{\Delta}(k,T)[:,1:L+N]
+              1Ntrg∑w=1Ntrg{−ηV~N−Ntrg∑k=Ntrg+1N[(1T−1T2CLOSE)([−𝒑ℓ+2​𝔼​[T−1]−𝒆k​𝔼​[T−1]
+              −𝒆w​𝔼​[T−1]]+[−𝒑ℓ+3​𝔼​[T−1]𝟎−𝒆k​𝔼​[T−1]]CLOSE)\displaystyle\frac{1}{N_{\
+              mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\Bigg\{-\frac{\tilde{\eta_{V}}}
+ =\           {N-N_{\mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\Bigg[\mathopen{}\
+ displaystyle mathclose{{\left(\frac{1}{T}-\frac{1}{T^{2}}}}\right)\mathopen{}\mathclose{{\  (B.71)
+ =            left(\begin{bmatrix}-\bm{p}_{\ell+2}\mathbb{E}[T^{-1}]\\ -\bm{e}_{k}\mathbb
+              {E}[T^{-1}]\\ -\bm{e}_{w}\mathbb{E}[T^{-1}]\end{bmatrix}+\begin{bmatrix}-\bm
+              {p}_{\ell+3}\mathbb{E}[T^{-1}]\\ \bm{0}\\ -\bm{e}_{k}\mathbb{E}[T^{-1}]\end
+              {bmatrix}}}\right)
+              +1T2[𝒑ℓ+2​𝔼​[T−1]+𝒑ℓ+3​𝔼​[T−1]𝒆k​𝔼​[T−1]𝒆k​𝔼​[T−1]+𝒆w​𝔼​[T−1]]+2T2[𝟏1:T∖
+              {ℓ+2,ℓ+3}𝔼[T−1]2​𝒆w​𝔼​[T−1]𝟎]][𝒑T⊤𝒆w⊤]}\displaystyle+\frac{1}{T^{2}}\begin
+              {bmatrix}\bm{p}_{\ell+2}\mathbb{E}[T^{-1}]+\bm{p}_{\ell+3}\mathbb{E}[T^{-1}]\
+              \ \bm{e}_{k}\mathbb{E}[T^{-1}]\\ \bm{e}_{k}\mathbb{E}[T^{-1}]+\bm{e}_{w}\      (B.72)
+              mathbb{E}[T^{-1}]\end{bmatrix}+\frac{2}{T^{2}}\begin{bmatrix}\bm{1}_{1:T\
+              setminus\{\ell+2,\ell+3\}}\mathbb{E}[T^{-1}]\\ 2\bm{e}_{w}\mathbb{E}[T^{-1}]\
+              \ \bm{0}\end{bmatrix}\Bigg]\begin{bmatrix}\bm{p}_{T}^{\top}&\bm{e}_{w}^{\top}
+              \end{bmatrix}\Bigg\}
+              +ηV~​𝔼​[T−1]​O​(Ntrg⋅N−1)+ηV~​O​(Ntrg⋅N−2)\displaystyle+{\tilde{\eta_{V}}}\
+              mathbb{E}[T^{-1}]O(N_{\mathrm{trg}}\cdot N^{-1})+{\tilde{\eta_{V}}}O(N_{\      (B.73)
+              mathrm{trg}}\cdot N^{-2})
+              1Ntrg∑w=1Ntrg{ηV~T[𝒑ℓ+2​𝔼​[T−1]+𝒑ℓ+3​𝔼​[T−1]𝟎𝒆w​𝔼​[T−1]][𝒑T⊤𝒆w⊤]\displaystyle
+ =\           \frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}\Bigg\{\frac{\tilde{\
+ displaystyle eta_{V}}}{T}\begin{bmatrix}\bm{p}_{\ell+2}\mathbb{E}[T^{-1}]+\bm{p}_{\ell+3}\  (B.74)
+ =            mathbb{E}[T^{-1}]\\ \bm{0}\\ \bm{e}_{w}\mathbb{E}[T^{-1}]\end{bmatrix}\begin
+              {bmatrix}\bm{p}_{T}^{\top}&\bm{e}_{w}^{\top}\end{bmatrix}
+              −2​ηV~T2[𝟏1:T∖{ℓ+2,ℓ+3}𝔼[T−1]2​𝒆w​𝔼​[T−1]𝟎][𝒑T⊤𝒆w⊤]}\displaystyle\quad\quad\
+              quad\quad-\frac{2\tilde{\eta_{V}}}{T^{2}}\begin{bmatrix}\bm{1}_{1:T\setminus\
+              {\ell+2,\ell+3\}}\mathbb{E}[T^{-1}]\\ 2\bm{e}_{w}\mathbb{E}[T^{-1}]\\ \bm{0}\  (B.75)
+              end{bmatrix}\begin{bmatrix}\bm{p}_{T}^{\top}&\bm{e}_{w}^{\top}\end{bmatrix}\
+              Bigg\}
+              +ηV~​𝔼​[T−1]​O∞​(Ntrg⋅N−1)+ηV~​O∞​(Ntrg⋅N−2),\displaystyle\quad\quad\quad\
+              quad+{\tilde{\eta_{V}}}\mathbb{E}[T^{-1}]O_{\infty}(N_{\mathrm{trg}}\cdot N^   (B.76)
+              {-1})+{\tilde{\eta_{V}}}O_{\infty}(N_{\mathrm{trg}}\cdot N^{-2}),
+
+which concludes the proof together with 𝔼⁡[T−1]≳N−1\mathbb{E}[T^{-1}]\gtrsim N^{-1} from
+Assumption 1. ∎
+
+We can also bound the last column:
+
+Lemma 12.
+
+It holds that
+
+ 𝑾K​Q∗[:,L+N+1:]=\        −1N−Ntrg∑k=Ntrg+1N𝚫(k,T)[:,L+N+1:]\displaystyle-\frac{1}{N-N_{\
+ displaystyle\bm{W}_{KQ}^ mathrm{trg}}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\bm{\Delta}(k,T)       (B.77)
+ {*}[:,L+N+1:]=           [:,L+N+1:]
+                          =ηV~​ηK​Q​𝔼ℓ′​[T​(ℓ′)−1]​O∞​(Ntrg⋅N−1).\displaystyle=\tilde{\eta_
+                          {V}}\eta_{KQ}\mathbb{E}_{\ell^{\prime}}[T(\ell^{\prime})^{-1}]O_   (B.78)
+                          {\infty}(N_{\mathrm{trg}}\cdot N^{-1}).
+
+Proof.  Note that
+
+              𝚫(k,T)[:,L+N+1:]\displaystyle\bm{\Delta}(k,T)[:,L+N+1:]                        (B.79)
+              1T∑t=1T(𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒆zT−1⊤]−𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)𝒆zT−1⊤|zT+1=k])\
+              displaystyle\frac{1}{T}\sum_{t=1}^{T}\mathopen{}\mathclose{{\left(\mathbb{E}_
+ =\           {\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_
+ displaystyle {t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{e}_{z_{T-1}}^{\top}}}\right]-\      (B.80)
+ =            mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^
+              {*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})\bm{e}_{z_{T-1}}^{\top}|z_
+              {T+1}=k}}\right]}}\right)
+ =\           1N−Ntrg∑l=Ntrg+1N1T∑t=1T(𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)|zT−1=l]\displaystyle\frac{1}
+ displaystyle {N-N_{\mathrm{trg}}}\sum_{l=N_{\mathrm{trg}}+1}^{N}\frac{1}{T}\sum_{t=1}^{T}   (B.81)
+ =            (\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!
+              V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})|z_{T-1}=l}}\right]
+              −𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)|zT−1=l,zT+1=k])𝒆l⊤.\displaystyle\hskip 85.35826pt-\
+              mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^  (B.82)
+              {*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})|z_{T-1}=l,z_{T+1}=k}}\
+              right])\bm{e}_{l}^{\top}.
+
+Then the assertion immediately follows from the fact that each entry of
+
+ 𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)|zT−1=l]−𝔼𝑿[𝒆k⊤𝑾V∗𝒙t⋅(𝒙t−𝒙¯1:T)|zT−1=l,zT+1=k]\mathbb{E}_{\bm{X}}\mathopen
+ {}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}_{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_
+ {1:T})|z_{T-1}=l}}\right]-\mathbb{E}_{\bm{X}}\mathopen{}\mathclose{{\left[\bm{e}_{k}^{\top}\bm{W}
+ _{\!V}^{*}\bm{x}_{t}\cdot(\bm{x}_{t}-\bar{\bm{x}}_{1:T})|z_{T-1}=l,z_{T+1}=k}}\right]
+
+is upper bounded by ηV~​𝔼​[T−1]\tilde{\eta_{V}}\mathbb{E}[T^{-1}] up to constant, from Lemma 9. ∎
+
+B.3 Max-sum Ratio and Algorithm Selection
+
+Now we are ready to establish analysis on transformer’s algorithm selection based on max-sum ratio.
+From Lemmas 11 and 12, it holds that
+
+              𝑾K​Q∗\displaystyle\bm{W}_{KQ}^{*}                                              (B.83)
+              η~1Ntrg∑w=1Ntrg𝔼[{[(T−1+2​T−2)​(𝒑ℓ+2+𝒑ℓ+3)𝟎T−1​𝒆w]−2T−2[𝟏1:T2​𝒆w𝟎]}
+              [𝒑T⊤𝒆w⊤𝟎N⊤]]\displaystyle\tilde{\eta}\frac{1}{N_{\mathrm{trg}}}\sum_{w=1}^{N_
+ =\           {\mathrm{trg}}}\mathbb{E}\mathopen{}\mathclose{{\left[\mathopen{}\mathclose
+ displaystyle {{\left\{\begin{bmatrix}(T^{-1}+2T^{-2})(\bm{p}_{\ell+2}+\bm{p}_{\ell+3})\\ \  (B.84)
+ =            mathbf{0}\\ T^{-1}\bm{e}_{w}\end{bmatrix}-2T^{-2}\begin{bmatrix}\bm{1}_{1:T}\
+              \ 2\bm{e}_{w}\\ \mathbf{0}\end{bmatrix}}}\right\}\begin{bmatrix}\bm{p}_{T}^{\
+              top}&\bm{e}_{w}^{\top}&\mathbf{0}_{N}^{\top}\end{bmatrix}}}\right]
+              +O∞​(η~​Ntrg⋅N−1)\displaystyle+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N  (B.85)
+              ^{-1})
+
+where η~=ηV~​ηK​Q​𝔼​[T−1]\tilde{\eta}=\tilde{\eta_{V}}\eta_{KQ}\mathbb{E}[T^{-1}].
+
+Assume that a test sequence z=[z1,…,zT∗,zT∗+1]z=[z_{1},\dotsc,z_{T^{*}},z_{T^{*}+1}] is made from
+subtext lengths (ℓ1∗,ℓ2∗)(\ell_{1}^{*},\ell_{2}^{*}) (hence T∗=ℓ1∗+ℓ2∗+3T^{*}=\ell_{1}^{*}+\ell_{2}
+^{*}+3). Now let qλ=P[ℓ=λ]q_{\lambda}=\mathrm{P}[\ell=\lambda] and q∗=P[2ℓ+3=T∗]q^{*}=\mathrm{P}[2\
+ell+3=T^{*}] respectively (probability is defined by pretraining distribution). If the trigger 𝒙T∗\
+bm{x}_{T^{*}} satisfies 𝒙T∗=w∗\bm{x}_{T^{*}}=w^{*}, it holds that
+
+                  η~q∗Ntrg∑w=1Ntrg([((T∗)−1+2​(T∗)−2)​(𝒑ℓ∗+2+𝒑ℓ∗+3)𝟎(T∗)−1​𝒆w]−2(T∗)−2
+ 𝑾K​Q∗​𝒙T∗=\      [𝟏1:T∗2​𝒆w𝟎])\displaystyle\tilde{\eta}\frac{q^{*}}{N_{\mathrm{trg}}}\sum_
+ displaystyle\bm  {w=1}^{N_{\mathrm{trg}}}\mathopen{}\mathclose{{\left(\begin{bmatrix}((T^
+ {W}_{KQ}^{*}\bm  {*})^{-1}+2(T^{*})^{-2})(\bm{p}_{\ell^{*}+2}+\bm{p}_{\ell^{*}+3})\\ \      (B.86)
+ {x}_{T^{*}}=     mathbf{0}\\ (T^{*})^{-1}\bm{e}_{w}\end{bmatrix}-2(T^{*})^{-2}\begin
+                  {bmatrix}\bm{1}_{1:T^{*}}\\ 2\bm{e}_{w}\\ \mathbf{0}\end{bmatrix}}}\
+                  right)
+                  +η~1Ntrg𝔼[[(T−1+2​T−2)​(𝒑ℓ+2+𝒑ℓ+3)𝟎T−1​𝒆w∗]−2T−2[𝟏1:T2​𝒆w∗𝟎]]+O∞
+                  (η~Ntrg⋅N−1),\displaystyle+\tilde{\eta}\frac{1}{N_{\mathrm{trg}}}\mathbb
+                  {E}\mathopen{}\mathclose{{\left[\begin{bmatrix}(T^{-1}+2T^{-2})(\bm{p}_{\  (B.87)
+                  ell+2}+\bm{p}_{\ell+3})\\ \mathbf{0}\\ T^{-1}\bm{e}_{w^{*}}\end{bmatrix}
+                  -2T^{-2}\begin{bmatrix}\bm{1}_{1:T}\\ 2\bm{e}_{w^{*}}\\ \mathbf{0}\end
+                  {bmatrix}}}\right]+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1}),
+
+where ℓ∗=(T∗−3)/2\ell^{*}=(T^{*}-3)/2 — if such ℓ∗\ell^{*} is not an integer, then we do not define
+ℓ∗\ell^{*} (in such case q∗=0q^{*}=0 holds and we don’t need to define such a quantity).
+
+Hence, for any tt we can calculate the attention logit as
+
+ st\          ≔𝒙t⊤​𝑾K​Q∗​𝒙T∗\displaystyle\coloneqq\bm{x}_{t}^{\top}\bm{W}_{KQ}^{*}\bm{x}_{T
+ displaystyle ^{*}}                                                                          (B.88)
+ s_{t}
+ =\           η~​q∗Ntrg​∑w=1Ntrg(((T∗)−1+2​(T∗)−2)​(𝕀⁡(t=ℓ∗+2)+𝕀⁡(t=ℓ∗+3))CLOSE\
+ displaystyle displaystyle\tilde{\eta}\frac{q^{*}}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm   (B.89)
+ =            {trg}}}\bigg(((T^{*})^{-1}+2(T^{*})^{-2})(\mathbb{I}(t=\ell^{*}+2)+\mathbb{I}
+              (t=\ell^{*}+3))
+              OPEN+(T∗)−1​(𝕀⁡(zt−1=w))−2​(T∗)−2​(𝕀⁡(t≤T∗)+2​𝕀​(zt=w)))\displaystyle+(T^{*})
+              ^{-1}(\mathbb{I}(z_{t-1}=w))-2(T^{*})^{-2}(\mathbb{I}(t\leq T^{*})+2\mathbb    (B.90)
+              {I}(z_{t}=w))\bigg)
+              +η~​1Ntrg​((T​(t−2)−1+2​T​(t−2)−2)​qt−2+(T​(t−3)−1+2​T​(t−3)−2)​qt−3CLOSE\
+              displaystyle+\tilde{\eta}\frac{1}{N_{\mathrm{trg}}}\bigg((T(t-2)^{-1}+2T(t-2)  (B.91)
+              ^{-2})q_{t-2}+(T(t-3)^{-1}+2T(t-3)^{-2})q_{t-3}
+              OPEN+𝔼⁡[T−1]​𝕀​(zt−1=w∗)−2​𝔼​[T−2​𝕀​(t≤T)]−4​𝔼​[T−2]​𝕀​(zt=w∗))\displaystyle+
+              \mathbb{E}[T^{-1}]\mathbb{I}(z_{t-1}=w^{*})-2\mathbb{E}[T^{-2}\mathbb{I}(t\    (B.92)
+              leq T)]-4\mathbb{E}[T^{-2}]\mathbb{I}(z_{t}=w^{*})\bigg)
+              +O∞​(η~​Ntrg⋅N−1).\displaystyle+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot   (B.93)
+              N^{-1}).
+
+We begin with showing that if max-sum ratio is not sufficiently large, we can construct an OOD test
+sequence z∗z^{*} such that transformer mistakenly use the positional shortcut:
+
+Lemma 13.
+
+If it holds that
+
+ maxℓ⁡qℓ​ℓ−1∑ℓqℓ​ℓ−1≥ϵ⁡(Ntrg)\frac{\max_{\ell}q_{\ell}\ell^{-1}}{\sum_{\ell}q_{\ell}\ell^{-1}}\geq
+ \epsilon(N_{\mathrm{trg}})
+
+where ϵ⁡(Ntrg)=Θ⁡(Ntrg−1)\epsilon(N_{\mathrm{trg}})=\Theta(N_{\mathrm{trg}}^{-1}), there exists an
+OOD test sequence such that the pretrained transformer via Algorithm 1 fails to generalize.
+
+Proof.  Assume that
+
+ z∗=[u,u,…,u⏟ℓ1∗,w∗,v,u,u,…,u⏟ℓ2∗,w∗,v].z^{*}=[\underbrace{u,u,\dotsc,u}_{\ell_{1}^{*}},w^{*},v,\
+ underbrace{u,u,\dotsc,u}_{\ell_{2}^{*}},w^{*},v].
+
+and T∗=ℓ1∗+ℓ2∗+3=2​ℓ∗+3T^{*}=\ell_{1}^{*}+\ell_{2}^{*}+3=2\ell^{*}+3 where ℓ∗=arg⁡maxℓ⁡q⁡(ℓ)​ℓ−1\
+ell^{*}=\arg\max_{\ell}q(\ell)\ell^{-1}. Furthermore, we assume
+
+ ℓ1∗∉{ℓ∗−1,ℓ∗,ℓ∗+1,ℓ∗+2}.\ell_{1}^{*}\not\in\{\ell^{*}-1,\ell^{*},\ell^{*}+1,\ell^{*}+2\}.  (B.94)
+
+Since we have Assumption 2, there exists ℓ1∗≥1\ell_{1}^{*}\geq 1 such that (B.94) holds. We show
+the following sub-lemma:
+
+Lemma 14.
+
+There exists ϵ1​(Ntrg)=Θ⁡(Ntrg−1)\epsilon_{1}(N_{\mathrm{trg}})=\Theta(N_{\mathrm{trg}}^{-1}) such
+that if
+
+ maxℓ⁡qℓ​ℓ−1∑ℓqℓ​ℓ−1≥ϵ1​(Ntrg),\frac{\max_{\ell}q_{\ell}\ell^{-1}}{\sum_{\ell}q_{\ell}\ell^{-1}}\
+ geq\epsilon_{1}(N_{\mathrm{trg}}),
+
+then
+
+ sℓ1∗+1,sℓ1∗+2,sℓ1∗+3,sT∗≤12​sℓ∗+2.s_{\ell_{1}^{*}+1},s_{\ell_{1}^{*}+2},s_{\ell_{1}^{*}     (B.95)
+ +3},s_{T^{*}}\leq\frac{1}{2}s_{\ell^{*}+2}.
+
+Proof.  Here we show 2​sℓ1∗+2≤sℓ∗+22s_{\ell_{1}^{*}+2}\leq s_{\ell^{*}+2} — other properties can be
+deduced in the same vain.
+
+Note that, from (B.93),
+
+ sℓ1∗+2\
+ displaystyle s_ ≤η~​q∗Ntrg​∑w=1Ntrg[(T∗)−1​𝕀​(w=w∗)]\displaystyle\leq\tilde{\eta}\frac{q^{*}}{N_
+ {\ell_{1}^{*}   {\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}[(T^{*})^{-1}\mathbb{I}(w=w^{*})]
+ +2}
+                 +η~Ntrg​[((2​ℓ1∗+3)−1+2​(2​ℓ1∗+3)−2)​qℓ1∗+((2​ℓ1∗+1)−1+2​(2​ℓ1∗+1)−2)​qℓ1∗−1+𝔼⁡
+                 [T−1]]\displaystyle+\frac{\tilde{\eta}}{N_{\mathrm{trg}}}[((2\ell_{1}^{*}+3)^{-1}
+                 +2(2\ell_{1}^{*}+3)^{-2})q_{\ell_{1}^{*}}+((2\ell_{1}^{*}+1)^{-1}+2(2\ell_{1}^{*}
+                 +1)^{-2})q_{\ell_{1}^{*}-1}+\mathbb{E}[T^{-1}]]
+                 +O∞​(η~​Ntrg⋅N−1)\displaystyle+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^
+                 {-1})
+                 ≤η~​q∗Ntrg​(T∗)−1+6​η~​q∗Ntrg​(T∗)−1+η~Ntrg​𝔼​[T−1]+O∞​(η~​Ntrg⋅N−1).\
+                 displaystyle\leq\frac{\tilde{\eta}q^{*}}{N_{\mathrm{trg}}}(T^{*})^{-1}+\frac{6\
+                 tilde{\eta}q^{*}}{N_{\mathrm{trg}}}(T^{*})^{-1}+\frac{\tilde{\eta}}{N_{\mathrm
+                 {trg}}}\mathbb{E}[T^{-1}]+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1}).
+
+On the other hand, it holds that
+
+ sℓ∗+2\         ≥η~​q∗Ntrg​∑w=1Ntrg[(T∗)−1+2​(T∗)−2−2​(T∗)−2​(𝕀⁡(ℓ∗+2≤T∗)+2​𝕀​(zℓ∗+2=w))]\
+ displaystyle   displaystyle\geq\tilde{\eta}\frac{q^{*}}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm
+ s_{\ell^{*}+2} {trg}}}[(T^{*})^{-1}+2(T^{*})^{-2}-2(T^{*})^{-2}(\mathbb{I}(\ell^{*}+2\leq T^{*})
+                +2\mathbb{I}(z_{\ell^{*}+2}=w))]
+                +η~Ntrg​[((2​ℓ∗+3)−1+2​(2​ℓ∗+3)−2)​qℓ∗+((2​ℓ∗+1)−1+2​(2​ℓ∗+1)−2)​qℓ∗−1−6​𝔼​[T−2]]\
+                displaystyle+\frac{\tilde{\eta}}{N_{\mathrm{trg}}}[((2\ell^{*}+3)^{-1}+2(2\ell^{*}
+                +3)^{-2})q_{\ell^{*}}+((2\ell^{*}+1)^{-1}+2(2\ell^{*}+1)^{-2})q_{\ell^{*}-1}-6\
+                mathbb{E}[T^{-2}]]
+                +O∞​(η~​Ntrg⋅N−1)\displaystyle+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^
+                {-1})
+                ≥η~​q∗​(T∗)−1−6​η~​q∗​(T∗)−2−6​η~Ntrg​𝔼​[T−2]+O∞​(η~​Ntrg⋅N−1).\displaystyle\geq\
+                tilde{\eta}q^{*}(T^{*})^{-1}-6\tilde{\eta}q^{*}(T^{*})^{-2}-6\frac{\tilde{\eta}}
+                {N_{\mathrm{trg}}}\mathbb{E}[T^{-2}]+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot
+                N^{-1}).
+
+Note that T−2≤110​T−1T^{-2}\leq\frac{1}{10}T^{-1} holds from Assumption 2. Therefore,
+
+ 12​sℓ∗+2−sℓ1∗+2≥15​η~​q∗​(T∗)−1−1310​η~Ntrg​𝔼​[T−1]−7​η~​q∗Ntrg​(T∗)−1+O∞​(η~​Ntrg⋅N−1).\frac{1}
+ {2}s_{\ell^{*}+2}-s_{\ell_{1}^{*}+2}\geq\frac{1}{5}\tilde{\eta}q^{*}(T^{*})^{-1}-\frac{13}{10}\
+ frac{\tilde{\eta}}{N_{\mathrm{trg}}}\mathbb{E}[T^{-1}]-\frac{7\tilde{\eta}q^{*}}{N_{\mathrm
+ {trg}}}(T^{*})^{-1}+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1}).
+
+Together with Assumption 1, if the max-sum ratio is Ω⁡(Ntrg−1)\Omega(N_{\mathrm{trg}}^{-1}), we
+obtain 2​sℓ1∗+2≤sℓ∗+22s_{\ell_{1}^{*}+2}\leq s_{\ell^{*}+2} as desired. ∎
+
+Since now we have Lemma 14, when
+
+ η~V​ηK​Q≳C​log⁡N​N2Ntrg3≳C​log⁡N⋅Ntrg𝔼​[T−1]2\tilde{\eta}_{V}\eta_{KQ}\gtrsim C\log N\frac
+ {N^{2}}{N_{\mathrm{trg}}^{3}}\gtrsim C\log N\cdot\frac{N_{\mathrm{trg}}}{\mathbb{E}[T^      (B.96)
+ {-1}]^{2}}
+
+for a sufficiently large CC we obtain exp⁡st/exp⁡sℓ∗+2≤OPENexp⁡(−C​log⁡NCLOSE)=N−C\exp s_{t}/\exp
+s_{\ell^{*}+2}\leq\exp{-C\log N}=N^{-C} where t=ℓ1∗+1,ℓ1∗+2,ℓ1∗+3t=\ell_{1}^{*}+1,\ell_{1}^{*}+2,\
+ell_{1}^{*}+3 and T∗T^{*}. This immediately implies that 𝑿1:T∗Softmax(𝑿1:T∗⊤𝑾K​Q𝒙T∗)=
+∑k≠ℓ∗+1,ℓ∗+2,ℓ∗+3,T∗αk𝒙k+O∞(N−C′)\bm{X}_{1:T^{*}}\mathrm{Softmax}(\bm{X}_{1:T^{*}}^{\top}\bm{W}_
+{KQ}\bm{x}_{T^{*}})=\sum_{k\neq\ell^{*}+1,\ell^{*}+2,\ell^{*}+3,T^{*}}\alpha_{k}\bm{x}_{k}+O_{\
+infty}(N^{-C^{\prime}}) for a sufficiently large C′C^{\prime} where ∑k≠ℓ∗+1,ℓ∗+2,ℓ∗+3,T∗αk≥1−N−C′\
+sum_{k\neq\ell^{*}+1,\ell^{*}+2,\ell^{*}+3,T^{*}}\alpha_{k}\geq 1-N^{-C^{\prime}}. Therefore, we
+get
+
+ 𝑿1:T∗Softmax(𝑿1:T∗⊤𝑾K​Q𝒙T∗)=(1−N−C′)[∗𝒆u𝒆u]+N−C′[∗∗∗].\bm{X}_{1:T^{*}}\mathrm{Softmax}(\bm{X}_
+ {1:T^{*}}^{\top}\bm{W}_{KQ}\bm{x}_{T^{*}})=(1-N^{-C^{\prime}})\begin{bmatrix}\ast\\ \bm{e}_{u}\\
+ \bm{e}_{u}\end{bmatrix}+N^{-C^{\prime}}\begin{bmatrix}\ast\\ \ast\\ \ast\end{bmatrix}.
+
+From the structure of 𝑾V∗\bm{W}_{V}^{*} (Lemma 9), we observe that the predicted logit
+𝑾V𝑿1:T∗Softmax(𝑿1:T∗⊤𝑾K​Q𝒙T∗)\bm{W}_{V}\bm{X}_{1:T^{*}}\mathrm{Softmax}(\bm{X}_{1:T^{*}}^{\top}\bm
+{W}_{KQ}\bm{x}_{T^{*}}) has a peak on the token uu, meaning that OOD generalization fails. ∎
+
+Remark 3.
+
+Here we worked on the ratio between qℓ∗​T​(ℓ∗)−1=maxℓ⁡(2​ℓ+3)−1​qℓq_{\ell^{*}}T(\ell^{*})^{-1}=\
+max_{\ell}(2\ell+3)^{-1}q_{\ell} and 𝔼⁡[T​(ℓ)−1]=∑ℓ(2​ℓ+3)−1​qℓ\mathbb{E}[T(\ell)^{-1}]=\sum_{\ell}
+(2\ell+3)^{-1}q_{\ell}. We can immediately show (using Assumption 2) 13​maxℓ​(ℓ)−1​qℓ≤maxℓ⁡(2​ℓ+3)
+−1​qℓ≤12​maxℓ​(ℓ)−1​qℓ\frac{1}{3}\max_{\ell}(\ell)^{-1}q_{\ell}\leq\max_{\ell}(2\ell+3)^{-1}q_{\
+ell}\leq\frac{1}{2}\max_{\ell}(\ell)^{-1}q_{\ell} and 13​∑ℓ(ℓ)−1​qℓ≤∑ℓ(2​ℓ+3)−1​qℓ≤12​∑ℓ(ℓ)−1​qℓ\
+frac{1}{3}\sum_{\ell}(\ell)^{-1}q_{\ell}\leq\sum_{\ell}(2\ell+3)^{-1}q_{\ell}\leq\frac{1}{2}\sum_{\
+ell}(\ell)^{-1}q_{\ell}, then we do not distinguish these two definitions of max-sum ratio.
+
+Similarly we can show the following upper bound:
+
+Lemma 15.
+
+If it holds that
+
+ maxℓ⁡qℓ​ℓ−1∑ℓqℓ​ℓ−1≥ϵ⁡(Ntrg)\frac{\max_{\ell}q_{\ell}\ell^{-1}}{\sum_{\ell}q_{\ell}\ell^{-1}}\geq
+ \epsilon(N_{\mathrm{trg}})
+
+where ϵ⁡(Ntrg)=Θ⁡(Ntrg−1)\epsilon(N_{\mathrm{trg}})=\Theta(N_{\mathrm{trg}}^{-1}), the pretrained
+transformer via Algorithm 1 can generalize OOD.
+
+Proof.  In the same vain as the proof of the lower bound, it suffices to show sℓ1∗+2≥2​sts_{\ell_
+{1}^{*}+2}\geq 2s_{t} for any t≠ℓ1∗+2t\neq{\ell_{1}^{*}+2}, going the other way around Lemma 13.
+
+First we have
+
+ sℓ1∗+2\         ≥η~​q∗Ntrg​∑w=1Ntrg[−2​(T∗)−2​𝕀​(ℓ1∗+2≤T∗)]\displaystyle\geq\tilde{\eta}\frac{q^
+ displaystyle s_ {*}}{N_{\mathrm{trg}}}\sum_{w=1}^{N_{\mathrm{trg}}}[-2(T^{*})^{-2}\mathbb{I}(\
+ {\ell_{1}^{*}   ell_{1}^{*}+2\leq T^{*})]
+ +2}
+                 +η~Ntrg[((2ℓ1∗+3)−1+2(2ℓ1∗+3)−2)qℓ1∗+((2ℓ1∗+1)−1+2(2ℓ1∗+1)−2)qℓ1∗−1\displaystyle+
+                 \frac{\tilde{\eta}}{N_{\mathrm{trg}}}[((2\ell_{1}^{*}+3)^{-1}+2(2\ell_{1}^{*}+3)^
+                 {-2})q_{\ell_{1}^{*}}+((2\ell_{1}^{*}+1)^{-1}+2(2\ell_{1}^{*}+1)^{-2})q_{\ell_{1}
+                 ^{*}-1}
+                 −2𝔼[T−2]+𝔼[T−1]]+O∞(η~Ntrg⋅N−1)\displaystyle\quad\quad\quad-2\mathbb{E}[T^{-2}]+\
+                 mathbb{E}[T^{-1}]]+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1})
+                 ≥η~Ntrg​𝔼​[T−1]−2​η~Ntrg​𝔼​[T−2]−2​η~​maxℓ​qℓ​T​(ℓ)−1+O∞​(η~​Ntrg⋅N−1).\
+                 displaystyle\geq\frac{\tilde{\eta}}{N_{\mathrm{trg}}}\mathbb{E}[T^{-1}]-2\frac{\
+                 tilde{\eta}}{N_{\mathrm{trg}}}\mathbb{E}[T^{-2}]-2\tilde{\eta}\max_{\ell}q_{\ell}
+                 T(\ell)^{-1}+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1}).
+
+For all t≠ℓ1∗+2t\neq\ell_{1}^{*}+2, observe
+
+              ≤η~​q∗Ntrg​∑w=1Ntrg[3​(T∗)−1⋅2]+η~Ntrg​[3​T​(t−2)−1​qt−2+3​T​(t−3)−1​qt−3]+O∞​
+ st\          (η~​Ntrg⋅N−1)\displaystyle\leq\tilde{\eta}\frac{q^{*}}{N_{\mathrm{trg}}}\sum_{w=1}^
+ displaystyle {N_{\mathrm{trg}}}[3(T^{*})^{-1}\cdot 2]+\frac{\tilde{\eta}}{N_{\mathrm{trg}}}[3T
+ s_{t}        (t-2)^{-1}q_{t-2}+3T(t-3)^{-1}q_{t-3}]+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot
+              N^{-1})
+              ≤6​η~​maxℓ​qℓ​T​(ℓ)−1+6​η~Ntrg​maxℓ​qℓ​T​(ℓ)−1+O∞​(η~​Ntrg⋅N−1).\displaystyle\leq 6\
+              tilde{\eta}\max_{\ell}q_{\ell}T(\ell)^{-1}+6\frac{\tilde{\eta}}{N_{\mathrm{trg}}}\
+              max_{\ell}q_{\ell}T(\ell)^{-1}+O_{\infty}(\tilde{\eta}N_{\mathrm{trg}}\cdot N^{-1}).
+
+Therefore, we obtain 12​sℓ1∗+2≥st\frac{1}{2}s_{\ell_{1}^{*}+2}\geq s_{t} as desired, if max-sum
+ratio is O⁡(Ntrg−1)O(N_{\mathrm{trg}}^{-1}). ∎
+
+B.4 Proof of Theorem 5
+
+Theorem 5 is directly obtained by combining Lemmas 13 and 15: it only remains to adjust the
+stepsize.
+
+From Cororally 10 we need η~V=ηV/N≲1/N\tilde{\eta}_{V}=\eta_{V}/N\lesssim 1/N, and from (B.96) we
+need η~V​ηK​Q≳log⁡N​N2Ntrg3\tilde{\eta}_{V}\eta_{KQ}\gtrsim\log N\frac{N^{2}}{N_{\mathrm{trg}}^
+{3}}. Therefore, it suffices to set
+
+ ηV≲1​and​ηV​ηK​Q≳N3Ntrg3​log⁡N.\eta_{V}\lesssim 1~~\text{and}~~\eta_{V}\eta_{KQ}\gtrsim\    (B.97)
+ frac{N^{3}}{N_{\mathrm{trg}}^{3}}\log N.
+
+Appendix C Finite Sample Analysis
+
+Now we turn to make an analysis for finite sample size setting.
+
+Proof Sketch.
+
+We explain how to evaluate the concentration of the empirical gradient ∇𝑾Vℒ^​(fTF)\nabla_{\bm{W}_
+{\!V}}\hat{\mathcal{L}}(f_{\mathrm{TF}}). Concentration for ∇𝑾K​Qℒ^​(fTF)\nabla_{\bm{W}_{\!KQ}}\hat
+{\mathcal{L}}(f_{\mathrm{TF}}) can be obtained similarly.
+
+Let {{𝒙t(i)}t=1T​(ℓ)i}i=1MV\quantity{\qty{\vx^{(i)}_t}_{t=1}^{T(\ell)_i}}_{i=1}^{M_{V}} be MVM_{V}
+i.i.d. sample sequences, and {{𝒙t(iℓ,k)}t}iℓ,k=1MVℓ,k\quantity{\qty{\vx^{(i_{\ell,k})}_t}_t}_{i_{\
+ell,k}=1}^{M_{V}^{\ell,k}} be MVℓ,kM_{V}^{\ell,k} i.i.d. sub-samples conditioned on ℓ\ell and zT+1=
+kz_{T+1}=k. Note that ∑ℓ,kMVℓ,k=MV\sum_{\ell,k}M_{V}^{\ell,k}=M_{V}. The empirical gradient ∇𝑾Vℒ^​
+(fTF)\nabla_{\bm{W}_{\!V}}\hat{\mathcal{L}}(f_{\mathrm{TF}}) is expressed as
+
+ ∇𝑾Vℒ^(fTF)≃𝔼^ℓ∼𝒟ℓ𝔼^k∼Unif⁡[K][𝑨^ℓ,k]+(similar terms omitted)\nabla_{\bm{W}_{\!V}}\hat{\
+ mathcal{L}}(f_{\mathrm{TF}})\simeq\hat{\mathbb{E}}_{\ell\sim\mathcal{D}_{\ell}}\hat{\mathbb  (C.1)
+ {E}}_{k\sim\mathrm{Unif}[K]}\mathopen{}\mathclose{{\left[\hat{\bm{A}}_{\ell,k}}}\right]+\
+ text{(similar terms omitted)}
+
+where 𝑨^ℓ,k\hat{\bm{A}}_{\ell,k} is the empirical average of 1T​∑t=1T𝟏N​𝒙t(iℓ,k)⊤\frac{1}{T}\sum_{t
+=1}^{T}\bm{1}_{N}{\bm{x}_{t}^{(i_{\ell,k})}}^{\top} (iℓ,k=1,…,MVℓ,ki_{\ell,k}=1,\dots,M_{V}^{\
+ell,k}) with the sample size =MVℓ,k=M_{V}^{\ell,k}. We focus on bounding the first term in this
+sketch. The gap between the empirical and population gradients is bounded as
+
+              ‖∇𝑾Vℒ^​(fTF)−∇𝑾Vℒ​(fTF)‖2\displaystyle\|\nabla_{\bm{W}_{\!V}}\hat{\mathcal{L}}  (C.2)
+              (f_{\mathrm{TF}})-\nabla_{\bm{W}_{\!V}}\mathcal{L}(f_{\mathrm{TF}})\|_{2}
+              ‖𝔼^ℓ𝔼^k[𝑨^ℓ,k−𝔼[𝑨^ℓ,k|ℓ,k]]‖2+‖𝔼^ℓOPEN(𝔼^k−𝔼kCLOSE)𝔼[𝑨^ℓ,k|ℓ,k]‖2+‖OPEN(𝔼^
+              ℓ−𝔼ℓCLOSE)𝔼[𝑨^ℓ,k|ℓ]‖2.\displaystyle\mathopen{}\mathclose{{\left\|\hat{\mathbb
+ ≲\           {E}}_{\ell}\hat{\mathbb{E}}_{k}\mathopen{}\mathclose{{\left[\hat{\bm{A}}_{\
+ displaystyle ell,k}-\mathbb{E}[\hat{\bm{A}}_{\ell,k}|\ell,k]}}\right]}}\right\|_{2}+\        (C.3)
+ \lesssim     mathopen{}\mathclose{{\left\|\hat{\mathbb{E}}_{\ell}\quantity(\hat{\E}_{k} - \
+              E_k)\mathbb{E}[\hat{\bm{A}}_{\ell,k}|\ell,k]}}\right\|_{2}+\mathopen{}\
+              mathclose{{\left\|\quantity(\hat{\E}_{\ell}-\E_\ell)\mathbb{E}[\hat{\bm{A}}_{\
+              ell,k}|\ell]}}\right\|_{2}.
+
+The first term is bounded by the matrix Hoeffding’s inequality using ‖𝑨^ℓ,k​𝑨^ℓ,k⊤‖2,‖𝑨^ℓ,k⊤​𝑨^
+ℓ,k‖2≲1\|\hat{\bm{A}}_{\ell,k}\hat{\bm{A}}_{\ell,k}^{\top}\|_{2},\|\hat{\bm{A}}_{\ell,k}^{\top}\hat
+{\bm{A}}_{\ell,k}\|_{2}\lesssim 1 and MVℓ,k≃qℓ​N−1​MVM_{V}^{\ell,k}\simeq q_{\ell}N^{-1}M_{V} for
+each pair (ℓ,k)(\ell,k). Note that ∑ℓqℓ\sum_{\ell}\sqrt{q_{\ell}} emerges in this bound because ∥𝑨^
+ℓ,k−𝔼[𝑨^ℓ,k|ℓ,k]∥2≃qℓ−1/2\|\hat{\bm{A}}_{\ell,k}-\mathbb{E}[\hat{\bm{A}}_{\ell,k}|\ell,k]\|_{2}\
+simeq q_{\ell}^{-1/2} and 𝔼^ℓ[⋅]≃∑ℓ⋅qℓ\hat{\mathbb{E}}_{\ell}[\cdot]\simeq\sum_{\ell}\,\cdot\;q_{\
+ell}. The second and third terms can also be bounded by ‖𝑨^ℓ,k‖2≲1\|\hat{\bm{A}}_{\ell,k}\|_{2}\
+lesssim 1 and using the standard Hoeffding’s inequality.
+
+C.1 Value Matrix
+
+We first establish an upper-bound for the difference between empirical and population gradient with
+respect to 𝑾V\bm{W}_{V}.
+
+Lemma 16.
+
+Let 𝐀t=𝟏1:N𝐱t⊤=𝟏1:N[𝐩t⊤𝐞zt⊤𝐞zt−1⊤]\bm{A}_{t}=\bm{1}_{1:N}\bm{x}_{t}^{\top}=\bm{1}_{1:N}[\bm{p}_{t}^
+{\top}\;\bm{e}_{z_{t}}^{\top}\;\bm{e}_{z_{t-1}}^{\top}]. Then we have
+
+ [𝑨t​𝑨t⊤𝟎𝟎𝑨t⊤​𝑨t]⪯𝚺t\begin{bmatrix}\bm{A}_{t}\bm{A}_{t}^{\top}&\bm{0}\\ \bm{0}&\bm{A}_{t}^{\  (C.4)
+ top}\bm{A}_{t}\end{bmatrix}\preceq\bm{\Sigma}_{t}
+
+where λi​(𝚺t)≲N\lambda_{i}(\bm{\Sigma}_{t})\lesssim N for i=1,2i=1,2 λi​(𝚺t)=0\lambda_{i}(\bm{\
+Sigma}_{t})=0 for i≥3i\geq 3 and ‖𝚺t‖2≲N\|\bm{\Sigma}_{t}\|_{2}\lesssim N. Similarly, let 𝐁t,k=
+𝐞k​𝐱t⊤\bm{B}_{t,k}=\bm{e}_{k}\bm{x}_{t}^{\top}. Then, we have
+
+ [𝑩t,k​𝑩t,k⊤𝟎𝟎𝑩t,k⊤​𝑩t,k]⪯𝚺t′\begin{bmatrix}\bm{B}_{t,k}\bm{B}_{t,k}^{\top}&\bm{0}\\ \bm{0}&  (C.5)
+ \bm{B}_{t,k}^{\top}\bm{B}_{t,k}\end{bmatrix}\preceq\bm{\Sigma}^{\prime}_{t}
+
+where ‖𝚺t′‖2≲1\|\bm{\Sigma}^{\prime}_{t}\|_{2}\lesssim 1.
+
+Proof.  We provide the proof for 𝑨t\bm{A}_{t}. Proof for 𝑩t\bm{B}_{t} can be derived in the same
+vain.
+
+ 𝑨t𝑨t⊤=𝟏1:N𝒙t⊤𝒙t𝟏1:N⊤=3[1…1⋱1…1]⪯𝚺t(a)\bm{A}_{t}\bm{A}_{t}^{\top}=\bm{1}_{1:N}\bm{x}_{t}^{\
+ top}\bm{x}_{t}\bm{1}_{1:N}^{\top}=3\begin{bmatrix}1&\dots&1\\ \vdots&\ddots&\vdots\\ 1&\     (C.6)
+ dots&1\end{bmatrix}\preceq\bm{\Sigma}_{t}^{(a)}
+
+where λ1​(𝚺t(a))=3​N\lambda_{1}(\bm{\Sigma}^{(a)}_{t})=3N, λi​(𝚺t(a))=0\lambda_{i}(\bm{\Sigma}^
+{(a)}_{t})=0 for i≥2i\geq 2.
+
+ 𝑨t⊤𝑨t=𝒙t𝟏1:N⊤𝟏1:N𝒙t⊤=N𝒙t𝒙t⊤⪯𝚺t(b)\bm{A}_{t}^{\top}\bm{A}_{t}=\bm{x}_{t}\bm{1}_{1:N}^{\top}\  (C.7)
+ bm{1}_{1:N}\bm{x}_{t}^{\top}=N\bm{x}_{t}\bm{x}_{t}^{\top}\preceq\bm{\Sigma}_{t}^{(b)}
+
+where λ1​(𝚺t(b))=3​N\lambda_{1}(\bm{\Sigma}^{(b)}_{t})=3N, λi​(𝚺t(b))=0\lambda_{i}(\bm{\Sigma}^
+{(b)}_{t})=0 for i≥2i\geq 2. Using
+
+ rank⁡(𝑨t​𝑨t⊤)+rank⁡(𝑨t⊤​𝑨t)≤2\mathrm{rank}(\bm{A}_{t}\bm{A}_{t}^{\top})+\mathrm{rank}(\bm{A}_{t}^
+ {\top}\bm{A}_{t})\leq 2
+
+and
+
+ λ1​OPEN([𝑨t​𝑨t⊤𝑶𝑶𝑨t⊤​𝑨t]CLOSE)≲max⁡{λ1​(𝑨t​𝑨t⊤),λ1​(𝑨t⊤​𝑨t)},\lambda_{1}\quantity(\begin{bmatrix}
+ \vA_t \vA_t^\top& \bm{O}\\ \bm{O} & \vA_t^\top\vA_t\end{bmatrix})\lesssim\max\{\lambda_{1}(\bm{A}
+ _{t}\bm{A}_{t}^{\top}),\lambda_{1}(\bm{A}_{t}^{\top}\bm{A}_{t})\},
+
+we obtain the conclusion. ∎
+
+Lemma 17.
+
+Let {{𝐱t(i)}t=1Ti}i=1MV\quantity{\qty{\vx^{(i)}_t}_{t=1}^{T_i}}_{i=1}^{M_{V}} be i.i.d. sample
+sequences, {{𝐱t(iT)}t=1T}iT=1MVT\quantity{\qty{\vx^{(i_T)}_t}_{t=1}^{T}}_{i_{T}=1}^{M_{V}^{T}} be
+conditionally i.i.d. sub-samples with fixed TT, and {{𝐱t(iT,k)}t}iT,k=1MVT,k\quantity{\qty{\vx^{(i_
+{T,k})}_t}_t}_{i_{T,k}=1}^{M_{V}^{T,k}} be conditionally i.i.d. sub-samples with fixed TT and zT+1=
+kz_{T+1}=k. Note that ∑T,kMVT,k=∑TMVT=MV\sum_{T,k}M_{V}^{T,k}=\sum_{T}M_{V}^{T}=M_{V}. Then, with
+probability at least 1−O⁡(ϵ)1-O(\epsilon),
+
+              λmax(∇𝑾V1MV∑i=1MVℒ(𝑿1:T(i)(i);𝑾K​Q,𝑾V)−∇𝑾V¯ℒ(𝑾K​Q,𝑾V))\displaystyle\lambda_{\
+              max}\quantity( \nabla_{\vW_{\!V}}\frac{1}{M_V}\sum_{i=1}^{M_V}\cL(\vX_{1:T^     (C.8)
+              {(i)}}^{(i)};\vW_{KQ},\vW_V) - \nabla_{\vW_{\!V}}\bar\cL(\vW_{KQ},\vW_V) )
+ ≲\           OPEN(∑ℓqℓCLOSE)​N​log⁡OPEN(N​L​(N+L)​ϵ−1CLOSE)MV.\displaystyle\quantity(\sum_\
+ displaystyle ell\sqrt{q_\ell})\sqrt{\frac{N\log\quantity(NL(N+L) \epsilon^{-1})}{M_{V}}}.    (C.9)
+ \lesssim
+
+Proof.  The empirical gradient is, noting that T=2​ℓ+3≥5T=2\ell+3\geq 5,
+
+ ∇𝑾Vℒ^​(fTF)=\displaystyle 1N∑k=1N𝒆k𝔼^T[1T∑t=1T𝔼^[𝒙t]⊤]\displaystyle\frac{1}{N}\sum_{k=1}^
+ \nabla_{\bm{W}_{\!V}}\hat {N}\bm{e}_{k}\hat{\mathbb{E}}_{T}\mathopen{}\mathclose{{\left[\   (C.10)
+ {\mathcal{L}}(f_{\mathrm  frac{1}{T}\sum_{t=1}^{T}\hat{\mathbb{E}}[\bm{x}_{t}]^{\top}}}\
+ {TF}})=                   right]
+                           −∑k=Ntrg+1N𝒆k𝔼^T[1T∑t=1T𝔼^[𝒙t𝕀[zT+1=k]]⊤]\displaystyle-\sum_{k=
+                           N_{\mathrm{trg}}+1}^{N}\bm{e}_{k}\hat{\mathbb{E}}_{T}\mathopen{}  (C.11)
+                           \mathclose{{\left[\frac{1}{T}\sum_{t=1}^{T}\hat{\mathbb{E}}[\bm
+                           {x}_{t}\mathbb{I}[z_{T+1}=k]]^{\top}}}\right]
+                           1MV∑T=5L−1∑iT=1MVT(1T​N∑t=1T𝟏1:N𝒙(iT)t⊤)\displaystyle\frac{1}{M_
+ =\displaystyle=           {V}}\sum_{T=5}^{L-1}\sum_{i_{T}=1}^{M_{V}^{T}}\mathopen{}\        (C.12)
+                           mathclose{{\left(\frac{1}{TN}\sum_{t=1}^{T}\bm{1}_{1:N}{\bm{x}^
+                           {(i_{T})}_{t}}^{\top}}}\right)
+                           −∑T=5L−1MVTMV∑k=Ntrg+1NMVT,kMVT1MVT,k∑iT,k=1MVT,kOPEN(1T​∑t=
+                           1T𝒆k​𝒙t(iT,k)⊤CLOSE).\displaystyle-\sum_{T=5}^{L-1}\frac{M_{V}^
+                           {T}}{M_{V}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\frac{M_{V}^{T,k}}{M_   (C.13)
+                           {V}^{T}}\frac{1}{M_{V}^{T,k}}\sum_{i_{T,k}=1}^{M_{V}^{T,k}}\
+                           quantity(\frac{1}{T}\sum_{t=1}^T \ve_k {\vx^{(i_{T,k})}_t}^\
+                           top).
+
+Let
+
+ 𝑨(iT)=∑t=1T𝟏1:N𝒙(iT)t⊤−𝔼[∑t=1T𝟏1:N𝒙(iT)t⊤∣T]\bm{A}^{(i_{T})}=\sum_{t=1}^{T}\bm{1}_{1:N}{\bm{x}^
+ {(i_{T})}_{t}}^{\top}-\mathbb{E}\quantity[\sum_{t=1}^T \bm{1}_{1:N} {\vx^{(i_T)}_t}^\top\mid T]
+
+and
+
+ 𝑩(iT,k)=∑t=1T𝒆k​𝒙t(iT,k)⊤−𝔼​[∑t=1T𝒆k​𝒙(iT,k)t⊤|y=k,T].\bm{B}^{(i_{T,k})}=\sum_{t=1}^{T}\bm{e}_{k}
+ {\bm{x}^{(i_{T,k})}_{t}}^{\top}-\mathbb{E}\quantity[\sum_{t=1}^T \ve_k { \vx^{(i_{T,k})} }_t^\top
+ \mid y=k,T].
+
+Using Lemma 16, we can bound the operator norms as
+
+ 1T2‖[𝑨(iT)​𝑨(iT)⊤𝑶𝑶𝑨(iT)⊤​𝑨(iT)]‖2≲N\frac{1}{T^{2}}\mathopen{}\mathclose{{\left\|\begin
+ {bmatrix}\bm{A}^{(i_{T})}{\bm{A}^{(i_{T})}}^{\top}&\bm{O}\\ \bm{O}&{\bm{A}^{(i_{T})}}^{\    (C.14)
+ top}\bm{A}^{(i_{T})}\end{bmatrix}}}\right\|_{2}\lesssim\sqrt{N}
+
+and
+
+ 1T2‖[𝑩(iT,k)​𝑩(iT,k)⊤𝑶𝑶𝑩(iT,k)⊤​𝑩(iT,k)]‖2≲1.\frac{1}{T^{2}}\mathopen{}\mathclose{{\left\|
+ \begin{bmatrix}\bm{B}^{(i_{T,k})}{\bm{B}^{(i_{T,k})}}^{\top}&\bm{O}\\ \bm{O}&{\bm{B}^{(i_   (C.15)
+ {T,k})}}^{\top}{\bm{B}^{(i_{T,k})}}\end{bmatrix}}}\right\|_{2}\lesssim 1.
+
+By combining the matrix Hoeffding’s inequality and the union bound, we have
+
+ ‖1MVT​T​N∑iT=1MV𝑨(iT)‖2≲1N​MVTlog⁡OPEN(L⁡(N+L)​ϵ−1CLOSE)\mathopen{}\mathclose{{\left\|\
+ frac{1}{M_{V}^{T}TN}\sum_{i_{T}=1}^{M_{V}}\bm{A}^{(i_{T})}}}\right\|_{2}\lesssim\frac{1}{\  (C.16)
+ sqrt{NM_{V}^{T}}}\sqrt{\log\quantity(L(N+L) \epsilon^{-1})}
+
+and
+
+ ‖1MVT,k∑iT,k=1MVT,k1T(iT,k)2𝑩(iT,k)‖2≲1MVT,klog⁡OPEN(N​L​(N+L)​ϵ−1CLOSE).\mathopen{}\
+ mathclose{{\left\|\frac{1}{M_{V}^{T,k}}\sum_{i_{T,k}=1}^{M_{V}^{T,k}}\frac{1}{{T^{(i_       (C.17)
+ {T,k})}}^{2}}\bm{B}^{(i_{T,k})}}}\right\|_{2}\lesssim\frac{1}{\sqrt{M_{V}^{T,k}}}\sqrt{\
+ log\quantity(NL(N+L) \epsilon^{-1})}.
+
+with probability at least 1−O⁡(ϵ)1-O(\epsilon). Using the union bound MVT=MVqT⁡(ℓ)(1±MV−1/2qT⁡(ℓ)−1
+/2OPENlog⁡(L​ϵ−1CLOSE))M_{V}^{T}=M_{V}q_{T(\ell)}(1\pm M_{V}^{-1/2}q_{T(\ell)}^{-1/2}\sqrt{\log(L\
+epsilon^{-1})}), the matrix Hoeffding’s inequality, standard Hoeffding’s inequality, and ∥𝟏1:N𝒙(iT)
+t⊤∥2≲1\|\bm{1}_{1:N}{\bm{x}^{(i_{T})}_{t}}^{\top}\|_{2}\lesssim 1, we obtain
+
+              ‖1MV∑T=5L−1∑iT=1MVT(1T​N∑t=1T𝟏1:N𝒙(iT)t⊤)−𝔼(1T​N∑t=1T𝟏1:N𝒙(iT)t⊤)‖2\
+              displaystyle\mathopen{}\mathclose{{\left\|\frac{1}{M_{V}}\sum_{T=5}^{L-1}\
+              sum_{i_{T}=1}^{M_{V}^{T}}\mathopen{}\mathclose{{\left(\frac{1}{TN}\sum_{t=1}^  (C.18)
+              {T}\bm{1}_{1:N}{\bm{x}^{(i_{T})}_{t}}^{\top}}}\right)-\mathbb{E}\mathopen{}\
+              mathclose{{\left(\frac{1}{TN}\sum_{t=1}^{T}\bm{1}_{1:N}{\bm{x}^{(i_{T})}_{t}}
+              ^{\top}}}\right)}}\right\|_{2}
+              ‖∑T=5L−1MVTMV1MVT∑iT=1MVT1T​N𝑨(iT)‖2+‖∑T=5L−1OPEN(MVTMV−qT⁡(ℓ)CLOSE)𝔼(1T​N∑t=
+              1T𝟏1:N𝒙(iT)t⊤∣T)‖2\displaystyle\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}
+ ≲\           \frac{M_{V}^{T}}{M_{V}}\frac{1}{M_{V}^{T}}\sum_{i_{T}=1}^{M_{V}^{T}}\frac{1}
+ displaystyle {TN}\bm{A}^{(i_{T})}}}\right\|_{2}+\mathopen{}\mathclose{{\left\|\sum_{T=5}^   (C.19)
+ \lesssim     {L-1}\quantity(\frac{M_V^T}{M_V} - q_{T(\ell)})\mathbb{E}\mathopen{}\
+              mathclose{{\left(\frac{1}{TN}\sum_{t=1}^{T}\bm{1}_{1:N}{\bm{x}^{(i_{T})}_{t}}
+              ^{\top}\mid T}}\right)}}\right\|_{2}
+              ∑T=5L−1MVTMV⏟≃Prob⁡(T)‖1MVT∑iT=1MVT1T​N𝑨(iT)‖2⏟log⁡OPEN(L⁡(N+L)​ϵ−1CLOSE)
+              N​MV​Prob​(T)+∑T=5L−1|MVTMV−qT⁡(ℓ)|⏟≲qT⁡(ℓ)​OPENlog⁡(L​ϵ−1CLOSE)MV‖𝔼(1T​N∑t=
+              1T𝟏1:N𝒙(iT)t⊤∣T)‖2⏟N−1/2\displaystyle\sum_{T=5}^{L-1}\underbrace{\frac{M_{V}^
+              {T}}{M_{V}}}_{\simeq\mathrm{Prob{(T)}}}\underbrace{\mathopen{}\mathclose{{\
+ ≲\           left\|\frac{1}{M_{V}^{T}}\sum_{i_{T}=1}^{M_{V}^{T}}\frac{1}{TN}\bm{A}^{(i_
+ displaystyle {T})}}}\right\|_{2}}_{\sqrt{\frac{\log\quantity(L(N+L) \epsilon^{-1})}{NM_{V}  (C.20)
+ \lesssim     \mathrm{Prob(T)}}}}+\sum_{T=5}^{L-1}\underbrace{\mathopen{}\mathclose{{\left|
+              \frac{M_{V}^{T}}{M_{V}}-q_{T(\ell)}}}\right|}_{\lesssim\frac{\sqrt{q_{T(\
+              ell)}\log(L\epsilon^{-1})}}{\sqrt{M_{V}}}}\underbrace{\mathopen{}\mathclose
+              {{\left\|\mathbb{E}\mathopen{}\mathclose{{\left(\frac{1}{TN}\sum_{t=1}^{T}\bm
+              {1}_{1:N}{\bm{x}^{(i_{T})}_{t}}^{\top}\mid T}}\right)}}\right\|_{2}}_{N^{-1/
+              2}}
+ ≲\           ∑ℓqℓN​MV​log⁡OPEN(L⁡(N+L)​ϵ−1CLOSE).\displaystyle\frac{\sum_{\ell}\sqrt{q_{\
+ displaystyle ell}}}{\sqrt{NM_{V}}}\sqrt{\log\quantity(L(N+L) \epsilon^{-1})}.               (C.21)
+ \lesssim
+
+Let 𝑩¯iT,k=∑t=1T𝒆k​𝒙t(iT,k)⊤\bar{\bm{B}}_{i_{T,k}}=\sum_{t=1}^{T}\bm{e}_{k}{\bm{x}^{(i_{T,k})}_{t}}
+^{\top}. Using MVT,k≃MVT(N−Ntrg)−1(1±(MVT)−1/2N1/2OPENlog⁡(N​L​ϵ−1CLOSE))M_{V}^{T,k}\simeq M_{V}^
+{T}(N-N_{\mathrm{trg}})^{-1}(1\pm(M_{V}^{T})^{-1/2}N^{1/2}\sqrt{\log(NL\epsilon^{-1})}), MVT=MVqT⁡
+(ℓ)(1±MV−1/2qT⁡(ℓ)−1/2OPENlog⁡(L​ϵ−1CLOSE))M_{V}^{T}=M_{V}q_{T(\ell)}(1\pm M_{V}^{-1/2}q_{T(\ell)}^
+{-1/2}\sqrt{\log(L\epsilon^{-1})}), the matrix Hoeffding’s inequality, standard Hoeffding’s
+inequality, and ‖T−1​𝑩¯iT,k‖2≲1\|T^{-1}\bar{\bm{B}}_{i_{T,k}}\|_{2}\lesssim 1, we obtain
+
+              ∥∑T=5L−1MVTMV∑k=Ntrg+1NMVT,kMVT1MVT,k∑iT,k=1MVT,kOPEN(1T​∑t=1T𝒆k​𝒙t(iT,k)
+              ⊤CLOSE)\displaystyle\Bigg\|\sum_{T=5}^{L-1}\frac{M_{V}^{T}}{M_{V}}\sum_{k=N_
+              {\mathrm{trg}}+1}^{N}\frac{M_{V}^{T,k}}{M_{V}^{T}}\frac{1}{M_{V}^{T,k}}\sum_   (C.22)
+              {i_{T,k}=1}^{M_{V}^{T,k}}\quantity(\frac{1}{T}\sum_{t=1}^T \bm{e}_{k} {\vx^
+              {(i_{T,k})}_t}^\top)
+              −∑k=Ntrg+1N1N−Ntrg𝔼T[𝔼​[OPEN(1T​∑t=1T𝒆k​𝒙t(iT,k)⊤CLOSE)|y=k]]∥2\displaystyle-
+              \sum_{k=N_{\mathrm{trg}}+1}^{N}\frac{1}{N-N_{\mathrm{trg}}}\mathbb{E}_{T}\     (C.23)
+              quantity[\E\qty[\qty(\frac{1}{T}\sum_{t=1}^T \bm{e}_{k} {\vx^{(i_{T,k})}_t}^\
+              top) \mid y=k]]\Bigg\|_{2}
+ ≲\           ‖∑T=5L−1MVTMV∑k=Ntrg+1NMVT,kMVT1MVT,k∑iT,k=1MVT,kT−1𝑩(iT,k)‖2\displaystyle\
+ displaystyle mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\frac{M_{V}^{T}}{M_{V}}\sum_{k=   (C.24)
+ \lesssim     N_{\mathrm{trg}}+1}^{N}\frac{M_{V}^{T,k}}{M_{V}^{T}}\frac{1}{M_{V}^{T,k}}\
+              sum_{i_{T,k}=1}^{M_{V}^{T,k}}T^{-1}\bm{B}^{(i_{T,k})}}}\right\|_{2}
+              +‖∑T=5L−1MVTMV∑k=Ntrg+1NOPEN(MVT,kMVT−1N−NtrgCLOSE)1T𝔼[𝑩¯(iT,k)|y=k,T])‖2\
+              displaystyle+\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\frac{M_{V}^{T}}
+              {M_{V}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\quantity(\frac{M_V^{T,k}}{M_V^T}-\frac  (C.25)
+              {1}{N-\Ntrg})\frac{1}{T}\mathbb{E}\quantity[\bar{\vB}^{(i_{T,k})}\mid y=
+              k,T])}}\right\|_{2}
+              +‖∑T=5L−1OPEN(MVTMV−qT⁡(ℓ)CLOSE)∑k=Ntrg+1N1N−Ntrg𝔼[𝑩¯iT,k|k,T]‖2\
+              displaystyle+\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\quantity(\frac     (C.26)
+              {M_V^{T}}{M_V} - q_{T(\ell)})\sum_{k=N_{\mathrm{trg}}+1}^{N}\frac{1}{N-N_{\
+              mathrm{trg}}}\mathbb{E}[\bar{\bm{B}}_{i_{T,k}}|k,T]}}\right\|_{2}
+              ∑T=5L−1MVTMV⏟qT⁡(ℓ)​∑k=Ntrg+1NMVT,kMVT⏟N−1​‖1MVT,k∑iT,k=1MVT,kT−1𝑩(iT,k)
+              ‖2⏟N​log⁡OPEN(N​L​(N+L)​ϵ−1CLOSE)MV​Prob​(T)\displaystyle\sum_{T=5}^{L-1}\
+ ≲\           underbrace{\frac{M_{V}^{T}}{M_{V}}}_{q_{T(\ell)}}\sum_{k=N_{\mathrm{trg}}+1}^
+ displaystyle {N}\underbrace{\frac{M_{V}^{T,k}}{M_{V}^{T}}}_{N^{-1}}\underbrace{\mathopen{}  (C.27)
+ \lesssim     \mathclose{{\left\|\frac{1}{M_{V}^{T,k}}\sum_{i_{T,k}=1}^{M_{V}^{T,k}}T^{-1}\
+              bm{B}^{(i_{T,k})}}}\right\|_{2}}_{\sqrt{\frac{N\log\quantity(NL(N+L) \epsilon
+              ^{-1})}{M_{V}\mathrm{Prob(T)}}}}
+              +∑T=5L−1MVTMV∑k=Ntrg+1N|MVT,kMVT−1N−Ntrg|⏟OPENlog⁡(N​L​ϵ−1CLOSE)N​MV​qT⁡(ℓ)
+              ‖1T𝔼[𝑩¯(iT,k)|y=k,T])‖2⏟≲1\displaystyle+\sum_{T=5}^{L-1}\frac{M_{V}^{T}}{M_
+              {V}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\underbrace{\mathopen{}\mathclose{{\left|\
+              frac{M_{V}^{T,k}}{M_{V}^{T}}-\frac{1}{N-N_{\mathrm{trg}}}}}\right|}_{\sqrt{\   (C.28)
+              frac{\log(NL\epsilon^{-1})}{NM_{V}q_{T(\ell)}}}}\underbrace{\mathopen{}\
+              mathclose{{\left\|\frac{1}{T}\mathbb{E}\quantity[\bar{\vB}^{(i_{T,k})}\mid y=
+              k,T])}}\right\|_{2}}_{\lesssim 1}
+              +∑T=5L−1|MVTMV−qT⁡(ℓ)|‖∑k=Ntrg+1N1N−Ntrg𝔼[𝑩¯iT,k|k,T]‖2\displaystyle+\sum_{T=
+              5}^{L-1}\mathopen{}\mathclose{{\left|\frac{M_{V}^{T}}{M_{V}}-q_{T(\ell)}}}\    (C.29)
+              right|\mathopen{}\mathclose{{\left\|\sum_{k=N_{\mathrm{trg}}+1}^{N}\frac{1}
+              {N-N_{\mathrm{trg}}}\mathbb{E}[\bar{\bm{B}}_{i_{T,k}}|k,T]}}\right\|_{2}
+ ≲\           OPEN(∑ℓqℓCLOSE)​N​log⁡OPEN(N​L​(N+L)​ϵ−1CLOSE)MV.\displaystyle\quantity(\sum_
+ displaystyle \ell\sqrt{q_\ell})\sqrt{\frac{N\log\quantity(NL(N+L) \epsilon^{-1})}{M_{V}}}.  (C.30)
+ \lesssim
+
+∎
+
+Note that if OPENMV≳poly​log⁡N⋅N5Ntrg2​(∑ℓ∈𝒮qℓ∑ℓ∈𝒮qℓ​ℓ−1CLOSE)2M_{V}\gtrsim\mathrm{poly}\log N\cdot
+\frac{N^{5}}{N_{\mathrm{trg}}^{2}}\mathopen{}\mathclose{{\left(\frac{\sum_{\ell\in\mathcal{S}}\sqrt
+{q_{\ell}}}{\sum_{\ell\in\mathcal{S}}q_{\ell}\ell^{-1}}}}\right)^{2}, then we obtain
+‖𝑾V∗¯−𝑾V∗‖2≲η~V​𝔼​[T−1]​Ntrg​N−1\|\bar{\bm{W}_{V}^{*}}-\bm{W}_{V}^{*}\|_{2}\lesssim\tilde{\eta}_{V}
+\mathbb{E}[T^{-1}]N_{\mathrm{trg}}N^{-1}, where 𝑾V∗¯\bar{\bm{W}_{V}^{*}} and 𝑾V∗\bm{W}_{V}^{*} are
+𝑾V\bm{W}_{V} after one GD step with infinite and finite sample size, respectively. The following
+corollary is obtained by combining Lemmas 9 and 17.
+
+Corollary 18.
+
+If we set ηV≲1\eta_{V}\lesssim 1 and 𝑂𝑃𝐸𝑁MV≳poly​log⁡N⋅N5Ntrg2​(∑ℓ∈𝒮qℓ∑ℓ∈𝒮qℓ​ℓ−1𝐶𝐿𝑂𝑆𝐸)2M_{V}\gtrsim
+\mathrm{poly}\log N\cdot\frac{N^{5}}{N_{\mathrm{trg}}^{2}}\mathopen{}\mathclose{{\left(\frac{\sum_
+{\ell\in\mathcal{S}}\sqrt{q_{\ell}}}{\sum_{\ell\in\mathcal{S}}q_{\ell}\ell^{-1}}}}\right)^{2}, then
+it holds that |1/N−p⁡(k|z)|=O⁡(𝔼⁡[T−1]/N2)|1/N-p(k|z)|=O(\mathbb{E}[T^{-1}]/N^{2}) for any kk and
+zz, where p⁡(k|z)p(k|z) is the transformer output regarding token kk after pretraining 𝐖V\bm{W}_
+{V}.
+
+C.2 Key-Query matrix
+
+Now let us consider the KQ-matrix with finite samples
+
+              −ηK​Q∑T=5L−1∑k=Ntrg+1N(MK​QTMK​Q𝑪^(T,k)−MK​QTMK​QMK​QT,kMK​QT𝑫^(T,k))
+ 𝑾K​Q=\       +ηK​QηV~𝔼[T−1]O∞(Ntrg/NCLOSE)\displaystyle-\eta_{KQ}\sum_{T=5}^{L-1}\sum_{k=
+ displaystyle N_{\mathrm{trg}}+1}^{N}\Bigg(\frac{M_{KQ}^{T}}{M_{KQ}}\hat{\bm{C}}(T,k)-\frac  (C.31)
+ \bm{W}_{KQ}= {M_{KQ}^{T}}{M_{KQ}}\frac{M_{KQ}^{T,k}}{M_{KQ}^{T}}\hat{\bm{D}}(T,k)\Bigg)+\
+              eta_{KQ}{\tilde{\eta_{V}}\mathbb{E}[T^{-1}]O_{\infty}\mathopen{}\mathclose{{\
+              left(N_{\mathrm{trg}}/N}}\right)}
+
+where
+
+               ≔∑iT1MK​QT1N−Ntrg((1T−1T2CLOSE)​∑t𝒙t(iT)​𝒙t(iT)⊤​𝑾V⊤​𝒆k​𝒙T(iT)⊤)\
+ 𝑪^​(T,k)\     displaystyle\coloneqq\sum_{i_{T}}\frac{1}{M_{KQ}^{T}}\frac{1}{N-N_{\mathrm
+ displaystyle\ {trg}}}\mathopen{}\mathclose{{\left(\mathopen{}\mathclose{{\left(\frac{1}{T}  (C.32)
+ hat{\bm{C}}   -\frac{1}{T^{2}}}}\right)\sum_{t}{\bm{x}_{t}^{(i_{T})}}{\bm{x}_{t}^{(i_
+ (T,k)         {T})}}^{\top}\bm{W}_{V}^{\top}\bm{e}_{k}{\bm{x}_{T}^{(i_{T})}}^{\top}}}\
+               right)
+               −∑iT1MK​QT1N−Ntrg(1T2​∑t≠t′𝒙t(iT)​𝒙t′(iT)⊤​𝑾V⊤​𝒆k​𝒙T(iT)⊤CLOSE)\
+               displaystyle-\sum_{i_{T}}\frac{1}{M_{KQ}^{T}}\frac{1}{N-N_{\mathrm{trg}}}\
+               mathopen{}\mathclose{{\left(\frac{1}{T^{2}}\sum_{t\neq t^{\prime}}{\bm{x}_    (C.33)
+               {t}^{(i_{T})}}{\bm{x}_{t^{\prime}}^{(i_{T})}}^{\top}\bm{W}_{V}^{\top}\bm{e}_
+               {k}{\bm{x}_{T}^{(i_{T})}}^{\top}}}\right)
+
+and
+
+ 𝑫^​(T,k)\     ≔∑iT,k1MK​QT,k((1T−1T2CLOSE)​∑t𝒙t(iT,k)​𝒙t(iT,k)⊤​𝑾V⊤​𝒆k​𝒙T(iT,k)⊤)\
+ displaystyle\ displaystyle\coloneqq\sum_{i_{T,k}}\frac{1}{M_{KQ}^{T,k}}\mathopen{}\
+ hat{\bm{D}}   mathclose{{\left(\mathopen{}\mathclose{{\left(\frac{1}{T}-\frac{1}{T^{2}}}}\  (C.34)
+ (T,k)         right)\sum_{t}{\bm{x}_{t}^{(i_{T,k})}}{\bm{x}_{t}^{(i_{T,k})}}^{\top}\bm{W}_
+               {V}^{\top}\bm{e}_{k}{\bm{x}_{T}^{(i_{T,k})}}^{\top}}}\right)
+               −∑iT,k1MK​QT,k(1T2​∑t≠t′𝒙t(iT,k)​𝒙t′(iT,k)⊤​𝑾V⊤​𝒆k​𝒙T(iT,k)⊤CLOSE)\
+               displaystyle-\sum_{i_{T,k}}\frac{1}{M_{KQ}^{T,k}}\mathopen{}\mathclose{{\
+               left(\frac{1}{T^{2}}\sum_{t\neq t^{\prime}}{\bm{x}_{t}^{(i_{T,k})}}{\bm{x}_   (C.35)
+               {t^{\prime}}^{(i_{T,k})}}^{\top}\bm{W}_{V}^{\top}\bm{e}_{k}{\bm{x}_{T}^{(i_
+               {T,k})}}^{\top}}}\right)
+
+where
+
+ 𝑾V⊤​𝒆k=ηV~​𝔼​[T−1]​[00𝟎k−11𝟎N−k𝟎k−11𝟎N−k]+o⁡(ηV~​𝔼​[T−1])⋅𝟏L+2​N.\bm{W}_{V}^{\top}\bm{e}_
+ {k}=\tilde{\eta_{V}}\mathbb{E}[T^{-1}]\begin{bmatrix}0\\ \vdots\\ 0\\ \hline\cr\\ \mathbf   (C.36)
+ {0}_{k-1}\\ 1\\ \mathbf{0}_{N-k}\\ \hline\cr\\ \mathbf{0}_{k-1}\\ 1\\ \mathbf{0}_{N-k}\end
+ {bmatrix}+o(\tilde{\eta_{V}}\mathbb{E}[T^{-1}])\cdot\bm{1}_{L+2N}.
+
+Lemma 19.
+
+Let 𝐁t,t′,T,k=𝐱t​(𝐱t′⊤​𝐖V​𝐞k)​𝐱T⊤\bm{B}_{t,t^{\prime},T,k}=\bm{x}_{t}(\bm{x}_{t^{\prime}}^{\top}\bm
+{W}_{V}\bm{e}_{k})\bm{x}_{T}^{\top}. Then, we have
+
+ 𝑩t,t′,T,k=OPEN((𝟙[zt′=k]+𝟙[zt′−1=k])ηV~𝔼[T−1]+o(ηV~𝔼[T−1]))​𝒙t​𝒙T⊤.\bm{B}_{t,t^{\
+ prime},T,k}=\quantity((\mathbbm{1}[z_{t'}=k]+\mathbbm{1}[z_{t'-1}=k])\tilde{\eta_V} \E[T^   (C.37)
+ {-1}] + o(\tilde{\eta_V} \E[T^{-1}]))\bm{x}_{t}\bm{x}_{T}^{\top}.
+
+Therefore,
+
+ [𝑩t,t′,T,k​𝑩t,t′,T,k⊤𝑶𝑶𝑩t,t′,k⊤​𝑩t,t′,k]⪯𝚺\begin{bmatrix}\bm{B}_{t,t^{\prime},T,k}\bm{B}_
+ {t,t^{\prime},T,k}^{\top}&\bm{O}\\ \bm{O}&\bm{B}_{t,t^{\prime},k}^{\top}\bm{B}_{t,t^{\      (C.38)
+ prime},k}\end{bmatrix}\preceq\bm{\Sigma}
+
+where λi​(𝚺)=O​(ηV~​𝔼​[T−1])2\lambda_{i}(\bm{\Sigma})=O(\tilde{\eta_{V}}\mathbb{E}[T^{-1}])^{2} for
+i=1,2i=1,2 and λi​(𝚺)=0\lambda_{i}(\bm{\Sigma})=0 for i>3i>3.
+
+Proof.  The proof is straightforward. Note that 𝒙t′⊤​𝟏L+2​N=O⁡(1)\bm{x}_{t^{\prime}}^{\top}\bm{1}_
+{L+2N}=O(1) for all t′t^{\prime}. ∎
+
+Lemma 20.
+
+Let 𝐖¯K​Q∗\bar{\bm{W}}^{*}_{KQ} be 𝐖K​Q\bm{W}_{KQ} after one gradient descent step with finite
+sample size (Algorithm 1) and 𝐖K​Q∗{\bm{W}}^{*}_{KQ} be the counterpart for infinite sample size.
+Let {{𝐱t(i)}t=1Ti}i=1MV\quantity{\qty{\vx^{(i)}_t}_{t=1}^{T_i}}_{i=1}^{M_{V}} be i.i.d. sample
+sequences, {{𝐱t(iT)}t=1T}it=1MVT\quantity{\qty{\vx^{(i_T)}_t}_{t=1}^{T}}_{i_{t}=1}^{M_{V}^{T}} be
+conditionally i.i.d. sub-samples with fixed TT, and {{𝐱t(iT,k)}t}iT,k=1MVT,k\quantity{\qty{\vx^{(i_
+{T,k})}_t}_t}_{i_{T,k}=1}^{M_{V}^{T,k}} be conditionally i.i.d. sub-samples with fixed TT and zT+1=
+kz_{T+1}=k. With probability at least 1−O⁡(ϵ)1-O(\epsilon),
+
+ OPENλmax​OPEN(𝑾¯K​Q∗−𝑾K​Q∗CLOSE)≲ηK​Q​ηV~​𝔼​[T−1]​OPEN(∑lqℓCLOSE)​N​log⁡OPEN(L​N​(L+N)
+ ​ϵ−1CLOSE)MK​Q+ηK​Q​ηV~​𝔼​[T−1]​O∞​(Ntrg/NCLOSE).\lambda_{\max}\quantity( \bar{\vW}^*_{KQ}
+ - \vW^*_{KQ} )\lesssim\eta_{KQ}\tilde{\eta_{V}}\mathbb{E}[T^{-1}]\quantity(\sum_l \sqrt{q_  (C.39)
+ \ell})\sqrt{\frac{N\log\quantity(LN(L+N)\epsilon^{-1})}{M_{KQ}}}+\eta_{KQ}{\tilde{\eta_
+ {V}}\mathbb{E}[T^{-1}]O_{\infty}\mathopen{}\mathclose{{\left(N_{\mathrm{trg}}/N}}\right)}.
+
+Proof.  We have
+
+ ‖[𝑪^​(T,k)​𝑪^​(T,k)⊤𝑶𝑶𝑪^​(T,k)⊤​𝑪^​(T,k)]‖2≲(ηV~𝔼[T−1])2\mathopen{}\mathclose{{\left\|\
+ begin{bmatrix}\hat{\bm{C}}(T,k)\hat{\bm{C}}(T,k)^{\top}&\bm{O}\\ \bm{O}&{\hat{\bm{C}}       (C.40)
+ (T,k)}^{\top}\hat{\bm{C}}(T,k)\end{bmatrix}}}\right\|_{2}\lesssim(\tilde{\eta_{V}}\mathbb
+ {E}[T^{-1}])^{2}
+
+and
+
+ ‖[𝑫^​(T,k)​𝑫^​(T,k)⊤𝑶𝑶𝑫^​(T,k)⊤​𝑫^​(T,k)]‖2≲(ηV~𝔼[T−1])2.\mathopen{}\mathclose{{\left\|\
+ begin{bmatrix}\hat{\bm{D}}(T,k)\hat{\bm{D}}(T,k)^{\top}&\bm{O}\\ \bm{O}&{\hat{\bm{D}}       (C.41)
+ (T,k)}^{\top}\hat{\bm{D}}(T,k)\end{bmatrix}}}\right\|_{2}\lesssim(\tilde{\eta_{V}}\mathbb
+ {E}[T^{-1}])^{2}.
+
+by Lemma 19. Then we obtain the error bound as
+
+              1ηK​Q‖𝑾K​Q−𝑾∗K​Q‖2\displaystyle\frac{1}{\eta_{KQ}}\mathopen{}\mathclose{{\     (C.42)
+              left\|\bm{W}_{KQ}-\bm{W}^{*}_{KQ}}}\right\|_{2}
+              ‖∑T=5L−1MK​QTMK​QOPEN(𝑪^​(T,k)−𝔼⁡[𝑪^​(T,k)|T]CLOSE)‖2+‖∑T=5L−1OPEN
+ ≲\           (MK​QTMK​Q−qT⁡(ℓ)CLOSE)𝔼[𝑪^(T,k)|T]‖2\displaystyle\mathopen{}\mathclose{{\
+ displaystyle left\|\sum_{T=5}^{L-1}\frac{M_{KQ}^{T}}{M_{KQ}}\quantity( \hat{\vC}(T,k) - \E  (C.43)
+ \lesssim     [\hat{\vC}(T,k)| T] )}}\right\|_{2}+\mathopen{}\mathclose{{\left\|\sum_{T=5}^
+              {L-1}\quantity( \frac{M_{KQ}^T}{M_{KQ}} - q_{T(\ell)} )\mathbb{E}[\hat{\bm
+              {C}}(T,k)|T]}}\right\|_{2}
+              +‖∑T=5L−1MK​QTMK​Q∑k=Ntrg+1NMK​QT,kMK​QTOPEN(𝑫^(T,k)−𝔼[𝑫^(T,k)|T,k])‖2\
+              displaystyle+\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\frac{M_{KQ}^{T}}   (C.44)
+              {M_{KQ}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\frac{M_{KQ}^{T,k}}{M_{KQ}^{T}}\
+              quantity( \hat{\vD}(T,k) - \E[\hat{\vD}(T,k)| T,k] )}}\right\|_{2}
+              +‖∑T=5L−1MK​QTMK​Q∑k=Ntrg+1NOPEN(MK​QT,kMK​QT−1N−NtrgCLOSE)𝔼[𝑫^(T,k)|T,k]‖2\
+              displaystyle+\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\frac{M_{KQ}^{T}}   (C.45)
+              {M_{KQ}}\sum_{k=N_{\mathrm{trg}}+1}^{N}\quantity(\frac{M_{KQ}^{T,k}}{M_{KQ}^
+              T}-\frac{1}{N-\Ntrg})\mathbb{E}[\hat{\bm{D}}(T,k)|T,k]}}\right\|_{2}
+              +‖∑T=5L−1OPEN(MK​QTMK​Q−qT⁡(ℓ)CLOSE)𝔼[𝑫^(T,k)|T]‖2+ηK​QηV~𝔼[T−1]O∞(Ntrg/
+              NCLOSE)\displaystyle+\mathopen{}\mathclose{{\left\|\sum_{T=5}^{L-1}\quantity(
+              \frac{M_{KQ}^T}{M_{KQ}} - q_{T(\ell)} )\mathbb{E}[\hat{\bm{D}}(T,k)|T]}}\      (C.46)
+              right\|_{2}+\eta_{KQ}{\tilde{\eta_{V}}\mathbb{E}[T^{-1}]O_{\infty}\mathopen{}
+              \mathclose{{\left(N_{\mathrm{trg}}/N}}\right)}
+              OPENηV~​𝔼​[T−1]​OPEN(∑ℓqℓCLOSE)​N​log⁡OPEN((L+N)​ϵ−1CLOSE)MK​Q+ηV~​𝔼​[T−1]
+ ≲\           ​O∞​(Ntrg/NCLOSE)\displaystyle\tilde{\eta_{V}}\mathbb{E}[T^{-1}]\quantity(\
+ displaystyle sum_\ell\sqrt{q_\ell})\sqrt{\frac{N\log\quantity((L+N)\epsilon^{-1})}{M_       (C.47)
+ \lesssim     {KQ}}}+{\tilde{\eta_{V}}\mathbb{E}[T^{-1}]O_{\infty}\mathopen{}\mathclose{{\
+              left(N_{\mathrm{trg}}/N}}\right)}
+
+in the same way as bounding 𝑾V\bm{W}_{V}. We used MK​QT≃qℓ⁡(T)​MK​QM_{KQ}^{T}\simeq q_{\ell(T)}M_
+{KQ}, MK​QT,k≃N−1​MK​QTM_{KQ}^{T,k}\simeq N^{-1}M^{T}_{KQ}, (matrix-) Hoeffding’s inequalities, and
+‖𝑪^​(T,k)‖2,‖𝑫^​(T,k)‖2≲η~V​𝔼​[T−1]\|\hat{\bm{C}}(T,k)\|_{2},\|\hat{\bm{D}}(T,k)\|_{2}\lesssim\
+tilde{\eta}_{V}\mathbb{E}[T^{-1}] by Lemma 19. ∎
+
+Based on these finite sample analyses, Theorem 6 can be obtained similarly to Theorem 5.
+
+Proof. [Proof of Theorem 6] Note that, the approximation in Section B.2.1 still applies, if the
+finite-sample error with respect to 𝑾K​Q\bm{W}^{KQ} is falling into η~​O​(Ntrg/N)\tilde{\eta}O(N_{\
+mathrm{trg}}/N). From Lemma 20, it suffices to set OPENMK​Q≳poly​log⁡N⋅N3Ntrg2​(∑ℓqℓCLOSE)2M_{KQ}\
+gtrsim\mathrm{poly}\log N\cdot\frac{N^{3}}{N_{\mathrm{trg}}^{2}}\mathopen{}\mathclose{{\left(\sum_
+{\ell}\sqrt{q_{\ell}}}}\right)^{2}. Together with the requirement OPENMV≳poly​log⁡N⋅N5Ntrg2​
+(∑ℓ∈𝒮qℓ∑ℓ∈𝒮qℓ​ℓ−1CLOSE)2M_{V}\gtrsim\mathrm{poly}\log N\cdot\frac{N^{5}}{N_{\mathrm{trg}}^{2}}\
+mathopen{}\mathclose{{\left(\frac{\sum_{\ell\in\mathcal{S}}\sqrt{q_{\ell}}}{\sum_{\ell\in\mathcal
+{S}}q_{\ell}\ell^{-1}}}}\right)^{2} in Corollary 18 we obtain the assertion. ∎
+
+Appendix D Proof of Proposition 8
+
+We first show that
+
+ 𝒒∗=(q1∗,q2∗,…,qU∗)=(1,2,…,Ntrg,0,…,0)Z​(Z=Ntrg​(Ntrg+1)2)\bm{q}^{*}=(q_{1}^{*},q_{2}^{*},\
+ dotsc,q_{U}^{*})=\frac{(1,2,\dotsc,N_{\mathrm{trg}},0,\dotsc,0)}{Z}~~(Z=\frac{N_{\mathrm{trg}}(N_
+ {\mathrm{trg}}+1)}{2})
+
+satisfies the KKT condition of the LP
+
+ ℙ:{minimize∑ℓ=1Uqℓ​ℓ2subject tomaxℓ=1U​qℓ​ℓ−1∑ℓ=1Uqℓ​ℓ−1≤Ntrg−1∑ℓ=1Uqℓ=1q1,…,qU≥0,\mathbb
+ {P}:\begin{cases}\text{minimize}~~&{\sum_{\ell=1}^{U}{q_{\ell}}\ell^{2}}\\ \text{subject     (D.1)
+ to}~~&\frac{\max_{\ell=1}^{U}q_{\ell}\ell^{-1}}{\sum_{\ell=1}^{U}q_{\ell}\ell^{-1}}\leq N_
+ {\mathrm{trg}}^{-1}\\ &\sum_{\ell=1}^{U}q_{\ell}=1\\ &q_{1},\dotsc,q_{U}\geq 0\end{cases},
+
+and show its uniqueness.
+
+The KKT condition of ℙ\mathbb{P} is
+
+ ℓ2+(λℓ−∑ℓ′=1UNtrg−1​λℓ′)​ℓ−1−μℓ+ν=0\displaystyle\ell^{2}+(\lambda_{\ell}-\ (ℓ∈[U]),\
+ sum_{\ell^{\prime}=1}^{U}N_{\mathrm{trg}}^{-1}\lambda_{\ell^{\prime}})\ell displaystyle(\    (D.2)
+ ^{-1}-\mu_{\ell}+\nu=0~~                                                   ell\in[U]),
+ λℓ​(qℓ​ℓ−1−Ntrg−1​∑ℓ′qℓ′​(ℓ′)−1)=0\displaystyle\lambda_{\ell}(q_{\ell}\ell (ℓ∈[U]),\
+ ^{-1}-N_{\mathrm{trg}}^{-1}\sum_{\ell^{\prime}}q_{\ell^{\prime}}(\ell^{\   displaystyle(\    (D.3)
+ prime})^{-1})=0~~                                                          ell\in[U]),
+                                                                            (ℓ∈[U]),\
+ μℓ​(−qℓ)=0\displaystyle\mu_{\ell}(-q_{\ell})=0~~                           displaystyle(\    (D.4)
+                                                                            ell\in[U]),
+ qℓ​ℓ−1≤Ntrg−1​∑ℓ′=1Uqℓ′​ℓ′−1\displaystyle q_{\ell}\ell^{-1}\leq N_{\mathrm (ℓ∈[U]),\
+ {trg}}^{-1}\sum_{\ell^{\prime}=1}^{U}q_{\ell^{\prime}}{\ell^{\prime}}^{-1} displaystyle(\    (D.5)
+ ~~                                                                         ell\in[U]),
+ q1+…+qU=1\displaystyle q_{1}+\dotsc+q_{U}=1~~                              ,                 (D.6)
+                                                                            (ℓ∈[U]).\
+ λℓ≥0,μℓ≥0\displaystyle\lambda_{\ell}\geq 0,\mu_{\ell}\geq 0~~              displaystyle(\    (D.7)
+                                                                            ell\in[U]).
+
+We construct (𝝀={λℓ},𝝁={μℓ},ν)(\bm{\lambda}=\{\lambda_{\ell}\},\bm{\mu}=\{\mu_{\ell}\},\nu) such
+that (𝒒,𝝀,𝝁,ν)(\bm{q},\bm{\lambda},\bm{\mu},\nu) satisfies these conditions: by construction, (D.5)
+and (D.6) are already satisfied. Here, note that
+
+ qℓ​ℓ−1={Z−1(ℓ≤Ntrg),0(ℓ>Ntrg).q_{\ell}\ell^{-1}=\begin{cases}Z^{-1}~~&(\ell\leq N_{\mathrm   (D.8)
+ {trg}}),\\ 0~~&(\ell>N_{\mathrm{trg}}).\end{cases}
+
+Thus, from (D.3) and (D.4) we have λℓ=0​(ℓ>Ntrg)\lambda_{\ell}=0~(\ell>N_{\mathrm{trg}}) and μℓ=0​
+(ℓ≤Ntrg)\mu_{\ell}=0~(\ell\leq N_{\mathrm{trg}}).
+
+Now it remains to satisfy (D.2), not braking (D.7). For ℓ∈[Ntrg]\ell\in[N_{\mathrm{trg}}], (D.2)
+reduces to the following linear equations:
+
+ OPEN(𝑰Ntrg−[Ntrg−1⋯Ntrg−1⋱Ntrg−1⋯Ntrg−1]CLOSE)​[λ1λNtrg]=−[13+ν⋅1Ntrg3+ν⋅Ntrg].\mathopen{}\
+ mathclose{{\left(\bm{I}_{N_{\mathrm{trg}}}-\begin{bmatrix}N_{\mathrm{trg}}^{-1}&\cdots&N_{\
+ mathrm{trg}}^{-1}\\ \vdots&\ddots&\vdots\\ N_{\mathrm{trg}}^{-1}&\cdots&N_{\mathrm{trg}}^    (D.9)
+ {-1}\\ \end{bmatrix}}}\right)\begin{bmatrix}\lambda_{1}\\ \vdots\\ \lambda_{N_{\mathrm
+ {trg}}}\end{bmatrix}=-\begin{bmatrix}1^{3}+\nu\cdot 1\\ \vdots\\ N_{\mathrm{trg}}^{3}+\nu\
+ cdot N_{\mathrm{trg}}\end{bmatrix}.
+
+Noting that the sum of the all entries in the vector obtained by evaluating left-hand side is zero,
+we obtain
+
+ ν=−1+⋯+Ntrg31+⋯+Ntrg=Ntrg​(Ntrg+1)2.\nu=-\frac{1+\cdots+N_{\mathrm{trg}}^{3}}{1+\cdots+N_{\mathrm
+ {trg}}}=\frac{N_{\mathrm{trg}}(N_{\mathrm{trg}}+1)}{2}.
+
+We can also observe λ1≥⋯≥λNtrg\lambda_{1}\geq\cdots\geq\lambda_{N_{\mathrm{trg}}} since the
+right-hand side is decreasing w.r.t the vector index. Since 𝒘=[1,1,…,1]⊤\bm{w}=[1,1,\dotsc,1]^{\
+top} belongs to the right kernel of OPEN(𝑰Ntrg−[Ntrg−1⋯Ntrg−1⋱Ntrg−1⋯Ntrg−1]CLOSE)\mathopen{}\
+mathclose{{\left(\bm{I}_{N_{\mathrm{trg}}}-\begin{bmatrix}N_{\mathrm{trg}}^{-1}&\cdots&N_{\mathrm
+{trg}}^{-1}\\ \vdots&\ddots&\vdots\\ N_{\mathrm{trg}}^{-1}&\cdots&N_{\mathrm{trg}}^{-1}\\ \end
+{bmatrix}}}\right), we can shift 𝝀\bm{\lambda} by this vector to ensure λNtrg=1\lambda_{N_{\mathrm
+{trg}}}=1 (then λ≥0\lambda\geq 0), meaning
+
+ 1−λ¯=−Ntrg3−ν⋅Ntrg⇔λ¯=12​Ntrg3−12​Ntrg2+11-\bar{\lambda}=-N_{\mathrm{trg}}^{3}-\nu\cdot N_{\
+ mathrm{trg}}\Leftrightarrow\bar{\lambda}=\frac{1}{2}N_{\mathrm{trg}}^{3}-\frac{1}{2}N_{\mathrm
+ {trg}}^{2}+1
+
+where λ¯=Ntrg−1​∑ℓ=1Ntrgλℓ\bar{\lambda}=N_{\mathrm{trg}}^{-1}\sum_{\ell=1}^{N_{\mathrm{trg}}}\
+lambda_{\ell}. We now consider (D.2) with ℓ>Ntrg\ell>N_{\mathrm{trg}}. Since
+
+ μℓ\          =ν+ℓ2−ℓ−1​λ¯\displaystyle=\nu+\ell^{2}-\ell^{-1}\bar
+ displaystyle {\lambda}                                                                      (D.10)
+ \mu_{\ell}
+              ≥(Ntrg+1)2−Ntrg​(Ntrg+1)2−12​Ntrg2+12​Ntrg−1Ntrg\    =2​Ntrg+1−1Ntrg≥1,\
+              displaystyle\geq(N_{\mathrm{trg}}+1)^{2}-\frac{N_{\  displaystyle=2N_{\mathrm
+              mathrm{trg}}(N_{\mathrm{trg}}+1)}{2}-\frac{1}{2}N_{\ {trg}}+1-\frac{1}{N_{\    (D.11)
+              mathrm{trg}}^{2}+\frac{1}{2}N_{\mathrm{trg}}-\frac   mathrm{trg}}}\geq 1,
+              {1}{N_{\mathrm{trg}}}
+
+and then we can now determine 𝝁\bm{\mu} satisfying (D.7). Therefore, obtained (𝒒∗,𝝀,𝝁,ν)(\bm{q}^
+{*},\bm{\lambda},\bm{\mu},\nu) satisfies the KKT condition.
+
+From [24], to show the uniqueness it suffices to show that for any 𝒑∈ℝU\bm{p}\in\mathbb{R}^{U},
+there exists ϵ>0\epsilon>0 such that even if we replace the objective function to ∑ℓ∈[U](ℓ2+ϵ​pℓ)
+​qℓ\sum_{\ell\in[U]}(\ell^{2}+\epsilon p_{\ell})q_{\ell}, 𝒒∗\bm{q}^{*} is optimal. We can easily
+see this by reconsidering KKT condition—while the only effect by changing the objective is the
+nonnegativeness of 𝝀\bm{\lambda} and 𝝁\bm{\mu} (D.7), these parameters are continuous with respect
+to the perturbation, and we can still ensure nonnegativeness since for 𝒒=𝟎\bm{q}=\mathbf{0} we
+already obtained positive parameters.
+
+Appendix E Detailed Experimental Setting
+
+E.1 Detailed Settings for Section 4.2
+
+We introduce the detailed settings for the full-traning experiment.
+
+Architecture.
+
+  • •
+   
+    Embedding. We use embeddings obtained by concatenating the positional embedding and the token
+    embedding, i.e., [𝒑t𝒆zt]\begin{bmatrix}\bm{p}_{t}\\ \bm{e}_{z_{t}}\end{bmatrix} where 𝒑t\bm{p}_
+    {t} and 𝒆zt\bm{e}_{z_{t}} are one-hot vectors with ones at tt-th and ztz_{t}-th entries,
+    respectively. The previous-token embedding in (2.2) is omitted.
+
+  • •
+   
+    Transformer blocks. Each layer consists of a single-head attention module with separate
+    Key-Query matrices, a GeLU-based MLP, and residual connections:
+
+     𝒙t←𝒙t+MLP(𝒙t+𝑾V𝑿1:tSoftmax(𝑿1:t⊤𝑾K⊤𝑾Q𝒙t)),\bm{x}_{t}\leftarrow\bm{x}_{t}+\mathrm{MLP}\bigl(\
+     bm{x}_{t}+\bm{W}_{V}\bm{X}_{1:t}\,\mathrm{Softmax}(\bm{X}_{1:t}^{\top}\bm{W}_{K}^{\top}\bm{W}
+     _{Q}\bm{x}_{t})\bigr),
+
+    where
+
+     MLP⁡(𝒙)=𝑾MLP,2​GeLU​(𝑾MLP,1​𝒙+𝒃1)+𝒃2.\mathrm{MLP}(\bm{x})=\bm{W}_{\mathrm{MLP},2}\mathrm
+     {GeLU}(\bm{W}_{\mathrm{MLP},1}\bm{x}+\bm{b}_{1})+\bm{b}_{2}.
+
+    Three such layers are stacked, followed by a linear projection of size (N,D)(N,D) that maps the
+    final embeddings (dimension DD) to the vocabulary of size NN. We initialized 𝑾K,𝑾Q,𝑾V,𝑾MLP,1\bm
+    {W}_{K},\bm{W}_{Q},\bm{W}_{V},\bm{W}_{\mathrm{MLP},1} and 𝑾MLP,2\bm{W}_{\mathrm{MLP},2} using
+    Xavier initialization [14], while biases 𝒃1\bm{b}_{1} and 𝒃2\bm{b}_{2} are initialized from the
+    zero vector. The size of 𝑾MLP,1\bm{W}_{\mathrm{MLP},1} and 𝑾MLP,2\bm{W}_{\mathrm{MLP},2} are
+    (4​D,D)(4D,D) and (D,4​D)(D,4D), respectively, where D=N+LD=N+L is the embedding dimension. The
+    transformed embedding at the last layer is fed into the trainable linear output layer 𝑾O\bm{W}^
+    {O} of size (N,D)(N,D), initialized using Xavier, before softmax.
+
+Training.
+
+Training was performed using AdamW with both the learning rate and weight decay set to 10−210^{-2},
+using 32,768 training samples. We prepared 1,024 in-distribution samples drawn from the same
+distribution as the training data and stopped training once the accuracy exceeded 90% on these
+samples.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

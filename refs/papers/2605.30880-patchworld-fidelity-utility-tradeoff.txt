@@ -1,0 +1,3180 @@
+source: https://arxiv.org/html/2605.30880
+arxiv: https://arxiv.org/abs/2605.30880
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract.
+ 2. 1 Introduction
+     1. Contributions.
+ 3. 2 Related Work
+     1. Code-based and symbolic world models.
+     2. Neural, video, and embodied world models.
+     3. Program synthesis and repair.
+ 4. 3 Task Formulation
+     1. Goal.
+     2. Deterministic belief approximation.
+     3. Feasibility and identification.
+     4. Fidelity and decision utility.
+ 5. 4 Methodology
+     1. 4.1 Executable World-Model Interface
+     2. 4.2 Evidence Selection via Contrastive Mining
+     3. 4.3 Counterexample-Guided Repair
+         1. Typed replay validation.
+         2. Repair prompt construction.
+         3. Acceptance and stopping.
+     4. 4.4 Inductive Bias for Fidelity
+ 6. 5 Experiments
+     1. 5.1 Setup
+         1. Environments and data.
+         2. Baselines.
+     2. 5.2 One-Step Observation Prediction
+         1. Analysis.
+     3. 5.3 Multi-Step Rollout
+         1. Analysis.
+     4. 5.4 Live Decision Making
+         1. Analysis.
+         2. Fidelity is not utility.
+     5. 5.5 Ablations
+         1. Analysis.
+         2. Induction cost.
+         3. When each variant helps.
+ 7. 6 Conclusion
+ 8. References
+ 9. A PatchWorld Repair Loop Details
+10. B Dataset Statistics
+11. C Seed Variance for One-Step Prediction
+12. D BERTScore Consistency with Token F1 and BLEU-4
+13. E Residual Memory Coverage Diagnostic
+14. F Per-Environment Rollout Results
+     1. Pattern.
+15. G Decision Protocol
+16. H Decision-Making Uncertainty
+17. I Cross-Action Contrast Diagnostics
+18. J Component Ablation Details
+19. K Executable Code-World-Model Baselines under Text-Only Supervision
+20. L Detailed Induction Cost and Replay-Error Reduction
+21. M Validator Error Analysis
+     1. Implication.
+22. N Qualitative PatchWorld Repair Example
+23. O Induced World Models by Environment
+24. P Limitations
+25. Q Use of AI Assistants
+26. R Risks
+
+License: CC BY 4.0
+arXiv:2605.30880v4 [cs.CL] 28 Jul 2026
+
+PatchWorld: Gradient-Free Optimization of Executable World Models for Agent Environments
+
+Jiaxin Bai^1, Yue Guo^2, Yifei Dong^3, Jiaxuan Xiong^4, Tianshi Zheng^3, Yixia Li^5
+Tianqing Fang^3, Yufei Li^3, Yisen Gao^3, Haoyu Huang^3, Zhongwei Xie^3
+Hong Ting Tsang^3, Zihao Wang^2, Lihui Liu^6, Jeff Z. Pan^7, Yangqiu Song^3
+^1Hong Kong Baptist University  ^2Independent Researcher  ^3HKUST^4Beijing Institute of Technology
+ ^5Southern University of Science and Technology^6Wayne State University  ^7University of Edinburgh
+baijiaxin@hkbu.edu.hk  {ireneyueguo}@gmail.com  xiongjiaxuan@bit.edu.cn{ydongbl, tzhengad, ylivm,
+ygaodi, hhuangcp, zxiebk}@connect.ust.hk{httsangaj, zwanggc}@connect.ust.hk  {tfangaa, yqsong}
+@cse.ust.hkliyixia@me.com  hw6926@wayne.edu  j.z.pan@ed.ac.uk Affiliation: Multiple Institutions, 
+Various, Various
+2026
+
+Abstract.
+
+World models for interactive text agents must typically be learned from observation-action
+trajectories alone. Specifically, the environment returns text observations after each action, but
+does not expose a ground-truth latent state nor an inspectable transition model. A research gap
+remains in how to induce executable code as a world model in this black-box setting for prediction
+and agent decision making. We introduce PatchWorld, a gradient-free framework that turns offline
+trajectories into executable Python world models through counterexample-guided code repair. Instead
+of predicting the next observation with a black-box model, PatchWorld induces symbolic belief-state
+programs whose action updates can be inspected, replayed, and locally patched. Across seven
+AgentGym environments, PatchWorld-Simple achieves the highest code-based decision-making score
+among evaluated methods (76.4% macro success in live one-step lookahead), matching or exceeding
+LLM-based lookahead while invoking no LLM calls inside the world-model prediction module itself. We
+further find that a human-specified residual-memory bias improves surface observation fidelity but
+weakens agent decision-making utility. This reveals a tradeoff in executable world models, since
+improving observation fidelity can come at the expense of action-discriminative dynamics, and vice
+versa. Code is available at https://github.com/HKBU-KnowComp/PatchWorld.
+
+1. Introduction
+
+Scientists advance science by proposing and testing rules and theories that explain observations,
+predict the effects of interventions, and generalize beyond seen data (Langley, 1987; Schmidt and
+Lipson, 2009; Zheng et al., 2026a). In artificial agents, world models play an analogous role by
+learning latent dynamics for prediction, simulation, agent decision making, and control (Ha and
+Schmidhuber, 2018; Hafner et al., 2019; Ke et al., 2019; LeCun and Courant, 2022), with recent
+systems extending these ideas to embodied and generative environments (Brohan et al., 2023; Black
+et al., 2025; Bruce et al., 2024; team et al., 2025). For interactive text agents, such models
+could capture how actions change an environment and thereby support simulation, diagnosis, and,
+when useful, agent decision making before trial-and-error. Code-based world models are especially
+attractive because they are interpretable, exactly executable, and locally repairable (McDermott et
+al., 1998; Tang et al., 2024).
+
+Such models have already been explored in Atari-style games and robot control, where observations
+are well-structured data or pixel images and dynamics can often be captured by compact transition
+programs (Tang et al., 2024; Piriyakulkij et al., 2025; Lehrach et al., 2025; team et al., 2025;
+Black et al., 2025). They remain far less widely adopted in text-agent environments, including
+interfaces, games, and interactive virtual worlds. Bringing code-based world models to this setting
+raises three challenges (Figure 1).
+
+First, text-agent environments are black-box partially observable Markov decision processes
+(POMDPs) (Kaelbling et al., 1998): a ground-truth hidden state may exist, yet the agent never
+observes it directly and can recover only what is identifiable from the observation history. We
+call the agent’s internal state a belief: a representation that approximates the latent state for
+prediction and control, and that in general differs from it (s^t≠st\hat{s}_{t}\neq s_{t}). In
+AlfWorld, a kitchen observation may report that a drawer is closed while omitting its contents;
+likewise, Wordle never reveals the target word, and WebShop hides backend relevance scores (Côté et
+al., 2018; Shridhar et al., 2021; Wang et al., 2022; Yao et al., 2022; Xi et al., 2025; Xu et al.,
+2025). Prior text-environment world models often sidestep this issue by predicting the next
+observation from recent history (Li et al., 2025; Fang et al., 2025) or by distilling trajectory
+knowledge into parametric decision-making aids (Qiao et al., 2024). These approaches can be useful,
+but they do not necessarily maintain the persistent belief needed for multi-step simulation or
+agent decision making.
+
+Second, unlike structured pixels or proprioception, text observations are unstructured natural
+language. A useful code-based world model must therefore maintain a compact belief, apply an action
+update ff to predict the next belief, render a predicted observation through a readout ρ\rho, and
+correct the belief with gg once the true observation arrives. In the kitchen example of Figure 1,
+opening a closed drawer may be predicted to reveal an apple even though that object was absent from
+the preceding text; the readout then verbalizes the predicted belief, and correction reconciles it
+with the observed string. Encoding both belief dynamics and rendering as executable code is
+brittle: the same latent fact may surface in many phrasings, and small wording changes can break
+exact replay even when the underlying dynamics are correct.
+
+Teaser diagram contrasting a black-box environment latent statewith an agent belief-state world
+model, and showing that one offline log canbe explained by multiple alternative beliefs with
+different transfer.
+Figure 1. Text-agent environments are black-box POMDPs: a latent state sts_{t} transitions under
+action ata_{t} and emits unstructured text observations oto_{t}, but sts_{t} is never exposed
+(C1-C2). The agent (and any world model) maintains a belief s^t≠st\hat{s}_{t}\neq s_{t}, updated by
+predicting through actions and correcting from observations. Offline logs alone are underdetermined
+(C3): many beliefs can fit the same (ot,at,ot+1)(o_{t},a_{t},o_{t+1}) while differing in transfer,
+so replay on held-out validation trajectories is needed to probe generalization.Teaser diagram
+contrasting a black-box environment latent state with an agent belief-state world model, and
+showing that one offline log can be explained by multiple alternative beliefs with different
+transfer.
+
+Third, belief induction from offline trajectories is underdetermined. Many different beliefs can
+explain the same logs: some merely memorize seen transitions, while others maintain structured
+variables, such as container contents or inventory, that support generalization to unseen inputs.
+Fitting the training trajectories is therefore insufficient: a hypothesis that replays perfectly on
+seen data may still fail on new episodes. Because training logs alone cannot tell which beliefs
+will transfer, the learner needs both an inductive bias toward compact, reusable structure and an
+explicit generalization check beyond the induction set.
+
+We propose PatchWorld to address these challenges. PatchWorld is a gradient-free framework that
+generates one world model per environment and treats world-model induction as generative
+optimization. To address the need for persistent belief, an LLM synthesizes an executable Python
+program with an explicit symbolic belief, transition rules, correction logic, and rendering logic
+from offline observation-action trajectories only. To handle unstructured text, the program
+separates action-discriminative belief updates from observation readout, so dynamics need not
+entangle every surface phrasing. To constrain underdetermined induction, PatchWorld uses a
+program-shaped inductive bias and repairs the hypothesis through counterexample-guided inductive
+synthesis (CEGIS) (Solar-Lezama et al., 2006): trajectories are replayed, prediction failures
+become concrete counterexamples, and candidate patches are accepted only when they improve formal
+replay fidelity on held-out validation trajectories rather than on the induction examples alone.
+This validation-set replay gate rejects patches that memorize training transitions without
+generalizing. We further evaluate both observation reconstruction and decision-making utility on a
+held-out test split, and study their tradeoff. The output is not only a next-token predictor, but a
+reusable and inspectable executable hypothesis whose belief updates can be run, tested, and locally
+repaired.
+
+This dual evaluation matters because world modeling is pulled between two related goals. Some work
+emphasizes faithful reconstruction of future observations (Li et al., 2025; Fang et al., 2025),
+while other work emphasizes downstream decisions through action-contrastive predictions (Ha and
+Schmidhuber, 2018; Hafner et al., 2019; LeCun and Courant, 2022; Qiao et al., 2024). Under partial
+observability, a model can recover surface text while offering weak action guidance, or miss exact
+renderings while preserving useful transition structure (Figure 5). PatchWorld therefore treats
+text world modeling as a frontier rather than a single optimum. PatchWorld-Simple stays on the
+purely symbolic side of this frontier, while PatchWorld-Residual adds a human-specified
+residual-memory bias for exact, unambiguous textual state signatures. This improves reconstruction
+fidelity without replacing the executable dynamics used for agent decision making. More broadly,
+these results show that LLMs can act as symbolic optimizers, searching, patching, and improving
+executable symbolic systems that are competitive with LLM-based world models on both observation
+prediction and decision-making utility.
+
+Contributions.
+
+(1) We formulate three challenges for code-based world models in text-agent POMDPs: persistent
+belief under black-box partial observability, unstructured text observations, and underdetermined
+belief induction, where finite logs can support exact replay without revealing compact transferable
+belief structure, motivating held-out validation replay as a generalization check (Section 3). (2)
+We introduce PatchWorld, a gradient-free framework that uses LLMs as symbolic optimizers to
+synthesize and repair executable belief-state programs; its residual-memory variant treats
+recurring textual state evidence as a human-specified inductive bias, not an unconstrained cache
+(Section 4). (3) Across seven AgentGym environments, we find a frontier between observation
+reconstruction and decision-making utility. PatchWorld-Residual attains the highest code-based
+fidelity, PatchWorld-Simple attains the highest code-based live lookahead decision-making score,
+and our diagnostics explain where the two goals diverge (Section 5).
+
+Framework diagram of PatchWorld induction, counterexample-guided repair, and evaluation.
+Figure 2. Overall framework of PatchWorld for generative optimization of executable world models
+and their subsequent repair and evaluation.Framework diagram of PatchWorld induction,
+counterexample-guided repair, and evaluation.
+
+2. Related Work
+
+Code-based and symbolic world models.
+
+A growing line of work represents environment dynamics as executable code or symbolic rules rather
+than neural weights (see Li et al. (2026) for a broader survey of text world models). In games and
+control, WorldCoder induces transition programs, GIF-MCTS searches over code edits, PoE-World
+composes programmatic experts, and OneLife learns probabilistic precondition and effect rules (Tang
+et al., 2024; Dainese et al., 2024; Piriyakulkij et al., 2025; Khan et al., 2026). Related efforts
+target interactive interfaces and planning domains: Code2World renders GUI next screens as HTML (
+Zheng et al., 2026b), AutoWebWorld synthesizes web finite-state machines (Wu et al., 2026), GGP-CWM
+compiles game rules into OpenSpiel-style Python for MCTS (Lehrach et al., 2025), and TheoryCoder
+and Text2World produce PDDL or Python action models (Ahmed et al., 2025; McDermott et al., 1998; Hu
+et al., 2025). These systems differ from ours in what is observed during learning and what the
+induced artifact must maintain. POMDP Coder learns probabilistic transition and observation
+programs, but requires privileged simulator states (st,at,ot,st+1)(s_{t},a_{t},o_{t},s_{t+1})
+rather than text-only logs (Curtis et al., 2025). PoE-World and WorldCoder mainly synthesize local
+transition code and do not expose a persistent belief interface for partial observability.
+PatchWorld instead induces an executable belief-state Python program from offline text trajectories
+(ot,at,ot+1)(o_{t},a_{t},o_{t+1}) only, repairs it with execution-grounded counterexamples.
+
+Neural, video, and embodied world models.
+
+A complementary line of work keeps the world model implicit in a neural module. In text agents,
+Word2World fine-tunes a language model to predict the next observation (Li et al., 2025);
+WebEvolver co-evolves agent and world-model LLMs (Fang et al., 2025); WKM trains a parametric
+knowledge model for agent decision making (Qiao et al., 2024); and WALL-E and CoEx maintain rule
+sets through online interaction (Zhou et al., 2024; Zhou et al., 2025; Kim and Hwang, 2025). Beyond
+text, Genie induces interactive environments from unlabeled video (Bruce et al., 2024), while CWM
+and π0\pi_{0} extend action-conditional world models to code execution and robot control (team et
+al., 2025; Black et al., 2025). These approaches can improve prediction or control, but the
+transition logic stays in weights, prompts, or memories, which limits inspectability and often
+requires costly inference-time model calls (Li et al., 2026). Text-agent observations are also
+short and templated, so exact tokens matter more than in pixel domains. PatchWorld therefore
+induces an offline, gradient-free program whose belief can be inspected, executed without LLM calls
+during lookahead, and repaired locally when replay fails.
+
+Program synthesis and repair.
+
+PatchWorld’s induction loop builds on program synthesis from examples (Gulwani et al., 2017; Ellis
+et al., 2021; Wang et al., 2024b; Wei et al., 2025) and instantiates counterexample-guided
+inductive synthesis (Solar-Lezama et al., 2006) for sequential POMDP dynamics. In this setting, the
+specification is a set of replayable trajectories, the verifier is an executable validator that
+reports typed failures, and the synthesizer is an LLM prompted with structured diagnostics, making
+the LLM a gradient-free symbolic optimizer rather than the transition model itself. Related
+logical-hypothesis work studies constraint-based reasoning in knowledge graphs (Bai et al., 2023;
+Bai et al., 2024), whereas our hypotheses are executable transition programs. Compared with agent
+reflection and decision-making adaptation methods (Shinn et al., 2023; Wang et al., 2024a; Prasad
+et al., 2024; Yuan et al., 2025; Kim et al., 2025) and LLM code self-repair from execution
+feedback (Quoc et al., 2024; Kamoi et al., 2024; Jiang et al., 2024; Islam et al., 2025),
+PatchWorld addresses a failure mode of hallucinated or weakly checked code (Agarwal et al., 2024;
+Councilman et al., 2025): it accepts a patch only when the patch improves formal replay score on
+the full validation set, preventing the regression problem that plagues unconstrained
+self-correction.
+
+3. Task Formulation
+
+We model each environment as a POMDP (𝒮,𝒜,𝒯,Ω,𝒪)(\mathcal{S},\mathcal{A},\mathcal{T},\Omega,\
+mathcal{O}) with latent states st∈𝒮s_{t}\in\mathcal{S}, text actions at∈𝒜a_{t}\in\mathcal{A},
+observations ot∈𝒪o_{t}\in\mathcal{O}, transition kernel 𝒯⁡(st+1∣st,at)\mathcal{T}(s_{t+1}\!\mid\!s_
+{t},a_{t}), and emission Ω⁡(ot∣st)\Omega(o_{t}\!\mid\!s_{t}). The learner sees neither sts_{t} nor
+𝒯\mathcal{T}, only offline trajectories ℋ={(o0,a0,…,aT−1,oT)}\mathcal{H}=\{(o_{0},a_{0},\ldots,a_
+{T-1},o_{T})\} and an optional description EE.
+
+Goal.
+
+Induce executable Python cc that approximates dynamics through a symbolic belief s^t∈𝒮^\hat{s}_{t}\
+in\hat{\mathcal{S}} and a predict and correct cycle. The program implements fcf_{c} (predict), ρc\
+rho_{c} (readout), and gcg_{c} (correct). Let ⊥\bot denote the blank belief returned by init_belief
+; correct_belief then populates it from the initial observation:
+
+(1)  s^0\displaystyle\hat{s}_{0}     =gc​(⊥,o0),\displaystyle=g_{c}(\bot,\,o_{0}),
+(2)  s~t+1\displaystyle\tilde{s}_    =fc​(s^t,at),\displaystyle=f_{c}(\hat{s}_{t},\,a_{t}),
+     {t+1}
+(3)  o^t+1\displaystyle\hat{o}_{t+1} =ρc​(s~t+1,at),\displaystyle=\rho_{c}(\tilde{s}_{t+1},\,a_
+                                     {t}),
+(4)  s^t+1\displaystyle\hat{s}_{t+1} =gc​(s~t+1,ot+1).\displaystyle=g_{c}(\tilde{s}_{t+1},\,o_
+                                     {t+1}).
+
+The induction objective is to minimize replay loss
+
+(5)  minc⁡𝔼(ot,at,ot+1)∼ℋ​[ℓ⁡(o^t+1,ot+1)],\min_{c}\;\mathbb{E}_{(o_{t},a_{t},o_{t+1})\sim\mathcal
+     {H}}\bigl[\ell(\hat{o}_{t+1},\,o_{t+1})\bigr],
+
+where ℓ\ell is a text loss over predicted and observed next observations and s^t\hat{s}_{t} comes
+from running (1)-(4) along the prefix. Since cc is discrete, we optimize by search (Section 4)
+using typed replay validation and a severity-weighted error score (Eq. (6)) rather than
+differentiating ℓ\ell directly; the output is an inspectable program whose beliefs, rules, and
+render logic can be locally patched.
+
+The program cc may also include a constrained residual readout memory for high-confidence surface
+details, while preserving the predict and correct interface. These constraints are an inductive
+bias, analogous to weight decay, that steers search toward compact explanations (Section 4.4).
+
+Deterministic belief approximation.
+
+The learning target is a deterministic executable belief update under partial observability: given
+history and action, cc produces the next belief and observation string. This matches the needs of
+text-agent prediction and one-step lookahead, where the agent must maintain an actionable summary
+of what has been observed (e.g., a Wordle candidate set) and step it forward under interventions.
+Stochastic kernels over latent simulator states are a compatible extension of the same interface
+and are left for future work.
+
+Feasibility and identification.
+
+Offline induction from ℋ\mathcal{H} is a well-posed search problem with a standard identification
+structure (Kaelbling et al., 1998). Many programs can replay the logged transitions, ranging from
+prefix-action lookup tables to compact rule systems, so replay fitness alone under-specifies which
+hypothesis will transfer. PatchWorld therefore treats inductive bias as part of the method: an LLM
+code prior, contrastive counterexample-guided repair that enforces consistency across diverse
+transition patterns, and explicit constraints on residual memory. Together these preferences select
+structured, reusable programs over rote memorization of ℋ\mathcal{H}.
+
+Fidelity and decision utility.
+
+Eq. (5) measures textual reconstruction of ot+1o_{t+1}. Agent decision making instead depends on
+whether predicted futures separate good actions from bad ones. Let Δc​(s,a,a′)\Delta_{c}(s,a,a^{\
+prime}) denote the action-contrastive difference between the readouts ρc​(fc​(s,a),a)\rho_{c}(f_{c}
+(s,a),a) and ρc​(fc​(s,a′),a′)\rho_{c}(f_{c}(s,a^{\prime}),a^{\prime}) that the selector uses for
+ranking. Reconstruction and Δc\Delta_{c} are related but distinct objectives: surface factors that
+are shared across actions (template phrasing, identifiers, list orderings) can change ℓ\ell while
+leaving action rankings unchanged, and conversely (Grimm et al., 2020). Accordingly, we evaluate
+both observation fidelity and live lookahead success and characterize their Pareto frontier in §5.4
+and Appendix I.
+
+
+Table 1. Environment regimes vs. intro challenges (C1 belief, C2 text, C3 underdetermination).
+
+            Regime                       Envs.          Stress
+Belief collapses w/ exploration Maze, BabyAI, TextCraft C1
+Belief stays underdetermined    Wordle, WebShop         C1+C3
+Dynamics OK, rendering brittle  AlfWorld, SciWorld      C2
+
+⬇
+class BaseWorldModel:
+# Parse text into facts.
+def parse_observation(self, obs: str) -> dict: ...
+# Initialize blank latent belief.
+def init_belief(self) -> State: ...
+# Populate / update belief from text.
+def correct_belief(self, state, obs: str) -> State: ...
+# Apply action dynamics.
+def predict_belief(self, state, action: str) -> State: ...
+# Render next observation.
+def readout_observation(self, state, action: str) -> str: ...
+
+Figure 3. Core executable interface implemented by each induced program, separating parsing, belief
+correction, dynamics, and readout.Python class skeleton listing BaseWorldModel interface methods.
+
+4. Methodology
+
+PatchWorld induces a standalone Python world model for each environment by execution-grounded
+search over programs (Figure 2). Given offline trajectories, the method selects contrastive
+evidence, prompts an LLM to synthesize a complete BaseWorldModel, replays the candidate to expose
+counterexamples, and accepts a repair only when it improves validation replay. The resulting
+program maintains an explicit belief state, supports agent decision making, and predicts next
+observations without additional LLM calls at inference time. Unless otherwise stated, induction
+uses the training split, repair uses the validation split when available (otherwise training), and
+evaluation is reserved for the held-out test split.
+
+4.1. Executable World-Model Interface
+
+Each induced module implements the predict and correct interface defined in Section 3 and
+summarized in Figure 3. During replay, belief is corrected with the logged observation before the
+next action is applied; during rollout, the model is conditioned on its own predicted observations
+so that compounding errors become visible to the validator. The synthesis prompt specifies the
+target environment, but does not prescribe a fixed belief schema: the LLM proposes a state
+representation suited to that environment’s observations and dynamics.
+
+4.2. Evidence Selection via Contrastive Mining
+
+Because the synthesis prompt can include only a small subset of ℋ\mathcal{H}, PatchWorld mines a
+compact contrastive set that covers diverse action and outcome patterns (Algorithm 1). Each
+transition τ=(o,a,o′)\tau=(o,a,o^{\prime}) is indexed by two signatures. The action signature α⁡(a)
+\alpha(a) replaces instance-specific arguments by types (for example, take mug 1 from shelf 2
+becomes take OBJ from RECEPTACLE). The outcome signature ω⁡(o′)\omega(o^{\prime}) labels the next
+observation as a successful state change, a no-op or invalid response, a terminal outcome, or an
+informational reply. We then retain, for each action type, both success-like and failure-like
+continuations, so the induced program must learn conditional rules rather than a single memorized
+string. Algorithm 1 stores at most kk transitions per bucket (α,ω)(\alpha,\omega) and samples
+across buckets in round-robin order until at most mm examples are collected. Replay validation
+continues to use the full trajectory set; only the LLM prompt is restricted to the mined subset.
+
+
+Algorithm 1 Contrastive transition selection
+1: Induction trajectories ℋind\mathcal{H}_{\text{ind}}, caps k,mk,m
+2: initialize buckets Bα,ωB_{\alpha,\omega}, each holding ≤k\leq k transitions
+3: T←∅T\leftarrow\emptyset; let 𝒜\mathcal{A} be signatures with non-empty buckets
+4: while |T|<m|T|<m and buckets remain do
+5:   round-robin pick α∈𝒜\alpha\in\mathcal{A}; pop one τ\tau from any non-empty Bα,ωB_{\alpha,\
+omega}
+6:   T←T∪{τ}T\leftarrow T\cup\{\tau\}
+7: end while
+8: Contrastive multiset TT
+
+4.3. Counterexample-Guided Repair
+
+Induction begins from a synthesis prompt that includes the contrastive set TT, an environment
+description, the BaseWorldModel interface contract, and instructions to emit a complete executable
+module. Thereafter, PatchWorld searches over programs by proposing candidates with an LLM and
+accepting updates only when replay validation improves (Algorithm 2).
+
+Typed replay validation.
+
+Eq. (5) defines the target as a text loss ℓ\ell between o^t+1\hat{o}_{t+1} and ot+1o_{t+1}. Because
+cc is discrete, search does not differentiate ℓ\ell; instead the validator operationalizes replay
+disagreement through typed failures on a replay set BB. Given a candidate cc, it executes the
+predict and correct cycle in (1)-(4) on each logged trajectory and forms o^t+1(c)=ρc​(fc​(s^
+t,at),at)\hat{o}^{(c)}_{t+1}=\rho_{c}(f_{c}(\hat{s}_{t},a_{t}),a_{t}). A failed check yields a
+typed counterexample (load error, parser exception, belief-update error, task-specific state
+mismatch, or readout mismatch). Let ℰ⁡(c,B)\mathcal{E}(c;B) denote this set. Held-out prediction
+evaluation separately reports continuous instantiations of ℓ\ell (Token F1 and BLEU-4); episode
+success is reserved for the decision-making experiments in Section 5.
+
+Repair prompt construction.
+
+Two operators turn ℰ⁡(c,B)\mathcal{E}(c;B) into an editable diagnosis. Diagnose clusters related
+failures and summarizes the dominant pattern in natural language (for example, that move
+predictions drop walls_visible when a move is blocked). Prioritize ranks individual failures so
+that execution and parser errors precede milder semantic mismatches. Each repair prompt then
+presents the current program, the diagnosis, the top-16 counterexamples (input, expected output,
+and actual output), and the fixed interface guidance; the LLM returns a full replacement module.
+
+Acceptance and stopping.
+
+As a searchable surrogate for ℓ\ell on BB, candidate quality is measured by the severity-weighted
+replay score
+
+(6)  Score⁡(c,B)=∑e∈ℰ⁡(c,B)(1+14​σ​(e)),\mathrm{Score}(c;B)=\sum_{e\in\mathcal{E}(c;B)}\bigl(1+\
+     tfrac{1}{4}\,\sigma(e)\bigr),
+
+where σ⁡(e)\sigma(e) is a fixed rank over error types and non-executable programs incur a large
+penalty. Lower scores correspond to fewer or less severe disagreements with the logged
+observations. In each round we decode CC independent candidates and accept at most one, requiring a
+strict improvement in Score⁡(c,B)\mathrm{Score}(c;B) and using |ℰ⁡(c,B)||\mathcal{E}(c;B)| as a
+tie-breaker. This gate rejects patches that repair only the displayed examples while regressing on
+the broader replay set BB. Search terminates when ℰ=∅\mathcal{E}=\emptyset, the round budget is
+exhausted, or no candidate improves the score; the accepted program is written out as a Python
+module. At inference time, next-observation prediction uses only predict_belief followed by 
+readout_observation (no neural renderer); parser outputs δt=πc​(ot)\delta_{t}=\pi_{c}(o_{t}) may be
+inspected during replay for diagnostics. Figure 4 illustrates a Maze repair in which a concrete
+counterexample leads to a localized patch that tightens terminal parsing while preserving wall
+information on blocked moves.
+
+⬇
+# Counterexample
+observation: "The goal is at position 8, 6. ... position 1, 2.
+There are walls above you, below you."
+action: "move right"
+expected: "... position 1, 3. There is a wall above you."
+before patch: "Success" or "... There are no walls around you."
+# Accepted patch
+- if "Success" in obs_text:
++ if obs_text.strip() == "Success":
+result["status"] = "success"
+if move_blocked:
+- pass
++ new_belief["local_walls"] = belief["local_walls"].copy()
+
+Figure 4. Qualitative PatchWorld repair example. The validator turns a failed Maze transition into
+a localized code change; see Appendix N.Code listing of a qualitative counterexample and accepted
+patch for Maze.
+
+
+Algorithm 2 PatchWorld Repair Loop: counterexample-guided patch search
+1: Train ℋtrain\mathcal{H}_{\text{train}}, optional val ℋval\mathcal{H}_{\text{val}}, caps k,mk,m,
+budget RR, candidates CC, beam bb
+2: ℋreplay←ℋval\mathcal{H}_{\text{replay}}\leftarrow\mathcal{H}_{\text{val}} if available else
+ℋtrain\mathcal{H}_{\text{train}}
+3: T←SelectContrastive​(ℋtrain,k,m)T\leftarrow\textsc{SelectContrastive}(\mathcal{H}_{\text
+{train}},k,m)
+4: G←G\leftarrow interface and transition guidance
+5: c←LLMcode​(G,T)c\leftarrow\text{LLM}_{\text{code}}(G,T)
+6: ℰ←Validate​(c,ℋreplay)\mathcal{E}\leftarrow\textsc{Validate}(c,\mathcal{H}_{\text{replay}})
+7: q←Score⁡(c,ℋreplay)q\leftarrow\mathrm{Score}(c;\mathcal{H}_{\text{replay}})
+8: for r=1r=1 to RR do
+9:   if ℰ=∅\mathcal{E}=\emptyset then break
+10:   end if
+11:   D,ℰ¯←Diagnose​(ℰ),Prioritize​(ℰ)D,\bar{\mathcal{E}}\leftarrow\textsc{Diagnose}(\mathcal{E}),
+\,\textsc{Prioritize}(\mathcal{E})
+12:   for j=1j=1 to CC do
+13:    c~j←LLMrepair(c,ℰ¯1:16,D,G;seed=j)\tilde{c}_{j}\leftarrow\text{LLM}_{\text{repair}}(c,\bar{\
+mathcal{E}}_{1:16},D,G;\operatorname{seed}=j)
+14:    ℰ~j←Validate​(c~j,ℋreplay)\tilde{\mathcal{E}}_{j}\leftarrow\textsc{Validate}(\tilde{c}_{j},\
+mathcal{H}_{\text{replay}})
+15:    q~j←Score⁡(c~j,ℋreplay)\tilde{q}_{j}\leftarrow\mathrm{Score}(\tilde{c}_{j};\mathcal{H}_{\
+text{replay}})
+16:   end for
+17:   retain top bb by (q~j,|ℰ~j|)(\tilde{q}_{j},|\tilde{\mathcal{E}}_{j}|)
+18:   if some retained candidate has q~j<q\tilde{q}_{j}<q or (q~j=q​ and ​|ℰ~j|<|ℰ|)(\tilde{q}_{j}=
+q\textbf{ and }|\tilde{\mathcal{E}}_{j}|<|\mathcal{E}|) then
+19:    c,ℰ,q←c,\mathcal{E},q\leftarrow best improving candidate
+20:   else
+21:    break
+22:   end if
+23: end for
+24: Final program cc
+
+4.4. Inductive Bias for Fidelity
+
+PatchWorld-Simple uses only the induced symbolic program. This is often enough for decision making,
+but compact rules can miss exact surface text such as object IDs or long product listings.
+PatchWorld-Residual therefore adds a small train-only lookup table for those recurring strings,
+while belief updates still go through predict_belief and correct_belief. Each training pair
+(observation, action) is stored under a normalized key (lower-cased, whitespace collapsed; object
+IDs kept), together with its majority next observation, but only when that next observation is
+unique for the key. At test time, a key hit returns the stored string; otherwise the symbolic
+readout is used. Because the table is built from training data only and rejects conflicting
+outcomes, it cannot memorize validation or test transitions, and it avoids aliases such as
+identical Wordle screens with different hidden targets. Details are in Appendix E.
+
+
+Table 2. One-step next-observation prediction on the held-out test set, with Token F1 (F1) and
+BLEU-4 (BL); Avg. is the unweighted mean. “Infer. LLM?” indicates whether test-time prediction
+needs LLM calls after fitting. Bold marks the best code-based score.
+
+Method              Backbone          LLM     Infer. AlfWorld  BabyAI    Maze      SciWorld  TextCraft WebShop   Wordle    Avg.
+                                      Usage   LLM?
+                                                     F1   BL   F1   BL   F1   BL   F1   BL   F1   BL   F1   BL   F1   BL   F1   BL
+LLM-based Neural World Models
+Word2World (Li et   Qwen3.5-4B        SFT     Yes    0.89 0.66 0.93 0.75 0.97 0.89 0.96 0.95 0.94 0.68 0.63 0.42 0.60 0.37 0.85 0.67
+al., 2025)
+                    Qwen3-Coder-480B  ICL     Yes    0.53 0.35 0.73 0.44 0.83 0.75 0.48 0.30 0.76 0.51 0.56 0.34 0.60 0.21 0.64 0.41
+LLM-Direct          Mimo-v2.5         ICL     Yes    0.55 0.33 0.81 0.54 0.83 0.75 0.45 0.25 0.76 0.50 0.52 0.25 0.51 0.24 0.63 0.41
+                    DeepSeek-V4-Flash ICL     Yes    0.55 0.34 0.81 0.56 0.83 0.73 0.52 0.34 0.78 0.51 0.58 0.36 0.53 0.19 0.66 0.43
+Program-based World Models (No LLMs at Inference)
+POMDP Coder (Curtis Qwen3-Coder-480B  CodeGen No     0.67 0.42 0.59 0.35 0.85 0.70 0.40 0.32 0.73 0.48 0.24 0.05 0.00 0.00 0.50 0.33
+et al., 2025)
+GGP-CWM (Lehrach et Qwen3-Coder-480B  CodeGen No     0.26 0.08 0.42 0.14 0.71 0.51 0.00 0.00 0.24 0.12 0.36 0.12 0.00 0.00 0.29 0.14
+al., 2025)
+WorldCoder (Tang et Qwen3-Coder-480B  CodeGen No     0.63 0.42 0.78 0.61 0.83 0.76 0.40 0.36 0.88 0.61 0.58 0.45 0.31 0.11 0.63 0.48
+al., 2024)          Mimo-v2.5         CodeGen No     0.59 0.35 0.77 0.61 0.88 0.78 0.37 0.33 0.88 0.61 0.53 0.37 0.35 0.13 0.63 0.46
+                    DeepSeek-V4-Flash CodeGen No     0.40 0.21 0.70 0.54 0.73 0.61 0.41 0.33 0.60 0.35 0.58 0.45 0.55 0.22 0.57 0.39
+PoE-World (         Qwen3-Coder-480B  CodeGen No     0.62 0.40 0.78 0.62 0.83 0.77 0.39 0.34 0.78 0.55 0.58 0.44 0.43 0.17 0.63 0.47
+Piriyakulkij et     Mimo-v2.5         CodeGen No     0.62 0.40 0.78 0.62 0.86 0.78 0.41 0.36 0.88 0.61 0.60 0.47 0.40 0.16 0.65 0.49
+al., 2025)          DeepSeek-V4-Flash CodeGen No     0.37 0.14 0.73 0.54 0.76 0.61 0.21 0.21 0.50 0.41 0.47 0.33 0.55 0.22 0.51 0.35
+PatchWorld-Simple   Qwen3-Coder-480B  CodeGen No     0.36 0.10 0.85 0.58 0.80 0.69 0.57 0.39 0.28 0.10 0.53 0.30 0.58 0.20 0.57 0.34
+(ours)              Mimo-v2.5         CodeGen No     0.73 0.47 0.41 0.19 0.88 0.75 0.48 0.30 0.93 0.67 0.28 0.12 0.47 0.16 0.60 0.38
+                    DeepSeek-V4-Flash CodeGen No     0.48 0.21 0.77 0.51 0.90 0.80 0.22 0.04 0.84 0.61 0.28 0.10 0.69 0.40 0.60 0.38
+PatchWorld-Residual Qwen3-Coder-480B  CodeGen No     0.70 0.47 0.69 0.47 0.97 0.91 0.56 0.48 0.71 0.48 0.50 0.26 0.72 0.44 0.69 0.50
+(ours)              Mimo-v2.5         CodeGen No     0.77 0.50 0.49 0.28 0.87 0.82 0.69 0.56 0.95 0.68 0.50 0.26 0.63 0.35 0.70 0.49
+                    DeepSeek-V4-Flash CodeGen No     0.57 0.29 0.80 0.56 0.98 0.93 0.56 0.46 0.91 0.66 0.50 0.26 0.60 0.34 0.70 0.50
+
+5. Experiments
+
+We evaluate PatchWorld on observation fidelity and decision-making utility. One-step and rollout
+prediction test future-observation match, while live one-step lookahead tests action choice. The
+two evaluations favor different variants. PatchWorld-Residual is the best code-based predictor,
+while PatchWorld-Simple is the best code-based decision-making agent.
+
+5.1. Setup
+
+Environments and data.
+
+We evaluate on seven AgentGym (Xi et al., 2025) environments: Maze (Abdulhai et al., 2025), BabyAI 
+(Chevalier-Boisvert et al., 2019), TextCraft (Prasad et al., 2024), Wordle (Abdulhai et al., 2025),
+WebShop (Yao et al., 2022), AlfWorld (Shridhar et al., 2021), and SciWorld (Wang et al., 2022).
+Together they cover navigation, partial observability, crafting, shopping, and long-horizon
+household tasks. Offline trajectories are collected with a strong coding LLM under a ReAct policy^1
+^1 1 Qwen3-Coder-480B-A35B-Instruct: https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct.
+and split 60/20/20 by instance ID, so all rollouts from one instance stay in the same split.
+Training data are used for world-model induction (and Word2World fine-tuning); validation data for
+repair and hyperparameter choices; and test data only for final reporting. For each environment and
+backbone we induce one program with fixed repair settings; any residual-memory index is built from
+training transitions only. Details are in Appendix B.
+
+Baselines.
+
+LLM-Direct predicts with k=3k{=}3 in-context transitions. Word2World (Li et al., 2025) is an SFT
+implicit predictor. On the code side, WorldCoder (Tang et al., 2024) and PoE-World (Piriyakulkij et
+al., 2025) induce transition programs; POMDP Coder (Curtis et al., 2025) and GGP-CWM (Lehrach et
+al., 2025) are recent executable world-model baselines that we adapt to text-only AgentGym
+supervision; adaptation details appear in Appendix K. ReAct (Yao et al., 2023) is used only in
+agent decision making. In live decision making, Word2World remains a neural next-observation
+predictor at inference time, whereas the code-based methods execute induced programs. All
+code-induction methods share the same splits, backbone per row, and per-environment LLM budget
+caps; PatchWorld uses contrastive caps k=5,m=60k{=}5,m{=}60. We report Token F1 and BLEU-4 for
+prediction, and episode success for live decision making. All LLM calls use Qwen3-Coder-480B unless
+noted. Word2World uses Qwen3.5-4B; selected code-induction rows also report Mimo-v2.5 and
+DeepSeek-V4-Flash, with model cards in Table 2.
+
+5.2. One-Step Observation Prediction
+
+On each held-out transition, every method predicts o^t+1\hat{o}_{t+1} from (ot,at)(o_{t},a_{t})
+with no per-instance adaptation; PatchWorld does so through belief update then readout, as reported
+in Table 2.
+
+Analysis.
+
+PatchWorld-Residual attains the strongest program-based one-step scores: 0.69 Token F1 / 0.50
+BLEU-4 with Qwen3-Coder-480B, and up to 0.70 Token F1 with Mimo-v2.5 or DeepSeek-V4-Flash,
+exceeding matched WorldCoder and PoE-World rows by roughly 6–7 points. Among executable methods,
+PatchWorld-Residual outperforms WorldCoder and PoE-World, which in turn outperform
+PatchWorld-Simple. PatchWorld-Simple already indicates that belief tracking is largely effective:
+under Qwen3-Coder-480B it reaches 0.57 macro Token F1, and the validator analysis in Appendix M
+attributes most errors to readout mismatches rather than incorrect state updates. The residual
+deficit is therefore primarily surface realization. On template-heavy environments such as AlfWorld
+and TextCraft, where exact string match matters, PatchWorld-Simple trails WorldCoder and PoE-World,
+both at 0.63 macro Token F1 under the same backbone. As shown in Table 2, constrained train-only
+residual memory narrows this gap to 0.69 Token F1 while remaining an executable program rather than
+an end-to-end neural predictor. Exact train keys cover only 33% of held-out transitions on average,
+and a retrieval-only predictor scores 0.32 when misses are scored as zero; Appendices E and C
+report coverage and show that the residual margin exceeds induction variance.
+
+5.3. Multi-Step Rollout
+
+We start from ground-truth o0o_{0} and roll out with ground-truth actions but the model’s own
+predicted observations,
+
+ o^t+1=ρc​(fc​(s^t,at),at),s^t+1←gc​(fc​(s^t,at),o^t+1),\hat{o}_{t+1}=\rho_{c}\bigl(f_{c}(\hat{s}_
+ {t},a_{t}),a_{t}\bigr),\qquad\hat{s}_{t+1}\leftarrow g_{c}\bigl(f_{c}(\hat{s}_{t},a_{t}),\hat{o}_
+ {t+1}\bigr),
+
+for up to five steps; Table 3 reports the macro averages, with per-environment details in Appendix 
+F. Scores at t=1t{=}1 use episode-level filtering and are not directly comparable to Section 5.2.
+
+
+Table 3. Average rollout Token F1, unweighted over the seven environments. Bold marks the best
+code-based score. Per-environment results are in Appendix F.
+
+          Method           t=1t{=}1 t=2t{=}2 t=3t{=}3 t=5t{=}5
+        LLM-Direct           0.64     0.63     0.60     0.59
+        WorldCoder         0.63     0.60     0.58     0.57
+        PoE-World          0.63     0.57     0.53     0.51
+ PatchWorld-Simple (ours)  0.56     0.50     0.43     0.40
+PatchWorld-Residual (ours) 0.69     0.64     0.60     0.58
+
+Analysis.
+
+PatchWorld-Residual attains the strongest code-based rollout at every horizon, with 0.58 Token F1
+at t=5t{=}5 against 0.57 for WorldCoder and 0.51 for PoE-World. Multi-step rollout stresses partial
+observability over time: each prediction is fed back as the next observation, so small wording
+errors can compound unless the model re-grounds them in a persistent belief. PatchWorld does this
+explicitly by correcting belief from its own readout before the next action. As reported in Table 3
+, PatchWorld-Residual remains strongest from t=1t{=}1 through t=5t{=}5; its five-step score nearly
+matches WorldCoder and substantially exceeds PoE-World. Even PatchWorld-Simple, despite weaker
+surface text of 0.56 at t=1t{=}1, remains usable at longer horizons with 0.40 at t=5t{=}5: the
+structured belief still carries enough latent state to limit cascade failures after the first
+mismatch. Executable belief state therefore supports not only next-token fidelity, but also
+stability when observations must be imagined over several steps.
+
+5.4. Live Decision Making
+
+We embed each world model in the same one-step lookahead loop: a ReAct policy proposes a default
+action plus up to four additional LLM candidates; these are merged with environment-exposed
+actions, capped at eight total, scored by predicted next observations, and reranked with a shared
+LLM selector; the protocol is detailed in Appendix G. Candidate proposal and selection still use
+LLMs; the comparison isolates the lookahead predictor among an LLM call, a neural model, and an
+executable program. We evaluate up to 200 held-out episodes per environment with a 30-step cap;
+results appear in Tables 4 and 5 and in Figure 5.
+
+
+Table 4. Episode success rate (%) under the shared one-step lookahead decision procedure. Average
+is the unweighted mean over seven environments. Bold marks the unique best score per column;
+all-tie columns (Wordle) are left unbolded.
+
+      Method        Alf. Baby. Maze  Sci.  Text. Web. Wor.  Avg.
+       ReAct        17.5 86.7  83.3  83.5  93.8  56.0 100.0 74.4
+    LLM-Direct      14.5 88.9  100.0 85.0  95.8  46.0 100.0 75.7
+    Word2World      9.6  75.6  83.3  66.7  86.5  22.6 100.0 63.5
+    POMDP Coder     10.0 90.0  66.7  100.0 90.0  65.0 100.0 74.5
+      GGP-CWM       10.0 90.0  50.0  80.0  85.0  70.0 100.0 69.3
+    WorldCoder      3.5  81.7  66.7  88.5  67.7  43.0 100.0 64.4
+     PoE-World      3.5  84.4  83.3  93.5  70.8  49.5 100.0 69.3
+ PatchWorld-Simple  6.0  87.8  100.0 86.5  95.8  58.5 100.0 76.4
+PatchWorld-Residual 5.5  86.1  83.3  82.5  96.9  56.0 100.0 72.9
+
+
+Table 5. Decision-time prediction efficiency. Both rows share the candidate generator and reranker;
+only the lookahead predictor differs. Tokens count lookahead prediction.
+
+     Method       Pred. tokens/task Macro success
+   LLM-Direct     63,897            75.7
+PatchWorld-Simple 0                 76.4
+
+Scatter plot of observation fidelity versus decision-making success for compared methods.
+
+
+Figure 5. Fidelity-utility Pareto frontier: one-step Token F1 from Table 2 versus live lookahead
+success from Table 4.Scatter plot of observation fidelity versus decision-making success for
+compared methods.
+
+Analysis.
+
+PatchWorld-Simple attains the best code-based live success at 76.4%, exceeding PoE-World at 69.3%
+and WorldCoder at 64.4%, and matching or exceeding LLM-Direct at 75.7% while using 0 rather than
+roughly 64k lookahead-prediction tokens per task, as reported in Table 5. Live decision making
+evaluates whether belief-conditioned predictions help choose actions, not only reconstruct text.
+Relative to other induced programs, PatchWorld-Simple improves macro success by 7.1 points over
+PoE-World and 12.0 over WorldCoder under the same selector and candidate pool. Gains concentrate on
+WebShop and TextCraft, where symbolic updates help reject infeasible actions; Table 4 reports the
+per-environment breakdown. Word2World provides a useful contrast: it has the highest one-step
+fidelity at 0.85 F1, yet only 63.5% macro success, so surface match alone does not yield better
+decisions. An executable belief predictor can therefore replace LLM lookahead without paying the
+token cost, and often improves the action choices.
+
+Fidelity is not utility.
+
+Under Qwen3-Coder-480B, PatchWorld-Residual raises Token F1 from 0.57 to 0.69 but lowers live
+success from 76.4% to 72.9%. Lookahead needs action-relevant contrast about what becomes reachable,
+not only closer wording: a prediction can match surface tokens yet still fail to separate good
+actions from bad ones under the shared selector. Appendix I shows that residual predictions remain
+diverse across candidates; the issue is which differences the selector uses, not that candidates
+collapse to one string. Figure 5 illustrates the split: PatchWorld-Residual ranks higher on
+fidelity, while PatchWorld-Simple ranks higher on decision utility. Induced programs appear in
+Appendix O.
+
+5.5. Ablations
+
+We ablate one component at a time from the full PatchWorld-Residual pipeline under a fixed split,
+backbone, and budget.
+
+
+Table 6. Component ablation. Avg. F1 is test Token F1; Dec. is macro episode success (%).
+
+           Variant             Avg. F1 Δ\DeltaF1 Dec. Δ\DeltaDec
+             Full              0.69    +0.00     72.9 +0.0
+  −-Residual memory (simple)   0.57    −-0.12    76.4 +3.5
+        −-Repair loop          0.60    −-0.09    65.0 −-7.9
+     −-Contrastive mining      0.49    −-0.20    60.0 −-12.9
+−-State parsing / text-to-text 0.56    −-0.13    48.4 −-24.5
+
+Analysis.
+
+Contrastive mining and belief structure contribute the largest gains: removing mining reduces F1 by
+0.20 and success by 12.9 points, while removing parsed-state structure reduces success by 24.5
+points. Without contrastive evidence, the prompt over-represents successful transitions and
+under-samples failures, so induction cannot learn the required conditionals. Removing the repair
+loop likewise degrades both metrics, reducing F1 by 0.09 and decision success by 7.9 points,
+indicating that counterexample-guided search improves both fidelity and downstream action
+selection. As shown in Table 6, residual memory again exhibits the tradeoff between fidelity and
+utility: removing it lowers F1 by 0.12 but raises success by 3.5 points. Taken together, the
+ablations assign distinct roles to each component: parsed belief and contrastive mining primarily
+support decision quality, repair improves both fidelity and success, and residual memory mainly
+increases surface-level match. Applying the same train-only residual to PoE-World and WorldCoder
+raises their F1 from 0.51 to 0.66 and from 0.57 to 0.65, respectively, yet live success remains
+68.3% and 65.5%, still below PatchWorld-Simple at 76.4%; details appear in Appendix K. The
+principal advantage therefore stems from the belief interface and contrastive repair, rather than
+from the residual cache alone.
+
+Induction cost.
+
+Induction is incurred offline, averaging 17 to 28 LLM calls and 300k to 503k tokens per
+environment, after which lookahead uses zero world-model LLM calls, as reported in Table 7. This
+offline cost yields the decision-time saving in Table 5: once the program is induced, prediction is
+ordinary Python execution. Stronger backbones also reduce validation replay error more sharply:
+Qwen by 78.6%, Mimo by 71.1%, and DeepSeek by 11.8%, consistent with repair being gated by initial
+synthesis quality. Details appear in Appendix L.
+
+
+Table 7. Macro induction cost and validation replay-error reduction for PatchWorld (averages over
+seven environments).
+
+     Backbone      Calls Rounds Tok./env Err. red.
+ Qwen3-Coder-480B  28.4  6.9    452k     78.6%
+    Mimo-v2.5      25.0  6.0    503k     71.1%
+DeepSeek-V4-Flash  17.0  4.0    300k     11.8%
+
+When each variant helps.
+
+PatchWorld-Residual helps most where train-key coverage is high and observations are templated, as
+on AlfWorld, TextCraft, and Wordle. Where the symbolic program already covers surface variation, as
+on Maze and BabyAI, or where coverage is low and the browser fallback dominates, as on WebShop, the
+residual gap shrinks. After repair, readout and rendering still account for 53% of remaining errors
+on average, as detailed in Appendix M. These patterns suggest using residual memory for
+surface-form failures and the symbolic program when decisions depend on action contrast.
+
+6. Conclusion
+
+World models for interactive agents need not live only in neural weights. PatchWorld turns offline
+text trajectories into executable belief-state programs that an LLM proposes, a validator stresses,
+and local patches improve. Surface fidelity and decision utility remain related but distinct goals,
+and paying for induction once yields a world model that runs without further model calls at
+lookahead time. We therefore argue for treating LLMs as symbolic optimizers of executable world
+theories, evaluated on the frontier between fidelity and utility.
+
+References
+
+  • Abdulhai et al. (2025) M. Abdulhai, I. White, C. V. Snell, C. Sun, J. Hong, Y. Zhai, K. Xu, and
+    S. Levine LMRL gym: benchmarks for multi-turn reinforcement learning with language models. In 
+    Forty-second International Conference on Machine Learning, External Links: Link Cited by: §5.1.
+  • Agarwal et al. (2024) V. Agarwal, Y. Pei, S. Alamir, and X. Liu CodeMirage: hallucinations in
+    code generated by large language models. CoRR abs/2408.08333. External Links: Link, Document, 
+    2408.08333 Cited by: §2.
+  • Ahmed et al. (2025) Z. Ahmed, J. B. Tenenbaum, C. Bates, and S. J. Gershman Synthesizing world
+    models for bilevel planning. Transactions on Machine Learning Research. Note: External Links: 
+    ISSN 2835-8856, Link Cited by: §2.
+  • Bai et al. (2023) J. Bai, X. Liu, W. Wang, C. Luo, and Y. Song Complex query answering on
+    eventuality knowledge graph with implicit logical constraints. In Advances in Neural
+    Information Processing Systems 36: Annual Conference on Neural Information Processing Systems
+    2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023, A. Oh, T. Naumann, A.
+    Globerson, K. Saenko, M. Hardt, and S. Levine (Eds.), External Links: Link Cited by: §2.
+  • Bai et al. (2024) J. Bai, Y. Wang, T. Zheng, Y. Guo, X. Liu, and Y. Song Advancing abductive
+    reasoning in knowledge graphs through complex logical hypothesis generation. In Proceedings of
+    the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+    Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024, L. Ku, A. Martins, and V. Srikumar
+    (Eds.), pp. 1312–1329. External Links: Link, Document Cited by: §2.
+  • Black et al. (2025) K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L.
+    Groom, K. Hausman, B. Ichter, S. Jakubczak, T. Jones, L. Ke, S. Levine, A. Li-Bell, M.
+    Mothukuri, S. Nair, K. Pertsch, L. Shi, L. Smith, J. Tanner, Q. Vuong, A. Walling, H. Wang, and
+    U. Zhilinsky π0\pi_{0}: A vision-language-action flow model for general robot control. 
+    Robotics: Science and Systems XXI. Cited by: §1, §1, §2.
+  • Brohan et al. (2023) A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, K. Choromanski, T.
+    Ding, D. Driess, A. Dubey, C. Finn, P. Florence, C. Fu, M. G. Arenas, K. Gopalakrishnan, K.
+    Han, K. Hausman, A. Herzog, J. Hsu, B. Ichter, A. Irpan, N. Joshi, R. Julian, D. Kalashnikov,
+    Y. Kuang, I. Leal, L. Lee, T. E. Lee, S. Levine, Y. Lu, H. Michalewski, I. Mordatch, K.
+    Pertsch, K. Rao, K. Reymann, M. Ryoo, G. Salazar, P. Sanketi, P. Sermanet, J. Singh, A. Singh,
+    R. Soricut, H. Tran, V. Vanhoucke, Q. Vuong, A. Wahid, S. Welker, P. Wohlhart, J. Wu, F. Xia,
+    T. Xiao, P. Xu, S. Xu, T. Yu, and B. Zitkovich RT-2: vision-language-action models transfer web
+    knowledge to robotic control. Cited by: §1.
+  • Bruce et al. (2024) J. Bruce, M. Dennis, A. Edwards, J. Parker-Holder, Y. Shi, E. Hughes, M.
+    Lai, A. Mavalankar, R. Steigerwald, C. Apps, Y. Aytar, S. Bechtle, F. Behbahani, S. Chan, N.
+    Heess, L. Gonzalez, S. Osindero, S. Ozair, S. Reed, J. Zhang, K. Zolna, J. Clune, N. de
+    Freitas, S. Singh, and T. Rocktäschel Genie: generative interactive environments. Cited by: §1,
+    §2.
+  • Chevalier-Boisvert et al. (2019) M. Chevalier-Boisvert, D. Bahdanau, S. Lahlou, L. Willems, C.
+    Saharia, T. H. Nguyen, and Y. Bengio BabyAI: first steps towards grounded language learning
+    with a human in the loop. In International Conference on Learning Representations, External
+    Links: Link Cited by: §5.1.
+  • Côté et al. (2018) M. Côté, Á. Kádár, X. Yuan, B. Kybartas, T. Barnes, E. Fine, J. Moore, M. J.
+    Hausknecht, L. E. Asri, M. Adada, W. Tay, and A. Trischler TextWorld: A learning environment
+    for text-based games. In Computer Games - 7th Workshop, CGW 2018, Held in Conjunction with the
+    27th International Conference on Artificial Intelligence, IJCAI 2018, Stockholm, Sweden, July
+    13, 2018, Revised Selected Papers, T. Cazenave, A. Saffidine, and N. R. Sturtevant (Eds.), 
+    Communications in Computer and Information Science, Vol. 1017, pp. 41–75. External Links: Link,
+    Document Cited by: §1.
+  • Councilman et al. (2025) A. Councilman, D. Fu, A. Gupta, C. Wang, D. Grove, Y. Wang, and V. S.
+    Adve Towards formal verification of llm-generated code from natural language prompts. CoRR abs/
+    2507.13290. External Links: Link, Document, 2507.13290 Cited by: §2.
+  • Curtis et al. (2025) A. Curtis, H. Tang, T. Veloso, K. Ellis, J. B. Tenenbaum, T. Lozano-Pérez,
+    and L. P. Kaelbling LLM-guided probabilistic program induction for POMDP model estimation. In 
+    Proceedings of the 9th Conference on Robot Learning, Cited by: Appendix K, §2, Table 2, §5.1.
+  • Dainese et al. (2024) N. Dainese, M. Merler, M. Alakuijala, and P. Marttinen Generating code
+    world models with large language models guided by monte carlo tree search. In The Thirty-eighth
+    Annual Conference on Neural Information Processing Systems, External Links: Link Cited by: §2.
+  • Ellis et al. (2021) K. Ellis, C. Wong, M. Nye, M. Sablé-Meyer, L. Morales, L. Hewitt, L. Cary,
+    A. Solar-Lezama, and J. B. Tenenbaum Dreamcoder: bootstrapping inductive program synthesis with
+    wake-sleep library learning. In Proceedings of the 42nd acm sigplan international conference on
+    programming language design and implementation, pp. 835–850. Cited by: §2.
+  • Fang et al. (2025) T. Fang, H. Zhang, Z. Zhang, K. Ma, W. Yu, H. Mi, and D. Yu WebEvolver:
+    enhancing web agent self-improvement with co-evolving world model. In Proceedings of the 2025
+    Conference on Empirical Methods in Natural Language Processing, C. Christodoulopoulos, T.
+    Chakraborty, C. Rose, and V. Peng (Eds.), Suzhou, China, pp. 8959–8975. External Links: Link,
+    Document, ISBN 979-8-89176-332-6 Cited by: §1, §1, §2.
+  • Grimm et al. (2020) C. Grimm, A. Barreto, S. Singh, and D. Silver The value equivalence
+    principle for model-based reinforcement learning. Advances in neural information processing
+    systems 33, pp. 5541–5552. Cited by: §3.
+  • Gulwani et al. (2017) S. Gulwani, O. Polozov, and R. Singh Program synthesis. Found. Trends
+    Program. Lang. 4 (1–2), pp. 1–119. External Links: ISSN 2325-1107, Link, Document Cited by: §2.
+  • Ha and Schmidhuber (2018) D. Ha and J. Schmidhuber World models. CoRR abs/1803.10122. External
+    Links: Link, 1803.10122 Cited by: §1, §1.
+  • Hafner et al. (2019) D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi Dream to control: learning
+    behaviors by latent imagination. Cited by: §1, §1.
+  • Hu et al. (2025) M. Hu, T. Chen, Y. Zou, Y. Lei, Q. Chen, M. Li, Y. Mu, H. Zhang, W. Shao, and
+    P. Luo Text2World: benchmarking large language models for symbolic world model generation. In 
+    Findings of the Association for Computational Linguistics: ACL 2025, W. Che, J. Nabende, E.
+    Shutova, and M. T. Pilehvar (Eds.), Vienna, Austria, pp. 26043–26066. External Links: Link,
+    Document, ISBN 979-8-89176-256-5 Cited by: §2.
+  • Islam et al. (2025) Md. A. Islam, M. E. Ali, and M. R. Parvez CodeSim: multi-agent code
+    generation and problem solving through simulation-driven planning and debugging. In Findings of
+    the Association for Computational Linguistics: NAACL 2025, Albuquerque, New Mexico, 
+    pp. 5128–5154. External Links: Link, Document, ISBN 979-8-89176-195-7 Cited by: §2.
+  • Jiang et al. (2024) N. Jiang, X. Li, S. Wang, Q. Zhou, S. B. Hossain, B. Ray, V. Kumar, X. Ma,
+    and A. Deoras LeDex: training LLMs to better self-debug and explain code. In Advances in Neural
+    Information Processing Systems, External Links: Link Cited by: §2.
+  • Kaelbling et al. (1998) L. P. Kaelbling, M. L. Littman, and A. R. Cassandra Planning and acting
+    in partially observable stochastic domains. Artificial intelligence 101 (1-2), pp. 99–134. 
+    Cited by: §1, §3.
+  • Kamoi et al. (2024) R. Kamoi, Y. Zhang, N. Zhang, J. Han, and R. Zhang When can LLMs actually
+    correct their own mistakes? a critical survey of self-correction of LLMs. Transactions of the
+    Association for Computational Linguistics 12, pp. 1417–1440. External Links: Link, Document 
+    Cited by: §2.
+  • Ke et al. (2019) N. R. Ke, A. Singh, A. Touati, A. Goyal, Y. Bengio, D. Parikh, and D. Batra 
+    Modeling the long term future in model-based reinforcement learning. In International
+    Conference on Learning Representations, Cited by: §1.
+  • Khan et al. (2026) Z. Khan, A. Prasad, E. Stengel-Eskin, J. Cho, and M. Bansal One life to
+    learn: inferring symbolic world models for stochastic environments from unguided exploration. 
+    In The Fourteenth International Conference on Learning Representations, External Links: Link 
+    Cited by: §2.
+  • Kim et al. (2025) J. Kim, S. Rhee, M. Kim, D. Kim, S. Lee, Y. Sung, and K. Jung ReflAct:
+    world-grounded decision making in LLM agents via goal-state reflection. In Proceedings of the
+    2025 Conference on Empirical Methods in Natural Language Processing, Suzhou, China, 
+    pp. 33433–33465. External Links: Link, Document, ISBN 979-8-89176-332-6 Cited by: §2.
+  • Kim and Hwang (2025) M. Kim and S. Hwang CoEx – co-evolving world-model and exploration. In 
+    Findings of the Association for Computational Linguistics: EMNLP 2025, C. Christodoulopoulos,
+    T. Chakraborty, C. Rose, and V. Peng (Eds.), Suzhou, China, pp. 21629–21651. External Links: 
+    Link, Document, ISBN 979-8-89176-335-7 Cited by: §2.
+  • Langley (1987) P. Langley Scientific discovery: computational explorations of the creative
+    processes. MIT press. Cited by: §1.
+  • LeCun and Courant (2022) Y. LeCun and Courant A path towards autonomous machine intelligence
+    version 0.9.2, 2022-06-27. . Cited by: §1, §1.
+  • Lehrach et al. (2025) W. Lehrach, D. Hennes, M. Lazaro-Gredilla, X. Lou, C. Wendelken, Z. Li,
+    A. Dedieu, J. Grau-Moya, M. Lanctot, A. Iscen, J. Schultz, M. Chiam, I. Gemp, P. Zielinski, S.
+    Singh, and K. P. Murphy Code world models for general game playing. External Links: 2510.04542,
+    Link Cited by: Appendix K, §1, §2, Table 2, §5.1.
+  • Li et al. (2026) Y. Li, H. Wang, P. Lai, Z. Ruan, H. Zhu, Y. Zhu, G. Zhao, M. Hu, Y. Chen, S.
+    Yang, P. Li, J. Z. Pan, J. Pan, G. Chen, Y. Liu, and G. Li Bridging the agent-world gap: text
+    world models for llm-based agents. External Links: 2606.09032, Link Cited by: §2, §2.
+  • Li et al. (2025) Y. Li, H. Wang, J. Qiu, Z. Yin, D. Zhang, C. Qian, Z. Li, P. Ma, G. Chen, H.
+    Ji, and M. Wang From word to world: can large language models be implicit text-based world
+    models?. External Links: 2512.18832, Link Cited by: §1, §1, §2, Table 2, §5.1.
+  • McDermott et al. (1998) D. McDermott, M. Ghallab, A. E. Howe, C. A. Knoblock, A. Ram, M. M.
+    Veloso, D. S. Weld, and D. E. Wilkins PDDL-the planning domain definition language. External
+    Links: Link Cited by: §1, §2.
+  • Piriyakulkij et al. (2025) W. T. Piriyakulkij, Y. Liang, H. Tang, A. Weller, M. Kryven, and K.
+    Ellis PoE-world: compositional world modeling with products of programmatic experts. In The
+    Thirty-ninth Annual Conference on Neural Information Processing Systems, External Links: Link 
+    Cited by: §1, §2, Table 2, §5.1.
+  • Prasad et al. (2024) A. Prasad, A. Koller, M. Hartmann, P. Clark, A. Sabharwal, M. Bansal, and
+    T. Khot ADaPT: as-needed decomposition and planning with language models. In Findings of the
+    Association for Computational Linguistics: NAACL 2024, K. Duh, H. Gomez, and S. Bethard (Eds.),
+    Mexico City, Mexico, pp. 4226–4252. External Links: Link, Document Cited by: §2, §5.1.
+  • Qiao et al. (2024) S. Qiao, R. Fang, N. Zhang, Y. Zhu, X. Chen, S. Deng, Y. Jiang, P. Xie, F.
+    Huang, and H. Chen Agent planning with world knowledge model. In Advances in Neural Information
+    Processing Systems, External Links: Link Cited by: §1, §1, §2.
+  • Quoc et al. (2024) T. T. Quoc, D. H. Minh, T. Q. Thanh, and A. Nguyen-Duc An empirical study on
+    self-correcting large language models for data science code generation. CoRR abs/2408.15658. 
+    External Links: Link, Document, 2408.15658 Cited by: §2.
+  • Schmidt and Lipson (2009) M. Schmidt and H. Lipson Distilling free-form natural laws from
+    experimental data. science 324 (5923), pp. 81–85. Cited by: §1.
+  • Shinn et al. (2023) N. Shinn, F. Cassano, A. Gopinath, K. Narasimhan, and S. Yao Reflexion:
+    language agents with verbal reinforcement learning. In Advances in Neural Information
+    Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS
+    2023, New Orleans, LA, USA, December 10 - 16, 2023, A. Oh, T. Naumann, A. Globerson, K. Saenko,
+    M. Hardt, and S. Levine (Eds.), External Links: Link Cited by: §2.
+  • Shridhar et al. (2021) M. Shridhar, X. Yuan, M. Côté, Y. Bisk, A. Trischler, and M. J.
+    Hausknecht ALFWorld: aligning text and embodied environments for interactive learning. In 9th
+    International Conference on Learning Representations, ICLR 2021, Virtual Event, Austria, May
+    3-7, 2021, External Links: Link Cited by: §1, §5.1.
+  • Solar-Lezama et al. (2006) A. Solar-Lezama, L. Tancau, R. Bodik, S. Seshia, and V. Saraswat 
+    Combinatorial sketching for finite programs. In Proceedings of the 12th International
+    Conference on Architectural Support for Programming Languages and Operating Systems, ASPLOS XII
+    , New York, NY, USA, pp. 404–415. External Links: ISBN 1595934510, Link, Document Cited by: §1,
+    §2.
+  • Tang et al. (2024) H. Tang, D. Key, and K. Ellis WorldCoder, a model-based LLM agent: building
+    world models by writing code and interacting with the environment. In Advances in Neural
+    Information Processing Systems 38: Annual Conference on Neural Information Processing Systems
+    2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024, A. Globersons, L. Mackey, D.
+    Belgrave, A. Fan, U. Paquet, J. M. Tomczak, and C. Zhang (Eds.), External Links: Link Cited by:
+    §1, §1, §2, Table 2, §5.1.
+  • team et al. (2025) F. C. team, J. Copet, Q. Carbonneaux, G. Cohen, J. Gehring, J. Kahn, J.
+    Kossen, F. Kreuk, E. McMilin, M. Meyer, Y. Wei, D. Zhang, K. Zheng, J. Armengol-Estapé, P.
+    Bashiri, M. Beck, P. Chambon, A. Charnalia, C. Cummins, J. Decugis, Z. V. Fisches, F. Fleuret,
+    F. Gloeckle, A. Gu, M. Hassid, D. Haziza, B. Y. Idrissi, C. Keller, R. Kindi, H. Leather, G.
+    Maimon, A. H. Markosyan, F. Massa, P. Mazaré, V. Mella, N. Murray, K. Muzumdar, P. W. O’Hearn,
+    M. Pagliardini, D. Pedchenko, T. Remez, V. Seeker, M. Selvi, O. Sultan, S. Wang, L. Wehrstedt,
+    O. Yoran, L. Zhang, T. Cohen, Y. Adi, and G. Synnaeve CWM: an open-weights LLM for research on
+    code generation with world models. CoRR abs/2510.02387. External Links: Link, Document, 
+    2510.02387 Cited by: §1, §1, §2.
+  • Wang et al. (2024a) G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. Fan, and A.
+    Anandkumar Voyager: an open-ended embodied agent with large language models. Trans. Mach.
+    Learn. Res. 2024. External Links: Link Cited by: §2.
+  • Wang et al. (2024b) R. Wang, E. Zelikman, G. Poesia, Y. Pu, N. Haber, and N. Goodman Hypothesis
+    search: inductive reasoning with language models. In International Conference on Learning
+    Representations, Vol. 2024, pp. 38993–39014. Cited by: §2.
+  • Wang et al. (2022) R. Wang, P. Jansen, M. Côté, and P. Ammanabrolu ScienceWorld: is your agent
+    smarter than a 5th grader?. In Proceedings of the 2022 Conference on Empirical Methods in
+    Natural Language Processing, Y. Goldberg, Z. Kozareva, and Y. Zhang (Eds.), Abu Dhabi, United
+    Arab Emirates, pp. 11279–11298. External Links: Link, Document Cited by: §1, §5.1.
+  • Wei et al. (2025) A. Wei, T. Suresh, J. Cao, N. Kannan, Y. Wu, K. Yan, T. S. F. X. Teixeira, K.
+    Wang, and A. Aiken CodeARC: benchmarking reasoning capabilities of LLM agents for inductive
+    program synthesis. External Links: 2503.23145, Link Cited by: §2.
+  • Wu et al. (2026) Y. Wu, Y. Peng, Y. Chen, J. Ruan, Z. Zhuang, C. Yang, J. Zhang, M. Chen, Y.
+    Tseng, Z. Yu, L. Chen, Y. Zhai, B. Liu, C. Wu, and Y. Luo AutoWebWorld: synthesizing infinite
+    verifiable web environments via finite state machines. External Links: 2602.14296, Link Cited
+    by: §2.
+  • Xi et al. (2025) Z. Xi, Y. Ding, W. Chen, B. Hong, H. Guo, J. Wang, X. Guo, D. Yang, C. Liao,
+    W. He, S. Gao, L. Chen, R. Zheng, Y. Zou, T. Gui, Q. Zhang, X. Qiu, X. Huang, Z. Wu, and Y.
+    Jiang AgentGym: evaluating and training large language model-based agents across diverse
+    environments. In Proceedings of the 63rd Annual Meeting of the Association for Computational
+    Linguistics (Volume 1: Long Papers), W. Che, J. Nabende, E. Shutova, and M. T. Pilehvar (Eds.),
+    Vienna, Austria, pp. 27914–27961. External Links: Link, Document, ISBN 979-8-89176-251-0 Cited
+    by: §1, §5.1.
+  • Xu et al. (2025) T. Xu, L. Chen, D. Wu, Y. Chen, Z. Zhang, X. Yao, Z. Xie, Y. Chen, S. Liu, B.
+    Qian, A. Yang, Z. Jin, J. Deng, P. Torr, B. Ghanem, and G. Li CRAB: cross-environment agent
+    benchmark for multimodal language model agents. In Findings of the Association for
+    Computational Linguistics: ACL 2025, Vienna, Austria, pp. 21607–21647. External Links: Link,
+    Document, ISBN 979-8-89176-256-5 Cited by: §1.
+  • Yao et al. (2022) S. Yao, H. Chen, J. Yang, and K. R. Narasimhan WebShop: towards scalable
+    real-world web interaction with grounded language agents. In Advances in Neural Information
+    Processing Systems, A. H. Oh, A. Agarwal, D. Belgrave, and K. Cho (Eds.), External Links: Link 
+    Cited by: §1, §5.1.
+  • Yao et al. (2023) S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. R. Narasimhan, and Y. Cao 
+    ReAct: synergizing reasoning and acting in language models. In The Eleventh International
+    Conference on Learning Representations, External Links: Link Cited by: §5.1.
+  • Yuan et al. (2025) S. Yuan, Z. Chen, Z. Xi, J. Ye, Z. Du, and J. Chen Agent-r: training
+    language model agents to reflect via iterative self-training. External Links: 2501.11425, Link 
+    Cited by: §2.
+  • Zhang et al. (2020) T. Zhang, V. Kishore, F. Wu, K. Q. Weinberger, and Y. Artzi BERTScore:
+    evaluating text generation with BERT. In International Conference on Learning Representations, 
+    Cited by: Appendix D.
+  • Zheng et al. (2026a) T. Zheng, K. K. Tam, N. H. K. Nguyen, B. Xu, Z. Wang, J. Cheng, H. T.
+    Tsang, W. Wang, J. Bai, T. Fang, Y. Song, G. Y. Wong, and S. See NewtonBench: benchmarking
+    generalizable scientific law discovery in LLM agents. In The Fourteenth International
+    Conference on Learning Representations, External Links: Link Cited by: §1.
+  • Zheng et al. (2026b) Y. Zheng, L. Zhong, Y. Wang, R. Dai, K. Liu, X. Chu, L. Lv, P. Torr, and
+    K. Q. Lin Code2World: a gui world model via renderable code generation. External Links: 
+    2602.09856, Link Cited by: §2.
+  • Zhou et al. (2024) S. Zhou, T. Zhou, Y. Yang, G. Long, D. Ye, J. Jiang, and C. Zhang WALL-E:
+    world alignment by rule learning improves world model-based LLM agents. CoRR abs/2410.07484. 
+    External Links: Link, Document, 2410.07484 Cited by: §2.
+  • Zhou et al. (2025) S. Zhou, T. Zhou, Y. Yang, G. Long, D. Ye, J. Jiang, and C. Zhang WALL-E
+    2.0: world alignment by neurosymbolic learning improves world model-based LLM agents. CoRR abs/
+    2504.15785. External Links: Link, Document, 2504.15785 Cited by: §2.
+
+Appendix A PatchWorld Repair Loop Details
+
+Algorithm 2 defines the counterexample-guided search. In implementation, σ⁡(e)\sigma(e) ranks
+validator error types: execution and interface failures first, then missing latent support, then
+parsed-state or readout mismatches, then uncategorized failures. Load failures carry a catastrophic
+penalty so non-executable programs cannot beat executable ones: introducing a load error rejects a
+candidate, and fixing one is accepted only if it does not create an excessive number of replay
+failures.
+
+Appendix B Dataset Statistics
+
+Table 8 reports per-environment instance, trajectory, and transition counts under the shared
+AgentGym collection used throughout.
+
+
+Table 8. Dataset statistics per environment (instance-level 60/20/20 split).
+
+   Env    Instances Trajectories  Transitions
+AlfWorld  2,620     7,860         212,695
+ BabyAI   900       2,700         17,089
+  Maze    26        78            714
+SciWorld  2,259     6,777         146,954
+TextCraft 474       1,422         10,697
+ WebShop  4,130     12,390        106,177
+ Wordle   959       2,877         9,302
+
+Appendix C Seed Variance for One-Step Prediction
+
+We repeat the Qwen3-Coder-480B PatchWorld-Residual pipeline five times with independent seeds,
+refitting both the program and the residual index from scratch.
+
+
+Table 9. Five-seed variance for PatchWorld-Residual (Qwen3-Coder-480B) on the held-out test set.
+Mean ±\pm std over seeds.
+
+Environment                Token F1                                BLEU-4
+ AlfWorld   0.6982±0.02050.6982\pm 0.0205          0.4665±0.01880.4665\pm 0.0188
+  BabyAI    0.6878±0.02470.6878\pm 0.0247          0.4691±0.02640.4691\pm 0.0264
+   Maze     0.9663±0.00890.9663\pm 0.0089          0.9091±0.01420.9091\pm 0.0142
+ SciWorld   0.5618±0.02910.5618\pm 0.0291          0.4761±0.02530.4761\pm 0.0253
+ TextCraft  0.7104±0.01860.7104\pm 0.0186          0.4805±0.01720.4805\pm 0.0172
+  WebShop   0.4985±0.02240.4985\pm 0.0224          0.2603±0.01790.2603\pm 0.0179
+  Wordle    0.7363±0.01020.7363\pm 0.0102          0.4324±0.01760.4324\pm 0.0176
+   Macro    0.6942±0.0192\mathbf{0.6942\pm 0.0192} 0.4991±0.0231\mathbf{0.4991\pm 0.0231}
+
+Macro seed std (≈0.02\approx 0.02 Token F1) is small relative to the gap between
+PatchWorld-Residual and the strongest non-residual baseline (≈0.06\approx 0.06).
+
+Appendix D BERTScore Consistency with Token F1 and BLEU-4
+
+We score held-out predictions from the five program-based one-step configurations with BERTScore (
+Zhang et al., 2020) (roberta-large, English baseline, no re-scaling), replaying persisted programs
+with no new LLM calls. Token F1 and BLEU-4 in Table 10 repeat the main-table macros for
+side-by-side comparison; BERTScore-F1 is the additional semantic metric.
+
+
+Table 10. Macro BERTScore-F1 on replayed held-out predictions, with main-table Token F1 / BLEU-4
+from Table 2 for reference. Bold marks the best score.
+
+             Configuration              TokF1 BLEU4 BERT-F1
+PatchWorld-Simple + Mimo-v2.5           0.60  0.38  0.916
+PatchWorld-Simple + Qwen3-Coder-480B    0.57  0.34  0.934
+PatchWorld-Residual + DeepSeek-V4-Flash 0.70  0.50  0.948
+PatchWorld-Residual + Qwen3-Coder-480B  0.69  0.50  0.948
+PatchWorld-Residual + Mimo-v2.5         0.70  0.49  0.950
+
+BERTScore agrees with the main fidelity conclusion: residual variants beat simple ones, and within
+residual the three backbones remain nearly tied (0.948–0.950). BERTScore’s compressed range can
+mask exact failures (a zero Token F1 cell can still score near 0.850.85), so we keep Token F1 and
+BLEU-4 as primary fidelity metrics.
+
+Appendix E Residual Memory Coverage Diagnostic
+
+Table 11 measures how often an exact normalized train (observation, action) key appears in held-out
+test transitions. A retrieval-only diagnostic returns the memorized majority next observation on a
+hit and scores misses as zero Token F1.
+
+The residual is high precision but low coverage (macro hit rate 0.33), so most held-out transitions
+still rely on the executable program.
+
+
+Table 11. Exact train-key residual coverage on the held-out test split. Hit F1 is Token F1 on cache
+hits; All F1 counts misses as zero.
+
+   Env.    Hit rate Hit F1 All F1
+ AlfWorld  0.20     0.94   0.18
+  BabyAI   0.12     0.95   0.12
+   Maze    0.87     1.00   0.87
+ SciWorld  0.45     0.99   0.44
+TextCraft  0.42     0.99   0.41
+ WebShop   0.00     0.00   0.00
+  Wordle   0.26     0.95   0.24
+  Macro    0.33     0.83   0.32
+
+Appendix F Per-Environment Rollout Results
+
+Table 12 expands the macro rollout summary in Table 3. Cells use episode-level filtering (episodes
+must be long enough for the horizon), so t=1t{=}1 is not directly comparable to Table 2.
+
+
+Table 12. Rollout Token F1 by environment and horizon. Bold marks the best code-based score per
+cell; PatchWorld variants share the Qwen3-Coder-480B backbone.
+
+  Env.          Method        t=1t{=}1 t=2t{=}2 t=3t{=}3 t=5t{=}5
+              WorldCoder      0.62     0.59     0.57     0.56
+AlfWorld       PoE-World      0.62     0.55     0.50     0.46
+           PatchWorld-Simple  0.36     0.31     0.28     0.27
+          PatchWorld-Residual 0.69     0.62     0.58     0.57
+              WorldCoder      0.78     0.75     0.74     0.74
+ BabyAI        PoE-World      0.77     0.71     0.68     0.66
+           PatchWorld-Simple  0.83     0.77     0.69     0.63
+          PatchWorld-Residual 0.69     0.65     0.62     0.62
+              WorldCoder      0.83     0.81     0.79     0.78
+  Maze         PoE-World      0.83     0.78     0.74     0.70
+           PatchWorld-Simple  0.80     0.74     0.66     0.61
+          PatchWorld-Residual 0.97     0.94     0.90     0.85
+              WorldCoder      0.40     0.37     0.35     0.34
+SciWorld       PoE-World      0.39     0.34     0.31     0.30
+           PatchWorld-Simple  0.57     0.49     0.41     0.39
+          PatchWorld-Residual 0.55     0.49     0.44     0.41
+              WorldCoder      0.88     0.85     0.83     0.82
+TextCraft      PoE-World      0.78     0.73     0.70     0.69
+           PatchWorld-Simple  0.28     0.22     0.18     0.15
+          PatchWorld-Residual 0.71     0.66     0.64     0.63
+              WorldCoder      0.58     0.55     0.52     0.50
+ WebShop       PoE-World      0.58     0.52     0.46     0.43
+           PatchWorld-Simple  0.53     0.46     0.38     0.36
+          PatchWorld-Residual 0.50     0.48     0.46     0.45
+              WorldCoder      0.31     0.29     0.28     0.28
+ Wordle        PoE-World      0.43     0.38     0.32     0.30
+           PatchWorld-Simple  0.58     0.49     0.41     0.39
+          PatchWorld-Residual 0.72     0.65     0.55     0.50
+
+Pattern.
+
+PatchWorld-Residual decays more slowly where templated readouts dominate, while PatchWorld-Simple
+can be stronger at short horizons yet drift faster on token metrics. This matches the main-text
+split between surface fidelity and decision utility: symbolic state can remain useful even when
+rendered text leaves the simulator template.
+
+Appendix G Decision Protocol
+
+Every world model uses the same one-step lookahead procedure; only the predictor module differs:
+
+ 1. (1)
+   
+    Belief update. On observation oto_{t}, the world model ingests (ot−1,at−1,ot)(o_{t-1},a_
+    {t-1},o_{t}) and updates its internal state. For PatchWorld, this calls correct_belief; for
+    WorldCoder/PoE-World, the program’s transition; for LLM-Direct, an ICL prompt that conditions
+    on the last k=3k{=}3 transitions.
+
+ 2. (2)
+   
+    Candidate generation. A ReAct policy proposes a default action adefaulta^{\text{default}} plus
+    up to four additional LLM candidates. These are merged with the environment’s exposed action
+    API, then deduplicated and capped at eight total candidates (including the default).
+
+ 3. (3)
+   
+    Lookahead rollout. For each candidate a(i)a^{(i)}, the world model predicts o^t+1(i)\hat{o}_
+    {t+1}^{(i)}. No multi-step rollout is used in this study; the lookahead depth is exactly one.
+
+ 4. (4)
+   
+    Gated reranking. A shared Qwen3-Coder-480B selector scores (ot,a(i),o^t+1(i))(o_{t},a^{(i)},\
+    hat{o}_{t+1}^{(i)}) tuples. The decision procedure overrides adefaulta^{\text{default}} only
+    when the world-model predictions provide a usable contrast and the selected action has clear
+    positive evidence relative to the default (or avoids an explicitly bad predicted outcome).
+    Otherwise it falls back to adefaulta^{\text{default}}. This avoids penalizing strong reactive
+    baselines when the world model adds no reliable signal.
+
+ 5. (5)
+   
+    Termination. Episodes terminate on environment success, environment failure, or a 30-step cap,
+    whichever comes first. Each environment uses up to 200 held-out instances.
+
+The selector, candidate cap, and step cap are identical across all rows in Figure 5 and Table 4.
+Table 5 reports lookahead-prediction token cost for LLM-Direct versus PatchWorld-Simple. Deeper
+search, reward models, and distributional rollouts are orthogonal extensions.
+
+Appendix H Decision-Making Uncertainty
+
+Table 13 reports macro live success as a five-run mean ±\pm standard deviation under the same
+unweighted estimator as Table 4.
+
+
+Table 13. Macro episode success as five-run mean ±\pm standard deviation.
+
+      Method              Macro success (%)
+       ReAct        74.4±2.374.4\pm 2.3
+    LLM-Direct      75.7±0.875.7\pm 0.8
+    Word2World      63.5±1.263.5\pm 1.2
+    WorldCoder      64.4±2.964.4\pm 2.9
+     PoE-World      69.3±2.469.3\pm 2.4
+ PatchWorld-Simple  76.4±0.8\mathbf{76.4\pm 0.8}
+PatchWorld-Residual 72.9±2.372.9\pm 2.3
+
+Code-baseline gaps exceed these standard deviations, while PatchWorld-Simple remains within error
+of—or ahead of—LLM-Direct.
+
+Appendix I Cross-Action Contrast Diagnostics
+
+Table 14 checks whether residual memory collapses candidate predictions into identical strings
+during live lookahead. We normalize whitespace and case, discard empty predictions, and report the
+share of steps with fewer than two distinct usable predictions, the mean number of distinct
+predictions, and mean pairwise SequenceMatcher distance.
+
+
+Table 14. Cross-action contrast from saved live decision-making logs. Identical is the share of
+steps with fewer than two distinct usable predictions.
+
+       Model        Identical (%) Unique preds. Pairwise dist.
+ PatchWorld-Simple  6.4           4.73          0.42
+PatchWorld-Residual 5.7           4.87          0.44
+
+Residual predictions are at least as diverse as PatchWorld-Simple, so the live-success drop is not
+from identical retrieved strings across candidates.
+
+Appendix J Component Ablation Details
+
+Table 6 variants, relative to full PatchWorld-Residual: −-Residual memory reduces to
+PatchWorld-Simple; −-Repair loop sets R=0R{=}0; −-Contrastive mining replaces mining with uniform
+sampling; and −-State parsing / text-to-text removes parsed-state structure and forces a direct
+text-to-text predictor.
+
+Appendix K Executable Code-World-Model Baselines under Text-Only Supervision
+
+We adapt POMDP Coder (Curtis et al., 2025) and GGP-CWM (Lehrach et al., 2025) to AgentGym’s
+text-only supervision (observations, actions, rewards; no simulator hidden state). POMDP Coder
+keeps its four-model interface with coverage-based repair over text-state surrogates; GGP-CWM uses
+a paper-faithful helper decomposition (transition, legal action, terminal, reward, value,
+inference).
+
+
+Table 15. Executable code world models under text-only AgentGym supervision. F1 is test Token F1;
+Dec. is live success (%).
+
+       Method         F1  Dec.
+ PatchWorld-Simple   0.57 76.4
+PatchWorld-Residual  0.69 72.9
+    POMDP Coder      0.50 74.5
+      GGP-CWM        0.29 69.3
+     WorldCoder      0.63 64.4
+     PoE-World       0.63 69.3
+
+PatchWorld-Residual attains the highest offline fidelity and PatchWorld-Simple the highest live
+success among these executable methods: belief abstraction plus repair fits text-only logs better
+than substituting parsed text for a hidden state.
+
+
+Table 16. Per-environment test Token F1 for POMDP/code baselines.
+
+   Env    PatchWorld-Residual  POMDP Coder GGP-CWM
+AlfWorld  0.70                 0.67        0.26
+ BabyAI   0.69                 0.59        0.42
+  Maze    0.97                 0.85        0.71
+SciWorld  0.56                 0.40        0.00
+TextCraft 0.71                 0.73        0.24
+ WebShop  0.50                 0.24        0.36
+ Wordle   0.72                 0.00        0.00
+  Avg.    0.69                 0.50        0.29
+
+Table 17 wraps the same train-only residual onto transition-code baselines.
+
+
+Table 17. Residual-memory wrapper on programmatic baselines. PatchWorld uses the Qwen3-Coder-480B
+Simple→\toResidual pair from Tables 2 and 4. PoE-World / WorldCoder wrap the DeepSeek-V4-Flash
+programs from Table 2 (Base F1 0.510.51 / 0.570.57) with the same train-only residual; Base Dec.
+matches the shared planning table, and ++Res. Dec. is from the residualized live runs.
+
+                 Method                  Base F1 +Res. F1 Base Dec. +Res. Dec.
+PatchWorld-Simple→\toPatchWorld-Residual 0.57    0.69     76.4      72.9
+          PoE-World (DeepSeek)           0.51    0.66     69.3      68.3
+         WorldCoder (DeepSeek)           0.57    0.65     64.4      65.5
+
+Residual memory raises F1 across methods—including non-PatchWorld programs—but does not close the
+decision gap: even residualized PoE-World (68.3%) and WorldCoder (65.5%) remain below
+PatchWorld-Simple (76.4%), so the core advantage remains belief structure plus repair, not the
+cache alone. Table 18 is a Wordle-only secondary check; the unified Token F1 / BLEU protocol
+remains primary.
+
+
+Table 18. Wordle position-sensitive feedback on held-out validation transitions.
+
+       Method        Seq. exact Slot acc. Pos. F1
+PatchWorld-Residual  26.7       62.9      54.4
+ PatchWorld-Simple   7.5        50.0      39.0
+     PoE-World       5.9        42.0      34.2
+     WorldCoder      5.9        42.0      34.2
+
+Appendix L Detailed Induction Cost and Replay-Error Reduction
+
+Macro averages appear in Table 7. Tables 19 and 20 give per-environment call/token/round counts and
+validation replay-error reduction under the PatchWorld Repair Loop.
+
+
+Table 19. Per-environment induction cost for PatchWorld. Rounds are attempted repair iterations
+before convergence, budget (R=15R{=}15), or hill-climbing rejection. Tokens rounded to thousands.
+
+    Backbone         Env    Calls In tok. Out tok. Rounds Conv.?
+Qwen3-Coder-480B  AlfWorld  25    245.1k  97.1k    6      No
+Qwen3-Coder-480B  BabyAI    29    446.5k  97.0k    7      No
+Qwen3-Coder-480B  Maze      17    128.3k  37.6k    4      No
+Qwen3-Coder-480B  SciWorld  29    219.6k  126.2k   7      No
+Qwen3-Coder-480B  TextCraft 21    153.6k  84.3k    5      No
+Qwen3-Coder-480B  WebShop   45    1002.0k 181.2k   11     No
+Qwen3-Coder-480B  Wordle    33    227.5k  115.3k   8      No
+Qwen3-Coder-480B  Avg.      28.4  346.1k  105.5k   6.9    No
+Mimo-v2.5         AlfWorld  25    230.8k  256.2k   6      No
+Mimo-v2.5         BabyAI    17    331.0k  173.8k   4      No
+Mimo-v2.5         Maze      17    78.5k   99.2k    4      No
+Mimo-v2.5         SciWorld  29    377.7k  366.7k   7      No
+Mimo-v2.5         TextCraft 45    303.6k  390.2k   11     No
+Mimo-v2.5         WebShop   13    297.6k  130.2k   3      No
+Mimo-v2.5         Wordle    29    209.0k  277.3k   7      No
+Mimo-v2.5         Avg.      25.0  261.2k  241.9k   6.0    No
+DeepSeek-V4-Flash AlfWorld  25    208.8k  98.1k    6      No
+DeepSeek-V4-Flash BabyAI    13    304.7k  58.1k    3      No
+DeepSeek-V4-Flash Maze      17    134.5k  39.5k    4      No
+DeepSeek-V4-Flash SciWorld  17    207.3k  84.8k    4      No
+DeepSeek-V4-Flash TextCraft 13    94.1k   37.0k    3      No
+DeepSeek-V4-Flash WebShop   21    571.5k  79.5k    5      No
+DeepSeek-V4-Flash Wordle    13    112.0k  69.3k    3      No
+DeepSeek-V4-Flash Avg.      17.0  233.3k  66.6k    4.0    No
+
+
+Table 20. PatchWorld Repair Loop replay-error reduction on validation trajectories (relative to the
+initial generated program).
+
+    Backbone         Env    Init. err. Final err. Δ\Delta err. Red.
+Qwen3-Coder-480B  AlfWorld  7866       1059       6807         86.5%
+Qwen3-Coder-480B  BabyAI    2102       951        1151         54.8%
+Qwen3-Coder-480B  Maze      507        305        202          39.8%
+Qwen3-Coder-480B  SciWorld  3472       24         3448         99.3%
+Qwen3-Coder-480B  TextCraft 2028       404        1624         80.1%
+Qwen3-Coder-480B  WebShop   1060       552        508          47.9%
+Qwen3-Coder-480B  Wordle    475        446        29           6.1%
+Qwen3-Coder-480B  Total     17510      3741       13769        78.6%
+Mimo-v2.5         AlfWorld  5720       1430       4290         75.0%
+Mimo-v2.5         BabyAI    1564       518        1046         66.9%
+Mimo-v2.5         Maze      508        20         488          96.1%
+Mimo-v2.5         SciWorld  6113       1788       4325         70.8%
+Mimo-v2.5         TextCraft 334        162        172          51.5%
+Mimo-v2.5         WebShop   460        460        0            0.0%
+Mimo-v2.5         Wordle    462        10         452          97.8%
+Mimo-v2.5         Total     15161      4388       10773        71.1%
+DeepSeek-V4-Flash AlfWorld  723        675        48           6.6%
+DeepSeek-V4-Flash BabyAI    479        479        0            0.0%
+DeepSeek-V4-Flash Maze      318        142        176          55.3%
+DeepSeek-V4-Flash SciWorld  2665       2200       465          17.4%
+DeepSeek-V4-Flash TextCraft 164        164        0            0.0%
+DeepSeek-V4-Flash WebShop   1266       1232       34           2.7%
+DeepSeek-V4-Flash Wordle    517        517        0            0.0%
+DeepSeek-V4-Flash Total     6132       5409       723          11.8%
+
+Replay-error reduction is gated by initial synthesis quality: strong for Qwen and Mimo, small for
+DeepSeek, and no environment reaches exact convergence within R=15R{=}15. Longer-horizon
+environments also tend to consume more calls and rounds.
+
+Appendix M Validator Error Analysis
+
+We aggregate typed validator tags—parser, transition, readout/render, or unhandled action—over the
+PatchWorld-Residual (Qwen3-Coder-480B) post-repair validation log.
+
+
+Table 21. Post-repair validation errors by typed cluster (rows sum to 100%). Unhandled covers
+rejected or raising actions.
+
+  Env.    Parser Transition  Readout Unhandled
+AlfWorld  6%     18%         63%     13%
+ BabyAI   4%     31%         49%     16%
+  Maze    3%     22%         60%     15%
+SciWorld  9%     20%         58%     13%
+TextCraft 5%     47%         32%     16%
+ WebShop  7%     44%         36%     13%
+ Wordle   3%     12%         75%     10%
+  Macro   5%     28%         53%     14%
+
+Implication.
+
+Readout/rendering is 53% of remaining errors on average and dominates templated environments, which
+is where residual memory helps most. Transition errors concentrate in TextCraft and WebShop, where
+compound rules stress program expressivity. Natural next steps are fill-in renderer templates and
+validator checks beyond exact string match.
+
+Appendix N Qualitative PatchWorld Repair Example
+
+Figure 4 shows a Maze patch that fixed over-eager terminal parsing: the initial program treated any
+observation containing Success as done, but the first Maze observation embeds an instructional
+example. After move right, the validator showed a coordinate update with a wall above, while the
+program predicted terminal Success or dropped walls. The accepted patch tightened the terminal
+check and preserved walls on blocked moves (127→\to109 validation errors).
+
+Appendix O Induced World Models by Environment
+
+Figures 5–11 list the induced Python programs for each environment under the shared BaseWorldModel
+interface (parse_observation, init_belief, correct_belief, predict_belief, readout_observation).
+Source files ship in the release under generated_world_models/.
+
+Appendix P Limitations
+
+We isolate the world model with one-step lookahead rather than a learned controller, value
+function, or deep search. Because programs predict observations but not rewards, live decision
+making still uses a shared LLM selector; controlling that selector across methods does not remove
+interactions with prediction style. We induce deterministic belief programs, not distributional
+transition/reward models, and one model per environment, so we do not measure cross-task transfer
+or expected-utility planning under underdetermined outcomes. Decision-making gains are
+environment-dependent (e.g., AlfWorld can trail the ReAct default), the benchmark is language-only,
+and interpretability claims rest on inspectable programs and execution diagnostics rather than user
+studies.
+
+Appendix Q Use of AI Assistants
+
+We used AI-based tools for grammar fixing and polishing the writing of the manuscript.
+
+Appendix R Risks
+
+An induced executable model can look interpretable while still encoding wrong rules, missing hidden
+state, or gaps inherited from limited trajectories. Without checks, such errors can yield confident
+but incorrect decisions. Generated models should be sandboxed, reviewed, and treated as diagnostic
+or assistive tools in higher-stakes settings, not as trusted simulators.
+
+
+Figure 5: AlfWorld induced world model. Executable program for household navigation with receptacle
+/object tracking, inventory updates, and action-conditioned readout.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+from collections import defaultdict
+class AlfworldWorldModel(BaseWorldModel):
+def __init__(self):
+super().__init__()
+self.receptacles = set()
+self.objects = set()
+self.object_locations = defaultdict(dict) # object_id -> {receptacle_id: status}
+self.receptacle_states = defaultdict(str) # receptacle_id -> state (open/closed)
+self.inventory = set()
+self.current_location = None
+self.valid_actions = {
+"go to": ["go to <receptacle>"],
+"take": ["take <object> from <receptacle>"],
+"move": ["move <object> to <receptacle>"],
+"examine": ["examine <object>"],
+"look": ["look"],
+"inventory": ["inventory"],
+"open": ["open <receptacle>"],
+"close": ["close <receptacle>"],
+"use": ["use <object>"],
+"heat": ["heat <object> with <receptacle>"],
+"clean": ["clean <object> with <receptacle>"]
+}
+def parse_observation(self, obs_text: str) -> dict:
+"""Parse observation text into structured data"""
+parsed = {
+"location": None,
+"objects": [],
+"receptacles": [],
+"inventory": [],
+"message": obs_text.strip()
+}
+# Extract location
+location_match = re.search(r"You are in the middle of a room\. Looking quickly around you, you see 
+(.+)$", obs_text)
+if location_match:
+items = location_match.group(1).split(", ")
+for item in items:
+if " " in item:
+name, num = item.rsplit(" ", 1)
+parsed["receptacles"].append(f"{name} {num}")
+else:
+# Check for desk-specific observation
+desk_match = re.search(r"You arrive at ([^\.]+)\. On the ([^,]+), you see (.+)", obs_text)
+if desk_match:
+parsed["location"] = desk_match.group(1)
+objects_str = desk_match.group(3)
+if objects_str != "nothing":
+object_list = objects_str.split(", ")
+for obj in object_list:
+if " " in obj:
+# Handle cases like "a alarmclock 1" or "alarmclock 1"
+parts = obj.replace("a ", "").strip().split(" ")
+if len(parts) >= 2:
+obj_name = " ".join(parts[:-1])
+obj_id = parts[-1]
+parsed["objects"].append(f"{obj_name} {obj_id}")
+# Check for inventory
+if "You are not carrying anything" in obs_text:
+parsed["inventory"] = []
+elif "You are carrying:" in obs_text:
+inv_match = re.search(r"You are carrying: (.+)", obs_text)
+if inv_match:
+items = inv_match.group(1).split(", ")
+parsed["inventory"] = [item.strip() for item in items]
+return parsed
+def init_belief(self):
+"""Initialize belief state with latent support"""
+return {
+"location": None,
+"receptacles": set(),
+"objects": set(),
+"object_locations": defaultdict(dict),
+"receptacle_states": defaultdict(str),
+"inventory": set(),
+"last_action": None,
+# Adding latent belief fields to satisfy validator
+"latent_variables": {},
+"facts": set(),
+"hypotheses": [],
+"frontier": set(),
+"hidden_state": {}
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""Update belief state based on observation"""
+belief = belief_prior.copy()
+# Preserve latent fields
+if "latent_variables" not in belief:
+belief["latent_variables"] = {}
+if "facts" not in belief:
+belief["facts"] = set()
+if "hypotheses" not in belief:
+belief["hypotheses"] = []
+if "frontier" not in belief:
+belief["frontier"] = set()
+if "hidden_state" not in belief:
+belief["hidden_state"] = {}
+parsed = self.parse_observation(obs_text)
+# Update location
+if parsed["location"]:
+belief["location"] = parsed["location"]
+# Update inventory
+belief["inventory"] = set(parsed["inventory"])
+# Update object locations from "On the X, you see..." patterns
+on_pattern = r"On the ([^,]+), you see (.+)"
+on_matches = re.findall(on_pattern, obs_text)
+for receptacle, objects_str in on_matches:
+if objects_str != "nothing":
+object_list = objects_str.split(", ")
+for obj in object_list:
+obj_clean = obj.replace("a ", "").strip()
+if " " in obj_clean:
+belief["object_locations"][obj_clean][receptacle] = "on"
+belief["objects"].add(obj_clean)
+# Update receptacle states
+if "is open" in obs_text:
+open_matches = re.findall(r"The ([^ ]+ [0-9]+) is open", obs_text)
+for receptacle in open_matches:
+belief["receptacle_states"][receptacle] = "open"
+if "is closed" in obs_text:
+closed_matches = re.findall(r"The ([^ ]+ [0-9]+) is closed", obs_text)
+for receptacle in closed_matches:
+belief["receptacle_states"][receptacle] = "closed"
+return belief
+def predict_belief(self, belief, action: str):
+"""Predict next belief state given action"""
+# Create a deep copy that preserves all fields including latent ones
+next_belief = {}
+for key, value in belief.items():
+if isinstance(value, (set, list)):
+next_belief[key] = type(value)(value)
+elif isinstance(value, dict):
+next_belief[key] = value.copy()
+else:
+next_belief[key] = value
+next_belief["last_action"] = action
+# Parse action
+action = action.strip().lower()
+if action.startswith("go to "):
+location = action[6:] # Remove "go to "
+next_belief["location"] = location
+elif action.startswith("take "):
+# take <object> from <receptacle>
+match = re.match(r"take (.+) from (.+)", action)
+if match:
+obj, receptacle = match.groups()
+# Remove from receptacle location
+if obj in next_belief["object_locations"]:
+next_belief["object_locations"][obj].pop(receptacle, None)
+# Add to inventory
+next_belief["inventory"].add(obj)
+elif action.startswith("move "):
+# move <object> to <receptacle>
+match = re.match(r"move (.+) to (.+)", action)
+if match:
+obj, receptacle = match.groups()
+# Remove from inventory if present
+next_belief["inventory"].discard(obj)
+# Add to receptacle location
+next_belief["object_locations"][obj][receptacle] = "on"
+elif action.startswith("open "):
+receptacle = action[5:] # Remove "open "
+next_belief["receptacle_states"][receptacle] = "open"
+elif action.startswith("close "):
+receptacle = action[6:] # Remove "close "
+next_belief["receptacle_states"][receptacle] = "closed"
+return next_belief
+def readout_observation(self, belief, action: str = "") -> str:
+"""Generate observation text from belief state"""
+# For simplicity, return a generic success message for now
+# In a full implementation, this would reconstruct the observation
+# based on the belief state and action taken
+if belief["last_action"]:
+action_type = belief["last_action"].split()[0]
+if action_type in ["take", "move", "open", "close"]:
+return f"You {belief['last_action']}."
+elif action_type == "go":
+return f"You arrive at {belief['location']}."
+elif action_type == "examine":
+return "Nothing happens."
+elif action_type == "look":
+return "Nothing happens."
+elif action_type == "inventory":
+if belief["inventory"]:
+items = ", ".join(sorted(belief["inventory"]))
+return f"You are carrying: {items}."
+else:
+return "You are not carrying anything."
+return "Nothing happens."
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""Return valid action templates"""
+return self.valid_actions
+
+
+Figure 6: BabyAI induced world model. Egocentric scene representation with relative object
+positions, orientation, and pickup/drop transitions.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+from collections import defaultdict
+class BabyaiWorldModel(BaseWorldModel):
+def parse_observation(self, obs_text: str) -> dict:
+"""Parse observation text into structured data"""
+result = {
+'objects': [],
+'carrying': None,
+'facing': None,
+'goal': None,
+'walls': True
+}
+# Extract goal if present
+goal_match = re.search(r’Your goal: (.+)', obs_text)
+if goal_match:
+result['goal'] = goal_match.group(1)
+# Extract carrying information
+carrying_match = re.search(r’You are carrying (?:a|an|the) ([^.]+)', obs_text)
+if carrying_match:
+result['carrying'] = carrying_match.group(1)
+elif 'You are not carrying anything' in obs_text:
+result['carrying'] = None
+# Extract facing information
+facing_match = re.search(r’You are facing (?:a|an|the) ([^.]+)', obs_text)
+if facing_match:
+result['facing'] = facing_match.group(1)
+elif (facing_wall := re.search(r’You are facing a wall(?: (\d+) steps away)?', obs_text)):
+steps = facing_wall.group(1) if facing_wall.group(1) else "unknown"
+result['facing'] = f"wall {steps} steps away"
+elif 'You are facing a wall' in obs_text:
+result['facing'] = "wall"
+# Extract objects - more robust pattern
+if "In front of you in this room, you can see several objects:" in obs_text:
+object_section = obs_text.split("In front of you in this room, you can see several objects:")[1]
+if "You are facing" in object_section:
+object_section = object_section.split("You are facing")[0]
+# Handle the case where objects are listed
+object_lines = object_section.strip()
+# Pattern to match objects like: "There is a red box 1 1 steps in front of you and 2 steps to your 
+left."
+object_pattern = r’There is (?:a|an) ([^,]+?) (\d+)(?: right in front of you )?(?:(\d+) steps away|
+(\d+) steps in front of you)?(?: and (\d+) steps to your (left|right))?[,.]'
+for match in re.finditer(object_pattern, object_lines):
+obj_name = match.group(1).strip()
+obj_id = match.group(2)
+# Determine front steps
+front_steps = "0"
+if match.group(3): # steps away
+front_steps = match.group(3)
+elif match.group(4): # steps in front of you
+front_steps = match.group(4)
+elif 'right in front of you' in match.group(0):
+front_steps = "0"
+# Determine lateral position
+lateral_steps = 0
+lateral_dir = 'center'
+if match.group(5) and match.group(6): # Has lateral position
+lateral_steps = int(match.group(5))
+lateral_dir = match.group(6)
+full_name = f"{obj_name} {obj_id}"
+result['objects'].append({
+'name': obj_name,
+'id': obj_id,
+'full_name': full_name,
+'front_steps': int(front_steps),
+'lateral_steps': lateral_steps,
+'lateral_dir': lateral_dir
+})
+return result
+def init_belief(self):
+"""Initialize belief state with latent support"""
+return {
+'objects': [],
+'carrying': None,
+'facing': None,
+'position': (0, 0), # (front, lateral) coordinates
+'orientation': 0, # 0=north, 1=east, 2=south, 3=west
+'goal': None,
+'latent_variables': {}, # Add latent support
+'facts': set(), # Track known facts
+'hypotheses': {}, # Track hypotheses about hidden state
+'frontier': set(), # Track frontier of exploration
+'hidden_state': {} # General hidden state tracking
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""Correct belief state based on observation"""
+parsed = self.parse_observation(obs_text)
+belief = belief_prior.copy()
+# Deep copy lists and dicts
+belief['objects'] = [obj.copy() for obj in parsed['objects']]
+belief['carrying'] = parsed['carrying']
+belief['facing'] = parsed['facing']
+belief['goal'] = parsed['goal']
+# Maintain latent variables
+if 'latent_variables' not in belief:
+belief['latent_variables'] = {}
+if 'facts' not in belief:
+belief['facts'] = set()
+if 'hypotheses' not in belief:
+belief['hypotheses'] = {}
+if 'frontier' not in belief:
+belief['frontier'] = set()
+if 'hidden_state' not in belief:
+belief['hidden_state'] = {}
+return belief
+def predict_belief(self, belief, action: str):
+"""Predict next belief state given action"""
+new_belief = {}
+for k, v in belief.items():
+if isinstance(v, list):
+new_belief[k] = v.copy()
+elif isinstance(v, set):
+new_belief[k] = v.copy()
+elif isinstance(v, dict):
+new_belief[k] = v.copy()
+else:
+new_belief[k] = v
+action_lower = action.lower().strip()
+if action_lower.startswith('turn left'):
+new_belief['orientation'] = (new_belief['orientation'] - 1) % 4
+elif action_lower.startswith('turn right'):
+new_belief['orientation'] = (new_belief['orientation'] + 1) % 4
+elif action_lower.startswith('move forward'):
+# Movement doesn't change object positions in this environment
+pass
+elif action_lower.startswith('pickup'):
+# Remove picked up object from scene
+obj_name_match = re.search(r’pickup ([^,]+)$', action_lower)
+if obj_name_match:
+obj_name = obj_name_match.group(1)
+new_belief['objects'] = [obj for obj in new_belief['objects'] if obj['full_name'] != obj_name]
+new_belief['carrying'] = obj_name
+elif action_lower.startswith('drop'):
+# Drop currently carried object in front of agent
+if new_belief['carrying']:
+# Check if there's already an object right in front
+front_objects = [obj for obj in new_belief['objects'] if obj['front_steps'] == 0 and obj[
+'lateral_steps'] == 0]
+if not front_objects: # Only drop if no object is already in front
+# Add the dropped object to the front of the agent
+dropped_obj = {
+'name': new_belief['carrying'].split(' ')[0], # Extract object type
+'id': new_belief['carrying'].split(' ')[1] if len(new_belief['carrying'].split(' ')) > 1 else '1',
+'full_name': new_belief['carrying'],
+'front_steps': 0, # Dropped right in front
+'lateral_steps': 0,
+'lateral_dir': 'center'
+}
+new_belief['objects'].append(dropped_obj)
+new_belief['carrying'] = None
+elif action_lower.startswith('go to'):
+# Navigation action - moves agent to object location
+obj_name_match = re.search(r’go to ([^,]+)$', action_lower)
+if obj_name_match:
+target_obj_name = obj_name_match.group(1)
+# Find target object
+target_obj = None
+for obj in new_belief['objects']:
+if obj['full_name'] == target_obj_name:
+target_obj = obj
+break
+if target_obj:
+# Agent moves to object position - object is now in front
+new_belief['objects'] = [obj for obj in new_belief['objects'] if obj['full_name'] != 
+target_obj_name]
+target_obj['front_steps'] = 0
+target_obj['lateral_steps'] = 0
+target_obj['lateral_dir'] = 'center'
+new_belief['objects'].append(target_obj)
+elif action_lower.startswith('toggle and go through') or action_lower.startswith('go through'):
+# Door traversal - removes door from scene
+door_match = re.search(r’(?:toggle and go through|go through) ([^,]+)$', action_lower)
+if door_match:
+door_name = door_match.group(1)
+new_belief['objects'] = [obj for obj in new_belief['objects'] if obj['full_name'] != door_name]
+return new_belief
+def readout_observation(self, belief, action: str = "") -> str:
+"""Generate observation text from belief state"""
+# Handle check available actions specially
+if action.lower().strip() == "check available actions":
+return self._generate_available_actions_response(belief)
+lines = []
+if belief['goal']:
+lines.append(f"Your goal: {belief['goal']}")
+if belief['objects']:
+lines.append("In front of you in this room, you can see several objects:")
+for obj in belief['objects']:
+if obj['lateral_steps'] == 0 and (obj['lateral_dir'] == 'center' or obj['lateral_dir'] == ''):
+if obj['front_steps'] == 0:
+lines.append(f"There is a {obj['name']} {obj['id']} right in front of you.")
+else:
+lines.append(f"There is a {obj['name']} {obj['id']} {obj['front_steps']} steps in front of you.")
+else:
+direction = obj['lateral_dir']
+lines.append(f"There is a {obj['name']} {obj['id']} {obj['front_steps']} steps in front of you and 
+{obj['lateral_steps']} steps to your {direction}.")
+else:
+lines.append("In front of you in this room, you can see several objects: The room has walls around 
+you.")
+if belief['facing']:
+lines.append(f"You are facing {belief['facing']}.")
+else:
+lines.append("You are facing a wall.")
+if belief['carrying']:
+lines.append(f"You are carrying {belief['carrying']}.")
+else:
+lines.append("You are not carrying anything.")
+return " ".join(lines)
+def _generate_available_actions_response(self, belief) -> str:
+"""Generate response for 'check available actions' command"""
+# This would normally extract available actions from the belief state
+# For now, we'll return a placeholder that indicates the action was processed
+return "You can take the following actions: turn left, turn right, move forward, check available 
+actions"
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""Extract valid action templates"""
+return {
+"go to": ["go to <object>"],
+"pickup": ["pickup <object>"],
+"drop": ["drop"],
+"toggle": ["toggle", "toggle and go through <door>"],
+"go through": ["go through <door>"],
+"move": ["move forward"],
+"turn left": ["turn left"],
+"turn right": ["turn right"],
+"check": ["check available actions"]
+}
+
+
+Figure 7: LMRL Gym Maze induced world model. Compact coordinate-state program with local wall
+constraints and deterministic movement updates.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+class MazeWorldModel(BaseWorldModel):
+def parse_observation(self, obs_text: str) -> dict:
+"""Parse observation text into structured data."""
+# Extract goal position
+goal_match = re.search(r"The goal is at position (\d+), (\d+)", obs_text)
+if not goal_match:
+return None
+goal_x, goal_y = int(goal_match.group(1)), int(goal_match.group(2))
+# Extract current position
+pos_match = re.search(r"Your current position is at position (\d+), (\d+)", obs_text)
+if not pos_match:
+return None
+pos_x, pos_y = int(pos_match.group(1)), int(pos_match.group(2))
+# Extract wall information
+walls = []
+if "wall above" in obs_text or "walls above" in obs_text or "above you" in obs_text:
+walls.append("up")
+if "wall below" in obs_text or "walls below" in obs_text or "below you" in obs_text:
+walls.append("down")
+if "wall to your left" in obs_text or "walls to your left" in obs_text or "to your left" in 
+obs_text:
+walls.append("left")
+if "wall to your right" in obs_text or "walls to your right" in obs_text or "to your right" in 
+obs_text:
+walls.append("right")
+return {
+"goal": (goal_x, goal_y),
+"position": (pos_x, pos_y),
+"walls": walls
+}
+def init_belief(self):
+"""Initialize belief state."""
+return {
+"goal": None,
+"position": None,
+"walls": []
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""Update belief state with new observation."""
+parsed = self.parse_observation(obs_text)
+if parsed is None:
+return belief_prior
+# Update belief with parsed information
+belief = belief_prior.copy()
+if parsed["goal"] is not None:
+belief["goal"] = parsed["goal"]
+if parsed["position"] is not None:
+belief["position"] = parsed["position"]
+if parsed["walls"] is not None:
+belief["walls"] = parsed["walls"]
+return belief
+def predict_belief(self, belief, action: str):
+"""Predict next belief state given action."""
+# Create a copy of current belief
+next_belief = belief.copy()
+# Parse action
+action = action.strip().lower()
+# Update position based on action if it's a valid move
+if next_belief["position"] is not None:
+x, y = next_belief["position"]
+# Apply movement (based on examples: right increases y, down increases x)
+# Fix: when moving down, x should increase; when moving up, x should decrease
+if action == "move up" and "up" not in next_belief["walls"]:
+x -= 1
+elif action == "move down" and "down" not in next_belief["walls"]:
+x += 1
+elif action == "move left" and "left" not in next_belief["walls"]:
+y -= 1
+elif action == "move right" and "right" not in next_belief["walls"]:
+y += 1
+next_belief["position"] = (x, y)
+return next_belief
+def readout_observation(self, belief, action: str = "") -> str:
+"""Convert belief state back to observation text."""
+if belief["goal"] is None or belief["position"] is None:
+return ""
+goal_x, goal_y = belief["goal"]
+pos_x, pos_y = belief["position"]
+# Start building the observation text
+obs_text = f"The goal is at position {goal_x}, {goal_y}. Your current position is at position 
+{pos_x}, {pos_y}."
+# Add wall information
+walls = belief["walls"]
+if walls:
+wall_descriptions = []
+# Maintain deterministic ordering
+if "up" in walls:
+wall_descriptions.append("above you")
+if "down" in walls:
+wall_descriptions.append("below you")
+if "left" in walls:
+wall_descriptions.append("to your left")
+if "right" in walls:
+wall_descriptions.append("to your right")
+if len(wall_descriptions) == 1:
+obs_text += f" There is a wall {wall_descriptions[0]}."
+else:
+obs_text += f" There are walls {', '.join(wall_descriptions)}."
+else:
+obs_text += "."
+return obs_text
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""Return valid action forms for this domain."""
+return {
+"move <X>": ["move up", "move down", "move left", "move right"]
+}
+
+
+Figure 8: SciWorld induced world model. Room-and-object workspace with inventory, container
+contents, and object-state transitions.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+class SciworldWorldModel(BaseWorldModel):
+def parse_observation(self, obs_text: str) -> dict:
+"""
+Parse observation text into structured data.
+"""
+# Basic parsing - extract key elements
+parsed = {
+"raw_text": obs_text,
+"room": "",
+"objects": [],
+"inventory": [],
+"actions": [],
+"task": "",
+"room_contents": {},
+"object_states": {},
+"container_contents": {}
+}
+# Extract room name
+room_match = re.search(r"This room is called the ([^.]+)\.", obs_text)
+if room_match:
+parsed["room"] = room_match.group(1).strip()
+# Extract task description
+task_match = re.search(r"Task description:\s*([^.]+(?:\.[^.]+)*)", obs_text)
+if task_match:
+parsed["task"] = task_match.group(1)
+# Extract inventory
+inv_match = re.search(r"In your inventory, you see:\s*((?:\s*.+)+?)(?=\n\n|\Z)", obs_text)
+if inv_match:
+items = inv_match.group(1).strip().split("\n")
+parsed["inventory"] = [item.strip() for item in items if item.strip() and item.strip() != "nothing"
+]
+elif "In your inventory, you see:" in obs_text and "nothing" in obs_text:
+parsed["inventory"] = []
+# Extract room contents
+contents_match = re.search(r"In it, you see:((?:\n\t.+(?:\n\t\t.+)*)+)", obs_text)
+if contents_match:
+contents_text = contents_match.group(1)
+# Parse objects and their states/contents
+lines = contents_text.strip().split('\n')
+current_parent = None
+for line in lines:
+if line.startswith('\t\t'):
+# This is content of a container
+if current_parent:
+content = line.strip()
+if current_parent not in parsed["container_contents"]:
+parsed["container_contents"][current_parent] = []
+parsed["container_contents"][current_parent].append(content)
+elif line.startswith('\t'):
+# This is an object
+obj_desc = line.strip()
+obj_name = obj_desc.split('.')[0] if '.' in obj_desc else obj_desc
+parsed["objects"].append(obj_name)
+current_parent = obj_name
+# Check for states like open/closed, on/off
+if 'open' in obj_desc:
+parsed["object_states"][obj_name] = 'open'
+elif 'closed' in obj_desc:
+parsed["object_states"][obj_name] = 'closed'
+elif 'on' in obj_desc:
+parsed["object_states"][obj_name] = 'on'
+elif 'off' in obj_desc:
+parsed["object_states"][obj_name] = 'off'
+return parsed
+def init_belief(self):
+"""
+Initialize belief state with latent support.
+"""
+return {
+"room": "unknown",
+"objects": {},
+"inventory": [],
+"task": "",
+"room_contents": {},
+"object_states": {},
+"container_contents": {},
+"latent_variables": {
+"door_states": {},
+"container_states": {},
+"object_locations": {}
+},
+"facts": set(),
+"hypotheses": [],
+"frontier": set(),
+"hidden_state": {}
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""
+Update belief state based on new observation.
+"""
+parsed = self.parse_observation(obs_text)
+belief = belief_prior.copy()
+if parsed["room"]:
+# Fix room name normalization issue
+room_name = parsed["room"].strip()
+if room_name.startswith("the "):
+room_name = room_name[4:]
+elif room_name.startswith("LOC "):
+room_name = room_name[4:]
+belief["room"] = room_name
+if parsed["task"]:
+belief["task"] = parsed["task"]
+if parsed["inventory"]:
+belief["inventory"] = parsed["inventory"].copy()
+elif "In your inventory, you see:" in obs_text and "nothing" in obs_text:
+belief["inventory"] = []
+# Only clear inventory if explicitly stated as empty, otherwise preserve it
+# Update room contents
+if parsed["objects"]:
+belief["room_contents"] = {obj: True for obj in parsed["objects"]}
+# Update object states
+belief["object_states"].update(parsed["object_states"])
+# Update container contents
+belief["container_contents"].update(parsed["container_contents"])
+# Maintain latent variables
+if "latent_variables" not in belief:
+belief["latent_variables"] = {
+"door_states": {},
+"container_states": {},
+"object_locations": {}
+}
+if "facts" not in belief:
+belief["facts"] = set()
+if "hypotheses" not in belief:
+belief["hypotheses"] = []
+if "frontier" not in belief:
+belief["frontier"] = set()
+if "hidden_state" not in belief:
+belief["hidden_state"] = {}
+return belief
+def predict_belief(self, belief, action: str):
+"""
+Predict next belief state given current belief and action.
+"""
+belief_next = belief.copy()
+# Handle specific actions that change state
+if action.startswith("open "):
+obj_name = action[5:] # Remove "open "
+if obj_name not in belief_next["object_states"]:
+belief_next["object_states"][obj_name] = "open"
+else:
+belief_next["object_states"][obj_name] = "open"
+elif action.startswith("pick up "):
+obj_name = action[8:] # Remove "pick up "
+if obj_name not in belief_next["inventory"]:
+belief_next["inventory"].append(obj_name)
+# Remove from room contents if present
+if obj_name in belief_next.get("room_contents", {}):
+del belief_next["room_contents"][obj_name]
+elif action.startswith("put down "):
+obj_name = action[9:] # Remove "put down "
+if obj_name in belief_next["inventory"]:
+belief_next["inventory"].remove(obj_name)
+elif action.startswith("go to "):
+room_name = action[6:] # Remove "go to "
+# Fix room name normalization
+if room_name.startswith("the "):
+room_name = room_name[4:]
+elif room_name.startswith("LOC "):
+room_name = room_name[4:]
+belief_next["room"] = room_name
+elif action.startswith("examine ") or action.startswith("look at "):
+# These actions can change the current room context
+location = action[8:] if action.startswith("examine ") else action[8:] # Remove "examine " or "look
+at "
+# If it's a room name, update the current room
+rooms = ["kitchen", "hallway", "greenhouse", "bathroom", "living room", "bedroom", "workshop", "art
+studio", "foundry"]
+# Normalize location name
+loc_clean = location
+if loc_clean.startswith("the "):
+loc_clean = loc_clean[4:]
+if loc_clean in rooms:
+belief_next["room"] = loc_clean
+# Ensure all required latent fields exist
+required_fields = ["latent_variables", "facts", "hypotheses", "frontier", "hidden_state"]
+for field in required_fields:
+if field not in belief_next:
+if field == "latent_variables":
+belief_next[field] = {
+"door_states": {},
+"container_states": {},
+"object_locations": {}
+}
+elif field == "facts":
+belief_next[field] = set()
+elif field == "hypotheses":
+belief_next[field] = []
+elif field == "frontier":
+belief_next[field] = set()
+elif field == "hidden_state":
+belief_next[field] = {}
+return belief_next
+def readout_observation(self, belief, action: str = "") -> str:
+"""
+Generate observation text from belief state.
+"""
+if action.startswith("look around") or action == "look around":
+# Generate detailed room description
+room_name = belief.get('room', 'unknown')
+obs_lines = [f"This room is called the {room_name}."]
+if belief.get("room_contents") or belief.get("inventory"):
+obs_lines.append("In it, you see:")
+# Add room objects
+for obj_name in belief.get("room_contents", {}):
+obj_line = f"\t{obj_name}"
+if obj_name in belief.get("object_states", {}):
+state = belief["object_states"][obj_name]
+if state in ["open", "closed"]:
+obj_line += f". The {obj_name} is {state}."
+elif state in ["on", "off"]:
+obj_line += f", which is turned {state}."
+# Check for container contents
+if obj_name in belief.get("container_contents", {}):
+contents = belief["container_contents"][obj_name]
+if contents:
+obj_line += f". On the {obj_name} is: {', '.join(contents)}."
+else:
+obj_line += f". On the {obj_name} is: nothing."
+elif any(keyword in obj_name for keyword in ["drawer", "cupboard", "fridge", "oven", "freezer"]):
+obj_line += ". The door is closed."
+obs_lines.append(obj_line)
+# Always add the agent to room contents when looking around
+obs_lines.append("\tthe agent")
+return "\n".join(obs_lines)
+elif action.startswith("inventory") or action == "inventory":
+if belief.get("inventory"):
+items = "\n\t".join(belief["inventory"])
+return f"In your inventory, you see:\n\t{items}"
+else:
+return "In your inventory, you see:\n\tnothing"
+elif action.startswith("task") or action == "task":
+if belief.get("task"):
+return f"Task description:\n{belief['task']}"
+else:
+return "No task specified."
+elif action.startswith("open "):
+obj_name = action[5:] # Remove "open "
+return f"The {obj_name} is now open."
+elif action.startswith("look in "):
+container_name = action[8:] # Remove "look in "
+if container_name in belief.get("container_contents", {}):
+contents = belief["container_contents"][container_name]
+if contents:
+content_list = "\n\t".join(contents)
+return f"Inside the {container_name} is: \n\t{content_list}"
+else:
+return f"Inside the {container_name} is: \n\tnothing"
+else:
+return f"Inside the {container_name} is: \n\tnothing"
+elif action.startswith("pick up "):
+obj_name = action[8:] # Remove "pick up "
+return f"You move the {obj_name} to the inventory."
+elif action.startswith("focus on "):
+obj_name = action[9:] # Remove "focus on "
+return f"You focus on the {obj_name}."
+elif action.startswith("look at "):
+obj_name = action[8:] # Remove "look at "
+# Try to find object description in belief
+if obj_name in belief.get("object_states", {}):
+state = belief["object_states"][obj_name]
+if "door" in obj_name:
+return f"A door to the {obj_name.replace(' door', '')} (that is {state})"
+else:
+return f"a {obj_name}, which is turned {state}."
+elif obj_name in ["kitchen", "hallway", "greenhouse", "bathroom", "living room", "bedroom", 
+"workshop", "art studio", "foundry"]:
+# Looking at a room
+return f"This room is called the {obj_name}."
+else:
+return f"a {obj_name}"
+elif action.startswith("examine "):
+obj_name = action[8:] # Remove "examine "
+if obj_name in ["kitchen", "hallway", "greenhouse", "bathroom", "living room", "bedroom", 
+"workshop", "art studio", "foundry"]:
+# Examining a room - return basic room description
+return f"This room is called the {obj_name}."
+else:
+return f"a {obj_name}"
+elif action.startswith("go to "):
+room_name = action[6:] # Remove "go to "
+# Normalize room name
+if room_name.startswith("the "):
+room_name = room_name[4:]
+return f"You move to the {room_name}."
+elif action == "wait" or action == "wait1":
+return "You decide to wait for 10 iterations."
+elif action == "":
+# Default response for ambiguous situations
+return "Ambiguous request: Please enter the number for the action you intended (or blank to 
+cancel):"
+else:
+# For unhandled actions, return a generic but non-empty response
+return f"You perform the action: {action}"
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""
+Return valid action templates.
+"""
+return {
+"look at": ["look at <object>"],
+"examine": ["examine <object>"],
+"focus on": ["focus on <object>"],
+"pick up": ["pick up <object>"],
+"put down": ["put down <object>"],
+"move": ["move <object> to <location>"],
+"go to": ["go to <location>"],
+"open": ["open <object>"],
+"close": ["close <object>"],
+"activate": ["activate <object>"],
+"deactivate": ["deactivate <object>"],
+"connect": ["connect <object> to <object>"],
+"disconnect": ["disconnect <object>"],
+"use": ["use <object> on <object>"],
+"pour": ["pour <object> in <object>"],
+"dunk": ["dunk <object> in <object>"],
+"mix": ["mix <object>"],
+"read": ["read <object>"],
+"inventory": ["inventory"],
+"task": ["task"],
+"look around": ["look around"],
+"wait": ["wait"],
+"wait1": ["wait1"],
+"look in": ["look in <object>"]
+}
+
+
+Figure 9: TextCraft induced world model. Resource-graph belief over inventory counts, crafting
+recipes, and obtainability constraints.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+from collections import defaultdict
+import re
+class TextcraftWorldModel(BaseWorldModel):
+def parse_observation(self, obs_text: str) -> dict:
+"""Parse observation text into structured data."""
+obs = {
+"inventory": {},
+"crafting_recipes": [],
+"goal": None,
+"message": None,
+"goal_item": None,
+"last_action_outcome": None
+}
+lines = obs_text.strip().split('\n')
+for line in lines:
+line = line.strip()
+if line.startswith("Inventory:"):
+if "You are not carrying anything" in line:
+obs["inventory"] = {}
+else:
+# Parse inventory items like [bricks] (1) [brick] (6)
+items = re.findall(r’$([^$]+)$$(\d+)', line)
+for item, count in items:
+obs["inventory"][item.strip()] = int(count)
+elif line.startswith("Crafting commands:"):
+continue
+elif line.startswith("craft "):
+obs["crafting_recipes"].append(line)
+elif line.startswith("Goal:"):
+goal_text = line.replace("Goal:", "").strip()
+obs["goal"] = goal_text
+# Extract the goal item (e.g., "minecraft:stone_pickaxe")
+goal_match = re.search(r’minecraft:([a-z_]+)', goal_text)
+if goal_match:
+obs["goal_item"] = goal_match.group(1)
+elif line.startswith("Got "):
+obs["message"] = line
+obs["last_action_outcome"] = "got"
+elif line.startswith("Crafted "):
+obs["message"] = line
+obs["last_action_outcome"] = "crafted"
+elif line.startswith("Could not execute") or "Could not find" in line:
+obs["message"] = line
+if "find enough items" in line:
+obs["last_action_outcome"] = "not_enough_items"
+elif "find a valid recipe" in line:
+obs["last_action_outcome"] = "invalid_recipe"
+else:
+obs["last_action_outcome"] = "not_found"
+return obs
+def init_belief(self):
+"""Initialize belief state with latent support."""
+return {
+"inventory": defaultdict(int),
+"recipes": set(),
+"crafting_recipes": [],
+"goal_item": None,
+"last_action": None,
+"last_obs": None,
+"last_action_outcome": None,
+"latent_variables": {
+"obtainable_items": set(),
+"known_unavailable_items": set(),
+"recipe_graph": {}
+}
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""Update belief state based on observation."""
+obs = self.parse_observation(obs_text)
+belief = belief_prior.copy()
+# Update inventory
+if obs["inventory"]:
+belief["inventory"] = defaultdict(int, obs["inventory"])
+# Add new recipes
+for recipe in obs["crafting_recipes"]:
+belief["recipes"].add(recipe)
+belief["crafting_recipes"].append(recipe)
+# Update goal
+if obs["goal_item"]:
+belief["goal_item"] = obs["goal_item"]
+# Update outcome
+if obs["last_action_outcome"]:
+belief["last_action_outcome"] = obs["last_action_outcome"]
+# Update latent variables based on message
+if obs["message"]:
+if "Got " in obs["message"]:
+item_match = re.search(r’Got (\d+) ([a-z_ ]+)', obs["message"])
+if item_match:
+_, item = item_match.groups()
+belief["latent_variables"]["obtainable_items"].add(item)
+elif "Could not find" in obs["message"] and "enough items" not in obs["message"]:
+item_match = re.search(r’Could not find ([a-z_ ]+)', obs["message"])
+if item_match:
+item = item_match.group(1)
+belief["latent_variables"]["known_unavailable_items"].add(item)
+belief["last_obs"] = obs
+return belief
+def predict_belief(self, belief, action: str):
+"""Predict next belief state given action."""
+next_belief = {
+"inventory": belief["inventory"].copy(),
+"recipes": belief["recipes"].copy(),
+"crafting_recipes": belief["crafting_recipes"].copy(),
+"goal_item": belief["goal_item"],
+"last_action": action,
+"last_obs": belief["last_obs"],
+"last_action_outcome": None,
+"latent_variables": {
+"obtainable_items": belief["latent_variables"]["obtainable_items"].copy(),
+"known_unavailable_items": belief["latent_variables"]["known_unavailable_items"].copy(),
+"recipe_graph": belief["latent_variables"]["recipe_graph"].copy()
+}
+}
+action = action.strip()
+# Handle crafting actions
+craft_match = re.match(r’craft (\d+) ([^(]+) using (.+)', action)
+if craft_match:
+quantity, item, ingredients_str = craft_match.groups()
+quantity = int(quantity)
+item = item.strip()
+# Parse ingredients
+ingredients = {}
+parts = ingredients_str.split(', ')
+for part in parts:
+ing_match = re.search(r’(\d+) (.+)', part.strip())
+if ing_match:
+ing_qty, ing_name = ing_match.groups()
+ingredients[ing_name] = int(ing_qty)
+# Check if we have enough ingredients
+can_craft = True
+for ing_name, ing_qty in ingredients.items():
+if next_belief["inventory"][ing_name] < ing_qty:
+can_craft = False
+break
+# If we can craft, update inventory
+if can_craft:
+# Deduct ingredients
+for ing_name, ing_qty in ingredients.items():
+next_belief["inventory"][ing_name] -= ing_qty
+# Add crafted item
+next_belief["inventory"][item] += quantity
+next_belief["last_action_outcome"] = "crafted"
+next_belief["latent_variables"]["obtainable_items"].add(item)
+else:
+next_belief["last_action_outcome"] = "not_enough_items"
+# Handle get actions
+get_match = re.match(r’get (\d+) (.+)', action)
+if get_match:
+quantity, item = get_match.groups()
+quantity = int(quantity)
+# Check if item is known to be unavailable
+if item in next_belief["latent_variables"]["known_unavailable_items"]:
+next_belief["last_action_outcome"] = "not_found"
+else:
+next_belief["inventory"][item] += quantity
+next_belief["last_action_outcome"] = "got"
+next_belief["latent_variables"]["obtainable_items"].add(item)
+# Handle inventory actions
+if action == "inventory":
+next_belief["last_action_outcome"] = "inventory"
+return next_belief
+def readout_observation(self, belief, action: str = "") -> str:
+"""Generate observation text from belief state."""
+if belief["last_action_outcome"] == "got":
+get_match = re.match(r’get (\d+) (.+)', belief["last_action"])
+if get_match:
+quantity, item = get_match.groups()
+return f"Got {quantity} {item}"
+elif belief["last_action_outcome"] == "crafted":
+craft_match = re.match(r’craft (\d+) ([^(]+) using (.+)', belief["last_action"])
+if craft_match:
+quantity, item, _ = craft_match.groups()
+return f"Crafted {quantity} minecraft:{item}"
+elif belief["last_action_outcome"] == "not_enough_items":
+return f"Could not find enough items to craft {belief['last_action'].split('craft ')[1].split(' 
+using')[0]}"
+elif belief["last_action_outcome"] == "not_found":
+get_match = re.match(r’get (\d+) (.+)', belief["last_action"])
+if get_match:
+_, item = get_match.groups()
+return f"Could not find {item}"
+elif belief["last_action_outcome"] == "invalid_recipe":
+return "Could not find a valid recipe"
+elif belief["last_action_outcome"] == "inventory":
+if not belief["inventory"]:
+return "Inventory: You are not carrying anything."
+else:
+items = []
+for item, count in belief["inventory"].items():
+if count > 0:
+items.append(f"[{item}] ({count})")
+return "Inventory: " + " ".join(items)
+# Default fallback
+if not belief["inventory"]:
+return "Inventory: You are not carrying anything."
+else:
+items = []
+for item, count in belief["inventory"].items():
+if count > 0:
+items.append(f"[{item}] ({count})")
+return "Inventory: " + " ".join(items)
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""Return valid action templates."""
+return {
+"craft": ["craft <quantity> <item> using <ingredients>"],
+"get": ["get <quantity> <item>"],
+"inventory": ["inventory"],
+"i": ["I <statement>"],
+"im": ["I'm <statement>"]
+}
+
+
+Figure 10: WebShop induced world model. Browser-state machine over page type, search results,
+product options, and purchase completion.
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+class WebshopWorldModel(BaseWorldModel):
+def parse_observation(self, obs_text: str) -> dict:
+"""Parse the observation text into a structured dictionary."""
+parts = [part.strip() for part in obs_text.split(" [SEP] ")]
+obs_dict = {
+"type": "",
+"instruction": "",
+"navigation": [],
+"items": [],
+"product_info": {},
+"page_info": {}
+}
+i = 0
+if not parts:
+return obs_dict
+# Check if this is a results page or product page by looking for instruction first
+if parts[0] == "Instruction:" or (len(parts) > 1 and parts[1] == "Instruction:"):
+obs_dict["type"] = "instruction"
+# Find instruction
+instr_idx = parts.index("Instruction:") + 1 if "Instruction:" in parts else 1
+if instr_idx < len(parts):
+obs_dict["instruction"] = parts[instr_idx]
+i = instr_idx + 1
+page_number = 1
+while i < len(parts):
+if parts[i] == "Back to Search":
+obs_dict["navigation"].append("Back to Search")
+i += 1
+elif parts[i] == "< Prev":
+obs_dict["navigation"].append("< Prev")
+i += 1
+elif parts[i] == "Next >":
+obs_dict["navigation"].append("Next >")
+i += 1
+elif parts[i].startswith("Page "):
+obs_dict["navigation"].append(parts[i])
+# Extract page number
+page_match = re.search(r"Page (\d+)", parts[i])
+if page_match:
+page_number = int(page_match.group(1))
+i += 1
+elif parts[i] == "Search":
+obs_dict["navigation"].append("Search")
+i += 1
+elif re.match(r"B\d+", parts[i]): # ASIN
+asin = parts[i]
+i += 1
+if i < len(parts):
+title = parts[i]
+i += 1
+item = {
+"asin": asin,
+"title": title
+}
+if i < len(parts) and (parts[i].startswith("$") or "to $" in parts[i]):
+item["price"] = parts[i]
+i += 1
+obs_dict["items"].append(item)
+elif parts[i] == "Price:":
+i += 1
+if i < len(parts):
+obs_dict["product_info"]["price"] = parts[i]
+i += 1
+elif parts[i] in ["Rating:", "Description", "Features", "Reviews", "Buy Now"]:
+obs_dict["product_info"][parts[i].lower().replace(" ", "_").replace(":", "")] = True
+i += 1
+elif parts[i] in ["size", "color", "fit_type", "style", "item_shape"]:
+attr_name = parts[i]
+i += 1
+options = []
+while i < len(parts) and not (parts[i] in ["Back to Search", "< Prev", "Next >",
+"Page 1 (Total results: 50)",
+"Page 2 (Total results: 50)",
+"Page 3 (Total results: 50)",
+"Page 4 (Total results: 50)",
+"Search"] or
+re.match(r"B\d+", parts[i]) or
+parts[i] == "Price:" or
+parts[i] in ["Rating:", "Description", "Features", "Reviews", "Buy Now"]):
+options.append(parts[i])
+i += 1
+obs_dict["product_info"][attr_name] = options
+else:
+# Product description text or other content
+if "product_description" not in obs_dict["product_info"]:
+obs_dict["product_info"]["product_description"] = []
+obs_dict["product_info"]["product_description"].append(parts[i])
+i += 1
+obs_dict["page_info"]["page_number"] = page_number
+elif parts[0] == "WebShop":
+# Initial search page
+obs_dict["type"] = "webshop"
+i = 1
+if i < len(parts) and parts[i] == "Instruction:":
+i += 1
+if i < len(parts):
+obs_dict["instruction"] = parts[i]
+i += 1
+if i < len(parts) and parts[i] == "Search":
+obs_dict["navigation"].append("Search")
+elif parts[0] == "Thank you for shopping with us!":
+obs_dict["type"] = "purchase_complete"
+obs_dict["message"] = parts[0]
+return obs_dict
+def init_belief(self):
+"""Initialize the belief state with latent support."""
+return {
+"page_type": "initial",
+"search_query": "",
+"instruction": "",
+"items": [],
+"selected_item": None,
+"product_attributes": {},
+"navigation_stack": [],
+# Adding latent belief fields as required by the environment
+"latent_variables": {
+"current_page": "initial",
+"selected_filters": {},
+"product_details": {},
+"search_history": [],
+"purchase_state": "not_started"
+},
+"facts": set(),
+"hypotheses": {},
+"frontier": [],
+"hidden_state": {}
+}
+def correct_belief(self, belief_prior, obs_text: str):
+"""Correct the belief state based on the observation."""
+obs = self.parse_observation(obs_text)
+belief = belief_prior.copy()
+# Preserve latent belief structure
+if "latent_variables" not in belief:
+belief["latent_variables"] = {
+"current_page": "initial",
+"selected_filters": {},
+"product_details": {},
+"search_history": [],
+"purchase_state": "not_started"
+}
+if "facts" not in belief:
+belief["facts"] = set()
+if "hypotheses" not in belief:
+belief["hypotheses"] = {}
+if "frontier" not in belief:
+belief["frontier"] = []
+if "hidden_state" not in belief:
+belief["hidden_state"] = {}
+if obs["type"] == "webshop":
+belief["page_type"] = "initial"
+belief["instruction"] = obs["instruction"]
+belief["latent_variables"]["current_page"] = "initial"
+belief["items"] = []
+belief["selected_item"] = None
+belief["product_attributes"] = {}
+elif obs["type"] == "instruction":
+belief["instruction"] = obs["instruction"]
+if "Back to Search" in obs["navigation"] and len(obs["navigation"]) == 1 and not obs["items"] and 
+not obs["product_info"]:
+# This is back to search from product page - should show results
+belief["page_type"] = "results"
+belief["latent_variables"]["current_page"] = "results"
+belief["items"] = []
+elif "Back to Search" in obs["navigation"] and obs["items"]:
+# This is a results page with Back to Search
+belief["page_type"] = "results"
+belief["items"] = obs["items"]
+belief["latent_variables"]["current_page"] = "results"
+elif any("Page" in nav for nav in obs["navigation"]):
+# This is a results page
+belief["page_type"] = "results"
+belief["items"] = obs["items"]
+belief["latent_variables"]["current_page"] = "results"
+elif "Search" in obs["navigation"] and not obs["items"] and not obs["product_info"]:
+# This is the initial page but reached via back navigation
+belief["page_type"] = "initial"
+belief["latent_variables"]["current_page"] = "initial"
+belief["items"] = []
+belief["selected_item"] = None
+belief["product_attributes"] = {}
+elif obs["product_info"] and not obs["items"]:
+# This is a product page
+belief["page_type"] = "product"
+belief["latent_variables"]["current_page"] = "product"
+belief["product_attributes"] = obs["product_info"]
+belief["latent_variables"]["product_details"] = obs["product_info"]
+else:
+# Default to results page when in doubt
+belief["page_type"] = "results"
+belief["items"] = obs["items"]
+belief["latent_variables"]["current_page"] = "results"
+elif obs["type"] == "purchase_complete":
+belief["page_type"] = "purchase_complete"
+belief["latent_variables"]["current_page"] = "purchase_complete"
+belief["latent_variables"]["purchase_state"] = "completed"
+return belief
+def predict_belief(self, belief, action: str):
+"""Predict the next belief state given an action."""
+next_belief = belief.copy()
+# Ensure latent belief structure is maintained
+if "latent_variables" not in next_belief:
+next_belief["latent_variables"] = {
+"current_page": "initial",
+"selected_filters": {},
+"product_details": {},
+"search_history": [],
+"purchase_state": "not_started"
+}
+if "facts" not in next_belief:
+next_belief["facts"] = set()
+if "hypotheses" not in next_belief:
+next_belief["hypotheses"] = {}
+if "frontier" not in next_belief:
+next_belief["frontier"] = []
+if "hidden_state" not in next_belief:
+next_belief["hidden_state"] = {}
+if action.startswith("search["):
+query = action[7:-1] # Remove search[ and ]
+next_belief["page_type"] = "results"
+next_belief["search_query"] = query
+next_belief["items"] = []
+next_belief["selected_item"] = None
+next_belief["navigation_stack"] = ["search"]
+next_belief["latent_variables"]["current_page"] = "results"
+next_belief["latent_variables"]["search_history"].append(query)
+next_belief["latent_variables"]["selected_filters"] = {}
+next_belief["product_attributes"] = {}
+elif action.startswith("click[") and "B" in action and "Back to Search" not in action and "Next >" 
+not in action and "Prev" not in action and "Buy Now" not in action:
+# Click on an item
+asin = action[6:-1] # Remove click[ and ]
+next_belief["page_type"] = "product"
+next_belief["selected_item"] = asin
+next_belief["navigation_stack"] = next_belief.get("navigation_stack", []) + ["item_click"]
+next_belief["latent_variables"]["current_page"] = "product"
+if "latent_variables" not in next_belief:
+next_belief["latent_variables"] = {}
+if "product_details" not in next_belief["latent_variables"]:
+next_belief["latent_variables"]["product_details"] = {}
+next_belief["latent_variables"]["product_details"]["asin"] = asin
+elif action == "click[Back to Search]" or action == "Back to Search":
+next_belief["page_type"] = "results" # Show results page, not initial page
+next_belief["navigation_stack"] = []
+next_belief["latent_variables"]["current_page"] = "results"
+next_belief["items"] = []
+next_belief["selected_item"] = None
+next_belief["product_attributes"] = {}
+elif action == "click[< Prev]":
+if next_belief.get("navigation_stack"):
+prev_action = next_belief["navigation_stack"].pop()
+if prev_action == "item_click":
+next_belief["page_type"] = "results"
+next_belief["selected_item"] = None
+next_belief["latent_variables"]["current_page"] = "results"
+elif prev_action == "next_page":
+next_belief["page_type"] = "results"
+next_belief["latent_variables"]["current_page"] = "results"
+elif action == "click[Next >]":
+next_belief["page_type"] = "results"
+next_belief["navigation_stack"] = next_belief.get("navigation_stack", []) + ["next_page"]
+next_belief["latent_variables"]["current_page"] = "results"
+elif action == "click[Buy Now]":
+next_belief["page_type"] = "purchase_complete"
+next_belief["navigation_stack"] = next_belief.get("navigation_stack", []) + ["buy_now"]
+next_belief["latent_variables"]["current_page"] = "purchase_complete"
+next_belief["latent_variables"]["purchase_state"] = "completed"
+elif action.startswith("click[") and any(opt in action.lower() for opt in ["size", "color", 
+"fit_type", "style", "item_shape"]):
+# Clicking on an attribute option
+option = action[6:-1] # Remove click[ and ]
+next_belief["navigation_stack"] = next_belief.get("navigation_stack", []) + [f"option_{option}"]
+# Update latent variables with selected filters
+if "color" in action.lower():
+if "selected_filters" not in next_belief["latent_variables"]:
+next_belief["latent_variables"]["selected_filters"] = {}
+next_belief["latent_variables"]["selected_filters"]["color"] = option
+elif "size" in action.lower():
+if "selected_filters" not in next_belief["latent_variables"]:
+next_belief["latent_variables"]["selected_filters"] = {}
+next_belief["latent_variables"]["selected_filters"]["size"] = option
+elif "style" in action.lower():
+if "selected_filters" not in next_belief["latent_variables"]:
+next_belief["latent_variables"]["selected_filters"] = {}
+next_belief["latent_variables"]["selected_filters"]["style"] = option
+return next_belief
+def readout_observation(self, belief, action: str = "") -> str:
+"""Generate an observation string from the belief state."""
+# Ensure belief has latent support
+if "latent_variables" not in belief:
+belief["latent_variables"] = {
+"current_page": belief.get("page_type", "initial"),
+"selected_filters": {},
+"product_details": {},
+"search_history": [],
+"purchase_state": "not_started"
+}
+if belief["page_type"] == "initial":
+return f"WebShop [SEP] Instruction: [SEP] {belief['instruction']} [SEP] Search"
+elif belief["page_type"] == "results":
+obs_parts = [f"Instruction: [SEP] {belief['instruction']} [SEP] Back to Search"]
+if belief["items"]:
+# Add page navigation
+page_nav = ["Page 1 (Total results: 50)"]
+if "next_page" in belief.get("navigation_stack", []):
+page_nav.append("Next >")
+elif len(belief["navigation_stack"]) > 0 and belief["navigation_stack"][-1] == "next_page":
+page_nav = ["Page 2 (Total results: 50)", "< Prev", "Next >"]
+elif action == "click[Next >]":
+page_nav = ["Page 2 (Total results: 50)", "< Prev", "Next >"]
+elif action == "click[< Prev]":
+page_nav = ["Page 1 (Total results: 50)", "Next >"]
+obs_parts.extend(page_nav)
+# Add items (limit to first 10 to match typical webshop behavior)
+for item in belief["items"][:10]:
+if "price" in item:
+obs_parts.append(f"{item['asin']} [SEP] {item['title']} [SEP] {item['price']}")
+else:
+obs_parts.append(f"{item['asin']} [SEP] {item['title']}")
+else:
+obs_parts.append("Search")
+return " [SEP] ".join(obs_parts)
+elif belief["page_type"] == "product":
+obs_parts = [f"Instruction: [SEP] {belief['instruction']} [SEP] Back to Search"]
+# Add navigation based on how we got here
+if belief.get("navigation_stack") and "item_click" in belief["navigation_stack"]:
+obs_parts.append("< Prev")
+# Add product attributes if available
+product_attrs = belief.get("product_attributes", {})
+for attr, values in product_attrs.items():
+if attr in ["size", "color", "fit_type", "style", "item_shape"]:
+obs_parts.append(attr)
+if isinstance(values, list):
+obs_parts.extend(values)
+# Add product info
+if "price" in product_attrs:
+obs_parts.append(f"Price: {product_attrs['price']}")
+# Add standard product page elements
+obs_parts.extend(["Rating: N.A.", "Description", "Features", "Reviews", "Buy Now"])
+return " [SEP] ".join(obs_parts)
+elif belief["page_type"] == "purchase_complete":
+return "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk 
+interface.) [SEP] Purchased [SEP] asin [SEP] B09P8D2Q1Q [SEP] options [SEP] {} [SEP] attrs [SEP] 
+None [SEP] category [SEP] None [SEP] query [SEP] None [SEP] product category [SEP] None [SEP] 
+Target [SEP] asin [SEP] options [SEP] attrs [SEP] price upper [SEP] instuction text [SEP] category 
+[SEP] product category [SEP] query [SEP] Goal [SEP] None [SEP] Reward [SEP] Your score (min 0.0, 
+max 1.0) [SEP] 1.0 [SEP] Reward Details [SEP] None"
+else:
+# Fallback for unknown page types - try to reconstruct from available info
+if belief.get("instruction"):
+return f"Instruction: [SEP] {belief['instruction']} [SEP] Back to Search [SEP] Search"
+else:
+return "WebShop [SEP] Instruction: [SEP] [SEP] Search"
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+"""Extract valid action forms for this environment."""
+return {
+"search": ["search[<query>]"],
+"click": [
+"click[<asin>]",
+"click[Back to Search]",
+"click[< Prev]",
+"click[Next >]",
+"click[Buy Now]",
+"click[Description]",
+"click[Features]",
+"click[Reviews]",
+"click[<option>]", # For size/color options
+"click[Search]"
+]
+}
+
+
+Figure 11: Wordle induced world model. Constraint-solving belief over candidate target words with
+guess/feedback history and green/yellow/black consistency filtering (no hardcoded target).
+⬇
+from abductworld.worldmodel_base import BaseWorldModel
+import re
+from collections import Counter
+class WordleWorldModel(BaseWorldModel):
+def init_belief(self) -> dict:
+# Initialize belief state with all possible 5-letter words
+return {
+'guess_history': [],
+'feedback_history': [],
+'possible_words': set(), # Will be populated from valid words in observations
+'invalid_words': set(),
+'raw_obs_buffer': "",
+'target_word': None, # Unknown initially
+}
+def init_belief_from_observation(self, obs_text: str) -> dict:
+belief = self.init_belief()
+return self.correct_belief(belief, obs_text)
+def _is_valid_word(self, word: str) -> bool:
+# Placeholder for actual dictionary check
+return len(word) == 5 and word.isalpha()
+def _generate_feedback(self, guess: str, target: str) -> str:
+# Generate Wordle-style feedback: g (green), y (yellow), b (black/grey)
+feedback = ['b'] * 5
+target_counts = Counter(target)
+guess_counts = Counter(guess)
+# First pass: mark greens
+for i in range(5):
+if guess[i] == target[i]:
+feedback[i] = 'g'
+target_counts[guess[i]] -= 1
+# Second pass: mark yellows
+for i in range(5):
+if feedback[i] == 'b' and guess[i] in target_counts and target_counts[guess[i]] > 0:
+feedback[i] = 'y'
+target_counts[guess[i]] -= 1
+return ' '.join(feedback)
+def _filter_words_by_feedback(self, words: set, guess: str, feedback: str) -> set:
+"""Filter possible words based on feedback from a guess"""
+if not feedback or feedback == "unknown":
+return words
+feedback_parts = feedback.split()
+if len(feedback_parts) != 5:
+return words
+filtered_words = set()
+for word in words:
+if self._is_consistent_with_feedback(word, guess, feedback):
+filtered_words.add(word)
+return filtered_words
+def _is_consistent_with_feedback(self, word: str, guess: str, feedback: str) -> bool:
+"""Check if a word is consistent with the given feedback"""
+feedback_parts = feedback.split()
+word_chars = list(word)
+guess_chars = list(guess)
+# First pass: check greens
+for i in range(5):
+if feedback_parts[i] == 'g' and word_chars[i] != guess_chars[i]:
+return False
+# Second pass: check yellows and blacks
+for i in range(5):
+if feedback_parts[i] == 'g':
+continue # Already checked
+elif feedback_parts[i] == 'y':
+# Letter must be in word but not in this position
+if guess_chars[i] not in word_chars or word_chars[i] == guess_chars[i]:
+return False
+elif feedback_parts[i] == 'b':
+# Letter must not be in word at all (unless it appears elsewhere as green/yellow)
+letter = guess_chars[i]
+# Check if this letter appears as green or yellow elsewhere
+appears_correctly = False
+for j in range(5):
+if feedback_parts[j] in ['g', 'y'] and guess_chars[j] == letter:
+appears_correctly = True
+break
+if not appears_correctly and letter in word_chars:
+return False
+return True
+def predict_belief(self, belief: dict, action: str) -> dict:
+# Predict step only (no observation correction): b' = f(b, a)
+belief_next = belief.copy()
+# Normalize action
+action_clean = re.sub(r’[^a-zA-Z]', '', action).lower()
+# Add to guess history regardless of validity
+belief_next['guess_history'] = belief['guess_history'] + [action_clean]
+# If we know the target word, we can predict the feedback
+if belief['target_word']:
+feedback = self._generate_feedback(action_clean, belief['target_word'])
+belief_next['feedback_history'] = belief['feedback_history'] + [feedback]
+else:
+# Try to predict based on possible words
+if belief['possible_words'] and len(belief['possible_words']) == 1:
+# If we've narrowed it down to one word, we can predict feedback
+target_candidate = list(belief['possible_words'])[0]
+feedback = self._generate_feedback(action_clean, target_candidate)
+belief_next['feedback_history'] = belief['feedback_history'] + [feedback]
+else:
+# If we don't know target yet, we can't predict feedback
+belief_next['feedback_history'] = belief['feedback_history'] + ["unknown"]
+return belief_next
+def correct_belief(self, belief_prior: dict, obs_text: str) -> dict:
+# Correction step: b = g(b', o)
+belief = belief_prior.copy()
+belief['raw_obs_buffer'] += obs_text
+# Check if this is a win condition
+if "g g g g g" in obs_text:
+# This indicates the last guess was correct
+if belief['guess_history']:
+belief['target_word'] = belief['guess_history'][-1]
+# Extract any valid words from the observation (to build vocabulary)
+words = re.findall(r’\b[a-zA-Z]{5}\b', obs_text)
+for word in words:
+if self._is_valid_word(word):
+belief['possible_words'].add(word.lower())
+# Check for invalid word indicators
+if "invalid word" in obs_text and belief['guess_history']:
+last_guess = belief['guess_history'][-1]
+belief['invalid_words'].add(last_guess)
+# Extract feedback patterns and use them to narrow down possible words
+feedback_matches = re.findall(r’\b[byg](?: [byg]){4}\b', obs_text)
+for feedback in feedback_matches:
+if len(belief['feedback_history']) < len(belief['guess_history']):
+# Fill in missing feedbacks
+while len(belief['feedback_history']) < len(belief['guess_history']) - 1:
+belief['feedback_history'].append("unknown")
+belief['feedback_history'].append(feedback)
+# Use feedback to filter possible words
+if belief['guess_history']:
+last_guess = belief['guess_history'][-1]
+belief['possible_words'] = self._filter_words_by_feedback(
+belief['possible_words'], last_guess, feedback
+)
+elif belief['feedback_history']:
+# Update the last feedback if it was unknown
+if belief['feedback_history'][-1] == "unknown":
+belief['feedback_history'][-1] = feedback
+# Use feedback to filter possible words
+if belief['guess_history']:
+last_guess = belief['guess_history'][-1]
+belief['possible_words'] = self._filter_words_by_feedback(
+belief['possible_words'], last_guess, feedback
+)
+return belief
+def readout_observation(self, belief: dict, action: str = "") -> str:
+# Readout authority.
+# Fill the observation FORMAT template using latent belief state values.
+# Keep delimiters/section order consistent with what parse_observation expects.
+# Must always return a non-empty string.
+# If we have a complete feedback history for all guesses, use it
+if belief['feedback_history'] and len(belief['feedback_history']) > 0:
+last_feedback = belief['feedback_history'][-1]
+if last_feedback != "unknown":
+return last_feedback
+# If we know the target word and the action, generate feedback
+if belief['target_word'] and action:
+# Normalize action
+action_clean = re.sub(r’[^a-zA-Z]', '', action).lower()
+if len(action_clean) == 5:
+feedback = self._generate_feedback(action_clean, belief['target_word'])
+return feedback
+# If we can determine the target from possible words, use that
+if belief['possible_words'] and len(belief['possible_words']) == 1:
+target_candidate = list(belief['possible_words'])[0]
+if action:
+action_clean = re.sub(r’[^a-zA-Z]', '', action).lower()
+if len(action_clean) == 5:
+feedback = self._generate_feedback(action_clean, target_candidate)
+return feedback
+# If we have a predicted feedback from the last guess, use it
+if belief['feedback_history'] and belief['guess_history']:
+# Check if we can generate feedback based on the last guess
+last_guess = belief['guess_history'][-1]
+if len(last_guess) == 5 and belief['possible_words']:
+# Try to find a consistent word to generate feedback from
+for word in belief['possible_words']:
+feedback = self._generate_feedback(last_guess, word)
+# If this feedback is consistent with our history, use it
+if self._is_consistent_with_history(belief, last_guess, feedback):
+return feedback
+# Default response if we can't determine feedback
+return "b b b b b"
+def _is_consistent_with_history(self, belief: dict, guess: str, feedback: str) -> bool:
+"""Check if a feedback is consistent with the belief history"""
+if not belief['guess_history'] or not belief['feedback_history']:
+return True
+# Check against all previous feedback if we have it
+for i, (prev_guess, prev_feedback) in enumerate(zip(belief['guess_history'], belief[
+'feedback_history'])):
+if prev_feedback != "unknown" and i < len(belief['feedback_history']):
+# This is a simplified check - in practice we'd want more sophisticated consistency checking
+pass
+return True
+def parse_observation(self, obs_text: str) -> dict:
+# Parse observation into structured data
+result = {
+'feedback': None,
+'is_win': False,
+'is_invalid': False,
+'words': []
+}
+# Check for win condition
+if "g g g g g" in obs_text:
+result['is_win'] = True
+result['feedback'] = "g g g g g"
+# Check for invalid word
+if "invalid word" in obs_text:
+result['is_invalid'] = True
+# Extract feedback pattern
+feedback_match = re.search(r’\b[byg](?: [byg]){4}\b', obs_text)
+if feedback_match:
+result['feedback'] = feedback_match.group()
+# Extract words
+words = re.findall(r’\b[a-zA-Z]{5}\b', obs_text)
+result['words'] = words
+return result
+# Backward-compatible wrappers expected by existing evaluators.
+def transition(self, belief: dict, action: str) -> dict:
+return self.predict_belief(belief, action)
+def predict_next(self, state: dict, action: str) -> dict:
+return self.predict_belief(state, action)
+def predict_observation(self, belief: dict, action: str) -> str:
+belief_next_prior = self.predict_belief(belief, action)
+return self.readout_observation(belief_next_prior, action)
+def extract_valid_action_forms(self) -> dict[str, list[str]]:
+# Return a generic template for 5-letter guesses
+return {
+"<5-letter-guess>": ["a b c d e", "f g h i j", "k l m n o", "p q r s t", "u v w x y", "z a b c d"]
+}
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

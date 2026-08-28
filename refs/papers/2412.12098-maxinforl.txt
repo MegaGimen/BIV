@@ -1,0 +1,1814 @@
+source: https://arxiv.org/html/2412.12098
+arxiv: https://arxiv.org/abs/2412.12098
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Contributions
+ 3. 2 Background
+     1. 2.1 Problem Setting
+     2. 2.2 ϵ\epsilon–greedy and exploration
+     3. 2.3 Boltzmann Exploration
+     4. 2.4 Intrinsic exploration with information gain
+         1. Approximating information gain
+         2. Data dependence of intrinsic rewards
+ 4. 3 MaxInfoRL
+     1. 3.1 Modifying ϵ\epsilon–greedy for directed exploration
+     2. 3.2 MaxInfoRL with Boltzmann exploration
+         1. Separating exploration bonuses
+         2. Auto-tuning the temperature for the information gain bonus
+         3. Convergence of MaxInfoRL
+ 5. 4 Experiments
+ 6. 5 Related Works
+     1. Naive Exploration
+     2. Intrinsic exploration
+ 7. 6 Conclusion
+ 8. References
+ 9. A Analyzing ϵ\epsilon–Greedy for Multi-armed Bandits
+     1. A.1 Sublinear regret for ϵ\epsilon–MaxInfoRL
+     2. A.2 Proof of
+10. B Proof of
+11. C MaxInfoRL from the perspective of KL-minimization
+12. D Additional Experiments
+13. E Experiment Details
+     1. MaxInfoSAC
+     2. Explore then exploit
+     3. SACIntrinsic
+     4. SACEipo
+     5. MaxInfoDrQ
+     6. MaxInfoDrQv2
+     7. MaxInfoSac[RND]
+     8. ϵ\epsilon–MaxInfoRL
+     9. E.1 Algorithms
+         1. Losses for MaxInfoSAC and MaxInfoDrQ
+         2. Critic loss for MaxInfoDrQv2
+    10. E.2 Hyperparameters
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2412.12098v2 [cs.LG] 31 Jul 2025
+
+MaxInfoRL: Boosting exploration in
+reinforcement learning through
+information gain maximization
+
+Bhavya Sukhija Email: sukhijab@ethz.ch    Stelian Coros Andreas Krause Email: scoros@ethz.ch    
+Pieter Abbeel Email: krausea@ethz.ch    Carmelo Sferrazza Email: pabbeel@berkeley.edu    ETH Zürich
+Email: csferrazza@berkeley.edu    UC Berkeley
+
+Abstract
+
+Reinforcement learning (RL) algorithms aim to balance exploiting the current best strategy with
+exploring new options that could lead to higher rewards. Most common RL algorithms use undirected
+exploration, i.e., select random sequences of actions. Exploration can also be directed using
+intrinsic rewards, such as curiosity or model epistemic uncertainty. However, effectively balancing
+task and intrinsic rewards is challenging and often task-dependent. In this work, we introduce a
+framework, MaxInfoRL, for balancing intrinsic and extrinsic exploration. MaxInfoRL steers
+exploration towards informative transitions, by maximizing intrinsic rewards such as the
+information gain about the underlying task. When combined with Boltzmann exploration, this approach
+naturally trades off maximization of the value function with that of the entropy over states,
+rewards, and actions. We show that our approach achieves sublinear regret in the simplified setting
+of multi-armed bandits. We then apply this general formulation to a variety of off-policy
+model-free RL methods for continuous state-action spaces, yielding novel algorithms that achieve
+superior performance across hard exploration problems and complex scenarios such as visual control
+tasks.
+
+
+
+^†^†footnotetext: Open-source implementations: https://sukhijab.github.io/projects/maxinforl/
+
+
+(a) Normalized average performance of MaxInfoRL across several deep RL benchmarks on state-based
+tasks.
+
+
+(b) Normalized average performance of MaxInfoDrQv2 on the humanoid visual control tasks (stand,
+walk, and run).
+
+
+Figure 1: We summarize the normalized performance of different variants of MaxInfoRL; MaxInfoSAC
+for state-based control and MaxInfoDrQv2 for visual control (cf., Section 4 for more details). We
+report the mean performance across five seeds with one standard error.
+
+1 Introduction
+
+Reinforcement learning (RL) has found numerous applications in sequential decision-making problems,
+from games (Silver et al., 2017), robotics (Hwangbo et al., 2019; Brohan et al., 2023), to
+fine-tuning of large language models (Ouyang et al., 2022). However, most widely applied RL
+algorithms such as PPO (Schulman et al., 2017) are inherently sample-inefficient, requiring
+hundreds of hours of environment interactions for learning. Off-policy methods like SAC (Haarnoja
+et al., 2018), REDQ (Chen et al., 2021), and DroQ  (Hiraoka et al., 2022) offer a more sample and
+compute efficient alternative and have demonstrated success in real-world learning (Smith et al.,
+2022). Despite this, they often require dense reward signals and suffer in the presence of sparse
+rewards or local optima. This is primarily due to their use of naive exploration schemes such as ϵ\
+epsilon-greedy or Boltzmann exploration and effectively take random sequences of actions for
+exploration. These strategies are known to be suboptimal even for basic tasks (Cesa-Bianchi et al.,
+2017; Burda et al., 2018; Sukhija et al., 2024b), yet remain popular due to their simplicity and
+scalability.
+
+Several works (Burda et al., 2018; Pathak et al., 2017; Pathak et al., 2019; Sekar et al., 2020;
+Sukhija et al., 2024b) use intrinsic reward signals, e.g., curiosity or information gain, to
+improve the exploration of RL agents. Moreover, information gain (Lindley, 1956) is also widely
+applied in Bayesian experiment design (Chaloner & Verdinelli, 1995) and is the basis of many active
+learning methods (Krause et al., 2008; Balcan et al., 2010; Hanneke et al., 2014; Hübotter et al.,
+2024). In RL, exploration via maximizing information gain offers strong theoretical guarantees (
+Mania et al., 2020; Sukhija et al., 2024b) and achieves state-of-the-art empirical performance (
+Sekar et al., 2020; Mendonca et al., 2021). However, a significant gap persists in both the
+theoretical and practical understanding of how to effectively balance intrinsic exploration
+objectives with naive extrinsic exploration algorithms. The goal of this work is to bridge this
+gap. To this end, we revisit the traditional, widely-used Boltzmann exploration, and enhance it by
+incorporating exploration bonuses derived from intrinsic rewards, like information gain. Our
+approach is grounded in both theoretical insights and practical motivations, and we empirically
+validate it across several deep RL benchmarks.
+
+The key contributions of this work are summarized as follows:
+
+Contributions
+
+ 1. 1.
+   
+    We propose MaxInfoRL, a novel class of off-policy model-free algorithms for continuous
+    state-action spaces that augments existing RL methods with directed exploration. In essence, 
+    MaxInfoRL builds on standard Boltzmann exploration and guides it via an intrinsic reward. We
+    propose a practical auto-tuning procedure that largely simplifies trading off extrinsic and
+    intrinsic objectives. This yields algorithms that explore by visiting trajectories that achieve
+    the maximum information gain about the underlying MDP, while efficiently solving the task. As a
+    result, MaxInfoRL retains the simplicity of traditional RL methods while adding directed
+    exploration through intrinsic rewards. Additionally, we show how the same idea can be combined
+    with other naive exploration techniques, such as ϵ\epsilon–greedy.
+
+ 2. 2.
+   
+    In the simplified setting of stochastic multi-armed bandits in continuous spaces, we show that 
+    MaxInfoRL has sublinear regret. In addition, we show that MaxInfoRL benefits from all
+    theoretical properties of contraction and convergence that hold for max-entropy RL algorithms
+    such as SAC (Haarnoja et al., 2018).
+
+ 3. 3.
+   
+    In our experiments, we use an ensemble of dynamics models to estimate information gain and
+    combine MaxInfoRL with SAC (Haarnoja et al., 2018), REDQ (Chen et al., 2021), DrQ (Yarats
+    et al., 2021), and DrQv2 (Yarats et al., 2022). We evaluate it on standard deep RL benchmarks
+    for state and visual control tasks and show that MaxInfoRL performs the best across all tasks
+    and baselines, obtaining the highest performance also in challenging exploration problems
+    (see., Fig. 1 for the average performance of MaxInfoRL across several environments).
+
+2 Background
+
+A core challenge in RL is deciding whether the agent should leverage its current knowledge to
+maximize rewards or try new actions in pursuit of better solutions. Striking this balance between
+exploration–exploitation is critical. Here, we first introduce the problem setting, then we discuss
+two of the most commonly used exploration strategies in RL: ϵ\epsilon-greedy and Boltzmann
+exploration.
+
+2.1 Problem Setting
+
+We study an infinite-horizon Markov decision process (Puterman, 2014, MDP,), defined by the tuple
+(𝒮,𝒜,p,γ,r,ρ)({\mathcal{S}},{\mathcal{A}},p,\gamma,r,\rho), where the state and action spaces are
+continuous, i.e., 𝒮⊂ℝds,𝒜⊂ℝda{\mathcal{S}}\subset\mathbb{R}^{d_{s}},{\mathcal{A}}\subset\mathbb{R}^
+{d_{a}}, and the unknown transition kernel p:𝒮×𝒮×𝒜→[0,∞)p:{\mathcal{S}}\times{\mathcal{S}}\times{\
+mathcal{A}}\to[0,\infty) represents the probability density of the next state 𝒔t+1∈𝒮{\bm{s}}_{t+1}\
+in{\mathcal{S}} given the current state 𝒔t∈𝒮{\bm{s}}_{t}\in{\mathcal{S}} and action 𝒂t∈𝒜{\bm{a}}_
+{t}\in{\mathcal{A}}. At each step tt in the environment, the agent observes the state 𝒔t{\bm{s}}_
+{t}, samples an action 𝒂t{\bm{a}}_{t} from the policy 𝝅:𝒜×𝒮→[0,∞){\bm{\pi}}:{\mathcal{A}}\times{\
+mathcal{S}}\to[0,\infty), 𝒂t∼𝝅⁡(𝒂|𝒔t){\bm{a}}_{t}\sim{\bm{\pi}}({\bm{a}}|{\bm{s}}_{t}), and
+receives a reward r:𝒮×𝒮×𝒜→[−12​rmax,12​rmax]r:{\mathcal{S}}\times{\mathcal{S}}\times{\mathcal{A}}\
+to[-\frac{1}{2}r_{\max},\frac{1}{2}r_{\max}]. The agent’s goal is to learn a policy 𝝅∗{\bm{\pi}}^
+{*} that maximizes the γ\gamma discounted reward w.r.t. the initial state distribution 𝒔0∼ρ{\bm{s}}
+_{0}\sim\rho.
+
+ 𝝅∗=arg​max𝝅∈Π⁡J​(𝝅)=arg​max𝝅∈Π⁡𝔼𝐬0,𝐚0,…​[∑t=0∞γt​rt].{\bm{\pi}}^{*}=\argmax_{{\bm{\pi}}\in\
+ Pi}J({\bm{\pi}})=\argmax_{{\bm{\pi}}\in\Pi}\mathbb{E}_{{\bm{s}}_{0},{\bm{a}}_{0},\dots}\left   (1)
+ [\sum_{t=0}^{\infty}\gamma^{t}r_{t}\right].
+
+In the following, we provide the definitions of the state-action value function Q𝝅Q^{{\bm{\pi}}}
+and the value function VπV^{\pi}:
+
+ Q𝝅​(𝒔t,𝒂t)=𝔼𝒔t+1,𝒂t+1∼𝝅,…​[∑l=0∞γl​rt+l],V𝝅​(𝒔t)=𝔼𝒂t∼𝝅,𝒔t+1,𝒂t+1∼𝝅,…​[∑l=0∞γl​rt+l].Q^{{\bm{\
+ pi}}}({\bm{s}}_{t},{\bm{a}}_{t})=\mathbb{E}_{{\bm{s}}_{t+1},{\bm{a}}_{t+1}\sim{\bm{\pi}},\dots}\
+ left[\sum_{l=0}^{\infty}\gamma^{l}r_{t+l}\right],\;V^{{\bm{\pi}}}({\bm{s}}_{t})=\mathbb{E}_{{\bm
+ {a}}_{t}\sim{\bm{\pi}},{\bm{s}}_{t+1},{\bm{a}}_{t+1}\sim{\bm{\pi}},\dots}\left[\sum_{l=0}^{\
+ infty}\gamma^{l}r_{t+l}\right].
+
+2.2 ϵ\epsilon–greedy and exploration
+
+The ϵ\epsilon-greedy strategy (Kearns & Singh, 2002; Mnih, 2013; Van Hasselt et al., 2016) is
+widely applied in RL to balance exploration and exploitation, where the RL agent follows this
+simple decision rule below to select actions
+
+ 𝒂t={𝒂∼Unif​(𝒜)with probability ​ϵtarg⁡max𝒂∈𝒜​Q∗​(𝒔t,𝒂)else,{\bm{a}}_{t}=\begin{cases}{\bm{a}}
+ \sim\text{Unif}({\mathcal{A}})\;&\text{with probability }\epsilon_{t}\\ \underset{{\bm{a}}\in  (2)
+ {\mathcal{A}}}{\arg\max}\;Q^{*}({\bm{s}}_{t},{\bm{a}})\;&\text{else},\end{cases}
+
+Here Q∗Q^{*} is the estimate of the optimal state-action value function. Therefore, at each step
+tt, with probability ϵt\epsilon_{t}, a random action 𝒂t∼Unif​(𝒜){\bm{a}}_{t}\sim\text{Unif}({\
+mathcal{A}}) is sampled, else the greedy action 𝒂t=max𝒂∈𝒜⁡Q∗​(𝒔t,𝒂){\bm{a}}_{t}=\max_{{\bm{a}}\in{\
+mathcal{A}}}Q^{*}({\bm{s}}_{t},{\bm{a}}) is picked. Lillicrap (2015); Fujimoto et al. (2018) extend
+this strategy to continuous state-action spaces, where a deterministic policy 𝝅θ{\bm{\pi}}_{\theta}
+is learned to maximize the value function and combined with random Gaussian noise for exploration.
+
+2.3 Boltzmann Exploration
+
+Boltzmann exploration is the basis of many RL algorithms (Sutton, 2018; Szepesvári, 2022). The
+policy distribution 𝝅{\bm{\pi}} for Boltzmann is represented through
+
+ 𝝅⁡(𝒂|𝒔)∝exp⁡(α−1​Q𝝅​(𝒔,𝒂)),{\bm{\pi}}({\bm{a}}|{\bm{s}})\propto\exp\left(\alpha^{-1}Q^{{\bm{\  (3)
+ pi}}}({\bm{s}},{\bm{a}})\right),
+
+where α\alpha is the temperature parameter that regulates exploration and Q𝝅Q^{{\bm{\pi}}} is the
+soft-QQ function. We neglect the normalization term Z−1​(𝒔)Z^{-1}({\bm{s}}) in the definition for
+simplicity. As α→0\alpha\to 0, the policy greedily maximizes Q𝝅​(𝒔,𝒂)Q^{{\bm{\pi}}}({\bm{s}},{\bm
+{a}}), i.e. it exploits, and as α→∞\alpha\to\infty the policy adds equal mass to all actions in 𝒜{\
+mathcal{A}}, effectively performing uniform exploration. Intuitively, Boltzmann exploration can be
+interpreted as a smoother alternative to ϵ\epsilon–greedy, with α\alpha serving a similar role to ϵ
+\epsilon in controlling the degree of exploration. Cesa-Bianchi et al. (2017) show that the
+standard Boltzmann exploration is suboptimal even in the simplest settings. They highlight that a
+key shortcoming of Boltzmann exploration is that it does not reason about the uncertainty of its
+estimates.
+
+Overall, both ϵ\epsilon–greedy and Boltzmann exploration strategies are undirected. They fail to
+account for the agent’s “lack of knowledge” and do not encourage risk- or knowledge-seeking
+behavior. The agent explores by sampling random action sequences, which leads to suboptimal
+performance, particularly in challenging exploration tasks with continuous state-action spaces.
+
+2.4 Intrinsic exploration with information gain
+
+Intrinsic rewards or motivation are used to direct agents toward underexplored regions of the MDP.
+Hence they enable RL agents to acquire information in a more principled manner as opposed to the
+aforementioned naive exploration methods. Effectively, the agent explores by selecting policies
+that maximize the γ\gamma-discounted intrinsic rewards. A common choice for the intrinsic reward is
+the information gain (Cover & Thomas, 2006; Sekar et al., 2020; Mendonca et al., 2021; Sukhija
+et al., 2024b). Accordingly, for the remainder of the paper, we center our derivations around using
+information gain as the intrinsic reward. However, our approach is flexible and can also be
+combined with other intrinsic exploration objectives, such as RND (Burda et al. (2018), see 
+Appendix D).
+
+We study a non-linear dynamical system of the form
+
+ 𝒔~t+1=𝒇∗​(𝒔t,𝒂t)+𝒘t.\tilde{{\bm{s}}}_{t+1}={\bm{f}}^{*}({\bm{s}}_{t},{\bm{a}}_{t})+{\bm{w}}_   (4)
+ {t}.
+
+Here 𝒔~t+1=[𝒔t+1⊤,rt]⊤\tilde{{\bm{s}}}_{t+1}=[{\bm{s}}^{\top}_{t+1},r_{t}]^{\top} represents the
+next state and reward, 𝒇∗{\bm{f}}^{*} represents the unknown dynamics and reward function of the
+MDP and 𝒘t{\bm{w}}_{t} is the process noise, which we assume to be zero-mean i.i.d.,σ2~\sigma^{2}
+-Gaussian. Note this is a very common representation of nonlinear systems with continuous
+state-action spaces (Khalil, 2015) and the basis of many RL algorithms (Pathak et al., 2019; Kakade
+et al., 2020; Curi et al., 2020; Mania et al., 2020; Wagenmaker et al., 2023; Sukhija et al., 2024a
+). Furthermore, it models all essential and unknown components of the underlying MDP; the
+transition kernel and the reward function.
+
+Approximating information gain
+
+Given a dataset of transitions 𝒟n={(𝒔i,𝒂i,𝒔~i′)}i=0n{\mathcal{D}}_{n}=\{({\bm{s}}_{i},{\bm{a}}_{i},
+\tilde{{\bm{s}}}^{\prime}_{i})\}^{n}_{i=0}, e.g., a replay buffer, we learn a Bayesian model of the
+unknown function 𝒇∗{\bm{f}}^{*}, to obtain a posterior distribution p⁡(𝒇∗|𝒟n)p({\bm{f}}^{*}|{\
+mathcal{D}}_{n}) for 𝒇∗{\bm{f}}^{*}. This distribution can be Gaussian, e.g., Gaussian process
+models (Rasmussen & Williams, 2005) or represented through Bayesian neural networks like
+probabilistic ensembles (Lakshminarayanan et al., 2017). As opposed to the typical model-based RL
+setting, similar to Burda et al. (2018); Pathak et al. (2017); Pathak et al. (2019), our learned
+model is only used to determine the intrinsic reward. The information gain I(𝒔~′;𝒇∗|𝒔,𝒂,𝒟n)I(\tilde
+{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}},{\mathcal{D}}_{n}), reflects the uncertainty
+about the unknown dynamics 𝒇∗{\bm{f}}^{*} from observing the transition (𝒔,𝒂,𝒔~′)({\bm{s}},{\bm
+{a}},\tilde{{\bm{s}}}^{\prime}). Moreover, let 𝝈⁡(𝒔,𝒂|𝒟n)=[σj​(𝒔,𝒂)]j≤d𝒔+1{\bm{\sigma}}({\bm{s}},{\
+bm{a}}|{\mathcal{D}}_{n})=[\sigma_{j}({\bm{s}},{\bm{a}})]_{j\leq d_{{\bm{s}}}+1} denote the model
+epistemic uncertainty or disagreement of 𝒇∗{\bm{f}}^{*}. Sukhija et al. (2024b, Lemma 1.) show that
+
+ I(𝒔~′;𝒇∗|𝒔,𝒂,𝒟n)=H(𝒔~′|𝒔,𝒂,𝒟n)−H(𝒔~|𝒔,𝒂,𝒇∗,𝒟n)≤∑j=1d𝒔+1log⁡(1+σn−1,j2​(𝒔t,𝒂t)σ2)⏟Iu​(𝒔,𝒂)I(\
+ tilde{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}},{\mathcal{D}}_{n})=H(\tilde{{\bm{s}}}
+ ^{\prime}|{\bm{s}},{\bm{a}},{\mathcal{D}}_{n})-H(\tilde{{\bm{s}}}|{\bm{s}},{\bm{a}},{\bm{f}}^  (5)
+ {*},{\mathcal{D}}_{n})\leq\underbrace{\sum^{d_{{\bm{s}}}+1}_{j=1}\log\left(1+\frac{\sigma_
+ {n-1,j}^{2}({\bm{s}}_{t},{\bm{a}}_{t})}{\sigma^{2}}\right)}_{I_{u}({\bm{s}},{\bm{a}})}
+
+where HH denotes the (differential) entropy (Cover & Thomas, 2006) and in Eq. 5 the equality holds
+when p⁡(𝒇∗|𝒟n)p({\bm{f}}^{*}|{\mathcal{D}}_{n}) is Gaussian. Note that while the above is an upper
+bound, Sukhija et al. (2024b) motivate this choice from a theoretical perspective proving
+convergence of the active learning algorithm for the model-based setting. In this work, similar to
+Pathak et al. (2019); Sekar et al. (2020); Mendonca et al. (2021); Sukhija et al. (2024b), we use
+the upper bound of the information gain for our practical algorithm. The upper bound has a natural
+interpretation, since by picking actions 𝒂t{\bm{a}}_{t} that maximize it, we effectively visit
+areas where we have high uncertainty about the unknown function 𝒇∗{\bm{f}}^{*}, therefore
+performing exploration in both state and action space. Empirically, this approach has shown to
+perform well, e.g., Sekar et al. (2020); Mendonca et al. (2021).
+
+Data dependence of intrinsic rewards
+
+Information gain and other intrinsic rewards depend on the data 𝒟n{\mathcal{D}}_{n}, making them
+inherently nonstationary and non-Markovian. Intuitively, underexplored areas of the MDP become less
+informative once visited (c.f., Prajapat et al. (2024) for more details). However, in RL, intrinsic
+rewards are often treated similarly to extrinsic rewards, a simplification that works very well in
+practice (Burda et al., 2018; Sekar et al., 2020). We take a similar approach in this paper and
+omit the dependence of II on 𝒟n{\mathcal{D}}_{n} and use I(𝒔~′;𝒇∗|𝒔,𝒂)I(\tilde{{\bm{s}}}^{\prime};
+{\bm{f}}^{*}|{\bm{s}},{\bm{a}}) from hereon for simplicity.
+
+3 MaxInfoRL
+
+In this section, we present our method for combining intrinsic exploration with classical
+exploration strategies. While MaxInfoRL builds directly on Boltzmann exploration, we begin by
+illustrating its key ideas in the context of an ϵ\epsilon–greedy strategy, due to its mathematical
+simplicity and natural distinction between exploration and exploitation steps. The insights gained
+from this serve as motivation for developing our main method: MaxInfoRL with Boltzmann exploration
+algorithms, which we evaluate in Section 4.
+
+3.1 Modifying ϵ\epsilon–greedy for directed exploration
+
+We modify the ϵ\epsilon–greedy strategy from Section 2.2 and learn two critics, Qextrinsic∗Q_{\text
+{extrinsic}}^{*} and Qintrinsic∗Q_{\text{intrinsic}}^{*}, where Qextrinsic∗Q_{\text{extrinsic}}^{*}
+is the state-action value function of the extrinsic reward rr and Qintrinsic∗Q_{\text{intrinsic}}^
+{*} the critic of an intrinsic reward function rintrinsicr_{\text{intrinsic}}, for instance, the
+information gain (see Eq. 5). Unlike traditional ϵ\epsilon–greedy exploration, we leverage
+intrinsic rewards to guide exploration more effectively by selecting actions that maximize
+Qintrinsic∗Q_{\text{intrinsic}}^{*}, leading to more informed exploration rather than random
+sampling. At each step tt, we pick a greedy action that maximizes Qextrinsic∗Q_{\text{extrinsic}}^
+{*} with probability 1−ϵt1-\epsilon_{t}, while for exploration, the action that maximizes the
+intrinsic critic is selected, i.e., 𝒂t=max𝒂∈𝒜⁡Qintrinsic∗​(𝒔t,𝒂){\bm{a}}_{t}=\max_{{\bm{a}}\in{\
+mathcal{A}}}Q_{\text{intrinsic}}^{*}({\bm{s}}_{t},{\bm{a}}).
+
+ 𝒂t={arg⁡max𝒂∈𝒜​Qintrinsic∗​(𝒔t,𝒂)with probability ​ϵtarg⁡max𝒂∈𝒜​Qextrinsic∗​(𝒔t,𝒂)else,{\bm
+ {a}}_{t}=\begin{cases}\underset{{\bm{a}}\in{\mathcal{A}}}{\arg\max}\;Q_{\text{intrinsic}}^{*}
+ ({\bm{s}}_{t},{\bm{a}})\;&\text{with probability }\epsilon_{t}\\ \underset{{\bm{a}}\in{\       (6)
+ mathcal{A}}}{\arg\max}\;Q_{\text{extrinsic}}^{*}({\bm{s}}_{t},{\bm{a}})\;&\text{else},\end
+ {cases}
+
+We call the resulting exploration strategy ϵ\epsilon–MaxInfoRL. This approach is motivated by the
+insight that in continuous spaces, intrinsic rewards cover the state-action spaces much more
+efficiently than undirected random exploration, making them more effective for exploration in
+general (Aubret et al., 2023; Sekar et al., 2020; Sukhija et al., 2024b). In Appendix A, to give a
+theoretical intuition of our approach, we study ϵ\epsilon–MaxInfoRL in the simplified setting of
+multi-armed bandit (MAB). We show that as more episodes are played, it gets closer to the optimal
+solution, i.e. has sublinear-regret.
+
+The key takeaway from ϵ\epsilon–MaxInfoRL is that instead of exploring with actions that maximize
+entropy in the action spaces, e.g., uniform sampling, we select policies that also yield high
+information about the MDP during learning. In the following, we leverage this idea and modify the
+target distribution of Boltzmann exploration to incorporate intrinsic exploration bonuses.
+Moreover, ϵ\epsilon–MaxInfoRL has two practical drawbacks; (i) it requires training two
+actor-critics and (ii) practically, the probability ϵt\epsilon_{t} is specified by the problem
+designer. We address both these limitations in the section below and present our main method.
+
+3.2 MaxInfoRL with Boltzmann exploration
+
+In Section 3.1, we modify ϵ\epsilon–greedy to sample actions with high intrinsic rewards during
+exploration instead of randomly picking actions. Motivated from the same principle, we augment the
+distribution of Boltzmann exploration with the intrinsic reward I(𝒔~′;𝒇∗|𝒔,𝒂)I(\tilde{{\bm{s}}}^{\
+prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}}) to get the following
+
+ 𝝅(𝒂|𝒔)∝exp(α−1Q𝝅(𝒔,𝒂)+I(𝒔~′;𝒇∗|𝒔,𝒂)).{\bm{\pi}}({\bm{a}}|{\bm{s}})\propto\exp\left(\alpha^
+ {-1}Q^{{\bm{\pi}}}({\bm{s}},{\bm{a}})+I(\tilde{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm   (7)
+ {a}})\right).
+
+The resulting distribution encourages exploration w.r.t. information gain, with α\alpha playing a
+similar role to ϵ\epsilon in Eq. 6. Therefore, Eq. 7 can be viewed as a soft formulation of Eq. 6.
+Effectively, instead of randomly sampling actions, for large values of the temperature, we pick
+actions that yield high information while maintaining the exploitative behavior for smaller
+temperatures. This distribution is closely related to the epistemic risk-seeking exponential
+utility function from KK-learning (O’Donoghue, 2021) and probabilistic inference in RL (Tarbouriech
+et al., 2024). As we show in the following, this choice of parameterization results in a very
+intuitive objective for the policy. Given the previous policy 𝝅old{\bm{\pi}}^{\text{old}} and
+Q𝝅oldQ^{{\bm{\pi}}^{\text{old}}}, akin to Haarnoja et al. (2018), we select the next policy 𝝅new{\
+bm{\pi}}^{\text{new}} through the following optimization
+
+ 𝝅new\          =arg​min𝝅∈ΠDKL(𝝅(⋅|𝐬)∥Z−1(𝐬)exp(1αQ𝝅old(𝐬,⋅)+I(𝐬~′;𝐟∗|𝐬,𝐚)))\displaystyle=\
+ displaystyle{\ argmin_{{\bm{\pi}}\in\Pi}\text{D}_{\text{KL}}\left({\bm{\pi}}(\cdot|{\bm{s}})\
+ bm{\pi}}^{\    Bigg\|Z^{-1}({\bm{s}})\exp\left(\frac{1}{\alpha}Q^{{\bm{\pi}}^{\text{old}}}({\
+ text{new}}     bm{s}},\cdot)+I(\tilde{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}})\
+                right)\right)
+                =arg​max𝝅∈Π𝔼𝐚∼𝝅(⋅|𝐬)[Q𝝅old(𝐬,𝐚)−αlog(𝝅(𝐚|𝐬))+αI(𝐬~′;𝐟∗|𝐬,𝐚)]\displaystyle=\
+                argmax_{{\bm{\pi}}\in\Pi}\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}\
+                left[Q^{{\bm{\pi}}^{\text{old}}}({\bm{s}},{\bm{a}})-\alpha\log({\bm{\pi}}({\bm
+                {a}}|{\bm{s}}))+\alpha I(\tilde{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm
+                {a}})\right]
+                =arg​max𝝅∈Π𝔼𝐚∼𝝅(⋅|𝐬)[Q𝝅old(𝐬,𝐚)]+αH(𝐬~′,𝐚|𝐬),\displaystyle=\argmax_{{\bm{\pi}}
+                \in\Pi}\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}\left[Q^{{\bm{\pi}}^  (8)
+                {\text{old}}}({\bm{s}},{\bm{a}})\right]+\alpha H(\tilde{{\bm{s}}}^{\prime},{\
+                bm{a}}|{\bm{s}}),
+
+here in the last line we used that 𝔼𝒂∼𝝅(⋅|𝒔)[−log(𝝅(𝒂|𝒔))+I(𝒔~′;𝒇∗|𝒔,𝒂)]=H(𝒂|𝒔)+H(𝒔~′|𝒂,𝒔)−H(𝒔~′|
+𝒔,𝒂,𝒇∗)=H(𝒔~′,𝒂|𝒔)−H(𝒘)\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}[-\log({\bm{\pi}}({\bm
+{a}}|{\bm{s}}))+I(\tilde{{\bm{s}}}^{\prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}})]=H({\bm{a}}|{\bm{s}})+H
+(\tilde{{\bm{s}}}^{\prime}|{\bm{a}},{\bm{s}})-H(\tilde{{\bm{s}}}^{\prime}|{\bm{s}},{\bm{a}},{\bm
+{f}}^{*})=H(\tilde{{\bm{s}}}^{\prime},{\bm{a}}|{\bm{s}})-H({\bm{w}}). Hence, the policy 𝝅new{\bm{\
+pi}}^{\text{new}} trades off maximizing the value function with the entropy of the states, rewards,
+and actions. This trade-off is regulated through the temperature parameter α\alpha. We provide a
+different perspective to Eq. 8 from the lens of control as inference (Levine, 2018; Hafner et al.,
+2020) in Appendix C.
+
+Separating exploration bonuses
+
+MaxInfoRL has two exploration bonuses; (i) the policy entropy, and (ii) the information gain (Eq. 5
+). The two terms are generally of different magnitude and tuning the temperature for the policy
+entropy is fairly well-studied in RL (Haarnoja et al., 2018). To this end, we modify Eq. 8 and
+introduce two individual temperature parameters α1\alpha_{1} and α2\alpha_{2} to separate the
+bonuses. Furthermore, since information gain does not have a closed-form solution in general, akin
+to prior work (Sekar et al., 2020; Sukhija et al., 2024b), we use its upper bound Iu​(𝒔,𝒂)I_{u}({\
+bm{s}},{\bm{a}}) (Eq. 5) instead.
+
+ J𝝅old​(𝝅|𝒔)\displaystyle  =𝔼𝒂∼𝝅(⋅|𝒔)[Q𝝅old(𝒔,𝒂)−α1log(𝝅(𝒂|𝒔))+α2Iu(𝒔,𝒂)]\displaystyle=\mathbb
+ J^{{\bm{\pi}}^{\text      {E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}\left[Q^{{\bm{\pi}}^{\
+ {old}}}({\bm{\pi}}|{\bm   text{old}}}({\bm{s}},{\bm{a}})-\alpha_{1}\log({\bm{\pi}}({\bm{a}}|
+ {s}})                     {\bm{s}}))+\alpha_{2}I_{u}({\bm{s}},{\bm{a}})\right]
+ 𝝅new(⋅|𝒔)\displaystyle{\  =arg​max𝝅∈Π⁡J𝝅old​(𝝅|𝐬)\displaystyle=\argmax_{{\bm{\pi}}\in\Pi}J^
+ bm{\pi}}^{\text{new}}(\   {{\bm{\pi}}^{\text{old}}}({\bm{\pi}}|{\bm{s}})                       (9)
+ cdot|{\bm{s}})
+
+For α1\alpha_{1}, we can either use a deterministic policy with α1=0\alpha_{1}=0 like Lillicrap
+(2015) or auto-tune α1\alpha_{1} as suggested by Haarnoja et al. (2018). Notably, for α2=0\alpha_
+{2}=0 we get the standard max entropy RL methods (Haarnoja et al., 2018). Therefore, by introducing
+two separate temperatures, we can treat information gain as another exploration bonus in addition
+to the policy entropy and combine it with any RL algorithm.
+
+Auto-tuning the temperature for the information gain bonus
+
+Haarnoja et al. (2018) formulate the problem of soft-Q learning as a constrained optimization.
+
+ 𝝅∗(⋅|𝒔)\            ≔arg⁡max𝝅∈Π​𝔼𝒂∼𝝅​[Q𝝅​(𝒔,𝒂)]​s.t.,​H​(𝒂|𝒔)≥H¯\displaystyle\coloneqq\underset
+ displaystyle{\bm{\  {{\bm{\pi}}\in\Pi}{\arg\max}\;\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}}\left[Q^{{\
+ pi}}^{*}(\cdot|{\bm bm{\pi}}}({\bm{s}},{\bm{a}})\right]\;\text{s.t.,}\;H({\bm{a}}|{\bm{s}})\geq\
+ {s}})               bar{H}
+                     ≔arg⁡max𝝅∈Π​minα1≥0​𝔼𝒂∼𝝅​[Q𝝅​(𝒔,𝒂)−α1​(log⁡(𝝅⁡(𝒂|𝒔))+H¯)].\displaystyle\
+                     coloneqq\underset{{\bm{\pi}}\in\Pi}{\arg\max}\;\min_{\alpha_{1}\geq 0}\mathbb
+                     {E}_{{\bm{a}}\sim{\bm{\pi}}}\left[Q^{{\bm{\pi}}}({\bm{s}},{\bm{a}})-\alpha_
+                     {1}(\log({\bm{\pi}}({\bm{a}}|{\bm{s}}))+\bar{H})\right].
+
+The entropy coefficient is then auto-tuned by solving this optimization problem gradually via
+stochastic gradient descent (SGD). In a similar spirit, we propose the following constraints to
+auto-tune the temperatures for the entropy and the information gain
+
+ 𝝅∗(⋅|𝒔)\         ≔arg⁡max𝝅∈Π​𝔼𝒂∼𝝅​[Q𝝅​(𝒔,𝒂)]​s.t.,​H​(𝒂|𝒔)≥H¯,𝔼𝒂∼𝝅​[Iu​(𝒔,𝒂)]≥I¯u​(𝒔)\
+ displaystyle{\bm displaystyle\coloneqq\underset{{\bm{\pi}}\in\Pi}{\arg\max}\;\mathbb{E}_{{\
+ {\pi}}^{*}(\cdot bm{a}}\sim{\bm{\pi}}}\left[Q^{{\bm{\pi}}}({\bm{s}},{\bm{a}})\right]\;\text   (10)
+ |{\bm{s}})       {s.t.,}\;H({\bm{a}}|{\bm{s}})\geq\bar{H},\mathbb{E}_{{\bm{a}}\sim{\bm{\
+                  pi}}}\left[I_{u}({\bm{s}},{\bm{a}})\right]\geq\bar{I}_{u}({\bm{s}})
+                  ≔arg⁡max𝝅∈Π​minα1,α2≥0⁡𝔼⁡[Q𝝅​(𝒔,𝒂)−α1​(log⁡(𝝅⁡(𝒂|𝒔))+H¯)+α2​(Iu​(𝒔,𝒂)−I¯u​
+                  (𝒔))]\displaystyle\coloneqq\underset{{\bm{\pi}}\in\Pi}{\arg\max}\min_{\
+                  alpha_{1},\alpha_{2}\geq 0}\mathbb{E}\left[Q^{{\bm{\pi}}}({\bm{s}},{\bm
+                  {a}})-\alpha_{1}(\log({\bm{\pi}}({\bm{a}}|{\bm{s}}))+\bar{H})+\alpha_{2}(I_
+                  {u}({\bm{s}},{\bm{a}})-\bar{I}_{u}({\bm{s}}))\right]
+
+Haarnoja et al. (2018) use a simple heuristic H¯=−dim​(𝒜)\bar{H}=-\text{dim}({\mathcal{A}}) for the
+target entropy. However, we cannot specify a general desired information gain since this depends on
+the learned Bayesian model p⁡(𝒇∗)p({\bm{f}}^{*}). This makes choosing I¯u\bar{I}_{u}
+task-dependent. For our experiments, we maintain a target policy 𝝅¯\bar{{\bm{\pi}}}, updated
+similarly to a target critic in off-policy RL, and define I¯u\bar{I}_{u} as
+
+ I¯u(𝒔)≔∑j=1d𝒔+1𝔼𝒂∼𝝅¯(⋅|𝒔)[log(1+σ−2σn−1,j2(𝒔,𝒂))]\bar{I}_{u}({\bm{s}})\coloneqq\sum^{d_{{\bm
+ {s}}}+1}_{j=1}\mathbb{E}_{{\bm{a}}\sim\bar{{\bm{\pi}}}(\cdot|{\bm{s}})}\left[\log\left(1+\    (11)
+ sigma^{-2}\sigma_{n-1,j}^{2}({\bm{s}},{\bm{a}})\right)\right]
+
+Intuitively, the constraint enforces that the current policy 𝝅{\bm{\pi}} explores w.r.t. the
+information gain, at least as much as the target policy 𝝅¯\bar{{\bm{\pi}}}. In principle, any other
+constraint can be used to optimize for α2\alpha_{2}. We consider our constraint since (i) it is
+easy to evaluate, (ii) it can be combined with other intrinsic rewards^1^1 1 II could represent a
+different intrinsic reward function, e.g., RND Burda et al. (2018)., and (iii) it is modular, i.e.,
+it can be added to any RL algorithm. Moreover, as MaxInfoRL can be combined with any base
+off-policy RL algorithm such as SAC (Haarnoja et al., 2018) or DDPG (Lillicrap, 2015), it benefits
+from the simplicity and scalability of these methods. In addition, it introduces the information
+gain as a directed exploration bonus and automatically tunes its temperature similar to the policy
+entropy in Haarnoja et al. (2018). Therefore, it benefits from both the strengths of the naive
+extrinsic exploration methods and the directedness of intrinsic exploration. We demonstrate this in
+our experiments, where we combine MaxInfoRL with SAC (Haarnoja et al., 2018), REDQ (Chen et al.,
+2021), DrQ (Yarats et al., 2021), and DrQv2 (Yarats et al., 2022).
+
+Convergence of MaxInfoRL
+
+In the following, we study our modified Boltzmann exploration strategy and show that as in Haarnoja
+et al. (2018), the update rules for QQ function and the policy converge to an optimal policy 𝝅∗∈Π{\
+bm{\pi}}^{*}\in\Pi. We make a very general assumption that the entropy of the policy and the model
+epistemic uncertainty are all bounded for all (𝒔,𝒂)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in{\mathcal{S}}\times{\
+mathcal{A}}. The proof of the theorem and the related lemmas are provided in Appendix B.
+
+We define the Bellman operator 𝒯𝝅{\mathcal{T}}^{{\bm{\pi}}}
+
+ 𝒯𝝅​Q​(𝒔,𝒂)=r⁡(𝒔,𝒂)+γ​𝔼𝒔′|𝒔,𝒂​[V𝝅​(𝒔′)],{\mathcal{T}}^{{\bm{\pi}}}Q({\bm{s}},{\bm{a}})=r({\bm
+ {s}},{\bm{a}})+\gamma\mathbb{E}_{{\bm{s}}^{\prime}|{\bm{s}},{\bm{a}}}[V^{{\bm{\pi}}}({\bm     (12)
+ {s}}^{\prime})],
+
+where
+
+ V𝝅(𝒔)=𝔼𝒂∼𝝅(⋅|𝒔)[Q(𝒔,𝒂)−α1log(𝝅(𝒂|𝒔))+α2Iu(𝒔,𝒂)]V^{{\bm{\pi}}}({\bm{s}})=\mathbb{E}_{{\bm{a}}
+ \sim{\bm{\pi}}(\cdot|{\bm{s}})}[Q({\bm{s}},{\bm{a}})-\alpha_{1}\log({\bm{\pi}}({\bm{a}}|{\bm  (13)
+ {s}}))+\alpha_{2}I_{u}({\bm{s}},{\bm{a}})]
+
+is the soft-value function.
+
+Theorem 3.1 (MaxInfoRL soft Q learning).
+
+Assume that the reward, the entropy for all 𝛑∈Π{\bm{\pi}}\in\Pi, and the model epistemic
+uncertainty 𝛔n{\bm{\sigma}}_{n} are all bounded for all n≥0n\geq 0, (𝐬,𝐚)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in
+{\mathcal{S}}\times{\mathcal{A}}. The repeated application of soft policy evaluation (Eq. 12) and
+soft policy update (Eq. 9) to any 𝛑∈Π{\bm{\pi}}\in\Pi converges to 𝛑∗∈Π{\bm{\pi}}^{*}\in\Pi such
+that Q𝛑​(𝐬,𝐚)≤Q𝛑∗​(𝐬,𝐚)Q^{{\bm{\pi}}}({\bm{s}},{\bm{a}})\leq Q^{{\bm{\pi}}^{*}}({\bm{s}},{\bm{a}})
+for all 𝛑∈Π{\bm{\pi}}\in\Pi, (𝐬,𝐚)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in{\mathcal{S}}\times{\mathcal{A}}.
+
+Theorem 3.1 shows that our reformulated expression for Boltzmann exploration exhibits the same
+convergence properties from Haarnoja et al. (2018).
+
+4 Experiments
+
+We evaluate MaxInfoRL with Boltzmann exploration from Section 3.2 across several deep RL
+benchmarks (Brockman, 2016; Tassa et al., 2018; Sferrazza et al., 2024) on state-based and visual
+control tasks. In all our experiments, we report the mean performance with standard error evaluated
+over five seeds. For the state-based tasks we combine MaxInfoRL with SAC (Haarnoja et al., 2018)
+and for the visual control tasks with DrQ (Yarats et al., 2021) and DrQv2 (Yarats et al., 2022). In
+the following, we refer to these algorithms as MaxInfoSAC, MaxInfoDrQ, and MaxInfoDrQv2,
+respectively. To further demonstrate the generality of MaxInfoRL, in Appendix D, we provide
+additional experiments, where we combine MaxInfoRL with REDQ (Chen et al., 2021), OAC (Ciosek
+et al., 2019), DrM (Xu et al., 2024), use RND (Burda et al., 2018) as an intrinsic reward instead
+of the information gain, and also evaluate the ϵ\epsilon–MaxInfoRL from Section 3.1 with curiosity 
+(Pathak et al., 2017) and disagreement (Pathak et al., 2019; Sekar et al., 2020; Mendonca et al.,
+2021) as intrinsic rewards.
+
+Baselines: For the state-based tasks, in addition to SAC, we consider four baselines, all of which
+use SAC as the base RL algorithm:
+
+ 1. 1.
+   
+    Disagreement: Employs an explore then exploit strategy, where it maximizes only the intrinsic
+    reward for the first 25%25\% of environment interaction and then switches to the exploitation
+    phase where the extrinsic reward is maximized. We use disagreement in the forward dynamics
+    model for the intrinsic reward.
+
+ 2. 2.
+   
+    Curiosity: The same as Disagreement but with curiosity as the intrinsic reward.
+
+ 3. 3.
+   
+    SACIntrinsic: Based on Burda et al. (2018), where a normalized intrinsic reward is added to the
+    extrinsic reward.
+
+ 4. 4.
+   
+    SACEipo: Uses a weighted sum of intrinsic and extrinsic rewards, where the weight is tuned with
+    the extrinsic optimality constraint from Chen et al. (2022).
+
+For the visual control tasks, we use DrQ and DrQv2 as our baselines. More details on our baselines
+and experiment details are provided in Appendix E.
+
+Does MaxInfoSAC achieve better performance on state-based control problems? In Figure 2 we compare 
+MaxInfoSAC with the baselines across several tasks of varying dimensionality^2^2 2 including the
+humanoid from DMC: ds=67d_{s}=67, da=21d_{a}=21 from the DeepMind control (Tassa et al., 2018,
+DMC,) and OpenAI gym benchmark suite (Brockman, 2016). Across all tasks we observe that MaxInfoSAC
+consistently performs the best. While the other baselines perform on par with MaxInfoSAC on some
+tasks, they fail to solve others. On the contrary, MaxInfoSAC consistently achieves the highest
+performance in all environments (cf., Fig. 1). To further demonstrate the scalability of MaxInfoSAC
+, we evaluate it on a practical robotics benchmark, namely HumanoidBench (Sferrazza et al., 2024)
+that features a simulated Unitree H1 robot on a variety of tasks. We use the no-hand version of the
+benchmark, and evaluate our algorithm on the stand, walk, and run tasks. We compare MaxInfoSAC to
+SAC in Fig. 3 and again observe that MaxInfoSAC achieves overall higher performance, except for a
+minor convergence delay on the stand task, which is a trivial exploration problem concerning pure
+stabilization.
+
+Refer to caption
+Figure 2: Learning curves of all methods on several environments from the OpenAI gym and DMC suite
+benchmarks.
+
+
+Figure 3: Performance of MaxInfoSAC and SAC on the HumanoidBench benchmark.
+
+Does MaxInfoSAC solve hard exploration problems? Naive exploration techniques often struggle with
+challeging exploration tasks (Burda et al., 2018; Curi et al., 2020; Sukhija et al., 2024b). To
+test MaxInfoSAC in this context, similar to Curi et al. (2020), we modify the reward in Pendulum,
+CartPole, and Walker by adding an action cost, raction​(𝒂)=−K​‖𝒂‖2r_{\text{action}}({\bm{a}})=-K\
+left\|{\bm{a}}\right\|_{2}, where KK controls the penalty for large actions. Curi et al. (2020)
+empirically show that even for small KK values, naive exploration methods fail, converging to the
+sub-optimal solution of applying no actions.
+
+In Figure 5 we compare MaxInfoSAC with the baselines. We observe that SAC struggles with action
+costs, especially in CartPole and Walker. Both SACEipo and SACIntrinsic underperform, likely due to
+poor handling of extrinsic and intrinsic rewards. Specifically, SACEipo quickly reduces its
+intrinsic reward weight to zero (cf., Fig. 8 in Appendix D), making it overly greedy. Disagreement
+and curiosity-based methods perform better since we manually tune their number of intrinsic
+exploration interactions. However, MaxInfoSAC achieves the best performance by automatically
+balancing intrinsic and extrinsic rewards. For MaxInfoSAC and SAC, we also depict the phase plot
+from the exploration on the pendulum environment in Figure 4. MaxInfoSAC covers the state space
+much faster than SAC, effectively solving the Pendulum swing-up task (Target=(0,0)\text{Target}=
+(0,0)) within 1010K environment steps.
+
+
+Figure 4: Phase plots during learning of MaxInfoRL and SAC on the Pendulum environment. MaxInfoSAC
+covers the state space much faster and effectively solves the swing-up task within 1010K
+environment interactions.
+
+Refer to caption
+Figure 5: Learning curves for state-based tasks for different values of the action cost parameter
+KK.
+
+Does MaxInfoRL scale to visual control tasks?
+
+
+Figure 6: Learning curves from visual control tasks of the DMC suite.
+
+In this section, we combine MaxInfoRL with DrQ and evaluate it on visual control problems from the
+DeepMind control suite (Tassa et al., 2018, DMC,). DrQ is a visual control algorithm based on the
+max entropy framework from SAC, therefore, it can easily be combined with MaxInfoRL. We call the
+resulting algorithm MaxInfoDrQ. We compare MaxInfoDrQ with DrQ and DrQv2 in Figure 6. From the
+figure, we conclude that MaxInfoDrQ consistently reaches higher rewards and better sample
+efficiency than the baselines across all tasks. This illustrates the scalability and generality of 
+MaxInfoRL.
+
+Solving challenging visual control tasks with MaxInfoRL For challenging visual control problems, in
+particular, the humanoid tasks from DMC, Yarats et al. (2022) propose DrQv2, a modified version of
+DrQ, which uses nn–step returns and DDPG with noise scheduling instead of SAC for the base
+algorithm. They claim that switching to DDPG with noise scheduling is particularly useful for
+solving the humanoid tasks. To this end, we combine MaxInfoRL with DrQv2 (MaxInfoDrQv2) and
+evaluate it on the stand, walk, and run humanoid tasks from DMC. This demonstrates the flexibility
+of MaxInfoRL, as it can seamlessly be combined with DrQv2, cf., Appendix E for more details and
+Appendix D for the performance of MaxInfoDrQv2 on other DMC tasks. We compare MaxInfoDrQv2 with
+DrQv2 in Figure 7. MaxInfoDrQv2 results in substantial gains in performance and sample efficiency
+compared to DrQv2. To our knowledge, those shown in Figure 7 are the highest returns reached in
+these challenging visual control tasks by model-free RL algorithms in the literature. This further
+illustrates the advantage of directed exploration via information gain/intrinsic rewards.
+
+
+Figure 7: Learning curves from the visual control humanoid tasks of the DMC suite.
+
+5 Related Works
+
+Naive Exploration
+
+Naive exploration approaches such as ϵ\epsilon–greedy or Boltzmann are widely applied in RL due to
+their simplicity (Mnih, 2013; Schulman et al., 2017; Lillicrap, 2015; Haarnoja et al., 2018; Hafner
+et al., 2023). In particular, the maximum entropy framework (Ziebart et al., 2008) is the basis of
+many sample-efficient model-free deep RL algorithms (Haarnoja et al., 2018; Chen et al., 2021;
+Hiraoka et al., 2022; Yarats et al., 2021). However, these methods often perform suboptimally,
+especially in challenging exploration problems such as those with sparse rewards or local optima
+(cf., Section 4). Effectively, the agent explores the underlying MDP by taking random sequences of
+actions. In continuous spaces, this makes sufficiently covering the state and action space
+exceptionally challenging. Moreover, even in the simplest setting of MAB in continuous spaces, the
+most common and theoretically sound exploration strategies are Thompson sampling (TS),
+upper-confidence bound (UCB) (Srinivas et al., 2012; Chowdhury & Gopalan, 2017), and
+information-directed sampling (Russo & Van Roy, 2018; Kirschner, 2021). There are several RL
+algorithms based on thes strategies (Brafman & Tennenholtz, 2002; Jaksch et al., 2010; Ouyang
+et al., 2017; Nikolov et al., 2019; Ciosek et al., 2019; Kakade et al., 2020; Curi et al., 2020;
+Sukhija et al., 2024a). Similarly, there are methods from Bayesian RL (Osband et al., 2018; Fellows
+et al., 2021; Buening et al., 2023) that perform principled exploration. However, the naive
+exploration approaches remain ubiquitous in deep RL due to their simplicity. Instead, intrinsic
+rewards are often used to facilitate more directed exploration. However, how to combine extrinsic
+and intrinsic exploration is much less understood both theoretically and practically.
+
+Intrinsic exploration
+
+Several works use intrinsic rewards as a surrogate objective to facilitate exploration in
+challenging tasks (cf., Aubret et al., 2023, for a comprehensive survey). Common choices of
+intrinsic rewards are model prediction error or “Curiosity” (Schmidhuber, 1991; Pathak et al., 2017
+; Burda et al., 2018), novelty of transitions/state-visitation counts (Stadie et al., 2015;
+Bellemare et al., 2016), diversity of skills/goals (Eysenbach et al., 2018; Sharma et al., 2019;
+Nair et al., 2018; Pong et al., 2019), empowerment (Klyubin et al., 2005; Salge et al., 2014),
+state-entropy (Mutti et al., 2021; Seo et al., 2021; Kim et al., 2024), and information gain over
+the forward dynamics (Sekar et al., 2020; Mendonca et al., 2021; Sukhija et al., 2024b). In this
+work, we focus on the information gain since it is the basis of many theoretically sound and
+empirically strong active learning methods (Krause et al., 2008; Balcan et al., 2010; Hanneke
+et al., 2014; Mania et al., 2020; Sekar et al., 2020; Sukhija et al., 2024b; Hübotter et al., 2024
+). Furthermore, we also motivate the choice of information gain/model epistemic uncertainty
+theoretically (cf., Theorem A.1 and Appendix C). Nonetheless, MaxInfoRL can also be used with other
+intrinsic exploration objectives. In this work, we study how to combine the intrinsic rewards with
+the extrinsic ones for exploration in RL. Moreover, approaches such as Pathak et al. (2017); Pathak
+et al. (2019); Sukhija et al. (2024b); Sekar et al. (2020) execute an explore then exploit
+strategy, where initially the extrinsic reward is ignored and a policy is trained to maximize the
+intrinsic objective. After this initial exploration phase, the agent is trained to maximize the
+extrinsic reward. This strategy is common in active learning methods and does not result in
+sublinear cumulative regret even for the simple MAB setting. This is because the agent executes a
+finite number of exploration steps instead of continuously trading off exploration and
+exploitation. To this end, Burda et al. (2018); Chen et al. (2022) combine the extrinsic and
+intrinsic exploration rewards by taking a weighted sum rtot=λ​rextrinsic+rintrinsicr_{\text{tot}}=\
+lambda r_{\text{extrinsic}}+r_{\text{intrinsic}}. While Burda et al. (2018) use fixed weight λ\
+lambda, Chen et al. (2022) propose the extrinsic optimality constraint to auto-tune the intrinsic
+reward weight. The extrinsic optimality constraint enforces that the policy maximizing the sum of
+intrinsic and extrinsic rewards performs at least as well as the policy which only maximizes the
+extrinsic ones. Keeping a fixed weight λ\lambda across all tasks and environment steps might be
+suboptimal and the constraint from Chen et al. (2022) may quickly lead to the trivial greedy
+solution λ−1=0\lambda^{-1}=0 (cf., Fig. 8 in Appendix D). We compare MaxInfoRL with these two
+methods, as well as with explore then exploit strategies. We show that MaxInfoRL outperforms them
+across several deep RL benchmarks (cf., Section 4).
+
+6 Conclusion
+
+In this work, we introduced MaxInfoRL, a class of model-free off-policy RL algorithms that train an
+agent to trade-off reward maximization with an exploration objective that targets high entropy in
+the state, action, and reward spaces. The proposed approach is theoretically sound, simple to
+implement, and can be combined with most common RL algorithms. MaxInfoRL consistently outperforms
+its baselines in a multitude of benchmarks and achieves state-of-the-art performance on challenging
+visual control tasks.
+
+A limitation of MaxInfoRL is that it requires training an ensemble of forward dynamics models to
+compute the information gain, which increases computation overhead (c.f. Appendix E Table 1). In
+addition, while effective, the constraint in Equation 10 also requires maintaining a target policy.
+
+The generality of the MaxInfoRL exploration bonus and the trade-off we propose with reward
+maximization are not limited to the off-policy model-free setting, which we focus on here due to
+their sample and computational efficiency. Future work will investigate its applicability to other
+classes of RL algorithms, such as model-based RL, where the forward dynamics model is generally
+part of the training framework. In fact, in this work we only use the forward dynamics model for
+the intrinsic rewards. Another interesting direction is to include samples from the learned model
+in the policy training, which may yield additional gains in sample efficiency. Lastly, extending
+our theoretical guarantees from the bandit settings to the MDP case is also an interesting
+direction for future work.
+
+Acknowledgments
+
+The authors would like to thank Kevin Zakka for the helpful discussions. Bhavya Sukhija was
+gratefully supported by ELSA (European Lighthouse on Secure and Safe AI) funded by the European
+Union under grant agreement No. 101070617. This project was supported in part by the ONR Science of
+Autonomy Program N000142212121, the Swiss National Science Foundation under NCCR Automation, grant
+agreement 51NF40 180545, the Microsoft Swiss Joint Research Center, the SNSF Postdoc Mobility
+Fellowship 211086, and an ONR DURIP grant. Pieter Abbeel holds concurrent appointments as a
+Professor at UC Berkeley and as an Amazon Scholar. This paper describes work performed at UC
+Berkeley and is not associated with Amazon.
+
+References
+
+  • Antonova et al. (2017) Rika Antonova, Akshara Rai, and Christopher G. Atkeson. Deep kernels for
+    optimizing locomotion controllers. In CORL, pp. 47–56, 2017.
+  • Aubret et al. (2023) Arthur Aubret, Laetitia Matignon, and Salima Hassas. An
+    information-theoretic perspective on intrinsic motivation in reinforcement learning: A survey. 
+    Entropy, 2023.
+  • Balcan et al. (2010) Maria-Florina Balcan, Steve Hanneke, and Jennifer Wortman Vaughan. The
+    true sample complexity of active learning. Machine learning, 80:111–139, 2010.
+  • Bellemare et al. (2016) Marc Bellemare, Sriram Srinivasan, Georg Ostrovski, Tom Schaul, David
+    Saxton, and Remi Munos. Unifying count-based exploration and intrinsic motivation. NeurIPS,
+    2016.
+  • Berkenkamp et al. (2021) Felix Berkenkamp, Andreas Krause, and Angela P. Schoellig. Bayesian
+    optimization with safety constraints: safe and automatic parameter tuning in robotics. Machine
+    Learning, 2021.
+  • Brafman & Tennenholtz (2002) Ronen I Brafman and Moshe Tennenholtz. R-max-a general polynomial
+    time algorithm for near-optimal reinforcement learning. Journal of Machine Learning Research,
+    2002.
+  • Brockman (2016) G Brockman. Openai gym. arXiv preprint arXiv:1606.01540, 2016.
+  • Brohan et al. (2023) Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph
+    Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, Jasmine Hsu, Julian
+    Ibarz, Brian Ichter, Alex Irpan, Tomas Jackson, Sally Jesmonth, Nikhil J Joshi, Ryan Julian,
+    Dmitry Kalashnikov, Yuheng Kuang, Isabel Leal, Kuang-Huei Lee, Sergey Levine, Yao Lu, Utsav
+    Malla, Deeksha Manjunath, Igor Mordatch, Ofir Nachum, Carolina Parada, Jodilyn Peralta, Emily
+    Perez, Karl Pertsch, Jornell Quiambao, Kanishka Rao, Michael Ryoo, Grecia Salazar, Pannag
+    Sanketi, Kevin Sayed, Jaspiar Singh, Sumedh Sontakke, Austin Stone, Clayton Tan, Huong Tran,
+    Vincent Vanhoucke, Steve Vega, Quan Vuong, Fei Xia, Ted Xiao, Peng Xu, Sichun Xu, Tianhe Yu,
+    and Brianna Zitkovich. Rt-1: Robotics transformer for real-world control at scale. arXiv
+    preprint arXiv:2212.06817, 2023.
+  • Buening et al. (2023) Thomas Kleine Buening, Christos Dimitrakakis, Hannes Eriksson, Divya
+    Grover, and Emilio Jorge. Minimax-bayes reinforcement learning. In AISTATS, 2023.
+  • Burda et al. (2018) Yuri Burda, Harrison Edwards, Amos Storkey, and Oleg Klimov. Exploration by
+    random network distillation. arXiv preprint arXiv:1810.12894, 2018.
+  • Calandra et al. (2016) Roberto Calandra, Andre Seyfarth, Jan Peters, and Marc Deisenroth. 
+    Bayesian optimization for learning gaits under uncertainty. Annals of Mathematics and
+    Artificial Intelligence, 2016.
+  • Cesa-Bianchi et al. (2017) Nicolò Cesa-Bianchi, Claudio Gentile, Gábor Lugosi, and Gergely Neu.
+    Boltzmann exploration done right. Advances in neural information processing systems, 30, 2017.
+  • Chaloner & Verdinelli (1995) Kathryn Chaloner and Isabella Verdinelli. Bayesian experimental
+    design: A review. Statistical science, 1995.
+  • Chen et al. (2022) Eric Chen, Zhang-Wei Hong, Joni Pajarinen, and Pulkit Agrawal. Redeeming
+    intrinsic rewards via constrained optimization. NeurIPS, 2022.
+  • Chen et al. (2021) Xinyue Chen, Che Wang, Zijian Zhou, and Keith Ross. Randomized ensembled
+    double q-learning: Learning fast without a model. ICLR, 2021.
+  • Chowdhury & Gopalan (2017) Sayak Ray Chowdhury and Aditya Gopalan. On kernelized multi-armed
+    bandits. In ICML, 2017.
+  • Ciosek et al. (2019) Kamil Ciosek, Quan Vuong, Robert Loftin, and Katja Hofmann. Better
+    exploration with optimistic actor critic. NeurIPS, 32, 2019.
+  • Cover & Thomas (2006) Thomas M. Cover and Joy A. Thomas. Elements of Information Theory (Wiley
+    Series in Telecommunications and Signal Processing). Wiley-Interscience, 2006.
+  • Curi et al. (2020) Sebastian Curi, Felix Berkenkamp, and Andreas Krause. Efficient model-based
+    reinforcement learning through optimistic policy search and planning. NeurIPS, 33:14156–14170,
+    2020.
+  • Eysenbach et al. (2018) Benjamin Eysenbach, Abhishek Gupta, Julian Ibarz, and Sergey Levine. 
+    Diversity is all you need: Learning skills without a reward function. arXiv preprint
+    arXiv:1802.06070, 2018.
+  • Fellows et al. (2021) Mattie Fellows, Kristian Hartikainen, and Shimon Whiteson. Bayesian
+    bellman operators. NeurIPS, 2021.
+  • Fujimoto et al. (2018) Scott Fujimoto, Herke Hoof, and David Meger. Addressing function
+    approximation error in actor-critic methods. In ICML, 2018.
+  • Haarnoja et al. (2018) Tuomas Haarnoja, Aurick Zhou, Kristian Hartikainen, George Tucker,
+    Sehoon Ha, Jie Tan, Vikash Kumar, Henry Zhu, Abhishek Gupta, Pieter Abbeel, et al. Soft
+    actor-critic algorithms and applications. arXiv preprint arXiv:1812.05905, 2018.
+  • Hafner et al. (2020) Danijar Hafner, Pedro A Ortega, Jimmy Ba, Thomas Parr, Karl Friston, and
+    Nicolas Heess. Action and perception as divergence minimization. arXiv preprint
+    arXiv:2009.01791, 2020.
+  • Hafner et al. (2023) Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. 
+    Mastering diverse domains through world models. arXiv preprint arXiv:2301.04104, 2023.
+  • Hanneke et al. (2014) Steve Hanneke et al. Theory of disagreement-based active learning. 
+    Foundations and Trends® in Machine Learning, 2014.
+  • Hiraoka et al. (2022) Takuya Hiraoka, Takahisa Imagawa, Taisei Hashimoto, Takashi Onishi, and
+    Yoshimasa Tsuruoka. Dropout q-functions for doubly efficient reinforcement learning. ICLR,
+    2022.
+  • Hwangbo et al. (2019) Jemin Hwangbo, Joonho Lee, Alexey Dosovitskiy, Dario Bellicoso, Vassilios
+    Tsounis, Vladlen Koltun, and Marco Hutter. Learning agile and dynamic motor skills for legged
+    robots. Science Robotics, 2019.
+  • Hübotter et al. (2024) Jonas Hübotter, Bhavya Sukhija, Lenart Treven, Yarden As, and Andreas
+    Krause. Transductive active learning: Theory and applications, 2024.
+  • Jaksch et al. (2010) Thomas Jaksch, Ronald Ortner, and Peter Auer. Near-optimal regret bounds
+    for reinforcement learning. Journal of Machine Learning Research, 2010.
+  • Kakade et al. (2020) Sham Kakade, Akshay Krishnamurthy, Kendall Lowrey, Motoya Ohnishi, and Wen
+    Sun. Information theoretic regret bounds for online nonlinear control. NeurIPS, 33:15312–15325,
+    2020.
+  • Kassraie et al. (2024) Parnian Kassraie, Nicolas Emmenegger, Andreas Krause, and Aldo
+    Pacchiano. Anytime model selection in linear bandits. Advances in Neural Information Processing
+    Systems, 36, 2024.
+  • Kearns & Singh (2002) Michael Kearns and Satinder Singh. Near-optimal reinforcement learning in
+    polynomial time. Machine learning, 2002.
+  • Khalil (2015) Hassan K Khalil. Nonlinear control, volume 406. Pearson New York, 2015.
+  • Kim et al. (2024) Dongyoung Kim, Jinwoo Shin, Pieter Abbeel, and Younggyo Seo. Accelerating
+    reinforcement learning with value-conditional state entropy exploration. Advances in Neural
+    Information Processing Systems, 36, 2024.
+  • Kirschner (2021) Johannes Kirschner. Information-Directed Sampling-Frequentist Analysis and
+    Applications. PhD thesis, ETH Zurich, 2021.
+  • Klyubin et al. (2005) Alexander S Klyubin, Daniel Polani, and Chrystopher L Nehaniv. 
+    Empowerment: A universal agent-centric measure of control. In IEEE congress on evolutionary
+    computation, 2005.
+  • Kostrikov (2021) Ilya Kostrikov. JAXRL: Implementations of Reinforcement Learning algorithms in
+    JAX, 10 2021. URL https://github.com/ikostrikov/jaxrl.
+  • Krause et al. (2008) Andreas Krause, Ajit Singh, and Carlos Guestrin. Near-optimal sensor
+    placements in gaussian processes: Theory, efficient algorithms and empirical studies. Journal
+    of Machine Learning Research, 9(2), 2008.
+  • Lakshminarayanan et al. (2017) Balaji Lakshminarayanan, Alexander Pritzel, and Charles
+    Blundell. Simple and scalable predictive uncertainty estimation using deep ensembles. NeurIPS,
+    30, 2017.
+  • Lattimore & Szepesvári (2020) Tor Lattimore and Csaba Szepesvári. Bandit algorithms. Cambridge
+    University Press, 2020.
+  • Levine (2018) Sergey Levine. Reinforcement learning and control as probabilistic inference:
+    Tutorial and review. arXiv preprint arXiv:1805.00909, 2018.
+  • Lillicrap (2015) TP Lillicrap. Continuous control with deep reinforcement learning. arXiv
+    preprint arXiv:1509.02971, 2015.
+  • Lindley (1956) D. V. Lindley. On a Measure of the Information Provided by an Experiment. The
+    Annals of Mathematical Statistics, pp. 986 – 1005, 1956.
+  • Mania et al. (2020) Horia Mania, Michael I Jordan, and Benjamin Recht. Active learning for
+    nonlinear system identification with guarantees. arXiv preprint arXiv:2006.10277, 2020.
+  • Marco et al. (2016) Alonso Marco, Philipp Hennig, Jeannette Bohg, Stefan Schaal, and Sebastian
+    Trimpe. Automatic LQR tuning based on Gaussian process global optimization. In ICRA, pp.
+    270–277, 2016.
+  • Mendonca et al. (2021) Russell Mendonca, Oleh Rybkin, Kostas Daniilidis, Danijar Hafner, and
+    Deepak Pathak. Discovering and achieving goals via world models. NeurIPS, 2021.
+  • Mnih (2013) Volodymyr Mnih. Playing atari with deep reinforcement learning. arXiv preprint
+    arXiv:1312.5602, 2013.
+  • Mutti et al. (2021) Mirco Mutti, Lorenzo Pratissoli, and Marcello Restelli. Task-agnostic
+    exploration via policy gradient of a non-parametric state entropy estimate. In AAAI, 2021.
+  • Nair et al. (2018) Ashvin V Nair, Vitchyr Pong, Murtaza Dalal, Shikhar Bahl, Steven Lin, and
+    Sergey Levine. Visual reinforcement learning with imagined goals. NeurIPS, 2018.
+  • Nikolov et al. (2019) Nikolay Nikolov, Johannes Kirschner, Felix Berkenkamp, and Andreas
+    Krause. Information-directed exploration for deep reinforcement learning. ICLR, 2019.
+  • O’Donoghue (2021) Brendan O’Donoghue. Variational bayesian reinforcement learning with regret
+    bounds. NeurIPs, 2021.
+  • Osband et al. (2018) Ian Osband, John Aslanides, and Albin Cassirer. Randomized prior functions
+    for deep reinforcement learning. NeurIPS, 2018.
+  • Osband et al. (2023) Ian Osband, Zheng Wen, Seyed Mohammad Asghari, Vikranth Dwaracherla,
+    Morteza Ibrahimi, Xiuyuan Lu, and Benjamin Van Roy. Epistemic neural networks. Advances in
+    Neural Information Processing Systems, 36:2795–2823, 2023.
+  • Ouyang et al. (2022) Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright,
+    Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training
+    language models to follow instructions with human feedback. NeurIPS, 2022.
+  • Ouyang et al. (2017) Yi Ouyang, Mukul Gagrani, Ashutosh Nayyar, and Rahul Jain. Learning
+    unknown markov decision processes: A thompson sampling approach. NeurIPS, 30, 2017.
+  • Pathak et al. (2017) Deepak Pathak, Pulkit Agrawal, Alexei A Efros, and Trevor Darrell. 
+    Curiosity-driven exploration by self-supervised prediction. In International conference on
+    machine learning, pp. 2778–2787. PMLR, 2017.
+  • Pathak et al. (2019) Deepak Pathak, Dhiraj Gandhi, and Abhinav Gupta. Self-supervised
+    exploration via disagreement. In ICML, pp. 5062–5071. PMLR, 2019.
+  • Pong et al. (2019) Vitchyr H. Pong, Murtaza Dalal, Steven Lin, Ashvin Nair, Shikhar Bahl, and
+    Sergey Levine. Skew-fit: State-covering self-supervised reinforcement learning. arXiv preprint
+    arXiv:1903.03698, 2019.
+  • Prajapat et al. (2024) Manish Prajapat, Mojmir Mutny, Melanie Zeilinger, and Andreas Krause. 
+    Submodular reinforcement learning. In ICLR, 2024.
+  • Puterman (2014) Martin L Puterman. Markov decision processes: discrete stochastic dynamic
+    programming. John Wiley & Sons, 2014.
+  • Raffin et al. (2021) Antonin Raffin, Ashley Hill, Adam Gleave, Anssi Kanervisto, Maximilian
+    Ernestus, and Noah Dormann. Stable-baselines3: Reliable reinforcement learning implementations.
+    Journal of Machine Learning Research, 2021.
+  • Rasmussen & Williams (2005) Carl Edward Rasmussen and Christopher K. I. Williams. Gaussian
+    Processes for Machine Learning (Adaptive Computation and Machine Learning). The MIT Press,
+    2005.
+  • Russo & Van Roy (2018) Daniel Russo and Benjamin Van Roy. Learning to optimize via
+    information-directed sampling. Operations Research, 2018.
+  • Salge et al. (2014) Christoph Salge, Cornelius Glackin, and Daniel Polani. Empowerment–an
+    introduction. Guided Self-Organization: Inception, 2014.
+  • Schmidhuber (1991) Jürgen Schmidhuber. A possibility for implementing curiosity and boredom in
+    model-building neural controllers. In Proc. of the international conference on simulation of
+    adaptive behavior: From animals to animats, pp. 222–227, 1991.
+  • Schulman et al. (2017) John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg
+    Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347, 2017.
+  • Sekar et al. (2020) Ramanan Sekar, Oleh Rybkin, Kostas Daniilidis, Pieter Abbeel, Danijar
+    Hafner, and Deepak Pathak. Planning to explore via self-supervised world models. In
+    International conference on machine learning, 2020.
+  • Seo et al. (2021) Younggyo Seo, Lili Chen, Jinwoo Shin, Honglak Lee, Pieter Abbeel, and Kimin
+    Lee. State entropy maximization with random encoders for efficient exploration. In ICML, 2021.
+  • Sferrazza et al. (2024) Carmelo Sferrazza, Dun-Ming Huang, Xingyu Lin, Youngwoon Lee, and
+    Pieter Abbeel. HumanoidBench: Simulated Humanoid Benchmark for Whole-Body Locomotion and
+    Manipulation. In RSS, 2024.
+  • Sharma et al. (2019) Archit Sharma, Shixiang Gu, Sergey Levine, Vikash Kumar, and Karol
+    Hausman. Dynamics-aware unsupervised discovery of skills. arXiv preprint arXiv:1907.01657,
+    2019.
+  • Silver et al. (2017) David Silver, Julian Schrittwieser, Karen Simonyan, Ioannis Antonoglou,
+    Aja Huang, Arthur Guez, Thomas Hubert, Lucas Baker, Matthew Lai, Adrian Bolton, et al. 
+    Mastering the game of go without human knowledge. nature, 2017.
+  • Smith et al. (2022) Laura Smith, Ilya Kostrikov, and Sergey Levine. A walk in the park:
+    Learning to walk in 20 minutes with model-free reinforcement learning. arXiv preprint
+    arXiv:2208.07860, 2022.
+  • Srinivas et al. (2012) Niranjan Srinivas, Andreas Krause, Sham M. Kakade, and Matthias W.
+    Seeger. Information-theoretic regret bounds for gaussian process optimization in the bandit
+    setting. IEEE Transactions on Information Theory, 2012.
+  • Stadie et al. (2015) Bradly C Stadie, Sergey Levine, and Pieter Abbeel. Incentivizing
+    exploration in reinforcement learning with deep predictive models. arXiv preprint
+    arXiv:1507.00814, 2015.
+  • Sukhija et al. (2023) Bhavya Sukhija, Matteo Turchetta, David Lindner, Andreas Krause,
+    Sebastian Trimpe, and Dominik Baumann. Gosafeopt: Scalable safe exploration for global
+    optimization of dynamical systems. Artificial Intelligence, 2023.
+  • Sukhija et al. (2024a) Bhavya Sukhija, Lenart Treven, Florian Dörfler, Stelian Coros, and
+    Andreas Krause. Neorl: Efficient exploration for nonepisodic rl. arXiv preprint
+    arXiv:2406.01175, 2024a.
+  • Sukhija et al. (2024b) Bhavya Sukhija, Lenart Treven, Cansu Sancaktar, Sebastian Blaes, Stelian
+    Coros, and Andreas Krause. Optimistic active exploration of dynamical systems. NeurIPS, 2024b.
+  • Sutton (2018) Richard S Sutton. Reinforcement learning: An introduction. A Bradford Book, 2018.
+  • Szepesvári (2022) Csaba Szepesvári. Algorithms for reinforcement learning. Springer nature,
+    2022.
+  • Tarbouriech et al. (2024) Jean Tarbouriech, Tor Lattimore, and Brendan O’Donoghue. 
+    Probabilistic inference in reinforcement learning done right. NeurIPs, 2024.
+  • Tassa et al. (2018) Yuval Tassa, Yotam Doron, Alistair Muldal, Tom Erez, Yazhe Li, Diego de Las
+    Casas, David Budden, Abbas Abdolmaleki, Josh Merel, Andrew Lefrancq, et al. Deepmind control
+    suite. arXiv preprint arXiv:1801.00690, 2018.
+  • Vakili et al. (2021) Sattar Vakili, Kia Khezeli, and Victor Picheny. On information gain and
+    regret bounds in gaussian process bandits. In AISTATS, 2021.
+  • Van Hasselt et al. (2016) Hado Van Hasselt, Arthur Guez, and David Silver. Deep reinforcement
+    learning with double q-learning. In AAAI, 2016.
+  • Wagenmaker et al. (2023) Andrew Wagenmaker, Guanya Shi, and Kevin Jamieson. Optimal exploration
+    for model-based rl in nonlinear systems. arXiv preprint arXiv:2306.09210, 2023.
+  • Xu et al. (2024) Guowei Xu, Ruijie Zheng, Yongyuan Liang, Xiyao Wang, Zhecheng Yuan, Tianying
+    Ji, Yu Luo, Xiaoyu Liu, Jiaxin Yuan, Pu Hua, et al. Drm: Mastering visual reinforcement
+    learning through dormant ratio minimization. ICLR, 2024.
+  • Yarats et al. (2021) Denis Yarats, Ilya Kostrikov, and Rob Fergus. Image augmentation is all
+    you need: Regularizing deep reinforcement learning from pixels. In ICLR, 2021.
+  • Yarats et al. (2022) Denis Yarats, Rob Fergus, Alessandro Lazaric, and Lerrel Pinto. Mastering
+    visual continuous control: Improved data-augmented reinforcement learning. ICLR, 2022.
+  • Ziebart et al. (2008) Brian D Ziebart, Andrew L Maas, J Andrew Bagnell, Anind K Dey, et al. 
+    Maximum entropy inverse reinforcement learning. In AAAI, 2008.
+
+Appendix A Analyzing ϵ\epsilon–Greedy for Multi-armed Bandits
+
+In this section, we enunciate a theorem that shows that our modified ϵ\epsilon–greedy approach from
+Section 3.1 has sublinear regret in the simplified setting of multi-arm bandits.
+
+A.1 Sublinear regret for ϵ\epsilon–MaxInfoRL
+
+This exploration–exploitation trade-off is also fundamental in multi-armed bandits (MAB) (Lattimore
+& Szepesvári, 2020), where the task is to optimize an unknown objective function J:Θ→
+[−12​Jmax,12​Jmax]J:\Theta\to[-\frac{1}{2}J_{\max},\frac{1}{2}J_{\max}], with Θ⊂ℝd\Theta\subset\
+mathbb{R}^{d} being a compact set over which we seek the optimal arm 𝜽∗=arg​max𝜽∈Θ⁡J​(𝜽){\bm{\
+theta}}^{*}=\argmax_{{\bm{\theta}}\in\Theta}J({\bm{\theta}}). In each round tt, we choose a point
+𝜽t∈Θ{\bm{\theta}}_{t}\in\Theta and obtain a noisy measurement yty_{t} of the function value, that
+is, yt=J⁡(𝜽t)+wty_{t}=J({\bm{\theta}}_{t})+w_{t}. Our goal is to maximize the sum of rewards ∑t=
+1TJ⁡(𝜽t)\sum^{T}_{t=1}J({\bm{\theta}}_{t}) over TT learning iterations/episodes, thus to perform
+essentially as well as 𝜽∗{\bm{\theta}}^{*} (as quickly as possible). For example, 𝜽{\bm{\theta}}
+can be parameters of the policy distribution 𝝅𝜽{\bm{\pi}}_{{\bm{\theta}}} and our objective
+maximizing the discounted rewards as defined in Eq. 1, i.e., max𝜽∈Θ⁡J⁡(𝝅𝜽)\max_{{\bm{\theta}}\in\
+Theta}J({\bm{\pi}}_{{\bm{\theta}}}). This formulation is the basis of several sample-efficient RL
+algorithms (Calandra et al., 2016; Marco et al., 2016; Antonova et al., 2017; Berkenkamp et al.,
+2021; Sukhija et al., 2023).
+
+The natural performance metric in this context is the cumulative regret defined as RT=∑t=1TJ⁡(𝜽∗)
+−J⁡(𝜽t)R_{T}=\sum^{T}_{t=1}J({\bm{\theta}}^{*})-J({\bm{\theta}}_{t}). A desirable asymptotic
+property of any learning algorithm is that it is no-regret: limT→∞RT/T=0\lim_{T\to\infty}R_{T}/T=0.
+In the following theorem, we show that under standard continuity assumptions on JJ, i.e., we can
+model it through Gaussian process regression (Rasmussen & Williams, 2005) with a given kernel k⁡
+(⋅,⋅):Θ×Θ→ℝ+k(\cdot,\cdot):\Theta\times\Theta\to\mathbb{R}_{+}, our exploration strategy from Eq. 7
+with the model epistemic uncertainty as the intrinsic objective has sublinear regret.
+
+Theorem A.1.
+
+Assume that the objective function JJ lies in the RKHS ℋk{\mathcal{H}}_{k} corresponding to the
+kernel k⁡(𝛉,𝛉)k({\bm{\theta}},{\bm{\theta}}), ‖J‖k≤B\left\|J\right\|_{k}\leq B, and that the noise
+𝐰t{\bm{w}}_{t} is zero-mean σ\sigma-sub Gaussian. Let ϵt=t2​α−1\epsilon_{t}=t^{2\alpha-1} for α∈(1/
+4,1/2)\alpha\in(\nicefrac{{1}}{{4}},\nicefrac{{1}}{{2}}), δ∈(0,1]\delta\in(0,1] and consider the
+following ϵ\epsilon–greedy exploration strategy
+
+ 𝜽t={arg⁡max𝜽∈Θ​σt​(𝜽)with probability​ϵtarg⁡max𝜽∈Θ​μt​(𝜽)else,{\bm{\theta}}_{t}=\begin{cases}\
+ underset{{\bm{\theta}}\in\Theta}{\arg\max}\;\sigma_{t}({\bm{\theta}})\;&\text{with probability}\
+ epsilon_{t}\\ \underset{{\bm{\theta}}\in\Theta}{\arg\max}\;\mu_{t}({\bm{\theta}})\;&\text{else},\
+ end{cases}
+
+where μt\mu_{t} is our mean estimate of JJ and σt\sigma_{t} the epistemic uncertainty (c.f., (
+Rasmussen & Williams, 2005) for the exact formula). Then we have with probability at least 1−δ1-\
+delta
+
+ RT≤𝒪⁡(Jmax​T2​α+2​ΓT​(k)​T1−α),R_{T}\leq{\mathcal{O}}\left(J_{\max}T^{2\alpha}+2\Gamma_{T}(k)T^
+ {1-\alpha}\right),
+
+where ΓT​(k)\Gamma_{T}(k) is the maximum information gain (Srinivas et al., 2012).
+
+The maximum information gain ΓT​(k)\Gamma_{T}(k) measures the complexity of learning the function
+JJ w.r.t. the number of data points TT and depends on the choice of the kernel kk, for common
+kernels such as the RBF and linear kernel, it grows polylogarithmically with TT (Srinivas et al.,
+2012; Vakili et al., 2021), resulting in a sublinear regret bound. Intuitively, by sampling
+informative actions sufficiently often, we will improve our estimate of JJ and thus gradually
+suffer less regret.
+
+A.2 Proof of Theorem A.1
+
+From hereon, let Zt∼Bernoulli​(ϵt)Z_{t}\sim\text{Bernoulli}(\epsilon_{t}) be a Bernoulli random
+variable. The acquisition function for ϵ\epsilon-greedy GP bandit from Theorem A.1 is defined as:
+
+ 𝜽t={arg⁡max𝜽∈Θ​σt​(𝜽)if ​Zt=1arg⁡max𝜽∈Θ​μt​(𝜽)else{\bm{\theta}}_{t}=\begin{cases}\underset
+ {{\bm{\theta}}\in\Theta}{\arg\max}\;\sigma_{t}({\bm{\theta}})\;&\text{if }Z_{t}=1\\ \         (14)
+ underset{{\bm{\theta}}\in\Theta}{\arg\max}\;\mu_{t}({\bm{\theta}})\;&\text{else}\end{cases}
+
+Let Qt=∑s=1tZs−ϵsQ_{t}=\sum^{t}_{s=1}Z_{s}-\epsilon_{s}. In the following, we analyze the sequence
+Q1:tQ_{1:t}. Note that Qt∈[0,t]Q_{t}\in[0,t] for all tt and
+
+ 𝔼[Qt|Q1:t−1]\displaystyle\mathbb  =𝔼[Zt−ϵt]+𝔼[Qt−1|Q1:t−1]\displaystyle=\mathbb{E}[Z_{t}-\
+ {E}[Q_{t}|Q_{1:t-1}]              epsilon_{t}]+\mathbb{E}[Q_{t-1}|Q_{1:t-1}]
+                                   =Qt−1.\displaystyle=Q_{t-1}.
+
+Therefore, Q1:tQ_{1:t} is a martingale sequence, or equivalently, {Zs−ϵs}s∈1:t\{Z_{s}-\epsilon_{s}
+\}_{s\in 1:t} is a martingale difference sequence.
+
+In the following, we use the time-uniform Azuma Hoeffding inequality from Kassraie et al. (2024) to
+give a bound on ∑s=1TZs\sum^{T}_{s=1}Z_{s}.
+
+Lemma A.2.
+
+Let ϵ1=1\epsilon_{1}=1, then we have with probability at least 1−δ1-\delta, for all t≥1t\geq 1
+
+ ∑s=1tZs≥max⁡{∑s=1tϵs−52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ)),1}\sum^{t}_{s=1}Z_{s}\geq\max\left\{\sum^{t}_
+ {s=1}\epsilon_{s}-\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))},1\right\}
+
+Proof.
+
+Note that |Qt−Qt−1|=|Zt−ϵt|∈[0,1]|Q_{t}-Q_{t-1}|=|Z_{t}-\epsilon_{t}|\in[0,1] for all tt.
+Therefore, we can use the time-uniform Azzuma-Hoeffding inequality (Kassraie et al., 2024, Lemma
+26.) to get
+
+ Pr(∃t:∑s=1tϵs−Zs≥52t⁡(log⁡log⁡(e​t)+log⁡(2​δ)))≤δ\Pr\left(\exists t:\sum^{t}_{s=1}\epsilon_{s}-Z_
+ {s}\geq\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}\right)\leq\delta
+
+Therefore, we have with probability at least 1−δ1-\delta
+
+ ∑s=1tZs≥∑s=1tϵs−52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))\sum^{t}_{s=1}Z_{s}\geq\sum^{t}_{s=1}\epsilon_{s}-\
+ frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}
+
+for all t≥1t\geq 1. Furthermore, since ϵ1=1\epsilon_{1}=1, we have Z1=1Z_{1}=1. Therefore,
+
+ ∑s=1tZs≥max⁡{∑s=1tϵs−52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ)),1}\sum^{t}_{s=1}Z_{s}\geq\max\left\{\sum^{t}_
+ {s=1}\epsilon_{s}-\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))},1\right\}
+
+∎
+
+Let EtE_{t} denote the number of exploration steps after tt iterations of the algorithm, that is,
+Et=∑s=1tZsE_{t}=\sum^{t}_{s=1}Z_{s}. In the next lemma, we derive a bound on EtE_{t}.
+
+Lemma A.3.
+
+Let ϵt=t2​α−1\epsilon_{t}=t^{2\alpha-1} with α∈(1/4,1/2)\alpha\in(\nicefrac{{1}}{{4}},\nicefrac
+{{1}}{{2}}), then for any δ∈(0,1]\delta\in(0,1] exists a C>0,t0>0C>0,t_{0}>0 such that Et≥C2​t2​αE_
+{t}\geq C^{2}t^{2\alpha} for all t≥t0t\geq t_{0} with probability at least 1−δ1-\delta.
+
+Proof.
+
+Note that ϵt\epsilon_{t} is monotonously decreasing with tt. Therefore, ∫ss+1x2​α−1​𝑑x≤ϵs\int^{s+1}
+_{s}x^{2\alpha-1}dx\leq\epsilon_{s} and hence
+
+ ∑s=1tϵs≥∫1tx2​α−1​𝑑x=t2​α−12​α\sum^{t}_{s=1}\epsilon_{s}\geq\int^{t}_{1}x^{2\alpha-1}dx=\frac{t^
+ {2\alpha}-1}{2\alpha}
+
+Therefore, we get
+
+ ∑s=1tϵs−52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))≥t2​α2​α−(52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))+12​α)\sum^{t}_{s=
+ 1}\epsilon_{s}-\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}\geq\frac{t^{2\alpha}}{2\alpha}-\
+ left(\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}+\frac{1}{2\alpha}\right)
+
+Therefore,
+
+ Et\
+ displaystyle =∑s=1tZs\displaystyle=\sum^{t}_{s=1}Z_{s}
+ E_{t}
+              ≥max⁡{∑s=1tϵs−52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ)),1}\displaystyle\geq\max\left\{\sum^{t}_
+              {s=1}\epsilon_{s}-\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))},1\right\}
+              ≥max⁡{t2​α2​α−(52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))+12​α),1}\displaystyle\geq\max\left\{\
+              frac{t^{2\alpha}}{2\alpha}-\left(\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}+\
+              frac{1}{2\alpha}\right),1\right\}
+
+Note that since α>14\alpha>\frac{1}{4}, for any δ∈(0,1]\delta\in(0,1]
+
+ 52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))+12​α∈o⁡(t2​α).\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}+\
+ frac{1}{2\alpha}\in o(t^{2\alpha}).
+
+Moreover max⁡{t2​α2​α−(52​t⁡(log⁡log⁡(e​t)+log⁡(2​δ))+12​α),1}∈Θ⁡(t2​α)\max\left\{\frac{t^{2\
+alpha}}{2\alpha}-\left(\frac{5}{2}\sqrt{t(\log\log(et)+\log(2\delta))}+\frac{1}{2\alpha}\right),1\
+right\}\in\Theta(t^{2\alpha}), therefore for any δ∈(0,1]\delta\in(0,1] exists a C>0,t0>0C>0,t_{0}>0
+such that Et≥C2​t2​αE_{t}\geq C^{2}t^{2\alpha} for all t≥t0t\geq t_{0} with probability at least
+1−δ1-\delta.
+
+∎
+
+Next, we use the results from Chowdhury & Gopalan (2017) on the well-calibration of JJ w.r.t. our
+mean and epistemic uncertainty estimates.
+
+Lemma A.4 (Theorem 2, Chowdhury & Gopalan (2017)).
+
+Let the assumptions from Theorem A.1 hold. Then, with probability at least 1−δ1-\delta, the
+following holds for all 𝛉∈Θ{\bm{\theta}}\in\Theta and t≥1t\geq 1:
+
+ |μt−1​(𝜽)−J⁡(𝜽)|≤βt−1​σt−1​(𝜽),|\mu_{t-1}({\bm{\theta}})-J({\bm{\theta}})|\leq\beta_{t-1}\sigma_
+ {t-1}({\bm{\theta}}),
+
+with βt−1=B+σ​2​(Γt−1+1+ln⁡(1/δ))\beta_{t-1}=B+\sigma\sqrt{2(\Gamma_{t-1}+1+\ln(\nicefrac{{1}}{{\
+delta}}))}, where Γt−1\Gamma_{t-1} is the maximum information gain (Srinivas et al., 2012) after
+t−1t-1 rounds.
+
+Proof of Theorem A.1.
+
+The ϵ\epsilon–greedy algorithm alternates between uncertainty sampling and maximizing the mean. In
+the worst case, it may suffer maximal regret JmaxJ_{\max} during the uncertainty sampling stage.
+Furthermore, assume at time tt, we execute the exploitation stage, then we have
+
+ J⁡(𝜽∗)−J⁡(𝜽t)\          =J⁡(𝜽∗)−μt​(𝜽∗)+μt​(𝜽∗)−J⁡(𝜽t)\displaystyle=J
+ displaystyle J({\bm{\   ({\bm{\theta}}^{*})-\mu_{t}({\bm{\theta}}^{*})+
+ theta}}^{*})-J({\bm{\   \mu_{t}({\bm{\theta}}^{*})-J({\bm{\theta}}_{t})
+ theta}}_{t})
+                         ≤J⁡(𝜽∗)−μt​(𝜽∗)+μt​(𝜽t)−J⁡(𝜽t)\displaystyle\leq  (μt​(𝜽t)≥μt​(𝜽∗)\mu_{t}
+                         J({\bm{\theta}}^{*})-\mu_{t}({\bm{\theta}}^{*})  ({\bm{\theta}}_{t})\geq\
+                         +\mu_{t}({\bm{\theta}}_{t})-J({\bm{\theta}}_     mu_{t}({\bm{\theta}}^
+                         {t})                                             {*}))
+                         ≤βt​(σt​(𝜽∗)+σt​(𝜽t))\displaystyle\leq\beta_{t}
+                         (\sigma_{t}({\bm{\theta}}^{*})+\sigma_{t}({\bm   (Lemma A.4)
+                         {\theta}}_{t}))
+
+Therefore, we can break down the cumulative regret RTR_{T} into these two stages.
+
+ RT\          =𝔼Z1:T,w1:T[∑t=1TJ(𝜽∗)−J(𝜽t)]\displaystyle=\mathbb{E}_{Z_{1:T},w_{1:T}}\left[\sum^
+ displaystyle {T}_{t=1}J({\bm{\theta}}^{*})-J({\bm{\theta}}_{t})\right]
+ R_{T}
+              =∑t=1T[𝔼Z1:t−1,w1:t−1𝔼wt,Zt[J(𝜽∗)−J(𝜽t)]]\displaystyle=\sum^{T}_{t=1}[\mathbb{E}_{Z_
+              {1:t-1},w_{1:t-1}}\mathbb{E}_{w_{t},Z_{t}}[J({\bm{\theta}}^{*})-J({\bm{\theta}}_
+              {t})]]
+              =∑t=1T𝔼Z1:t−1,w1:t−1[𝔼wt[J(𝜽∗)−J(𝜽t)|Zt=0](1−ϵt)+𝔼wt[J(𝜽∗)−J(𝜽t)|Zt=1]ϵt\
+              displaystyle=\sum^{T}_{t=1}\mathbb{E}_{Z_{1:t-1},w_{1:t-1}}[\mathbb{E}_{w_{t}}[J({\
+              bm{\theta}}^{*})-J({\bm{\theta}}_{t})|Z_{t}=0](1-\epsilon_{t})+\mathbb{E}_{w_{t}}[J
+              ({\bm{\theta}}^{*})-J({\bm{\theta}}_{t})|Z_{t}=1]\epsilon_{t}
+              ≤Jmax∑t=1Tϵt+∑t=1Tβt𝔼Z1:t−1,w1:t−1[σt(𝜽∗)+σt(𝜽t)]\displaystyle\leq J_{\max}\sum^{T}_
+              {t=1}\epsilon_{t}+\sum^{T}_{t=1}\beta_{t}\mathbb{E}_{Z_{1:t-1},w_{1:t-1}}[\sigma_{t}
+              ({\bm{\theta}}^{*})+\sigma_{t}({\bm{\theta}}_{t})]
+
+Assume EtE_{t} is given, then we have for all tt
+
+ max𝜽∈Θ⁡σt2​(𝜽)​Et\displaystyle\max_{{\bm{\  =max𝜽∈Θ⁡σt2​(𝜽)​∑s=1tZs\displaystyle=\max_{{\bm{\
+ theta}}\in\Theta}\sigma^{2}_{t}({\bm{\      theta}}\in\Theta}\sigma^{2}_{t}({\bm{\theta}})\sum^
+ theta}})E_{t}                               {t}_{s=1}Z_{s}
+                                             ≤∑s=1tZs​max𝜽∈Θ​σs2​(𝜽)\displaystyle\leq\sum^{t}_{s=
+                                             1}Z_{s}\max_{{\bm{\theta}}\in\Theta}\sigma^{2}_{s}({\
+                                             bm{\theta}})
+                                             ≤∑s=1tZs​σs2​(𝜽s)\displaystyle\leq\sum^{t}_{s=1}Z_{s}
+                                             \sigma^{2}_{s}({\bm{\theta}}_{s})
+                                             ≤∑s=1tσs2​(𝜽s)\displaystyle\leq\sum^{t}_{s=1}\sigma^
+                                             {2}_{s}({\bm{\theta}}_{s})
+                                             ≤C​Γt\displaystyle\leq C\Gamma_{t}
+
+Therefore, σt2​(𝜽)≤C​ΓtEt\sigma^{2}_{t}({\bm{\theta}})\leq\frac{C\Gamma_{t}}{E_{t}} for all 𝜽∈𝒳{\bm
+{\theta}}\in{\mathcal{X}}. Since, Et≥C2​t2​αE_{t}\geq C^{2}t^{2\alpha} for α∈(14,12)\alpha\in\left
+(\frac{1}{4},\frac{1}{2}\right), we have with probability at least 1−δ1-\delta for all t≥t0t\geq t_
+{0}, 𝜽∈Θ{\bm{\theta}}\in\Theta, there exists a constant KK such that
+
+ σt​(𝜽)≤K​Γttα\sigma_{t}({\bm{\theta}})\leq K\frac{\sqrt{\Gamma_{t}}}{t^{\alpha}}
+
+Going back to the regret, we get
+
+ Rt\           ≤Jmax​∑t=1Tϵt+∑t=1T2​βt​K​Γttα\displaystyle\leq J_{\max}\sum^{T}_{t=1}\epsilon_{t}+
+ displaystyle  \sum^{T}_{t=1}2\beta_{t}K\frac{\sqrt{\Gamma_{t}}}{t^{\alpha}}
+ R_{t}
+               ≤𝒪⁡(Jmax​T2​α+2​K​βT​ΓT​T1−α)\displaystyle\leq{\mathcal{O}}\left(J_{\max}T^{2\
+               alpha}+2K\beta_{T}\sqrt{\Gamma_{T}}T^{1-\alpha}\right)
+
+Here we used the fact that, α∈(14,12)\alpha\in\left(\frac{1}{4},\frac{1}{2}\right), therefore,
+
+ ∑t=1T2​βt​K​Γttα≤2​K​βT​ΓT​∑t=1T1tα≤Θ⁡(2​K​βT​ΓT​T1−α).\displaystyle\sum^{T}_{t=1}2\beta_{t}K\
+ frac{\sqrt{\Gamma_{t}}}{t^{\alpha}}\leq 2K\beta_{T}\sqrt{\Gamma_{T}}\sum^{T}_{t=1}\frac{1}{t^{\
+ alpha}}\leq\Theta(2K\beta_{T}\sqrt{\Gamma_{T}}T^{1-\alpha}).
+
+Similarly since ϵt=t2​α−1\epsilon_{t}=t^{2\alpha-1}, we have ∑t=1Tϵt=Θ⁡(T2​α)\sum^{T}_{t=1}\
+epsilon_{t}=\Theta(T^{2\alpha}) The regret is sublinear for ubiquitous choices of kernels such as
+the RBF. Indicating, consistency of the ϵ\epsilon-greedy exploration strategy with the
+model-epistemic uncertainty as the exploration signal.
+
+∎
+
+Appendix B Proof of Theorem 3.1
+
+Lemma B.1.
+
+Consider the Bellman operator 𝒯𝛑{\mathcal{T}}^{{\bm{\pi}}} from Eq. 12, and a mapping Q0:𝒮×𝒜→ℝQ^
+{0}:{\mathcal{S}}\times{\mathcal{A}}\to\mathbb{R} and define Qk+1=𝒯𝛑​QkQ^{k+1}={\mathcal{T}}^{{\bm
+{\pi}}}Q^{k}. Furthermore, let the assumptions from Theorem 3.1 hold. Then, the sequence QkQ^{k}
+will converge to the soft-Q function of 𝛑{\bm{\pi}} as k→∞k\to\infty.
+
+Proof.
+
+Consider the following augmented reward
+
+ r𝝅(𝒔,𝒂)=r(𝒔,𝒂)+𝔼𝒔′|𝒔,𝒂[𝔼𝒂′∼𝝅(⋅|𝒔′)[−α1log(𝝅(𝒂′|𝒔′))+α2I(𝒔~′′;𝒇∗|𝒔′,𝒂′)]],r_{{\bm{\pi}}}({\bm{s}},
+ {\bm{a}})=r({\bm{s}},{\bm{a}})+\mathbb{E}_{{\bm{s}}^{\prime}|{\bm{s}},{\bm{a}}}\left[\mathbb{E}_
+ {{\bm{a}}^{\prime}\sim{\bm{\pi}}(\cdot|{\bm{s}}^{\prime})}[-\alpha_{1}\log({\bm{\pi}}({\bm{a}}^{\
+ prime}|{\bm{s}}^{\prime}))+\alpha_{2}I(\tilde{{\bm{s}}}^{\prime\prime};{\bm{f}}^{*}|{\bm{s}}^{\
+ prime},{\bm{a}}^{\prime})]\right],
+
+where 𝒔~′′\tilde{{\bm{s}}}^{\prime\prime} is the next state and reward given (𝒔′,𝒂′)({\bm{s}}^{\
+prime},{\bm{a}}^{\prime}). Then from Eq. 12, we have
+
+ 𝒯𝝅​Q​(𝒔,𝒂)=r𝝅​(𝒔,𝒂)+γ​𝔼𝒔′,𝒂′|𝒔,𝒂​[Q⁡(𝒔′,𝒂′)].{\mathcal{T}}^{{\bm{\pi}}}Q({\bm{s}},{\bm{a}})=r_{{\
+ bm{\pi}}}({\bm{s}},{\bm{a}})+\gamma\mathbb{E}_{{\bm{s}}^{\prime},{\bm{a}}^{\prime}|{\bm{s}},{\bm
+ {a}}}[Q({\bm{s}}^{\prime},{\bm{a}}^{\prime})].
+
+Furthermore, r𝝅r_{{\bm{\pi}}} is bounded since rr is bounded and the policy entropy and the
+information gain are bounded for all 𝝅∈Π{\bm{\pi}}\in\Pi by assumption. Therefore, we can apply
+standard convergence results on policy evaluation to show convergence (Sutton, 2018). ∎
+
+Lemma B.1 shows that the Q updates satisfy the contraction property and thus converge to the soft-Q
+function of 𝝅{\bm{\pi}}. Next, we show that the policy update from Eq. 8 leads to monotonous
+improvement of the policy.
+
+Lemma B.2.
+
+Let the assumptions from Theorem 3.1 hold. Consider any 𝛑old∈Π{\bm{\pi}}^{\text{old}}\in\Pi, and
+let 𝛑new{\bm{\pi}}^{\text{new}} denote the solution to Eq. 8. Then we have for all (𝐬,𝐚)∈𝒮×𝒜({\bm
+{s}},{\bm{a}})\in{\mathcal{S}}\times{\mathcal{A}} that Q𝛑old​(𝐬,𝐚)≤Q𝛑new​(𝐬,𝐚)Q^{{\bm{\pi}}^{\text
+{old}}}({\bm{s}},{\bm{a}})\leq Q^{{\bm{\pi}}^{\text{new}}}({\bm{s}},{\bm{a}}).
+
+Proof.
+
+Consider any 𝒔∈𝒮{\bm{s}}\in{\mathcal{S}}
+
+  𝔼𝒂∼𝝅new(⋅|𝒔)[Q𝝅old(𝒔,𝒂)−α1log𝝅new(𝒂|𝒔)+α2I(𝒔′;𝒇∗|𝒔,𝒂)]\displaystyle\mathbb{E}_{{\bm{a}}\sim
+  {\bm{\pi}}^{\text{new}}(\cdot|{\bm{s}})}\left[Q^{{\bm{\pi}}^{\text{old}}}({\bm{s}},{\bm
+  {a}})-\alpha_{1}\log{\bm{\pi}}^{\text{new}}({\bm{a}}|{\bm{s}})+\alpha_{2}I({\bm{s}}^{\
+  prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}})\right]
+  ≥𝔼𝒂∼𝝅old(⋅|𝒔)[Q𝝅old(𝒔,𝒂)−α1log𝝅old(𝒂|𝒔)+α2I(𝒔′;𝒇∗|𝒔,𝒂)]\displaystyle\geq\mathbb{E}_{{\bm
+  {a}}\sim{\bm{\pi}}^{\text{old}}(\cdot|{\bm{s}})}\left[Q^{{\bm{\pi}}^{\text{old}}}({\bm{s}},
+  {\bm{a}})-\alpha_{1}\log{\bm{\pi}}^{\text{old}}({\bm{a}}|{\bm{s}})+\alpha_{2}I({\bm{s}}^{\
+  prime};{\bm{f}}^{*}|{\bm{s}},{\bm{a}})\right]
+  =V𝝅old​(𝒔)\displaystyle=V^{{\bm{\pi}}^{\text{old}}}({\bm{s}})                                (15)
+
+Next consider any pair (𝒔,𝒂)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in{\mathcal{S}}\times{\mathcal{A}}
+
+ Q𝝅old​(𝒔,𝒂)\          =r⁡(𝒔,𝒂)+γ​𝔼𝒔′|𝒔,𝒂​[V𝝅old​(𝒔′)]\displaystyle=r({\bm{s}},{\bm{a}})+\gamma\
+ displaystyle Q^{{\bm  mathbb{E}_{{\bm{s}}^{\prime}|{\bm{s}},{\bm{a}}}[V^{{\bm{\pi}}^{\text{old}}}
+ {\pi}}^{\text{old}}}  ({\bm{s}}^{\prime})]
+ ({\bm{s}},{\bm{a}})
+                       ≤r(𝒔,𝒂)+γ𝔼𝒔′|𝒔,𝒂[𝔼𝒂′∼𝝅new(⋅|𝒔′)[Q𝝅old(𝒔′,𝒂′)−α1log𝝅new(𝒂′|𝒔′)+α2I(𝒔′′;𝒇∗|
+                       𝒔′,𝒂′)]]\displaystyle\leq r({\bm{s}},{\bm{a}})+\gamma\mathbb{E}_{{\bm{s}}^
+                       {\prime}|{\bm{s}},{\bm{a}}}[\mathbb{E}_{{\bm{a}}^{\prime}\sim{\bm{\pi}}^{\
+                       text{new}}(\cdot|{\bm{s}}^{\prime})}[Q^{{\bm{\pi}}^{\text{old}}}({\bm{s}}^
+                       {\prime},{\bm{a}}^{\prime})-\alpha_{1}\log{\bm{\pi}}^{\text{new}}({\bm{a}}^
+                       {\prime}|{\bm{s}}^{\prime})+\alpha_{2}I({\bm{s}}^{\prime\prime};{\bm{f}}^
+                       {*}|{\bm{s}}^{\prime},{\bm{a}}^{\prime})]]
+                       ≤Q𝝅new​(𝒔,𝒂)\displaystyle\leq Q^{{\bm{\pi}}^{\text{new}}}({\bm{s}},{\bm
+                       {a}})
+
+where we have repeatedly expanded Q𝝅oldQ^{{\bm{\pi}}^{\text{old}}} on the RHS by applying the soft
+Bellman equation and the bound in Eq. 15. ∎
+
+Finally, combining Lemma B.1 and Lemma B.2, we can prove Theorem 3.1.
+
+Proof of Theorem 3.1.
+
+Note that since the reward, information gain, and entropy are bounded, Q𝝅​(𝒔,𝒂)Q^{{\bm{\pi}}}({\bm
+{s}},{\bm{a}}) is also bounded for all 𝝅∈Π{\bm{\pi}}\in\Pi, (𝒔,𝒂)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in{\
+mathcal{S}}\times{\mathcal{A}}. Furthermore, in Lemma B.2 we show that the policy is monotonously
+improving. Therefore, the sequence of policy updates converges to a policy 𝝅∗∈Π{\bm{\pi}}^{*}\in\Pi
+such that J𝝅∗​(𝝅∗)≥J𝝅∗​(𝝅)J^{{\bm{\pi}}^{*}}({\bm{\pi}}^{*})\geq J^{{\bm{\pi}}^{*}}({\bm{\pi}}) for
+all 𝝅∈Π{\bm{\pi}}\in\Pi. Applying the same argument as Haarnoja et al. (2018, Theorem 1), we get
+Q𝝅∗​(𝒔,𝒂)≥Q𝝅​(𝒔,𝒂)Q^{{\bm{\pi}}^{*}}({\bm{s}},{\bm{a}})\geq Q^{{\bm{\pi}}}({\bm{s}},{\bm{a}}) for
+all 𝝅∈Π{\bm{\pi}}\in\Pi, (𝒔,𝒂)∈𝒮×𝒜({\bm{s}},{\bm{a}})\in{\mathcal{S}}\times{\mathcal{A}}. ∎
+
+Appendix C MaxInfoRL from the perspective of KL-minimization
+
+We take inspiration from Hafner et al. (2020) and study the Boltzmann exploration formulation from 
+Section 3.2 from the action perception and divergence minimization (APD) perspective. We denote
+with 𝝉={𝒔t,𝒂t,rt}t≥0{\bm{\tau}}=\{{\bm{s}}_{t},{\bm{a}}_{t},r_{t}\}_{t\geq 0} the trajectory in
+state, reward, and action space. The goal of the RL agent is to maximize the cumulative reward
+w.r.t. the true system 𝒇∗{\bm{f}}^{*}. Therefore, a common and natural choice for a target/desired
+distribution for the trajectory 𝝉{\bm{\tau}} is (Levine, 2018; Hafner et al., 2020)
+
+ p∗(𝝉)=[∏t≥0p(𝒔t+1,rt|𝒔t,𝒂t,𝒇∗)]exp(1α∑t≥0rt).p^{*}({\bm{\tau}})=\left[\prod_{t\geq 0}p({\bm{s}}_
+ {t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}}^{*})\right]\exp\left(\frac{1}{\alpha}\sum_{t\geq
+ 0}r_{t}\right).
+
+However, 𝒇∗{\bm{f}}^{*} is unknown in our case and we only have an estimate of the underlying
+distribution p⁡(𝒇)p({\bm{f}}) from which it is sampled. Given a state-pair (𝒔t,𝒂t)({\bm{s}}_{t},{\
+bm{a}}_{t}), we get the following distribution for (𝒔t+1,rt)({\bm{s}}_{t+1},r_{t}).
+
+ p(𝒔t+1,rt|𝒔t,𝒂t)=∫p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)dp(𝒇)=E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)].p({\bm{s}}_{t+1},r_{t}|{\bm
+ {s}}_{t},{\bm{a}}_{t})=\int p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}})dp({\   (16)
+ bm{f}})=E_{{\bm{f}}}\left[p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}})\right].
+
+For a given policy 𝝅{\bm{\pi}}, we can write the distribution of its trajectory via 𝝉𝝅{\bm{\tau}}^
+{{\bm{\pi}}} as
+
+ p^𝝅​(𝝉)\displaystyle\ =[∏t≥0p(𝒔t+1,rt|𝒔t,𝒂t)𝝅(𝒂t|𝒔t)]\displaystyle=\left[\prod_{t\geq 0}p({\
+ hat{p}^{{\bm{\pi}}}   bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t}){\bm{\pi}}({\bm{a}}_{t}|
+ ({\bm{\tau}})         {\bm{s}}_{t})\right]
+                       =p(𝒔1)[∏t≥0E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)]𝝅(𝒂t|𝒔t)].\displaystyle=p({\bm{s}}_
+                       {1})\left[\prod_{t\geq 0}E_{{\bm{f}}}\left[p({\bm{s}}_{t+1},r_{t}|{\bm  (17)
+                       {s}}_{t},{\bm{a}}_{t},{\bm{f}})\right]{\bm{\pi}}({\bm{a}}_{t}|{\bm{s}}
+                       _{t})\right].
+
+A natural objective for deciding which policy to pick is to select 𝝅{\bm{\pi}} such that its
+resulting trajectory 𝝉𝝅{\bm{\tau}}^{{\bm{\pi}}} is close (in-distribution) to 𝝉∗{\bm{\tau}}^{*}.
+That is,
+
+ 𝝅∗=arg​min𝝅⁡DKL​(p^𝝅​(𝝉)|p∗​(𝝉)).{\bm{\pi}}^{*}=\argmin_{{\bm{\pi}}}D_{\mathrm{KL}}(\hat{p}^  (18)
+ {{\bm{\pi}}}({\bm{\tau}})|p^{*}({\bm{\tau}})).
+
+In the following, we break down the term from Eq. 18 and show that it results in the MaxInfoRL
+objective.
+
+ DKL​(p^𝝅​(𝝉)|p∗​(𝝉))\         =𝔼𝝉∼p^𝝅​(𝝉)​[−log⁡(p∗​(𝝉)p^𝝅​(𝝉))]\displaystyle=\mathbb{E}_{{\
+ displaystyle D_{\mathrm{KL}}  bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[-\log\left
+ (\hat{p}^{{\bm{\pi}}}({\bm{\  (\frac{p^{*}({\bm{\tau}})}{\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\
+ tau}})|p^{*}({\bm{\tau}}))    right)\right]
+                               =−𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(p(𝒔t+1,rt|𝒔t,𝒂t,𝒇∗))+1α∑t≥0rt]\
+                               displaystyle=-\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}
+                               ({\bm{\tau}})}\left[\sum_{t\geq 0}\log(p({\bm{s}}_{t+1},r_{t}|
+                               {\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}}^{*}))+\frac{1}{\alpha}\sum_
+                               {t\geq 0}r_{t}\right]
+                               +𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)])+log(𝝅(𝒂t|𝒔t))]\
+                               displaystyle+\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\
+                               bm{\tau}})}\left[\sum_{t\geq 0}\log\left(E_{{\bm{f}}}\left[p({\
+                               bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}})\right]\
+                               right)+\log({\bm{\pi}}({\bm{a}}_{t}|{\bm{s}}_{t}))\right]
+                               =𝔼𝝉∼p^𝝅​(𝝉)​[∑t≥0log⁡(𝝅⁡(𝒂t|𝒔t))−1α​rt]\displaystyle=\mathbb{E}
+                               _{{\bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_   (1)
+                               {t\geq 0}\log({\bm{\pi}}({\bm{a}}_{t}|{\bm{s}}_{t}))-\frac{1}{\
+                               alpha}r_{t}\right]
+                               +𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)])−log(p(𝒔t+1|
+                               𝒔t,𝒂t,𝒇∗))]\displaystyle+\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\
+                               bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}\log\left(E_{{\bm     (2)
+                               {f}}}\left[p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\
+                               bm{f}})\right]\right)-\log(p({\bm{s}}_{t+1}|{\bm{s}}_{t},{\bm
+                               {a}}_{t},{\bm{f}}^{*}))\right]
+
+The term (1) is commonly minimized in max entropy RL methods such as Haarnoja et al. (2018). The
+term (2) has a very natural interpretation, which we discuss below
+
+  𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)])−log(p(𝒔t+1,rt|𝒔t,𝒂t,𝒇∗))]\displaystyle\mathbb{E}_{{\
+  bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}\log\left(E_{{\bm{f}}}\left[p
+  ({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}})\right]\right)-\log(p({\bm{s}}_{t+1},r_
+  {t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}}^{*}))\right]
+  =𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(p(𝒔t+1,rt|𝒔t,𝒂t))−log(p(𝒔t+1,rt|𝒔t,𝒂t,𝒇∗))]\displaystyle=\mathbb{E}_{{\bm{\
+  tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}\log\left(p({\bm{s}}_{t+1},r_{t}|
+  {\bm{s}}_{t},{\bm{a}}_{t})\right)-\log(p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}}
+  ^{*}))\right]
+  =𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(p(𝒔t+1,rt|𝒔t,𝒂t))−log(p(𝒘t))]\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim\hat
+  {p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}\log\left(p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},
+  {\bm{a}}_{t})\right)-\log(p({\bm{w}}_{t}))\right]
+  =𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0H(𝒘t)−H(𝒔t+1,rt|𝒔t,𝒂t).]\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\bm{\
+  pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}H({\bm{w}}_{t})-H({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm
+  {a}}_{t}).\right]
+  =𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0H(𝒔t+1,rt|𝒔t,𝒂t,𝒇)−H(𝒔t+1,rt|𝒔t,𝒂t).]\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim\
+  hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}H({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm
+  {a}}_{t},{\bm{f}})-H({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t}).\right]
+
+Here in the last step, we applied the equality that the entropy of 𝒔t+1,rt{\bm{s}}_{t+1},r_{t}
+given the previous state, input, and dynamics is the same as the entropy of 𝒘t{\bm{w}}_{t}. In
+summary, we get
+
+  𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0log(E𝒇[p(𝒔t+1,rt|𝒔t,𝒂t,𝒇)])−log(p(𝒔t+1,rt|𝒔t,𝒂t,𝒇∗))]\displaystyle\mathbb{E}_{{\
+  bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}\log\left(E_{{\bm{f}}}\left[p
+  ({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}})\right]\right)-\log(p({\bm{s}}_{t+1},r_
+  {t}|{\bm{s}}_{t},{\bm{a}}_{t},{\bm{f}}^{*}))\right]
+  =𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0−I(𝒔t+1,rt;𝒇|𝒔t,𝒂t)].\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\bm{\
+  pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}-I({\bm{s}}_{t+1},r_{t};{\bm{f}}|{\bm{s}}_{t},{\bm{a}}_
+  {t})\right].
+
+Therefore Eq. 18 can be rewritten as
+
+ 𝝅∗=arg​max𝝅𝔼𝝉∼p^𝝅​(𝝉)[∑t≥0rt−αlog(𝝅(𝐮t|𝐳t))+αI(𝐬t+1,rt;𝐟|𝐬t,𝐚t)].{\bm{\pi}}^{*}=\argmax_{{\bm{\
+ pi}}}\mathbb{E}_{{\bm{\tau}}\sim\hat{p}^{{\bm{\pi}}}({\bm{\tau}})}\left[\sum_{t\geq 0}r_{t}-\
+ alpha\log({\bm{\pi}}({\bm{u}}_{t}|{\bm{z}}_{t}))+\alpha I({\bm{s}}_{t+1},r_{t};{\bm{f}}|{\bm{s}}_
+ {t},{\bm{a}}_{t})\right].
+
+Intuitively, to bring our estimated distribution of the policy p^𝝅​(𝝉)\hat{p}^{{\bm{\pi}}}({\bm{\
+tau}}) closer to the desired distribution p∗​(𝝉)p^{*}({\bm{\tau}}), we need to pick policies that
+maximize the underlying rewards while also gathering more information about the unknown elements of
+the MDP; the reward and dynamics model. While the former objective drives us in areas of high
+rewards under our estimated model, the latter objective ensures that our model gets more accurate
+over time.
+
+Appendix D Additional Experiments
+
+We present additional experiments and ablations in this section.
+
+Covergence of intrinsic reward coefficient λ\lambda for MaxInfoSAC: In Fig. 8 we report the tuned
+intrinsic reward coefficient λ\lambda for SACEipo and MaxInfoSAC (α2\alpha_{2} for MaxInfoSAC). As
+shown in Fig. 5 in Section 4, SACEipo obtains suboptimal performance compared to MaxInfoSAC on the
+Pendulum, CartPole, and Walker tasks. We ascribe this to its tendency to underexplore, i.e. λ→0\
+lambda\to 0 much faster and converges to the local optima. Figure 8 validates our intuition since
+the intrinsic reward coefficient quickly decays to zero for SACEipo whereas for MaxInfoSAC it does
+not.
+
+
+Figure 8: Evolution of the intrinsic reward coefficient λ\lambda of SACEipo and MaxInfoSAC over
+environment interaction.
+
+MaxInfoRL with REDQ: In Fig. 9 we combine MaxInfoRL with REDQ. In all our tasks, REDQ does not
+obtain high rewards, we believe this is due to the high update to data ratio, which leads to the Q
+function converging to a sub-optimal solution. However, when combined with MaxInfoRL, the resulting
+algorithm obtains considerably better performance and sample-efficiency.
+
+
+Figure 9: We combine MaxInfoRL with REDQ (MaxInfoREDQ) and report the learning curves of SAC, REDQ,
+MaxInfoSAC, and MaxInfoREDQ.
+
+MaxInfoRL with DrQv2 on additional DMC tasks: In Fig. 10 we compare MaxInfoDrQv2 with DrQv2 and 
+MaxInfoDrQ. For MaxInfoDrQv2, we use a fixed noise variance with σ=0.2\sigma=0.2 and σ=0.0\sigma=
+0.0. We observe that on all tasks, MaxInfoDrQv2 performs better than DrQv2, even when no noise is
+added for exploration. This empirically demonstrates that already by just maximizing the
+information gain, we get good exploration.
+
+
+Figure 10: Learning curves of MaxInfoDrQv2 with different noise levels σ∈{0.0,0.2}\sigma\in\
+{0.0,0.2\} compared to DrQv2 and MaxInfoDrQ.
+
+In Fig. 11, we evaluate the exploration behavior of MaxInfoDrQv2 without action noise on the DMC
+Humanoid Walk task. The figure shows that even without noise, MaxInfoDrQv2 outperforms DrQv2, while
+the noise-free DrQv2 struggles to achieve high rewards.
+
+
+Figure 11: MaxInfoDrQv2 evaluated on the humanoid walk task with no action noise.
+
+MaxInfoSAC with different intrinsic reward: We evaluate MaxInfoSAC with RND as intrinsic reward.
+Moreover, we initialize a random NN model and train another model to predict the output of the
+random model as proposed in Burda et al. (2018). We train an ensemble of NNs to learn the random
+model and use their disagreement as the intrinsic reward^3^3 3 Burda et al. (2018) use curiosity as
+the intrinsic reward but we observed that disagreement performed much better and robustly in our
+experiments.. Effectively, we replace the information gain term in Eq. 9 with the intrinsic reward
+derived from RND. In Fig. 12 we report the learning curves. From the figure, we conclude that 
+MaxInfoRL also works with RND as the exploration bonus. Moreover, while the standard MaxInfoSAC
+performs better on these tasks, MaxInfoSAC with RND performs significantly better than SAC. This
+illustrates the generality of our approach.
+
+Refer to caption
+Figure 12: Learning curves of MaxInfoSAC with RND as the intrinsic reward, instead of the
+information gain, compared to SAC and standard MaxInfoSAC.
+
+Experiments with ϵ\epsilon–MaxInfoRL We also evaluate our ϵ\epsilon–greedy version from Section 3.1
+, ϵ\epsilon–MaxInfoRL, empirically. For the intrinsic reward, we use the disagreement (Pathak
+et al., 2019) in the ensemble models of 𝒇∗{\bm{f}}^{*} and as the base algorithm, we use SAC. In
+Fig. 13 we compare it to MaxInfoSAC and SAC and report the learning curves. We also evaluate ϵ\
+epsilon–MaxInfoRL with different action costs, as in Section 4, in Fig. 14. For ϵ\epsilon we
+specify a linear decay schedule (see Appendix E). In the figures, we observe that ϵ\epsilon–
+MaxInfoRL performs better than SAC and often on par to MaxInfoSAC. However, ϵ\epsilon–MaxInfoRL
+requires training two different actor-critic networks and manually specifying the schedule for ϵ\
+epsilon, as opposed to MaxInfoSAC which automatically trades off the extrinsic and intrinsic
+rewards.
+
+Refer to caption
+Figure 13: Learning curves of ϵ\epsilon–MaxInfoRL with disagreement as the intrinsic reward, SAC
+and MaxInfoSAC.
+
+Refer to caption
+Figure 14: Learning curves of ϵ\epsilon–MaxInfoRL with disagreement as the intrinsic reward, SAC
+and MaxInfoSAC for varying levels of action costs KK.
+
+Experiments with ϵ\epsilon–MaxInfoRL and Curiosity In Fig. 15 we compare ϵ\epsilon–MaxInfoRL with
+disagreement and curiosity as intrinsic rewards. We observe that overall both perform better than
+SAC, with disagreement obtaining slightly better performance than curiosity.
+
+Refer to caption
+Figure 15: Learning curves of ϵ\epsilon–MaxInfoRL with disagreement and curiosity as the intrinsic
+reward compared with SAC.
+
+Experiments with ϵ\epsilon–MaxInfoRL with a switching frequency of one between policies. In all the
+ϵ\epsilon–MaxInfoRL experiments above, we switched between the extrinsic and intrinsic policies
+every 32 steps. Note that our proposed algorithm from Section 3.1 is still the same and we simply
+use a different schedule for the ϵ\epsilon parameter. This is because we believe that instead of
+switching after every time step, following the extrinsic or intrinsic policies for several steps
+helps in exploration since we can collect longer trajectories of explorative data. In Fig. 16 we
+test this hypothesis on the pendulum environment, where we observe that indeed the switching
+frequency of 32 steps performs better.
+
+
+Figure 16: Learning curves of ϵ\epsilon–MaxInfoRL with disagreement. We compare a version of ϵ\
+epsilon–MaxInfoRL which switches between extrinsic and intrinsic policy every step with one which
+switches every 32 steps.
+
+Experiments with OAC (Ciosek et al., 2019). In Fig. 17, we compare OAC (Ciosek et al., 2019) an
+optimism based actor-critic algorithm with MaxInfoSAC. Furthermore, we also test a MaxInfoRL
+version of OAC, called MaxInfoOAC. As depicted in the figure, we observe that while OAC performs
+better than SAC, the MaxInfoRL perform the best.
+
+Refer to caption
+Figure 17: Learning curves of OAC compared with MaxInfoSAC and a MaxInfoRL version of OAC (
+MaxInfoOAC).
+
+Experiments with DrM (Xu et al., 2024). In Fig. 18, we evaluate DrM (Xu et al., 2024) another
+exploration algorithm for visual control tasks. DrM uses dormant ratio-guided exploration to solve
+challenging visual control problems. In our experiments, we evaluate the version of DrM without the
+expectile regression and use the same exploration schedule proposed in the paper. We combine DrM
+with MaxInfoRL and report the performance on the humanoid and dog tasks from DMC.
+
+Refer to caption
+Figure 18: Learning curves of DrM compared with our version of DrM (MaxInfoDrM).
+
+Appendix E Experiment Details
+
+In this section, we present the experiment details of MaxInfoRL and our baselines.
+
+MaxInfoSAC
+
+We train an ensemble of PP deterministic neural networks with mean squared error to predict the
+next state^4^4 4 Specifically we predict 𝒔t+1−𝒔t{\bm{s}}_{t+1}-{\bm{s}}_{t}. and rewards. We
+evaluate the disagreement with 𝝈n​(𝒔,𝒂)=Var​({𝒇ϕi​(𝒔,𝒂)}i∈{1,…,P}){\bm{\sigma}}_{n}({\bm{s}},{\bm
+{a}})=\text{Var}(\{{\bm{f}}_{\phi_{i}}({\bm{s}},{\bm{a}})\}_{i\in\{1,\dots,P\}}), where {ϕi}i∈
+{1,…,P}\{\phi_{i}\}_{i\in\{1,\dots,P\}} are the parameters of each ensemble member. We quantify the
+information gain using the upper bound in Equation 5 and for the aleatoric uncertainty, we use σ=
+10−3\sigma=10^{-3}. In principle, we could learn the aleatoric uncertainty, however, we found that
+this approach already works robustly. Lastly, as suggested by Burda et al. (2018) we normalize the
+intrinsic reward/information gain term when training the critic.
+
+A limitation of our work is that it requires training an ensemble of forward dynamics models to
+quantify the epistemic uncertainty. This is highlighted in Table 1 where we compare the training
+time required to train SAC with MaxInfoSAC. We report the numbers for our Stable-Baselines 3 (SB3) 
+(Raffin et al., 2021) (torch-based) implementation and JaxRL (Kostrikov, 2021) (Jax-based)
+implementation.
+
+
+Table 1: Computation cost comparison for MaxInfoSAC on NVIDIA GeForce RTX 2080 Ti
+
+    Algorithm      Training time for 100k environment interactions
+    SAC (SB3)      16.96 min +/- 1.64317 min
+ MaxInfoSAC (SB3)  39 min +/- 1 min
+   SAC (JaxRL)     5.6 min +/- 0.2min
+MaxInfoSAC (JaxRL) 7.3 min +/- 0.75
+
+As the number suggests MaxInfoSAC requires more time to train due to the additional computational
+overhead from learning the dynamics model. However, our JaxRL-based implementation already bridges
+the computational gap and is much faster. To further reduce the computational cost, we can consider
+cheaper methods for uncertainty quantification such as Osband et al. (2023).
+
+Explore then exploit
+
+We train two different actor-critics, one for the extrinsic and one for the intrinsic reward. For
+the first 25%25\% of the episodes, we only use the intrinsic actor for data collection. For the
+remaining 75%75\%, the extrinsic actor is used. As the base actor-critic algorithm we use SAC. Both
+the intrinsic and extrinsic actor-critics share the same data buffer. Therefore, the data collected
+during the exploration phase is also used to train the policy for the exploitation phase. For the
+intrinsic reward, we use the disagreement calculated as specified above for MaxInfoSAC. We also
+evaluate this approach with curiosity as the intrinsic reward. Here we train a neural network model
+to predict the next state and reward and use the mean squared error in the prediction as the
+intrinsic reward.
+
+SACIntrinsic
+
+Here we follow the same procedure as proposed in Burda et al. (2018). We train two critics, one for
+the extrinsic reward and another one for the intrinsic rewards/exploration bonuses. We use the
+(normalized) information gain and policy entropy as the exploration bonuses. As suggested in Burda
+et al. (2018) the non-episodic returns are used in training the intrinsic critics. The policy is
+trained to maximize 𝔼𝒔∼𝒟[𝔼𝒂∼𝝅(⋅|𝒔)[Qextrinsic𝝅old(𝒔,𝒂)+Qintrinsic𝝅old(𝒔,𝒂)]]\mathbb{E}_{{\bm{s}}\
+sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}_{\text{old}}}_
+{\text{extrinsic}}({\bm{s}},{\bm{a}})+Q^{{\bm{\pi}}_{\text{old}}}_{\text{intrinsic}}({\bm{s}},{\bm
+{a}})]], where 𝒟{\mathcal{D}} is the data buffer.
+
+SACEipo
+
+We follow the same procedure as in SACIntrinsic in training the critics. For the policy, we
+maximize a weighted sum of the extrinsic and intrinsic critics, i.e., the policy 𝝅{\bm{\pi}} is
+trained to maximize 𝔼𝒔∼𝒟[𝔼𝒂∼𝝅(⋅|𝒔)[λQextrinsic𝝅old(𝒔,𝒂)+Qintrinsic𝝅old(𝒔,𝒂)]]\mathbb{E}_{{\bm{s}}\
+sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}[\lambda Q^{{\bm{\pi}}_{\text
+{old}}}_{\text{extrinsic}}({\bm{s}},{\bm{a}})+Q^{{\bm{\pi}}_{\text{old}}}_{\text{intrinsic}}({\bm
+{s}},{\bm{a}})]]. We determine λ\lambda using the extrinsic optimality constraint from Chen et al.
+(2021). For the policy 𝝅{\bm{\pi}}, the extrinsic optimality constraint is given by
+
+ 𝔼𝒔∼𝒟[𝔼𝒂∼𝝅(⋅|𝒔)[Qextrinsic𝝅(𝒔,𝒂)]]−max𝝅′∈Π𝔼𝒔∈𝒟[𝔼𝒂∼𝝅′(⋅|𝒔)[Qextrinsic𝝅′(𝒔,𝒂)]]=0\mathbb{E}_{{\bm
+ {s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}}_{\text
+ {extrinsic}}({\bm{s}},{\bm{a}})]]-\max_{{\bm{\pi}}^{\prime}\in\Pi}\mathbb{E}_{{\bm{s}}\in{\
+ mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}^{\prime}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}^{\prime}}
+ _{\text{extrinsic}}({\bm{s}},{\bm{a}})]]=0
+
+Effectively, we encourage the policy 𝝅{\bm{\pi}} that maximizes the intrinsic and extrinsic rewards
+performs at least as well as the policy which only maximizes the extrinsic ones. To evaluate this
+constraint, we train another actor and critic that greedily maximizes the extrinsic reward only,
+i.e., we use the data buffer to learn the solution πE∗\pi^{*}_{E} for max𝝅′∈Π𝔼𝒔∈𝒟[𝔼𝒂∼𝝅′(⋅|𝒔)
+[Qextrinsic𝝅′(𝒔,𝒂)]]\max_{{\bm{\pi}}^{\prime}\in\Pi}\mathbb{E}_{{\bm{s}}\in{\mathcal{D}}}[\mathbb
+{E}_{{\bm{a}}\sim{\bm{\pi}}^{\prime}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}^{\prime}}_{\text{extrinsic}}({\
+bm{s}},{\bm{a}})]].
+
+ L(λ)=λ(𝔼𝒂∼𝝅(⋅|𝒔)[Qextrinsic𝝅(𝒔,𝒂)]]−𝔼𝒔∼𝒟[𝔼𝒔∈𝒟[𝔼𝒂∼π∗E(⋅|𝒔)[QextrinsicπE∗(𝒔,𝒂)]])L(\lambda)=\lambda
+ \left(\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}}_{\text{extrinsic}}({\bm
+ {s}},{\bm{a}})]]-\mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{s}}\in{\mathcal{D}}}[\
+ mathbb{E}_{{\bm{a}}\sim\pi^{*}_{E}(\cdot|{\bm{s}})}[Q^{\pi^{*}_{E}}_{\text{extrinsic}}({\bm{s}},
+ {\bm{a}})]]\right)
+
+Intuitively, if our constraint is not satisfied, i.e., 𝔼𝒔∼𝒟[𝔼𝒔∈𝒟[𝔼𝒂∼π∗E(⋅|𝒔)[QextrinsicπE∗(𝒔,𝒂)]]>
+𝔼𝒔∼𝒟[𝔼𝒂∼𝝅(⋅|𝒔)[Qextrinsic𝝅(𝒔,𝒂)]]\mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{s}}\in{\
+mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim\pi^{*}_{E}(\cdot|{\bm{s}})}[Q^{\pi^{*}_{E}}_{\text
+{extrinsic}}({\bm{s}},{\bm{a}})]]>\mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\
+bm{\pi}}(\cdot|{\bm{s}})}[Q^{{\bm{\pi}}}_{\text{extrinsic}}({\bm{s}},{\bm{a}})]], we increase λ\
+lambda, effectively focusing more on the extrinsic reward. We update λ\lambda with gradient descent
+on L⁡(λ)L(\lambda), akin to the temperature parameters in MaxInfoSAC.
+
+MaxInfoDrQ
+
+We add our information gain on top of DrQ using the same architecture and image augmentations from
+Yarats et al. (2021). The policy and critic updates are identical to MaxInfoSAC. However, since we
+deal with images, we train an ensemble of PP deterministic neural networks with mean squared error
+to predict the next state 𝒔t+1{\bm{s}}_{t+1}, rewards rtr_{t}, and a compressed image embedding
+ete_{t} which we obtain from the encoder for the observation oto_{t}. Effectively, we compress the
+output of the encoder into a ded_{e} dimensional embedding using max pooling and use that as a
+label for our ensemble training. Crucially, we want the ensemble to learn and explore all unknown
+components of the MDP, the dynamics, rewards and observation model. For the state 𝒔{\bm{s}}, we use
+the learned representation from the target critic.
+
+MaxInfoDrQv2
+
+We use the same procedure for training the ensemble model as MaxInfoDrQ. For MaxInfoDrQv2, we
+separate the intrinsic and extrinsic reward critic. This is primarily because DrQv2 uses nn–step
+returns for training the extrinsic critic. By separating the two critics, we can train the
+extrinsic critic with the nn–step returns and the intrinsic with the standard 11–step ones. This
+makes implementing the algorithm easier.
+
+MaxInfoSac[RND]
+
+In Fig. 12 we evaluate MaxInfoSAC with RND as intrinsic reward. We initialize a target neural
+network to predict an output embedding 𝒚{\bm{y}} given (𝒔,𝒂)({\bm{s}},{\bm{a}}). We train an
+ensemble of neural networks to learn the target network and use the disagreement as the intrinsic
+reward. The remaining training procedure is identical to MaxInfoSAC.
+
+ϵ\epsilon–MaxInfoRL
+
+We also evaluate the ϵ\epsilon–MaxInfoRL algorithm from Equation 6. We train two actor-critics
+similar to the explore and then exploit baselines. However, instead of exploring for a fixed amount
+of iterations initially, we specify a probability ϵt\epsilon_{t} to alternate between the
+exploitation and exploration phases. Furthermore, changing the between policies after every
+time-step can lead to noisy trajectories. Therefore, we choose a frequency f=32\mathit{f}=32 for
+the switches. That is, we change the sampling strategy (explore or exploit) after a minimum of
+f​s​t​e​p​s\mathit{f}steps.
+
+E.1 Algorithms
+
+We provide more details about MaxInfoSAC, MaxInfoDrQ, and MaxInfoDrQv2. All three are off-policy
+actor-critic algorithms and learn two critics Qθ1Q_{\theta_{1}} and Qθ2Q_{\theta_{2}} to avoid
+overestimation bias. From here on, we denote with ψ\psi the parameters of the policy and θ¯1,2,ψ¯\
+bar{\theta}_{1,2},\bar{\psi} the parameters of the target critics and policy.
+
+Losses for MaxInfoSAC and MaxInfoDrQ
+
+We sample a trajectory 𝝉{\bm{\tau}} from 𝒟{\mathcal{D}} and use the following for the critic and
+policy losses.
+
+Critic loss:
+
+ JQ​(θ)\       =12​𝔼𝝉∼𝒟​[(Qθ​(𝒔,𝒂)−y)2]\displaystyle=\frac{1}{2}\mathbb{E}_{{\bm{\tau}}\sim{\
+ displaystyle  mathcal{D}}}[(Q_{\theta}({\bm{s}},{\bm{a}})-y)^{2}]
+ J_{Q}(\theta)
+ y\            =r+γmink∈{1,2}Qθ¯k(𝒔′,𝒂′)−α1log𝝅ψ(⋅|𝒔′)+α2Iu(𝒔′,𝒂′).\displaystyle=r+\gamma\
+ displaystyle  min_{k\in\{1,2\}}Q_{\bar{\theta}_{k}}({\bm{s}}^{\prime},{\bm{a}}^{\prime})-\    (19)
+ y             alpha_{1}\log{\bm{\pi}}_{\psi}(\cdot|{\bm{s}}^{\prime})+\alpha_{2}I_{u}({\bm
+               {s}}^{\prime},{\bm{a}}^{\prime}).
+
+where 𝒂′∼𝝅ψ(⋅|𝒔′){\bm{a}}^{\prime}\sim{\bm{\pi}}_{\psi}(\cdot|{\bm{s}}^{\prime}).
+
+Policy loss:
+
+ J𝝅​(ψ)\         =𝔼𝒔∼𝒟[𝔼𝒂∼𝝅ψ[α1log𝝅ψ(⋅|𝒔)−α2Iu(𝒔,𝒂)−mink∈{1,2}Qθk(𝒔,𝒂)]].\displaystyle=\
+ displaystyle J_ mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}_{\   (20)
+ {{\bm{\pi}}}(\  psi}}[\alpha_{1}\log{\bm{\pi}}_{\psi}(\cdot|{\bm{s}})-\alpha_{2}I_{u}({\bm
+ psi)            {s}},{\bm{a}})-\min_{k\in\{1,2\}}Q_{\theta_{k}}({\bm{s}},{\bm{a}})]].
+
+Entropy coefficient loss;
+
+ J(α1)=𝔼𝒔∼𝒟[−α1(log𝝅ψ(⋅|𝒔)+H¯)].J(\alpha_{1})=\mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[-\alpha_  (21)
+ {1}(\log{\bm{\pi}}_{\psi}(\cdot|{\bm{s}})+\bar{H})].
+
+Critic loss for MaxInfoDrQv2
+
+For MaxInfoDrQv2 we train separate critics for the intrinsic and extrinsic rewards. This allows us
+to use nn–step returns for the extrinsic rewards while keeping a simple implementation, using
+11–step returns, for the intrinsic ones. Effectively, for computational efficiency, we adapt the
+critic network to output two heads, one for the extrinsic and one for the intrinsic reward.
+
+Critic loss:
+
+ JQ​(θ)\          =12​𝔼𝝉∼𝒟​[(Qθextrinsic​(𝒔,𝒂)−yextrinsic)2+(Qθintrinsic​(𝒔,𝒂)−yintrinsic)2]\
+ displaystyle J_  displaystyle=\frac{1}{2}\mathbb{E}_{{\bm{\tau}}\sim{\mathcal{D}}}[(Q^{\text
+ {Q}(\theta)      {extrinsic}}_{\theta}({\bm{s}},{\bm{a}})-y^{\text{extrinsic}})^{2}+(Q^{\
+                  text{intrinsic}}_{\theta}({\bm{s}},{\bm{a}})-y^{\text{intrinsic}})^{2}]
+ yextrinsic\      =∑l=0nγl​rl+γn​mink∈{1,2}​Qθ¯kextrinsic​(𝒔n,𝒂n)\displaystyle=\sum^{n}_{l=0}
+ displaystyle y^  \gamma^{l}r_{l}+\gamma^{n}\min_{k\in\{1,2\}}Q^{\text{extrinsic}}_{\bar{\
+ {\text           theta}_{k}}({\bm{s}}_{n},{\bm{a}}_{n})
+ {extrinsic}}
+ yintrinsic\      =Iu​(𝒔,𝒂)+γ​mink∈{1,2}​Qθ¯kintrinsic​(𝒔′,𝒂′).\displaystyle=I_{u}({\bm{s}},
+ displaystyle y^  {\bm{a}})+\gamma\min_{k\in\{1,2\}}Q^{\text{intrinsic}}_{\bar{\theta}_{k}}    (22)
+ {\text           ({\bm{s}}^{\prime},{\bm{a}}^{\prime}).
+ {intrinsic}}
+
+where 𝒂n∼𝝅ψ(⋅|𝒔n){\bm{a}}_{n}\sim{\bm{\pi}}_{\psi}(\cdot|{\bm{s}}_{n}) and 𝒂′∼𝝅ψ(⋅|𝒔′){\bm{a}}^{\
+prime}\sim{\bm{\pi}}_{\psi}(\cdot|{\bm{s}}^{\prime}).
+
+Policy loss:
+
+ J𝝅​(ψ)\       =𝔼𝒔∼𝒟​[𝔼𝒂∼𝝅ψ​[−(mink∈{1,2}⁡Qθkextrinsic​(𝒔,𝒂)+α2​mink∈{1,2}​Qθkintrinsic​
+ displaystyle  (𝒔,𝒂))]].\displaystyle=\mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}\left[\mathbb{E}_
+ J_{{\bm{\     {{\bm{a}}\sim{\bm{\pi}}_{\psi}}\left[-\left(\min_{k\in\{1,2\}}Q_{\theta_{k}}^   (23)
+ pi}}}(\psi)   {\text{extrinsic}}({\bm{s}},{\bm{a}})+\alpha_{2}\min_{k\in\{1,2\}}Q_{\theta_
+               {k}}^{\text{intrinsic}}({\bm{s}},{\bm{a}})\right)\right]\right].
+
+Loss for the information gain coefficient
+
+ J⁡(α2)=α2​(𝔼𝒔∼𝒟​[𝔼𝒂∼𝝅ψ​[Iu​(𝒔,𝒂)]−𝔼𝒂¯∼𝝅¯ψ​[Iu​(𝒔,𝒂¯)]]).J(\alpha_{2})=\alpha_{2}\left(\
+ mathbb{E}_{{\bm{s}}\sim{\mathcal{D}}}[\mathbb{E}_{{\bm{a}}\sim{\bm{\pi}}_{\psi}}[I_{u}({\bm   (24)
+ {s}},{\bm{a}})]-\mathbb{E}_{\bar{{\bm{a}}}\sim\bar{{\bm{\pi}}}_{\psi}}[I_{u}({\bm{s}},\bar
+ {{\bm{a}}})]]\right).
+
+Loss of ensemble model for MaxInfoSAC. Let Φ={ϕi}i∈{1,…​P}\Phi=\{\phi_{i}\}_{i\in\{1,\dots P\}}
+
+ J⁡(Φ)\        =𝔼𝝉∼𝒟​[∑i=1P‖𝒇ϕi​(𝒔,𝒂)−y‖2]\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim{\mathcal
+ displaystyle  {D}}}\left[\sum^{P}_{i=1}\left\|{\bm{f}}_{\phi_{i}}({\bm{s}},{\bm{a}})-y\right  (25)
+ J(\Phi)       \|^{2}\right]
+ y\
+ displaystyle  =[(𝒔′−𝒔)⊤,r].\displaystyle=\left[({\bm{s}}^{\prime}-{\bm{s}})^{\top},r\right].  (26)
+ y
+
+Loss of ensemble model for MaxInfoDrQ and MaxInfoDrQv2.
+
+ J⁡(Φ)\        =𝔼𝝉∼𝒟​[∑i=1P‖𝒇ϕi​(𝒔,𝒂)−y‖2]\displaystyle=\mathbb{E}_{{\bm{\tau}}\sim{\mathcal
+ displaystyle  {D}}}\left[\sum^{P}_{i=1}\left\|{\bm{f}}_{\phi_{i}}({\bm{s}},{\bm{a}})-y\right  (27)
+ J(\Phi)       \|^{2}\right]
+ y\
+ displaystyle  =[𝒔′⁣⊤,r,e⊤].\displaystyle=\left[{\bm{s}}^{\prime\top},r,e^{\top}\right].       (28)
+ y
+
+In Algorithm 1 we present the main structure of the algorithms. We omit algorithm-specific details
+of DrQ, DrQv2 such as noise scheduling and image augmentation in Algorithm 1 and refer the reader
+to the respective papers for those details (Yarats et al., 2021; Yarats et al., 2022).
+
+
+Algorithm 1 Algorithm structure for MaxInfoSAC, MaxInfoDrQ, MaxInfoDrQv2
+Init: θ1\theta_{1}, θ2\theta_{2}, ψ\psi
+θ¯1←θ1\bar{\theta}_{1}\leftarrow\theta_{1}, θ¯2←θ2\bar{\theta}_{2}\leftarrow\theta_{2}, ψ¯←ψ\bar{\
+psi}\leftarrow\psi ➤ Initialize target
+𝒟=∅{\mathcal{D}}=\emptyset
+for iterations n=1,…,nn=1,\ldots,n do
+  for each environment step do
+   𝒂t∼𝝅ψ(⋅|𝒔t){\bm{a}}_{t}\sim{\bm{\pi}}_{\psi}(\cdot|{\bm{s}}_{t}) ➤ Sample action
+   𝒔t+1,rt∼p(𝒔t+1,rt|𝒔t,𝒂t){\bm{s}}_{t+1},r_{t}\sim p({\bm{s}}_{t+1},r_{t}|{\bm{s}}_{t},{\bm{a}}_
+{t}) ➤ Observe state and reward
+   𝒟←𝒟∪{𝒔t,𝒂t,𝒔t+1,𝒂t}{\mathcal{D}}\leftarrow{\mathcal{D}}\cup\{{\bm{s}}_{t},{\bm{a}}_{t},{\bm{s}}_
+{t+1},{\bm{a}}_{t}\}
+  end for
+  for each gradient step do
+   Update critics with stochastic gradient descent (SGD) on JQ​(𝜽1)+JQ​(𝜽2)J_{Q}({\bm{\theta}}_{1})
++J_{Q}({\bm{\theta}}_{2})
+   Update critics with SGD on J𝝅​(ψ)J_{{\bm{\pi}}}(\psi)
+   Update temperatures with SGD on J⁡(α1),J⁡(α2)J(\alpha_{1}),J(\alpha_{2})^5^5 5 α1\alpha_{1} is
+not used in MaxInfoDrQv2
+   Update ensemble with SGD on J⁡(Φ)J(\Phi).
+   Update θ¯1,2,ψ\bar{\theta}_{1,2},\psi ➤ Policy update target updates
+  end for
+end for
+
+E.2 Hyperparameters
+
+
+Table 2: Hyperparameters for results in Section 4.
+
+Environment Learning rate Policy/Critic Architecture Model architcture Polyak Coefficient action 
+repeat feature and embedding dim State Based Tasks DMC and Gym 3×10−43\times 10^{-4} (256,256)
+(256,256) 0.0050.005 11 for Gym 22 for DMC - Humanoid Bench 5×10−55\times 10^{-5} 0.0050.005 - 
+Visual Control tasks DMC 3×10−43\times 10^{-4} for MaxInfoDrQ, else 10−410^{-4} 10−410^{-4} for the
+model and α2\alpha_{2} (256, 256) (256, 256) 0.0050.005 for MaxInfoDrQ, else 10−410^{-4} 2 Feature:
+50 Embedding: 32 Humanoid and Dog tasks (DrM) 8×10−58\times 10^{-5}, 8×10−58\times 10^{-5} for the
+model and α2\alpha_{2} (1024,1024)(1024,1024) (1024,1024)(1024,1024) 0.010.01 22 Feature: 100100 
+Embedding: 3232 
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

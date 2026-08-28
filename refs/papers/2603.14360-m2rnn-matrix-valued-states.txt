@@ -1,0 +1,1881 @@
+source: https://arxiv.org/html/2603.14360
+arxiv: https://arxiv.org/abs/2603.14360
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Background
+     1. 2.1 State Tracking
+     2. 2.2 Linear RNNs
+     3. 2.3 Limitations of Linear RNNs
+         1. 2.3.1 Limited State Tracking
+         2. 2.3.2 Poor in-context retrieval performance
+     4. 2.4 Non-Linear RNNs
+         1. Expressivity.
+     5. 2.5 Limitations of Non-Linear RNNs
+         1. 2.5.1 Poor language modeling performance
+         2. 2.5.2 Poor in-context retrieval performance
+         3. 2.5.3 Training Inefficiency
+             1. Non-Parallelizability on Sequence Length.
+             2. Expensive Computation due to Back-to-back GEMM for Non-Linear RNNs.
+             3. Poor Hardware Utilization due to Wasted FLOPs.
+ 4. 3 Matrix-to-Matrix RNN
+     1. 3.1 M^2RNN Layer
+         1. 3.1.1 Forget Gate
+         2. 3.1.2 M^2RNN Block
+             1. Transition Matrix Initialization.
+             2. Gradient Clipping.
+     2. 3.2 Improved State Tracking
+     3. 3.3 Improved Language Modeling, In-Context Retrieval and Long-Context Performance
+         1. Language modeling.
+         2. In-context retrieval and long-context performance.
+     4. 3.4 Improved Hardware Utilization
+         1. 3.4.1 Improved Tiling
+         2. 3.4.2 Efficient Integration of M^2RNN Layers in Hybrid Architectures
+ 5. 4 Distributed Training and Systems Optimizations
+     1. 4.1 Forward Algorithm
+     2. 4.2 Backward Algorithm
+     3. 4.3 Tensor Parallelism
+         1. 4.3.1 TP Topology-Aware M^2RNN Layers
+             1. Advantages.
+             2. Disadvantages.
+         2. 4.3.2 TP Topology-Independent M^2RNN Layers
+             1. Advantages.
+             2. Disadvantages.
+ 6. 5 Experiments
+     1. 5.1 Models
+         1. 5.1.1 Homogeneous Architectures
+         2. 5.1.2 2-way Hybrid Models
+         3. 5.1.3 3-way Hybrid Models
+     2. 5.2 Model Training
+     3. 5.3 Language Modeling
+         1. 5.3.1 Homogeneous Architectures
+         2. 5.3.2 2-way Hybrid Models
+         3. 5.3.3 3-way Hybrid Models
+     4. 5.4 In-Context Retrieval
+         1. 5.4.1 In-Context Retrieval on RULER
+             1. Hybrid Gated DeltaNet + M^2RNN:
+             2. Hybrid Mamba-2 + M^2RNN:
+         2. 5.4.2 In-Context Retrieval on Real-World Data
+     5. 5.5 Long-Context Performance
+     6. 5.6 Ablations: Effect of State Size and Forget Gate
+     7. 5.7 Training Throughput
+ 7. 6 Conclusion
+ 8. References
+ 9. A State Size Expansion
+10. B Representation Power of M^2RNN Layers
+11. C RMSNormTP Module
+
+License: CC BY 4.0
+arXiv:2603.14360v2 [cs.LG] 13 May 2026
+
+1]UC Berkeley 2]Learning Machine 3]MIT-IBM Watson Lab 4]Princeton University 5]Together AI \
+contribution[*]Equal Mentoring \correspondenceMayank Mishra @ \metadata[ Training Code]https://
+github.com/open-lm-engine/lm-engine \metadata[ Kernels]https://github.com/open-lm-engine/
+accelerated-model-architectures \metadata[ Models]https://huggingface.co/collections/open-lm-engine
+/m2rnn
+
+M^2RNN: Non-Linear RNNs with Matrix-Valued States for Scalable Language Modeling
+
+Mayank Mishra    Shawn Tan    Ion Stoica    Joseph E. Gonzalez    Tri Dao Affiliation: [ 
+Affiliation: [ Affiliation: [ Affiliation: [ Affiliation: [ Email: mayank@learning-machine.ai
+
+Abstract
+
+Transformers are highly parallel but are limited to computations in the TC^0 complexity class,
+excluding tasks such as entity tracking and code execution that provably require greater expressive
+power. Motivated by this limitation, we revisit non-linear Recurrent Neural Networks (RNNs) for
+language modeling and introduce Matrix-to-Matrix RNN (M^2RNN): an architecture with matrix-valued
+hidden states and expressive non-linear state transitions. We demonstrate that the language
+modeling performance of non-linear RNNs is limited by their state size, and show how the state size
+expansion mechanism enables efficient use of tensor cores. Empirically, M^2RNN achieves perfect
+state tracking generalization at sequence lengths not seen during training. These benefits also
+translate to large-scale language modeling. In hybrid settings that interleave recurrent layers
+with attention, Hybrid M^2RNN outperforms equivalent Gated DeltaNet hybrids by 0.40.4–0.50.5
+perplexity points on a 7B MoE model, while using 3×3\times smaller state sizes for the recurrent
+layers. Notably, replacing even a single recurrent layer with M^2RNN in an existing hybrid
+architecture yields accuracy gains comparable to Hybrid M^2RNN with minimal impact on training
+throughput. Further, the Hybrid Gated DeltaNet models with a single M^2RNN layer also achieve
+superior long-context generalization, outperforming state-of-the-art hybrid linear attention
+architectures by up to 88 points on LongBench. Together, these results establish non-linear RNN
+layers as a compelling building block for efficient and scalable language models.
+
+1 Introduction
+
+Foundation models trained on massive datasets and adapted to downstream tasks have become the
+dominant paradigm in modern machine learning Brown et al. (2020); Chowdhery et al. (2023);
+Grattafiori et al. (2024). At their core, these models rely on sequence-based architectures capable
+of processing diverse modalities including text, code, images, video, and speech Brown et al.
+(2020); Chowdhery et al. (2023); Grattafiori et al. (2024); Mishra et al. (2024); Dosovitskiy
+(2020); Lugosch et al. (2019). The prevailing architecture is the decoder-only Transformer,
+composed of alternating multi-layer perceptron (MLP) and causal attention layers Vaswani et al.
+(2017). Much of attention’s success stems from its amenability to parallelization across the
+sequence length, the availability of hardware-efficient implementations Dao et al. (2022); Dao
+(2023); Shah et al. (2024); Zadouri et al. (2026), and its effective in-context retrieval
+capabilities. Attention-based Transformers have also demonstrated remarkable scalability, powering
+models ranging from hundreds of billions Brown et al. (2020); Chowdhery et al. (2023); Workshop et
+al. (2022); Smith et al. (2022); Liu et al. (2024); Yang et al. (2025) to trillions of parameters
+Team et al. (2025); Meta AI (2025).
+
+However, attention’s quadratic time complexity during training and linearly growing memory
+requirements during inference have motivated the development of more efficient alternatives Tay et
+al. (2022). State Space Models (SSMs) and linear attention Gu et al. (2021a); Gu et al. (2021b); Gu
+and Dao (2024); Dao and Gu (2024); Yang et al. (2023); Yang et al. (2024b); Yang et al. (2024a);
+Peng et al. (2023) have emerged as promising replacements. Katharopoulos et al. (2020) propose
+computing linear attention via a dot product of kernel features, Peng et al. (2021) approximate
+attention using random feature methods, Schlag et al. (2021) introduce the delta update rule,
+showing significant improvements in associative recall, and Gu and Dao (2024); Dao and Gu (2024)
+propose Mamba with an efficient training algorithm that scales linearly with sequence length.
+
+Linear attention admits both a recurrent and a parallel formulation. The constant-state size for
+linear attention enables memory-efficient and fast autoregressive inference (using the recurrent
+form) while the standard parallel form retains quadratic complexity during training. To bridge this
+gap, a chunkwise parallel formulation can be employed Hua et al. (2022); Yang et al. (2023),
+preserving linear time complexity while batching computations within chunks to leverage matrix
+multiplication units (tensor cores on NVIDIA GPUs NVIDIA Corporation ()). SSMs like Mamba-1 Gu and
+Dao (2024) can alternatively be accelerated via the parallel scan algorithm Hillis and Steele
+(1986); Blelloch (1990).
+
+Although linear RNNs have attracted considerable attention due to their efficient inference and
+training, they present several notable limitations:
+
+ 1. 1.
+   
+    Limited state tracking: Linear RNNs are provably less expressive than non-linear RNNs,
+    particularly for hard state-tracking tasks such as code evaluation, entity tracking, and
+    permutation composition (S5S_{5} group permutation task). Consequently, they are no more
+    expressive than Transformers Merrill et al. (2024).
+
+ 2. 2.
+   
+    Poor in-context retrieval performance: Linear RNNs exhibit weak performance in in-context
+    retrieval tasks Yang et al. (2023); Yang et al. (2024b); Yang et al. (2024a). Because their
+    recurrent state is updated via a fixed-rank outer product, the state can be overwritten when
+    the number of key-value associations exceeds its capacity, leading to degraded in-context
+    retrieval performance. This manifests as poor performance on needle-in-a-haystack benchmarks
+    and long-context recall tasks that require retrieving specific information from distant
+    context.
+
+A common strategy is to interleave quadratic attention layers with sub-quadratic recurrent layers
+in order to achieve a balance between inference efficiency and downstream task performance in
+state-of-the-art production models. This alleviates the poor language modeling and long-context
+performance of linear RNNs while retaining their efficiency advantages for long-context training
+and inference Blakeman et al. (2025); Lieber et al. (2024); Ren et al. (2024).
+
+While non-linear RNNs have been shown to excel at hard state tracking problems Merrill et al.
+(2024), they face several practical challenges:
+
+ 1. 1.
+   
+    Poor language modeling performance: Current non-linear RNNs significantly underperform linear
+    RNNs in language modeling. We show that large state sizes are critical for strong language
+    modeling performance, and that the inferior results of non-linear RNNs are primarily due to
+    their smaller state sizes rather than their non-linearity.
+
+ 2. 2.
+   
+    Poor long-context retrieval performance: We further show that the smaller state sizes
+    significantly hurt the retrieval and long-context performance. The vector-valued non-linear
+    RNNs in our experiments consistently underperform Mamba-2 and Gated DeltaNet by ≈20\approx 20
+    points in real-world retrieval tasks (Tables 3, 4).
+
+ 3. 3.
+   
+    Training inefficiency: Unlike linear RNNs, non-linear RNNs cannot be parallelized across the
+    sequence length, making training significantly more expensive. This is compounded by poor
+    hardware utilization: naïve recurrent GEMM execution prevents reuse of on-chip tiles across
+    time steps, forcing costly HBM I/O and synchronization. Even block-wise variants Pöppel et al.
+    (2025) remain constrained by micro-batch tiling, leading to padding overhead and wasted FLOPs.
+
+We propose Matrix-to-Matrix RNN (M^2RNN), a non-linear RNN architecture that, when combined with
+hybrid linear RNNs, results in significant performance improvements in both language modeling and
+long-context performance. Specifically, M^2RNN layers address the following key limitations of
+linear RNNs and non-linear RNNs:
+
+ 1. 1.
+   
+    Improved state tracking: Matrix-to-Matrix RNN (M^2RNN) layer achieves perfect state tracking,
+    significantly improving state tracking performance over linear RNNs similar to non-linear RNNs
+    and GRUs Cho et al. (2014a). We further demonstrate that M^2RNN layers can express all
+    computations that can be performed by a non-linear RNN.
+
+ 2. 2.
+   
+    Improved language modeling, in-context retrieval and long-context performance: We demonstrate
+    the importance of large state sizes for recurrent models and that it is a key driver behind the
+    success of linear RNNs such as Mamba-2 Dao and Gu (2024) and Gated DeltaNet Yang et al. (2024a)
+    . We show that the outer product state expansion mechanism is directly applicable to non-linear
+    RNNs. Similar to LSTMs Hochreiter and Schmidhuber (1997) and GRUs Cho et al. (2014a), we use a
+    forget gate to prevent gradient degradation across time steps Chung et al. (2014), but unlike
+    LSTMs and GRUs, our forget gate is independent of the recurrent state, enabling parallel
+    computation. Hybrid M^2RNN models outperform Hybrid Mamba-2 and Hybrid Gated DeltaNet on
+    language modeling benchmarks. The outer product state expansion mechanism also improves
+    in-context retrieval and long-context performance which are sensitive to the state size.
+    Further, we demonstrate that combining M^2RNN layers with Hybrid Mamba-2 and Hybrid Gated
+    DeltaNet enhances long-context performance by up to 8 points at both 410M dense and 7B MoE
+    scales (Tables 5, 6).
+
+ 3. 3.
+   
+    Improved hardware utilization: The outer product based state expansion mechanism enables
+    efficient tensor core utilization without the wasted FLOPs of FlashRNN Pöppel et al. (2025) due
+    to padding along the batch dimension (Section 3.4). Since M^2RNN layers are computationally
+    expensive and non-parallelizable across time steps, we further explore using M^2RNN layers
+    sparingly. We demonstrate with experiments that using M^2RNN layers sparingly (even just one
+    layer) results in substantial improvements in all benchmarks.
+
+Beyond efficient single-device execution, training models at scale requires careful attention to
+systems design. We describe the forward and backward kernels for M^2RNN layers implemented in
+Triton Tillet et al. (2019), and present two strategies for applying tensor parallelism (TP) to M^
+2RNN layers: a topology-aware approach that requires no additional communication, and a
+topology-independent approach that preserves parameter count across TP configurations at the cost
+of extra synchronization (Section 4.3).
+
+2 Background
+
+We use bold letters (A) to represent matrices and small letters (aa) to represent column vectors in
+the following sections.
+
+2.1 State Tracking
+
+State tracking refers to determining the state of a system by observing a sequence of updates
+applied to it. The complexity of state tracking tasks is characterized by circuit complexity
+classes:
+
+TC^0: TC^0 denotes the class of languages decidable by constant-depth threshold boolean circuits of
+polynomial size. Simple state tracking problems such as parity (equivalent to the permutation group
+S2S_{2}) fall within this class. Merrill et al. (2022) show that Transformers Vaswani et al. (2017)
+lie in TC^0, making them capable of solving only these simpler tasks.
+
+NC^1: NC^1 denotes the class of languages decidable by logarithmic-depth boolean circuits of
+polynomial size^1^1 1 Depth is measured in the input size.. Many practical state tracking tasks
+such as tracking chess moves or evaluating programs reduce to problems at least as hard as the S5S_
+{5} word problem, where SkS_{k} denotes the symmetric group on kk elements (i.e., all permutations
+of kk objects). Since S5S_{5} is NC^1-complete, these tasks lie strictly outside the expressivity
+class of both Transformers Merrill et al. (2022) and linear SSMs with input-independent or diagonal
+transition matrices Merrill et al. (2024), motivating architectures with greater computational
+expressivity.
+
+2.2 Linear RNNs
+
+Both linear attention mechanisms and SSMs admit recurrent and parallel formulations, leading the
+literature to refer to them collectively as recurrent neural networks (RNNs). However, Merrill et
+al. (2024) demonstrate a significant expressivity gap between these linear RNNs and non-linear
+RNNs. Non-linear RNNs, recurrent networks that apply a non-linear activation at each step of the
+recurrence, have traditionally been employed for sequence modeling Elman (1990), particularly for
+tasks requiring state tracking across time steps. While the inclusion of a non-linearity yields a
+much richer class of representable functions, it precludes the use of algorithms like parallel scan
+Hillis and Steele (1986); Blelloch (1990) for efficient computation Merrill et al. (2024).
+Nevertheless, the state-tracking capabilities enabled by non-linear RNNs can make their incurred
+cost a reasonable tradeoff.
+
+Many linear attention and SSM models take the following general form where Equation 1 is used to
+compute the recurrent state at the next time step and Equation 2 is used to compute the final
+output:
+
+ Ht\displaystyle\textbf   =Ht−1​A​(xt)+B​(xt)\displaystyle=\textbf{H}_{t-1}\textbf{A}(x_{t})+\  (1)
+ {H}_{t}                  textbf{B}(x_{t})
+ yt\displaystyle y_{t}    =Ht⊤​c​(xt)+d⁡(xt)\displaystyle=\textbf{H}_{t}^{\top}c(x_{t})+d(x_    (2)
+                          {t})
+
+where Ht∈ℝK×V\textbf{H}_{t}\in\mathbb{R}^{K\times V} denotes the recurrent state at time step tt,
+A​(xt)∈ℝV×V\textbf{A}(\textbf{x}_{t})\in\mathbb{R}^{V\times V} is the transition matrix, and B​(xt)
+∈ℝK×V\textbf{B}(x_{t})\in\mathbb{R}^{K\times V} is a function of the input xt∈ℝdx_{t}\in\mathbb{R}^
+{d}. c⁡(xt)∈ℝK×1c(x_{t})\in\mathbb{R}^{K\times 1} is the vector used to compute the output and d⁡
+(xt)∈ℝV×1d(x_{t})\in\mathbb{R}^{V\times 1} is the residual stream. KK and VV represent the key and
+value head dimensions respectively. Note that the recurrent state Ht\textbf{H}_{t} is a matrix
+rather than a vector. Katharopoulos et al. (2020) replace the similarity score in attention (exp⁡
+(qi⊤​kj)\exp(q_{i}^{\top}k_{j})) Vaswani et al. (2017) with a kernel κ⁡(qi,kj)=⟨ϕ⁡(qi),ϕ⁡(kj)⟩\
+kappa(q_{i},k_{j})=\left<\phi(q_{i}),\phi(k_{j})\right> to compute the similarity scores between
+queries (qiq_{i}) and keys (kjk_{j}) where ϕ\phi represents the feature map for the kernel function
+κ\kappa. This leads to the following simplified recurrence:
+
+ Ht\displaystyle\      =Ht−1+ϕ⁡(kt)​vt⊤\displaystyle=\textbf{H}_{t-1}+\phi(k_{t}){v_{t}}^{\     (3)
+ textbf{H}_{t}         top}
+ zt\displaystyle z_{t} =zt−1+ϕ⁡(kt)\displaystyle=z_{t-1}+\phi(k_{t})                            (4)
+ yt\displaystyle y_{t} =Ht⊤​ϕ​(qt)zt⊤​ϕ​(qt)\displaystyle=\frac{\textbf{H}_{t}^{\top}\phi(q_    (5)
+                       {t})}{z_{t}^{\top}\phi(q_{t})}
+
+Prior works found that removing the normalization term in the denominator (zt⊤​ϕ​(qt)z_{t}^{\top}\
+phi(q_{t})) in Equation 5 improves training stability Sun et al. (2023) for linear attention and
+hence we omit this in going forward. The recurrence then becomes:
+
+ Ht\displaystyle\textbf{H}_ =Ht−1+ϕ⁡(kt)​vt⊤\displaystyle=\textbf{H}_{t-1}+\phi(k_{t}){v_{t}}^  (6)
+ {t}                        {\top}
+ yt\displaystyle y_{t}      =Ht⊤​ϕ​(qt)\displaystyle=\textbf{H}_{t}^{\top}\phi(q_{t})           (7)
+
+A comprehensive summary of recurrent forms for various linear attention models can be found in Yang
+et al. (2024b) (Table 2).
+
+2.3 Limitations of Linear RNNs
+
+2.3.1 Limited State Tracking
+
+Merrill et al. (2024) demonstrate that hard state tracking tasks like the permutation group S5S_{5}
+cannot be solved when the transition matrix for a linear RNN is input-independent (A​(xt)=A\textbf
+{A}(x_{t})=\textbf{A}) or diagonal (A​(xt)=diag​(a⁡(xt))\textbf{A}(x_{t})=\text{diag}(a(x_{t}))).
+The authors further suggest that input-dependent, non-diagonal transition matrices can overcome
+this limitation and can simulate deterministic finite-state automata (DFAs). Grazzi et al. (2024)
+extend this result, demonstrating that SSMs whose transition matrices A​(xt)\textbf{A}(x_{t}) have
+only positive eigenvalues (typical in Mamba and Gated DeltaNet) cannot even solve simple state
+tracking problems like parity. Grazzi et al. (2024) evaluate Mamba-1 Gu and Dao (2024) and Gated
+DeltaNet Yang et al. (2024a) on S3S_{3} and S5S_{5} permutation groups. They demonstrate that
+Mamba-1 and Gated DeltaNet can solve the tasks when the eigenvalues of A are allowed to be negative
+(specifically between [−1,1][-1,1]). Siems et al. (2025) further demonstrate that allowing a
+product of k−1k-1 HouseHolder matrices further increases the expressivity and allows solving tasks
+like SkS_{k}. Terzić et al. (2025) take an alternative approach via structured sparse matrices
+combined with straight-through gradient estimators, which preserves compatibility with parallel
+scan Hillis and Steele (1986); Blelloch (1990) while improving expressivity.
+
+2.3.2 Poor in-context retrieval performance
+
+Linear RNNs and SSMs significantly underperform parameter-matched Transformer Vaswani et al. (2017)
+models on in-context retrieval tasks Yang et al. (2023); Yang et al. (2024b); Yang et al. (2024a).
+While recent linear RNNs such as DeltaNet Yang et al. (2024b) and Gated DeltaNet Yang et al.
+(2024a) have closed this performance gap, there still remains a significant gap between
+Transformers Vaswani et al. (2017) and linear RNNs. We experimentally demonstrate this further in
+Section 5.4.2 (Tables 3, 4).
+
+2.4 Non-Linear RNNs
+
+The most basic non-linear RNN (Elman, 1990) takes the form:
+
+ ht\displaystyle h_{t} =tanh⁡(W​ht−1+xt)\displaystyle=\tanh(\textbf{W}h_{t-1}+x_{t})  (8)
+ yt\displaystyle y_{t} =ht\displaystyle=h_{t}                                         (9)
+
+where ht∈ℝd×1h_{t}\in\mathbb{R}^{d\times 1} is the hidden state at time step tt, xt∈ℝd×1x_{t}\in\
+mathbb{R}^{d\times 1} is the input, and W∈ℝd×d\textbf{W}\in\mathbb{R}^{d\times d} is the (dense,
+input-independent) transition matrix.
+
+A key challenge for deep non-linear RNNs is vanishing and exploding gradients, which makes learning
+long-range dependencies difficult Bengio et al. (1994). The Long Short-Term Memory (LSTM)
+Hochreiter and Schmidhuber (1997) and Gated Recurrent Unit (GRU) Cho et al. (2014b) address this by
+introducing multiplicative gating mechanisms.
+
+Expressivity.
+
+Merrill (2019) analyze non-linear RNNs under finite precision and show that they are equivalent to
+finite-state automata, capable of recognizing all regular languages. Under infinite precision,
+saturated non-linear RNNs are strictly more expressive, capable of simulating arbitrary
+deterministic finite-state automata (DFAs) and thus solving hard state-tracking tasks such as
+permutation group composition that lie outside TC^0 Merrill et al. (2024). This expressivity
+advantage over linear RNNs (which are confined to TC^0 under diagonal or input-independent
+transitions) motivates their use in architectures targeting tasks that require stateful computation
+beyond what Transformers can express.
+
+2.5 Limitations of Non-Linear RNNs
+
+2.5.1 Poor language modeling performance
+
+Despite their expressivity advantages, non-linear RNNs like LSTMs Hochreiter and Schmidhuber (1997)
+and GRUs Cho et al. (2014a) significantly underperform both Transformers Vaswani et al. (2017) and
+modern linear RNNs on language modeling benchmarks. A natural hypothesis is that non-linearity
+itself is the bottleneck, but we argue the gap is largely attributable to state size. Vector-valued
+non-linear RNNs maintain a hidden state ht∈ℝdh_{t}\in\mathbb{R}^{d}, which is far smaller than the
+matrix-valued states Ht∈ℝK×V\textbf{H}_{t}\in\mathbb{R}^{K\times V} used by linear attention models
+(Section 5.6) for the same number of model parameters. Naively increasing dd to match this capacity
+is impractical: the transition matrix W∈ℝd×d\textbf{W}\in\mathbb{R}^{d\times d} grows quadratically
+in parameters, and for large dd it can no longer fit in the shared memory of a single streaming
+multiprocessor (SM), eliminating the possibility of on-chip reuse.
+
+2.5.2 Poor in-context retrieval performance
+
+Beyond language modeling, non-linear RNNs also struggle at in-context retrieval tasks. The
+fundamental bottleneck is again the state size: a vector-valued hidden state ht∈ℝdh_{t}\in\mathbb
+{R}^{d} must compress the entire context into a fixed-size representation. As sequence length
+grows, the state becomes increasingly overloaded, making it difficult to retrieve specific
+key-value associations stored earlier in the context. This stands in contrast to Transformers,
+which retain all past tokens in an explicit key-value cache and can attend directly to any
+position. While linear RNNs with matrix-valued states fare better on retrieval due to their larger
+effective state capacity, they too lag behind Transformers on in-context retrieval and
+recall-intensive benchmarks Yang et al. (2023); Yang et al. (2024b); Yang et al. (2024a) (Section
+5.4.2). Non-linear RNNs, constrained to vector-valued states, exhibit an even larger retrieval
+deficit.
+
+2.5.3 Training Inefficiency
+
+Non-Parallelizability on Sequence Length.
+
+The element-wise non-linearity in non-linear RNNs breaks the associativity required by the parallel
+scan algorithm Hillis and Steele (1986); Blelloch (1990), forcing sequential computation over the
+sequence length. Danieli et al. (2025) show that non-linear RNNs can be parallelized by casting the
+recurrence as a system of LL (LL denotes the sequence length) non-linear equations and solving it
+via Newton’s method Ortega and Rheinboldt (2000). However, storing the Jacobian requires
+substantial memory and the recurrence becomes computationally expensive, rendering the approach
+impractical at scale. To make it feasible, Danieli et al. (2025) impose diagonal structure on the
+transition matrix, which eliminates cross-neuron mixing and substantially reduces expressivity.
+Moreover, each forward pass requires multiple Newton iterations, and the number of iterations
+needed for convergence is not known a priori for a given architecture. Consequently, executing the
+full sequential recurrence may ultimately be more efficient than iterative Newton updates.
+
+Expensive Computation due to Back-to-back GEMM for Non-Linear RNNs.
+
+Computing the GEMM (General Matrix Multiply) W​ht−1\textbf{W}h_{t-1} on a GPU proceeds by tiling
+the output so that each output tile is assigned to a different streaming multiprocessor (SM). This
+works well for a single GEMM, as each SM can independently compute its tile without cross-SM
+communication. However, the tiling becomes problematic at the next time step when computing W​ht\
+textbf{W}h_{t}: the output tiles from time step t−1t-1 become the input tiles for time step tt, but
+they reside on different SMs than where they are needed. Ideally, the SM that produced a given
+output tile would reuse it directly as input, but the standard tiling prevents this. As a result,
+intermediate results must be written to and reloaded from global memory (HBM), introducing costly
+synchronization and data movement. This issue is similar to what one would encounter when fusing
+two back-to-back GEMMs for MLP computation.
+
+To address this, FlashRNN Pöppel et al. (2025) modify the RNN recurrence into a block-wise form,
+analogous to multi-head attention. This design is also adopted by xLSTM Beck et al. (2024). By
+keeping the per-block state size small enough to reside in SM shared memory, they avoid HBM-level
+synchronization and achieve significant speedups.
+
+Poor Hardware Utilization due to Wasted FLOPs.
+
+FlashRNN Pöppel et al. (2025) propose to parallelize a vector-valued non-linear recurrence over the
+batch dimension (BB) and the number of heads (NN). However, to enable the use of tensor cores on
+NVIDIA GPUs, Pöppel et al. (2025) propose to pad the batch dimension BB to BpaddedB_{\textrm
+{padded}} (1616 for using the WMMA instruction) NVIDIA Corporation (). This leads to a GEMM
+computation with shape M, N, K=Bpadded,d,d\textbf{M, N, K}=B_{\textrm{padded}},d,d at each time
+step.
+
+In practice, per-GPU batch sizes of 1616 or more are rarely feasible when training large models due
+to GPU memory limitations (80GB on NVIDIA H100s), leading to substantial wasted FLOPs due to
+padding. For example, at a batch size of B=4B=4, padding wastes 75% of the recurrence FLOPs. In
+Section 3.4, we describe how the M^2RNN recurrence completely avoids the FLOPs wasted due to
+padding.
+
+3 Matrix-to-Matrix RNN
+
+In this section, we describe Matrix-to-Matrix RNN (M^2RNN), our proposed non-linear RNN layer,
+which addresses the poor language modeling, poor retrieval performance and poor hardware
+utilization of vector-valued non-linear RNNs while also addressing the limited state tracking
+problem of linear RNNs.
+
+3.1 M^2RNN Layer
+
+To overcome the state size limitations of traditional RNNs, we develop Matrix-to-Matrix RNN (M^
+2RNN), which uses matrix-valued hidden states. We adopt an outer product state expansion strategy
+similar to that of linear attention Katharopoulos et al. (2020) and SSMs Gu and Dao (2024); Dao and
+Gu (2024), significantly increasing the state size without significantly increasing the number of
+parameters. We further incorporate a forget gate which is independent of the recurrent state and
+can be computed in parallel. We found that adding a residual connection around the M^2RNN
+recurrence similar to SSMs helps to improve gradient flow and mitigate the compounding effect of
+the tanh\tanh activation across layers. The forward computation for M^2RNN recurrence is:
+
+ Zt\displaystyle\textbf  =tanh⁡(Ht−1​W+kt​vt⊤)\displaystyle=\tanh(\textbf{H}_{t-1}\textbf{W}   (10)
+ {Z}_{t}                 +k_{t}v_{t}^{\top})
+ Ht\displaystyle\textbf  =ft​Ht−1+(1−ft)​Zt\displaystyle=f_{t}\textbf{H}_{t-1}+(1-f_{t})\      (11)
+ {H}_{t}                 textbf{Z}_{t}
+ yt\displaystyle y_{t}   =Ht⊤​qt+wr⊙vt\displaystyle=\textbf{H}_{t}^{\top}q_{t}+w_{r}\odot v_   (12)
+                         {t}
+
+where Ht−1∈ℝK×V\textbf{H}_{t-1}\in\mathbb{R}^{K\times V} denotes the recurrent state at the
+previous time step. We initialize the initial state H0=0K×V\textbf{H}_{0}=0_{K\times V} (matrix of
+shape K×VK\times V filled with 0s). Zt∈ℝK×V\textbf{Z}_{t}\in\mathbb{R}^{K\times V} denotes the
+state update and Ht\textbf{H}_{t} denotes the state at the current time step after the update.
+W∈ℝV×V\textbf{W}\in\mathbb{R}^{V\times V} is the transition matrix for the recurrence (independent
+of the input) while the query, key, value and forget gate (qt,kt∈ℝK×1,vt∈ℝV×1,ft∈[0,1]q_{t},k_{t}\
+in\mathbb{R}^{K\times 1},v_{t}\in\mathbb{R}^{V\times 1},f_{t}\in[0,1]) are functions of the input
+xt∈ℝd×1x_{t}\in\mathbb{R}^{d\times 1}. yt∈ℝV×1y_{t}\in\mathbb{R}^{V\times 1} represents the final
+output of the recurrence after the query readout and residual addition and wrw_{r} represents the
+weight for the residual.
+
+3.1.1 Forget Gate
+
+Following LSTMs Hochreiter and Schmidhuber (1997) and GRUs Cho et al. (2014a), we augment M^2RNN
+with a forget gate to mitigate the vanishing gradient problem. We use a scalar-valued (per-head)
+forget gate ft∈[0,1]f_{t}\in[0,1]. While we experimented with a vector-valued forget gate of size
+KK per head, it yielded only marginal improvements while substantially increasing the parameter
+count. The gated recurrent update is Ht=ft​Ht−1+(1−ft)​Zt\textbf{H}_{t}=f_{t}\textbf{H}_{t-1}+(1-f_
+{t})\textbf{Z}_{t}, where ft=1f_{t}=1 fully preserves the current state and ft=0f_{t}=0 resets it
+entirely. Although the importance of forget gates is well established in the literature Hochreiter
+and Schmidhuber (1997); Cho et al. (2014a); Chung et al. (2014), we provide confirmatory ablations
+in Section 5.6. Note that the forget gate (ftf_{t}) is only a function of the input xtx_{t} and is
+independent of the previous state Ht−1\textbf{H}_{t-1} unlike LSTMs Hochreiter and Schmidhuber
+(1997) and GRUs Cho et al. (2014a). The forget gate (ft,nf_{t,n})^2^2 2 We drop the notation for
+head ft,nf_{t,n} in the rest of the paper and use ftf_{t} for simplicity. (forget gate value for
+nt​hn^{th} head at time step tt) for M^2RNN layers is computed as:
+
+ ft,n=ψ⁡(xt)=1(1+ext+βn)αn\displaystyle f_{t,n}=\psi(x_{t})=\frac{1}{(1+e^{x_{t}+\beta_{n}})^  (13)
+ {\alpha_{n}}}
+
+
+Figure 1: Forget gate (ftf_{t}) behavior as a function of the input (xtx_{t}) for different values
+of αn\alpha_{n} and βn\beta_{n}. nn denotes the nthn^{\textrm{th}} head.
+
+where αn\alpha_{n} and βn\beta_{n} are learnable parameters that are independent of the input. A
+smaller value of αn\alpha_{n} for the nthn^{\text{th}} head results in a slower decay rate. The
+parameter βn\beta_{n} controls the location at which the forget gate saturates (see Figure 1). A
+similar gate is used in Mamba-1 Gu and Dao (2024), Mamba-2 Dao and Gu (2024) and Gated DeltaNet
+Yang et al. (2024a). Each head is initialized to a different value of αn\alpha_{n} and βn\beta_{n},
+which leads to different forgetting characteristics. We initialize αn∼Uniform​(αmin,αmax)\alpha_{n}
+\sim\textrm{Uniform}(\alpha_{\textrm{min}},\alpha_{\textrm{max}}) and βn∼LogUniform​(βmin,βmax)\
+beta_{n}\sim\textrm{LogUniform}(\beta_{\textrm{min}},\beta_{\textrm{max}}). Note that when αn=1\
+alpha_{n}=1, the forget gate simplifies to ψ⁡(xt)=σ⁡(−xt−βn)\psi(x_{t})=\sigma(-x_{t}-\beta_{n}),
+which corresponds to a sigmoid with a reflected input and a bias shift.
+
+3.1.2 M^2RNN Block
+
+The queries, keys, and values (qt,kt,vtq_{t},k_{t},v_{t}) are computed via linear projections
+followed by a depthwise causal short-convolution (kernel size 4) and SiLU activation Hendrycks
+(2016); Elfwing et al. (2018). The output gate gtg_{t} uses SiLU without a convolution, and the
+forget gate ftf_{t} uses the parameterized function from Section 3.1.1 to ensure ft∈[0,1]f_{t}\in
+[0,1]. Crucially, all pre-recurrence projections depend only on the input xtx_{t} and can therefore
+be computed in parallel across the sequence. The full M^2RNN layer (for a single head) is:
+
+ qt\displaystyle  OPEN=SiLU(conv1d​(Wq​xt+bq))\displaystyle=\textrm  ∈ℝK×1\displaystyle\in\    (14)
+ q_{t}            {SiLU(conv1d}(\textbf{W}_{q}x_{t}+b_{q}))          mathbb{R}^{K\times 1}
+ kt\displaystyle  OPEN=SiLU(conv1d​(Wk​xt+bk))\displaystyle=\textrm  ∈ℝK×1\displaystyle\in\    (15)
+ k_{t}            {SiLU(conv1d}(\textbf{W}_{k}x_{t}+b_{k}))          mathbb{R}^{K\times 1}
+ vt\displaystyle  OPEN=SiLU(conv1d​(Wv​xt+bv))\displaystyle=\textrm  ∈ℝV×1\displaystyle\in\    (16)
+ v_{t}            {SiLU(conv1d}(\textbf{W}_{v}x_{t}+b_{v}))          mathbb{R}^{V\times 1}
+ ft\displaystyle  =ψ⁡(Wf​xt)\displaystyle=\psi(\textbf{W}_{f}x_{t})  ∈[0,1]\displaystyle\in    (17)
+ f_{t}                                                               [0,1]
+ gt\displaystyle  =SiLU​(Wg​xt)\displaystyle=\textrm{SiLU}(\textbf   ∈ℝV×1\displaystyle\in\    (18)
+ g_{t}            {W}_{g}x_{t})                                      mathbb{R}^{V\times 1}
+ Zt\displaystyle\ =tanh⁡(Ht−1​W+kt​vt⊤)\displaystyle=\tanh(\textbf   ∈ℝK×V\displaystyle\in\    (19)
+ textbf{Z}_{t}    {H}_{t-1}\textbf{W}+k_{t}v_{t}^{\top})             mathbb{R}^{K\times V}
+ Ht\displaystyle\ =ft​Ht−1+(1−ft)​Zt\displaystyle=f_{t}\textbf{H}_   ∈ℝK×V\displaystyle\in\    (20)
+ textbf{H}_{t}    {t-1}+(1-f_{t})\textbf{Z}_{t}                      mathbb{R}^{K\times V}
+ yt\displaystyle  =Ht⊤​qt+wr⊙vt\displaystyle=\textbf{H}_{t}^{\top}   ∈ℝV×1\displaystyle\in\    (21)
+ y_{t}            q_{t}+w_{r}\odot v_{t}                             mathbb{R}^{V\times 1}
+ yg​t\            =RMSNorm​(yt⊙gt)\displaystyle=\textrm{RMSNorm}(y_  ∈ℝV×1\displaystyle\in\
+ displaystyle y_  {t}\odot g_{t})                                    mathbb{R}^{V\times 1}     (22)
+ {gt}
+ ot\displaystyle  =Wo​yg​t\displaystyle=\textbf{W}_{o}y_{gt}         ∈ℝd×1\displaystyle\in\    (23)
+ o_{t}                                                               mathbb{R}^{d\times 1}
+
+where xt∈ℝdx_{t}\in\mathbb{R}^{d}.
+
+Following Mamba-1 Gu and Dao (2024), Mamba-2 Dao and Gu (2024), and Gated DeltaNet Yang et al.
+(2024a), we adopt a hybrid architecture combining the H3 block Fu et al. (2022) with a gated MLP, a
+design that has proven effective in production LLMs (Figure 2).
+
+NormM^2RNN Layer+NormMLP/MoE+LinearLinearLinearCausalConv1Dψ\psiM^2RNN recurrenceqtq_{t}ktk_{t}vtv_
+{t}ftf_{t}×\timesRMSNormLineargtg_{t}
+Figure 2: Visualization of the Matrix-to-Matrix RNN layer. This block replaces attention and is
+combined with MLP and RMSNorm modules as in the Transformer.
+
+Transition Matrix Initialization.
+
+We experimented with three initialization schemes for the transition matrix W: normal
+initialization (W∼𝒩⁡(0,σ2)\textbf{W}\sim\mathcal{N}(0,\sigma^{2})), orthogonal initialization (WW⊤=
+I\textbf{W}\textbf{W}^{\top}=\textbf{I}), and identity initialization (W=I\textbf{W}=\textbf{I}) Le
+et al. (2015). Consistent with findings for vector-valued non-linear RNNs, orthogonal
+initialization outperforms normal initialization. Identity initialization performs on par with
+orthogonal initialization, so we adopt it for all models.
+
+Gradient Clipping.
+
+Training non-linear RNNs with backpropagation through time (BPTT) is susceptible to exploding
+gradients, as the gradient of the loss with respect to early hidden states involves repeated
+multiplication by the transition matrix W and the Jacobian of the tanh\tanh nonlinearity. Although
+the forget gate ftf_{t} attenuates gradients flowing through the state, the transition matrix W can
+still cause gradient magnitudes to grow unboundedly. To stabilize training, we apply per-step
+gradient clipping to the gradient of the recurrent state Ht\textbf{H}_{t} during BPTT.
+
+3.2 Improved State Tracking
+
+Theorem 1.
+
+The M^2RNN recurrence can represent all tasks representable by non-linear vector-valued RNNs and
+hence can represent regular languages.
+
+We give the proof for Theorem 1 in Appendix B.
+
+Siems et al. (2025) show that Gated DeltaProduct [−1,1][-1,1]^3^3 3 Gated DeltaProduct [−1,1][-1,1]
+denotes Gated DeltaProduct with the ability to have negative eigenvalues. parameterized as a
+product of k−1k-1 Householder matrices can, in principle, represent the SkS_{k} task. In
+particular, this implies that the S3S_{3} task should be representable using Gated DeltaProduct
+[−1,1][-1,1] with product of two Householder matrices. To evaluate this claim empirically, we
+compare M^2RNN, GRU Cho et al. (2014a), Gated DeltaNet [−1,1][-1,1]^4^4 4 Gated DeltaNet [−1,1]
+[-1,1] denotes Gated DeltaNet with the ability to have negative eigenvalues. Yang et al. (2024a),
+and Gated DeltaProduct [−1,1][-1,1] Siems et al. (2025) parameterized as a product of two
+Householder matrices on the S3S_{3} task. All models are trained on sequences of length 128128 and
+evaluated on context lengths up to 512512.
+
+
+Figure 3: Accuracy on the permutation group S3S_{3} state-tracking task for M^2RNN, Gated DeltaNet
+[−1,1][-1,1], Gated DeltaProduct [−1,1][-1,1] and GRU. The vertical line at 128128 denotes the
+training context length for all models. For the Gated DeltaProduct, we use product of 2 HouseHolder
+matrices since it can solve the S3S_{3} task in theory Grazzi et al. (2024). However, as the
+evaluation context length is increased beyond the training context length, we observe accuracy
+degradation.
+
+As can be seen from Figure 3, Gated DeltaNet [−1,1][-1,1] fails to learn the task altogether. Gated
+DeltaProduct [−1,1][-1,1] achieves near-perfect accuracy up to context length 256256, however, it
+fails to generalize to longer sequence lengths not seen during training. These findings suggest
+that, despite its theoretical expressivity, the model exhibits limited length generalization even
+on the simple state-tracking S3S_{3} task. However, both GRU Cho et al. (2014a) and M^2RNN
+generalize perfectly to unseen context lengths achieving ≥99.5%\geq 99.5\% accuracy up to 512512
+sequence length. This suggests that theoretical expressivity alone does not guarantee robust state
+tracking in practice, and that non-linear RNNs like M^2RNN and GRU exhibit stronger length
+generalization on this task. Motivated by this, we investigate whether non-linear RNNs exhibit this
+length generalization advantage on language modeling when equipped with an expanded state size.
+
+3.3 Improved Language Modeling, In-Context Retrieval and Long-Context Performance
+
+The outer-product formulation for state size expansion in RNNs has become standard in many SSMs and
+linear RNNs Yang et al. (2023); Gu and Dao (2024); Dao and Gu (2024); Yang et al. (2024b); Yang et
+al. (2024a). Qin et al. (2024) demonstrate that larger state sizes improve language modeling
+performance even when achieved through low-rank parameterizations. We also demonstrate this with
+empirical evidence in Section 5.6.
+
+Additionally, Mamba-2 Dao and Gu (2024) increases the effective state size through a grouping
+strategy that shares parameters across heads using a multi-value attention formulation, allowing
+the model to scale the state dimension without increasing the overall parameter count. Building on
+this idea, we use an outer product with the multi-value attention formulation proposed by Dao and
+Gu (2024) to increase the achievable state size under a fixed parameter budget (see Table 8 in
+Appendix A).
+
+The expanded matrix-valued state directly addresses the two core weaknesses of vector-valued
+non-linear RNNs identified in Section 2.5: poor language modeling and poor retrieval performance.
+
+Language modeling.
+
+The low language modeling performance of non-linear RNNs such as LSTMs Hochreiter and Schmidhuber
+(1997) and GRUs Cho et al. (2014a) relative to Transformers Vaswani et al. (2017) and linear RNNs
+has traditionally been attributed to the non-linearity itself. We argue instead that the primary
+bottleneck is state capacity. By expanding the hidden state from a vector ht∈ℝdh_{t}\in\mathbb{R}^
+{d} to a matrix Ht∈ℝK×V\textbf{H}_{t}\in\mathbb{R}^{K\times V}, M^2RNN dramatically increases the
+information that can be stored at each recurrent step without a proportional increase in parameter
+count. We provide empirical evidence for this in Section 5.6, showing that larger state sizes yield
+consistent language modeling improvements under a fixed parameter budget.
+
+In-context retrieval and long-context performance.
+
+The outer product write kt​vt⊤k_{t}v_{t}^{\top} significantly expands the state size enabling
+efficient storage of key-value associations and structured in-context retrieval via the readout
+Ht⊤​qt\textbf{H}_{t}^{\top}q_{t}. This capacity is absent in vector-valued non-linear RNNs, which
+cannot store enough associations due to the limited state size. We demonstrate the resulting gains
+in Tables 3, 4. We further demonstrate the impact of the state size expansion in long-context tasks
+in Tables 5, 6.
+
+3.4 Improved Hardware Utilization
+
+3.4.1 Improved Tiling
+
+The outer product expansion enables M^2RNN to be efficiently parallelized across both the batch
+dimension BB and the number of heads NN. In this formulation, each GPU streaming multiprocessor
+(SM) executes an independent recurrence over a matrix-valued state of size K×VK\times V. Each step
+of the recurrence involves a GEMM with dimensions M, N, K=K,V,V\textbf{M, N, K}=K,V,V.
+
+Importantly, the matrix-valued recurrence in M^2RNN requires no padding as long as KK and VV are
+multiples of 16 allowing utilizing the tensor cores. For example, when K=64K=64 and V=16V=16, the
+GEMM computation Ht−1​W\textbf{H}_{t-1}\textbf{W} can utilize the WGMMA instruction on NVIDIA
+Hopper GPUs NVIDIA Corporation (), ensuring high hardware efficiency.
+
+Crucially, the GEMM shape in M^2RNN is independent of the batch size BB. This contrasts with
+vector-valued non-linear RNNs, where GEMM dimensions depend on BB, often necessitating batch-size
+padding to achieve tensor core compatibility. As a result, the outer product state expansion
+mechanism achieves improved parallelism without wasting FLOPs, avoiding the padding overhead
+described in Section 2.5.3.
+
+3.4.2 Efficient Integration of M^2RNN Layers in Hybrid Architectures
+
+Due to the expensive nature of M^2RNN layers, we explore using them more sparingly. Our results
+show that replacing only a single Mamba-2 or Gated DeltaNet layer with M^2RNN in a hybrid
+architecture achieves the same accuracy improvements as the full hybrid M^2RNN model, while keeping
+training throughput within 6% of the Hybrid Gated DeltaNet at both 4k and 16k context lengths. This
+provides a scalable strategy for incorporating M^2RNN layers into large language models.
+
+4 Distributed Training and Systems Optimizations
+
+In this section, we discuss the system considerations for M^2RNN layers, including the forward and
+backward algorithms (Section 4.1, 4.2) and tensor parallelism (Section 4.3).
+
+
+Algorithm 1 Forward Computation for M^2RNN layer with multi-value attention formulation. The blue
+colour indicates computation or tensors residing in on-chip memory.
+0:  : H0∈ℝB​N​K​V,Q,K∈ℝB​T​K,V∈ℝB​T​N​V,W∈ℝN​V​V,F∈[0,1]B​T​N\textbf{H}_{0}\in\mathbb{R}^{BNKV},\
+textbf{Q},\textbf{K}\in\mathbb{R}^{BTK},\textbf{V}\in\mathbb{R}^{BTNV},\textbf{W}\in\mathbb{R}^
+{NVV},\textbf{F}\in[0,1]^{BTN}
+0:  : Y∈ℝB​T​N​V\textbf{Y}\in\mathbb{R}^{BTNV}
+ for n=0n=0 to N−1N-1 in parallel do ⊳\triangleright Each head on a separate SM
+  Load W←W[n,:,:]\textbf{{\color[rgb]{0,0,1}W}}\leftarrow\textbf{W}[n,:,:] from HBM ⊳\triangleright
+Transition matrix to SRAM (reused across batch)
+  for b=0b=0 to B−1B-1 in parallel do
+   Load H←H0[b,n,:,:]\textbf{{\color[rgb]{0,0,1}H}}\leftarrow\textbf{H}_{0}[b,n,:,:] from HBM ⊳\
+triangleright Initial hidden state (K×VK\times V) to SRAM
+   for t = 00 to T−1T-1 do ⊳\triangleright Sequential recurrence over time
+    Load q,k,v,f←Q[b,t,:],K[b,t,:],V[b,t,n,:],F[b,t,n]{\color[rgb]{0,0,1}q,k,v,f}\leftarrow\textbf
+{Q}[b,t,:],\textbf{K}[b,t,:],\textbf{V}[b,t,n,:],\textbf{F}[b,t,n] from HBM
+    Compute Z←tanh⁡(HW+k​v⊤){\color[rgb]{0,0,1}\textbf{Z}\leftarrow\tanh(\textbf{H}\textbf{W}+kv^{\
+top})} ⊳\triangleright Nonlinear transition with outer product input
+    Compute H←f​H+(1−f)​Z{\color[rgb]{0,0,1}\textbf{H}\leftarrow f\textbf{H}+(1-f)\textbf{Z}} ⊳\
+triangleright Gated update of hidden state
+    Compute y←H⊤​q{\color[rgb]{0,0,1}y\leftarrow\textbf{H}^{\top}q} ⊳\triangleright Query readout
+from hidden state
+    Store Y[b,t,n,:]←y\textbf{Y}[b,t,n,:]\leftarrow{\color[rgb]{0,0,1}y} to HBM ⊳\triangleright 
+Write output; no intermediate H cached
+   end for
+  end for
+ end for
+
+
+Algorithm 2 Backward Computation for M^2RNN layer with multi-value attention formulation. The blue
+colour indicates computation or tensors residing in on-chip memory.
+0:  : H0∈ℝB​N​K​V,Q∈ℝB​T​K,K∈ℝB​T​K,V∈ℝB​T​N​V,W∈ℝN​V​V,F∈[0,1]B​T​N,Hfull∈ℝB​T​N​K​V\textbf{H}_{0}
+\in\mathbb{R}^{BNKV},\textbf{Q}\in\mathbb{R}^{BTK},\textbf{K}\in\mathbb{R}^{BTK},\textbf{V}\in\
+mathbb{R}^{BTNV},\textbf{W}\in\mathbb{R}^{NVV},\textbf{F}\in[0,1]^{BTN},\textbf{H}_{\text{full}}\in
+\mathbb{R}^{BTNKV}
+0:  : d​Q∈ℝB​T​K,d​K∈ℝB​T​K,d​V∈ℝB​T​N​V,d​W∈ℝN​V​V,d​F∈[0,1]B​T​Nd\textbf{Q}\in\mathbb{R}^{BTK},d\
+textbf{K}\in\mathbb{R}^{BTK},d\textbf{V}\in\mathbb{R}^{BTNV},d\textbf{W}\in\mathbb{R}^{NVV},d\
+textbf{F}\in[0,1]^{BTN}
+ for n=0n=0 to N−1N-1 in parallel do ⊳\triangleright Each head on a separate SM
+  Load W←W[n,:,:]\textbf{{\color[rgb]{0,0,1}W}}\leftarrow\textbf{W}[n,:,:] from HBM ⊳\triangleright
+Transition matrix to SRAM
+  for b=0b=0 to B−1B-1 in parallel do
+   Load H←H0[b,n,:,:]\textbf{{\color[rgb]{0,0,1}H}}\leftarrow\textbf{H}_{0}[b,n,:,:] from HBM ⊳\
+triangleright Initial hidden state to SRAM
+   for t=0t=0 to T−1T-1 do ⊳\triangleright Pass 1: forward recomputation, cache all Ht\textbf{H}_
+{t}
+    Load k,v,f←K[b,t,:],V[b,t,n,:],F[b,t,n]{\color[rgb]{0,0,1}k,v,f}\leftarrow\textbf{K}[b,t,:],\
+textbf{V}[b,t,n,:],\textbf{F}[b,t,n] from HBM
+    Store Hfull[b,t,n,:,:]←fH+(1−f)tanh(HW+kv⊤)\textbf{H}_{\text{full}}[b,t,n,:,:]\leftarrow{\color
+[rgb]{0,0,1}f\textbf{H}+(1-f)\tanh(\textbf{H}\textbf{W}+kv^{\top})} to HBM ⊳\triangleright Cache
+hidden state for backward
+   end for
+   d​W←0V×Vd\textbf{W}\leftarrow 0_{V\times V} ⊳\triangleright Initialize d​Wd\textbf{W} to 0
+   for t=T−1t=T-1 to 00 do ⊳\triangleright Pass 2: reverse sweep to compute gradients
+    if t==0t==0 then
+     Load Hprev←H0[b,n,:,:]{\color[rgb]{0,0,1}\textbf{H}_{\text{prev}}}\leftarrow\textbf{H}_{0}
+[b,n,:,:] from HBM
+    else
+     Load Hprev←Hfull[b,t−1,n,:,:]{\color[rgb]{0,0,1}\textbf{H}_{\text{prev}}}\leftarrow\textbf{H}_
+{\text{full}}[b,t-1,n,:,:] from HBM
+    end if
+    Load q,k,v,f,dy←Q[b,t,:],K[b,t,:],V[b,t,n,:],F[b,t,n],dY[b,t,n,:]{\color[rgb]{0,0,1}q,k,v,f,dy}
+\leftarrow\textbf{Q}[b,t,:],\textbf{K}[b,t,:],\textbf{V}[b,t,n,:],\textbf{F}[b,t,n],\textbf{dY}
+[b,t,n,:] from HBM
+    Compute Z←tanh⁡(Hprev​W+kt​vt⊤){\color[rgb]{0,0,1}\textbf{Z}\leftarrow\tanh(\textbf{H}_{\text
+{prev}}\textbf{W}+k_{t}v_{t}^{\top})} ⊳\triangleright Recompute pre-gate activation
+    Compute H←f​Hprev+(1−f)​Z{\color[rgb]{0,0,1}\textbf{H}\leftarrow f\textbf{H}_{\text{prev}}+
+(1-f)\textbf{Z}} ⊳\triangleright Recompute hidden state at tt
+    Compute d​q←H⋅d​y{\color[rgb]{0,0,1}dq\leftarrow\textbf{H}\cdot dy} ⊳\triangleright Gradient
+w.r.t. query
+    Atomic Add dQ[b,t,:]←dqd\textbf{Q}[b,t,:]\leftarrow{\color[rgb]{0,0,1}dq} to HBM ⊳\
+triangleright Accumulate across shared heads
+    Compute r←q⋅d​y⊤{\color[rgb]{0,0,1}r\leftarrow q\cdot dy^{\top}} ⊳\triangleright Outer product
+for temporary variable
+    Compute d​f←1K⊤​[r⊙(Hprev−Z)]​1V{\color[rgb]{0,0,1}df\leftarrow 1_{K}^{\top}\left[r\odot(\
+textbf{H}_{\text{prev}}-\textbf{Z})\right]1_{V}} ⊳\triangleright Gradient w.r.t. forget gate
+(scalar)
+    Store d​F​[b,t,n]←d​fd\textbf{F}[b,t,n]\leftarrow{\color[rgb]{0,0,1}df} to HBM
+    Compute d​H←r⊙f{\color[rgb]{0,0,1}d\textbf{H}\leftarrow r\odot f} ⊳\triangleright Gradient
+through the gated residual
+    Compute d​Z←r⊙(1−f){\color[rgb]{0,0,1}d\textbf{Z}\leftarrow r\odot(1-f)} ⊳\triangleright 
+Gradient through the nonlinear branch
+    Compute d​X←d​Z⊙(1K×V−Z⊙Z){\color[rgb]{0,0,1}d\textbf{X}\leftarrow d\textbf{Z}\odot(\textbf{1}_
+{K\times V}-\textbf{Z}\odot\textbf{Z})} ⊳\triangleright Backprop through tanh\tanh
+    Compute d​H←d​Z⊙(d​X⋅W⊤){\color[rgb]{0,0,1}d\textbf{H}\leftarrow d\textbf{Z}\odot(d\textbf{X}\
+cdot\textbf{W}^{\top})} ⊳\triangleright Gradient w.r.t. previous hidden state
+    Compute d​W←d​W+Hprev⊤​d​X{\color[rgb]{0,0,1}d\textbf{W}\leftarrow d\textbf{W}+\textbf{H}_{\
+text{prev}}^{\top}d\textbf{X}} ⊳\triangleright Accumulate gradient for transition matrix
+    Compute d​k←d​X⋅v{\color[rgb]{0,0,1}dk\leftarrow d\textbf{X}\cdot v} ⊳\triangleright Gradient
+w.r.t. key
+    Atomic Add dK[b,t,:]←dkd\textbf{K}[b,t,:]\leftarrow{\color[rgb]{0,0,1}dk} to HBM ⊳\
+triangleright Accumulate across shared heads
+    Compute d​v←d​X⊤​k{\color[rgb]{0,0,1}dv\leftarrow d\textbf{X}^{\top}k} ⊳\triangleright Gradient
+w.r.t. value
+    Store dV[b,t,n,:]←dvd\textbf{V}[b,t,n,:]\leftarrow{\color[rgb]{0,0,1}dv} to HBM ⊳\triangleright
+Write to HBM
+   end for
+   Atomic Add dW[n,:,:]←dWd\textbf{W}[n,:,:]\leftarrow{\color[rgb]{0,0,1}d\textbf{W}} to HBM ⊳\
+triangleright Accumulate d​Wd\textbf{W} across batch
+  end for
+ end for
+
+4.1 Forward Algorithm
+
+We implement the forward computation for the M^2RNN layer using the Triton Tillet et al. (2019)
+DSL. The kernel parallelizes across the batch dimension BB and the number of heads NN, assigning
+each (b,n)(b,n) pair to a separate GPU SM. We illustrate our algorithm in Algorithm 1 for the case
+of multi-value formulation (Nq=Nk=1N_{q}=N_{k}=1 and Nv,Nf,Nw=NN_{v},N_{f},N_{w}=N) which we use
+for all our models. We avoid caching intermediate activations during the backward pass for use in
+backward computation, as storing the H matrix is prohibitively expensive in both I/O and memory
+footprint: Ht∈ℝB​N​K​V\textbf{H}_{t}\in\mathbb{R}^{BNKV} is much larger than the per-time-step keys
+and values (kt∈ℝNk​K,vt∈ℝNv​Vk_{t}\in\mathbb{R}^{N_{k}K},v_{t}\in\mathbb{R}^{N_{v}V}).
+
+4.2 Backward Algorithm
+
+For the backward computation, we recompute the forward recurrence without the final query readout
+and cache Ht\textbf{H}_{t} at every time step to HBM. The backward kernel then reads Ht\textbf{H}_
+{t} at every time step from HBM to compute the gradients for the inputs. The backward kernel is
+implemented in the Triton DSL Tillet et al. (2019), which does not expose direct programmability of
+shared memory. As a result, the kernel is heavily memory-bandwidth bound; an optimized CUTLASS
+implementation is left for future work. The algorithm is illustrated in Algorithm 2.
+
+LinearLinearLinearCausalConv1Dψ\psiM^2RNN recurrenceqtq_{t}ktk_{t}vtv_{t}ftf_{t}×\timesRMSNorm
+Lineargtg_{t}LinearLinearLinearCausalConv1Dψ\psiM^2RNN recurrenceqtq_{t}ktk_{t}vtv_{t}ftf_{t}×\
+timesRMSNormLineargtg_{t}ReduceScatter (FWD)AllGather (BWD)AllGather (FWD)ReduceScatter (BWD)
+Figure 4: TP topology-aware M^2RNN layer running with TP on 2 GPUs. Note that RMSNorm[1] and
+RMSNorm[2] have different weights for the RMSNorm module on both GPUs.
+
+4.3 Tensor Parallelism
+
+Shoeybi et al. (2019) introduced tensor parallelism (TP), a model parallelism technique that
+partitions attention and MLP layers across multiple accelerators. This approach has become standard
+for training large-scale models Chowdhery et al. (2023); Smith et al. (2022); Grattafiori et al.
+(2024); Brown et al. (2020); Workshop et al. (2022). The core challenge in applying TP for M^2RNN
+is that the multi-value formulation shares a single query and key head across all value heads (Nq=
+Nk=1N_{q}=N_{k}=1, Nv=NN_{v}=N), preventing a straightforward partition of heads across GPUs. We
+present two strategies for implementing TP in M^2RNN layers: a grouped-value approach that avoids
+extra communication, and a multi-value approach that preserves the parameter count at the cost of
+additional communication during training. We represent the TP world size as NTPN_{\textrm{TP}}.
+
+4.3.1 TP Topology-Aware M^2RNN Layers
+
+A straightforward way to implement TP for M^2RNN layers is to adopt a grouped-value formulation:
+the number of query and key heads is set equal to the TP world size (Nq=Nk=NTPN_{q}=N_{k}=N_{\
+textrm{TP}}), while the number of value heads remains Nv=NN_{v}=N. Each GPU is assigned one query
+head, one key head, and NvNTP\frac{N_{v}}{N_{\textrm{TP}}} value heads^5^5 5 We assume NvN_{v} is
+divisible by NTPN_{\textrm{TP}}., and applies RMSNorm Zhang and Sennrich (2019) with different
+weights on different GPUs in the TP group (refer to Figure 4). Since this is equivalent to running
+a multi-value M^2RNN recurrence on every GPU, this requires no modifications to the kernels.
+
+Advantages.
+
+Each GPU operates independently on its assigned heads, so no communication is introduced beyond the
+standard TP communication required for an attention layer.
+
+Disadvantages.
+
+The query and key projection sizes grow proportionally with NTPN_{\textrm{TP}}, coupling the
+parameter count to the TP topology used during training^6^6 6 The RMSNorm weight size also grows
+with NTPN_{\textrm{TP}} but is significantly smaller in comparison.. Consequently, a model trained
+with TP world size NTPN_{\textrm{TP}} cannot be straightforwardly deployed at a smaller world size
+without carrying the inflated query, key projections and the larger activation footprint that comes
+with them (specifically, the input to the output linear projection). This is analogous to the
+approach proposed in Mamba-2 Dao and Gu (2024) and the Desync-Residual strategy^7^7 7 Refer to
+https://arxiv.org/abs/2501.06589v2 (v2) since later versions of the paper dropped Desync-Residual.
+Zhang et al. (2025).
+
+4.3.2 TP Topology-Independent M^2RNN Layers
+
+LinearLinearLinearCausalConv1Dψ\psiM^2RNN recurrenceqtq_{t}ktk_{t}vtv_{t}ftf_{t}×\timesRMSNormTP
+Lineargtg_{t}LinearLinearLinearCausalConv1Dψ\psiM^2RNN recurrenceqtq_{t}ktk_{t}vtv_{t}ftf_{t}×\
+timesRMSNormTPLineargtg_{t}ReduceScatter (FWD)AllGather (BWD)AllGather (FWD)ReduceScatter (BWD)
+AllReduce (FWD/BWD)No-OP (FWD)AllReduce (BWD)No-OP (FWD)AllReduce (BWD)
+Figure 5: TP topology-independent M^2RNN layer. Note that RMSNormTP have weights sharded along the
+model width dimension for the RMSNorm module on both GPUs requiring a synchronization in both the
+forward and backward computation.
+
+Alternatively, TP can be applied directly to the multi-value formulation (Nq=Nk=1N_{q}=N_{k}=1, Nv=
+NN_{v}=N). Each GPU processes NNTP\frac{N}{N_{\textrm{TP}}} value heads but shares the same query
+and key projections. This requires replacing RMSNorm Zhang and Sennrich (2019) modules with
+RMSNormTP (refer to Appendix C) where the weight for RMSNorm is sharded and an extra communication
+is introduced in RMSNormTP for the forward and backward computation. The communication in the
+forward is required to synchronize the RMSNorm normalization term and the synchronization in the
+backward is required for computing the activation gradient. Note that this idea is applicable to 
+Mamba-2 Dao and Gu (2024) and Gated DeltaNet Yang et al. (2024a) layers as well. If the weights for
+the causal convolution and linear projections for queries and keys are initialized to the same
+values on all GPUs participating in TP, the sharding method illustrated in Figure 5 ensures that
+the weights remain synchronized during training.
+
+Advantages.
+
+This TP approach preserves the parameter count regardless of the number of GPUs and makes the M^
+2RNN layers independent of the TP topology used during training.
+
+Disadvantages.
+
+This approach introduces additional AllReduce communications beyond standard TP. In the forward
+pass, one extra AllReduce is needed to synchronize the RMSNorm normalization term^8^8 8 The RMSNorm
+normalization term depends only on the batch size (BB) and sequence length (TT), so this
+communication is lightweight.. The backward pass requires three extra AllReduces: one for the
+RMSNorm gradient and two to aggregate the query and key activation gradients, since each GPU
+computes partial gradients for the shared query and key heads from its assigned subset of value
+heads. Weight gradients for the query and key projections remain naturally synchronized across GPUs
+throughout training, provided the corresponding weights are initialized identically, so no
+additional communication is needed for them. One way to reduce backward communication is to make
+only the RMSNorm module TP topology-dependent (as in Section 4.3.1); since RMSNorm has very few
+parameters, this trade-off may be acceptable in practice.
+
+5 Experiments
+
+We train dense models with 410410M parameters (24 layers) and Mixture-of-Experts (MoE) Shazeer et
+al. (2017) models with 77B total (1.11.1B active) parameters (40 layers). All models are trained on
+100B tokens sampled from the high quality subset of Nemotron-CC-v2 NVIDIA et al. (2025).
+
+5.1 Models
+
+5.1.1 Homogeneous Architectures
+
+We compare M^2RNN primarily against Mamba-2 Dao and Gu (2024), Gated DeltaNet Yang et al. (2024a),
+RNN and GRU Cho et al. (2014a). We focus on Mamba-2 and Gated DeltaNet because they (and their
+variants) have demonstrated strong performance in state-of-the-art production models Team et al.
+(2025); NVIDIA et al. (2025); Lieber et al. (2024); IBM Granite Team (2025).
+
+5.1.2 2-way Hybrid Models
+
+We additionally run experiments in hybrid settings that combine recurrent layers with attention
+layers. Following common practice in production LLMs IBM Granite Team (2025); Lieber et al. (2024),
+we use 1 attention layer for every 7 recurrent layers (i.e., 1 out of every 8 layers is attention).
+We compare Hybrid M^2RNN against Transformer++ Vaswani et al. (2017), Hybrid Mamba-2 and Hybrid 
+Gated DeltaNet.
+
+5.1.3 3-way Hybrid Models
+
+We also experiment with augmenting Hybrid Gated DeltaNet models with M^2RNN layers, yielding 3-way
+hybrids denoted “Hybrid GDN + M^2RNN-nn”, where nn is the number of M^2RNN layers. For n=1n=1, we
+replace the first recurrent layer with M^2RNN; for n>1n>1, we replace the layer immediately
+preceding each attention layer, producing “Hybrid GDN + M^2RNN-3” and “Hybrid GDN + M^2RNN-5” for
+the 410M and 7B models respectively.
+
+5.2 Model Training
+
+For all the models, we use RMSNorm Zhang and Sennrich (2019) with pre-normalization Xiong et al.
+(2020). Additionally, Transformer++ uses RoPE positional embeddings Su et al. (2024) while all
+linear and hybrid architectures use NoPE (no positional embeddings) Kazemnejad et al. (2023). For
+MLP and MoE layers Shazeer et al. (2017), we use the SwiGLU activation Shazeer (2020). We keep the
+model width, intermediate MLP width, number of layers, and all other hyperparameters consistent
+across architectures, adjusting only the parameters in the sequence mixing block.
+
+All models are trained with the AdamW optimizer Loshchilov and Hutter (2019) using a cosine
+learning rate schedule. We linearly warm up the learning rate over the first 10B tokens to a peak
+value of 3×10−43\times 10^{-4}, followed by decaying to 10%10\% of the peak (3×10−53\times 10^
+{-5}). We use gradient clipping of 11 and weight decay of 0.10.1. We don’t apply weight decay to
+the normalization parameters. All models are trained with a batch size of 10241024 samples at a
+context length of 40964096 tokens. We ensure that all models see identical data in identical order
+to ensure fair comparison. The 410M dense models are trained on 32 H100s and the 7B MoE models on
+64 H100s.
+
+We use the lm-engine codebase Mishra (2024) written in PyTorch Paszke et al. (2019) for training
+all our models. We also use FlashAttention-3 Shah et al. (2024) and SonicMoE Guo et al. (2025) with
+PyTorch compile Ansel et al. (2024) for training throughput optimization. We also use fast kernels
+for causal convolutions, Mamba-2, Gated DeltaNet, and M^2RNN where applicable. The models use mixed
+precision Micikevicius et al. (2017) in BF16 Kalamkar et al. (2019), with gradient AllReduce and
+accumulation in FP32 for numerical stability.
+
+5.3 Language Modeling
+
+We evaluate all trained models on a suite of downstream benchmarks using EleutherAI’s LM Eval
+Harness Gao et al. (2024): LAMBADA Paperno et al. (2016), HellaSwag Zellers et al. (2019), PIQA
+Bisk et al. (2019), ARC Clark et al. (2018), Winogrande Sakaguchi et al. (2019), BoolQ Clark et al.
+(2019), OpenBookQA Mihaylov et al. (2018), CoPA Roemmele et al. (2011), and SciQ Welbl et al.
+(2017). We additionally report language modeling perplexity on Wikitext Merity et al. (2017) and
+LAMBADA Paperno et al. (2016).
+
+Model         Wiki  LMB    LAMBADA HellaSwag PIQA  ARC-E ARC-C WinoGrande BoolQ OBQA  COPA  SciQ  Avg
+              PPL   PPL                                                                           Acc
+Mamba-2       22.93 38.56  32.78   47.70     70.29 62.04 30.55 53.28      58.69 33.20 69.00 85.50 54.30
+Gated         22.70 34.17  34.21   47.16     71.00 61.24 28.07 51.07      58.84 32.80 70.00 85.50 53.99
+DeltaNet
+RNN           33.74 317.38 13.00   44.12     69.70 62.54 30.63 49.72      45.75 33.40 63.00 77.10 48.90
+GRU           25.80 63.83  26.10   48.70     71.49 64.90 30.97 49.64      57.68 33.80 71.00 82.90 53.72
+M^2RNN        22.92 33.63  33.98   47.76     71.60 62.29 30.29 53.43      50.21 34.80 72.00 86.00 54.24
+Transformer++ 23.32 42.87  33.36   45.02     68.88 59.76 29.01 50.43      54.56 32.00 72.00 84.00 52.90
+Hybrid        21.59 35.84  35.32   48.11     70.89 62.54 29.35 52.72      51.41 35.40 65.00 86.80 53.75
+Mamba-2
+Hybrid Gated  21.89 29.02  35.78   47.19     70.67 61.91 29.78 52.17      52.57 34.00 70.00 86.30 54.04
+DeltaNet
+Hybrid M^2RNN 21.53 37.31  35.67   48.74     70.29 63.38 30.29 51.46      50.09 33.80 71.00 86.80 54.15
+Hybrid        21.59 35.84  35.32   48.11     70.89 62.54 29.35 52.72      51.41 35.40 65.00 86.80 53.75
+Mamba-2
+Hybrid                                                                                            
+Mamba-2 + M^  21.48 36.98  34.47   48.23     70.46 64.14 31.57 54.46      49.54 33.60 70.00 85.80 54.23
+2RNN-1
+Hybrid                                                                                            
+Mamba-2 + M^  21.39 35.77  35.77   48.47     70.57 62.33 31.83 50.75      51.44 33.00 65.00 87.40 53.65
+2RNN-3
+Hybrid Gated  21.89 29.02  35.78   47.19     70.67 61.91 29.78 52.17      52.57 34.00 70.00 86.30 54.04
+DeltaNet
+Hybrid Gated                                                                                      
+DeltaNet + M^ 21.39 33.78  34.83   48.11     70.73 61.24 29.95 51.70      48.41 33.20 72.00 87.30 53.75
+2RNN-1
+Hybrid Gated                                                                                      
+DeltaNet + M^ 21.26 28.93  37.18   48.83     69.64 63.85 29.44 53.35      59.14 33.80 71.00 86.10 55.23
+2RNN-3
+
+
+Table 1: Language Modeling on the 410M parameter dense model across commonsense reasoning
+benchmarks. All models are evaluated in the 0-shot setting.
+
+Model         Wiki  LMB   LAMBADA HellaSwag PIQA  ARC-E ARC-C WinoGrande BoolQ OBQA  COPA  SciQ  Avg
+              PPL   PPL                                                                          Acc
+Mamba-2       13.73 11.03 50.09   67.43     76.82 74.33 43.52 61.64      64.01 41.00 80.00 93.40 65.22
+Gated         13.89 11.10 48.92   66.94     77.26 73.82 40.53 60.14      65.41 39.60 78.00 92.20 64.28
+DeltaNet
+RNN           17.65 43.68 30.25   64.49     76.61 72.64 41.04 55.64      58.35 40.20 79.00 87.60 60.58
+GRU           14.80 15.33 43.94   67.36     76.82 75.67 43.52 58.96      63.79 41.00 82.00 91.30 64.44
+M^2RNN        13.80 11.48 49.18   67.57     76.71 75.51 44.97 58.17      64.16 41.40 82.00 92.00 65.17
+Transformer++ 14.94 17.26 43.90   62.99     75.63 71.97 38.91 57.54      63.12 37.20 75.00 91.40 61.76
+Hybrid        13.10 11.05 50.18   68.62     76.55 72.64 43.09 60.62      63.61 43.00 79.00 93.00 65.03
+Mamba-2
+Hybrid Gated  13.51 11.06 50.20   67.23     77.09 73.06 41.64 59.12      62.39 40.80 82.00 92.90 64.64
+DeltaNet
+Hybrid M^2RNN 13.00 10.58 51.74   68.44     76.55 76.81 43.09 61.09      63.21 40.40 81.00 93.30 65.56
+Hybrid        13.10 11.05 50.18   68.62     76.55 72.64 43.09 60.62      63.61 43.00 79.00 93.00 65.03
+Mamba-2
+Hybrid                                                                                           
+Mamba-2 + M^  13.01 10.84 50.92   68.35     77.86 74.66 42.24 60.54      62.57 40.40 83.00 92.80 65.33
+2RNN-1
+Hybrid                                                                                           
+Mamba-2 + M^  13.02 11.59 49.84   68.19     77.04 75.17 42.58 59.04      65.26 42.40 83.00 93.90 65.64
+2RNN-5
+Hybrid Gated  13.51 11.06 50.20   67.23     77.09 73.06 41.64 59.12      62.39 40.80 82.00 92.90 64.64
+DeltaNet
+Hybrid Gated                                                                                     
+DeltaNet + M^ 13.07 10.33 51.54   68.69     78.18 74.45 41.81 60.30      65.08 42.00 82.00 93.90 65.80
+2RNN-1
+Hybrid Gated                                                                                     
+DeltaNet + M^ 12.85 10.29 51.80   68.99     76.82 76.73 43.60 60.69      63.30 40.20 81.00 93.50 65.66
+2RNN-5
+
+
+Table 2: Language Modeling on the 7B (1B active) MoE model across commonsense reasoning benchmarks.
+All models are evaluated in the 0-shot setting.
+
+5.3.1 Homogeneous Architectures
+
+At the 410M scale, Gated DeltaNet achieves the best Wikitext Merity et al. (2017) perplexity among
+all baselines, with M^2RNN matching Mamba-2 Dao and Gu (2024) (within 0.010.01 points). On LAMBADA
+Paperno et al. (2016), M^2RNN outperforms both Mamba-2 and Gated DeltaNet Yang et al. (2024a) by
+4.934.93 and 0.540.54 perplexity points respectively (Table 1). We attribute M^2RNN’s gap behind 
+Gated DeltaNet on Wikitext to its 3×3\times smaller state size: while increasing the state size can
+close this gap, it also raises the per-step FLOP count of the recurrence, making it a less
+favorable tradeoff in practice.
+
+At the 7B MoE scale, Mamba-2 achieves the best Wikitext perplexity, followed by M^2RNN, which
+outperforms Gated DeltaNet by 0.090.09 points (Table 2). On average downstream accuracy, M^2RNN
+matches Mamba-2 to within 0.060.06 points at both the 410M and 7B MoE scales while consistently
+outperforming Gated DeltaNet (Tables 1, 2). Vanilla RNN and GRU models significantly underperform M
+^2RNN and other linear RNNs across all metrics.
+
+5.3.2 2-way Hybrid Models
+
+Combining M^2RNN with attention Vaswani et al. (2017) (denoted Hybrid M^2RNN) yields substantial
+gains on Wikitext Merity et al. (2017). Hybrid M^2RNN outperforms Hybrid Mamba-2 Dao and Gu (2024)
+by 0.060.06 and 0.10.1 perplexity points at 410M and 7B MoE scale, and Hybrid Gated DeltaNet Yang
+et al. (2024a) by 0.40.4 and 0.50.5 points at the 410M and 7B MoE scale. Average downstream
+accuracy also improves over all other hybrids at both scales (Tables 1, 2). Overall, 2-way hybrids
+improve upon both Transformer++ and homogeneous M^2RNN models. We attribute these gains to M^2RNN’s
+non-linear state transition: in the homogeneous setting, M^2RNN’s advantage is constrained by its
+smaller state size relative to Mamba-2 and Gated DeltaNet, however, in the hybrid setting,
+attention is responsible for in-context retrieval, allowing M^2RNN’s non-linear recurrence to
+contribute expressivity that linear RNNs such as Mamba-2 and Gated DeltaNet cannot provide.
+
+5.3.3 3-way Hybrid Models
+
+We next explore 3-way hybrids that mix attention, Gated DeltaNet (or Mamba-2), and M^2RNN layers.
+We find that replacing even a single linear RNN layer with M^2RNN (denoted Hybrid Gated DeltaNet
+(or Mamba-2) + M^2RNN-1) suffices to match the accuracy of the full Hybrid M^2RNN model while
+preserving comparable training throughput (Section 5.7). This result indicates that M^2RNN layers
+carry information that is substantially different from what Gated DeltaNet layers capture.
+
+Hybrid Gated DeltaNet + M^2RNN-1 improves upon Hybrid Gated DeltaNet, reducing Wikitext perplexity
+by 0.50.5 and 0.440.44 points at the 410M and 7B (1B active) scales, respectively. We also observe
+improvements on Hybrid Mamba-2 + M^2RNN-1 over Hybrid Mamba-2 of 0.10.1 perplexity points on both
+model scales. Increasing the number of M^2RNN layers to 3 (5 for 7B MoE) yields additional gains of
+0.130.13 and 0.220.22 perplexity points. Together, these results solidify the importance of
+non-linear recurrences in sequence mixing blocks.
+
+5.4 In-Context Retrieval
+
+5.4.1 In-Context Retrieval on RULER
+
+We evaluate the in-context retrieval ability of M^2RNN relative to other linear RNNs on the RULER
+benchmark Hsieh et al. (2024), focusing on the Single Needle In A Haystack (S-NIAH-1, 2, 3) Nelson
+et al. (2024), Multi-Query (MQ), Multi-Key (MK), and Multi-Value (MV) variants:
+
+ 1. 1.
+   
+    S-NIAH: A key-value pair is embedded in context and the model is tasked to retrieve the value
+    given the key. S-NIAH-1 uses a synthetic passage with word keys and numeric values, probing
+    long-term retention. S-NIAH-2 and S-NIAH-3 use real-world essays with numeric and UUID values,
+    respectively, testing efficient long-context memory management Yang et al. (2024a).
+
+ 2. 2.
+   
+    MQ-NIAH: In the MQ-NIAH benchmark, multiple key–value pairs are embedded within the passage,
+    and the task requires retrieving all needles associated with distinct keys.
+
+ 3. 3.
+   
+    MK-NIAH: The MK-NIAH benchmark inserts multiple key-value pairs in the passage. The task is to
+    retrieve a single specified key while the other keys serve as distractors.
+
+ 4. 4.
+   
+    MV-NIAH: Multiple values share the same key and the model must retrieve all values associated
+    with that key.
+
+Figures 7 and 7 report accuracy at the 410M scale for Gated DeltaNet and Mamba-2-based models,
+respectively; Figures 9 and 9 report the same for the 7B (1B active) MoE model. All models are
+trained with a 4,096 context length and evaluated up to 16,384.
+
+Hybrid Gated DeltaNet + M^2RNN:
+
+Replacing a few Gated DeltaNet layers with M^2RNN layers in the hybrid setting significantly
+improves retrieval at unseen context lengths on S-NIAH-2, and MQ/MK/MV-NIAH at the 410M parameter
+scale (Figure 7). At the 7B MoE scale, we observe that the 3-way consistently improves over the
+2-way hybrid models except on S-NIAH-1 (Figure 9). Notably, augmenting with M^2RNN layers also
+improves MQ/MK/MV-NIAH accuracy at context lengths seen during training (≤4,096\leq 4,096) at both
+model scales.
+
+On S-NIAH-1, we find that both Hybrid M^2RNN and Hybrid Gated DeltaNet achieve 100% accuracy across
+all context lengths, however, adding M^2RNN layers leads to accuracy degradation, likely due to the
+extremely synthetic passages used in the S-NIAH-1 task.
+
+Hybrid Mamba-2 + M^2RNN:
+
+We find that a single M^2RNN layer with Hybrid Mamba-2 (Hybrid Mamba-2 + M^2RNN-1) is insufficient
+to improve long-context retrieval at either model scale. However, replacing three Mamba-2 layers
+with M^2RNN layers at 410M and 5 layers at 7B MoE yields consistent improvement (Figures 7, 9). We
+attribute this to the weaker state transition of Mamba-2 requiring more M^2RNN layers to
+compensate.
+
+
+Figure 6: Zero-shot in-context retrieval performance on the RULER benchmark for M^2RNN layers and 
+Gated DeltaNet models on 410M parameter scale. The vertical lines at 4096 indicate the training
+context length.
+
+Figure 7: Zero-shot in-context retrieval performance on the RULER benchmark for M^2RNN layers and 
+Mamba-2 models on 410M parameter scale. The vertical lines at 4096 indicate the training context
+length.
+
+
+Figure 8: Zero-shot in-context retrieval performance on the RULER benchmark for M^2RNN layers and 
+Gated DeltaNet models for the 7B MoE model. The vertical lines at 4096 indicate the training
+context length.
+
+Figure 9: Zero-shot in-context retrieval performance on the RULER benchmark for M^2RNN layers and 
+Mamba-2 models for the 7B MoE model. The vertical lines at 4096 indicate the training context
+length.
+
+Model                            SQuAD NQ   DROP TriviaQA FDA  SWDE Avg
+Mamba-2                          31.2  15.0 19.5 50.5     15.6 32.4 27.4
+Gated DeltaNet                   34.8  15.4 24.9 51.7     16.3 41.8 30.8
+RNN                              9.6   5.9  14.6 29.7     0.0  5.0  10.8
+GRU                              15.8  8.8  17.2 41.5     0.7  7.7  15.3
+M^2RNN                           34.0  13.0 22.9 52.3     10.6 28.5 26.9
+Transformer++                    14.0  15.5 28.2 52.4     46.0 51.7 34.6
+Hybrid Mamba-2                   37.6  21.4 26.4 51.7     65.3 61.7 44.0
+Hybrid Gated DeltaNet            37.6  22.2 26.0 53.4     61.5 58.0 43.1
+Hybrid M^2RNN                    41.3  22.7 26.8 55.5     74.5 60.7 46.9
+Hybrid Mamba-2                   37.6  21.4 26.4 51.7     65.3 61.7 44.0
+Hybrid Mamba-2 + M^2RNN-1        38.6  23.8 26.3 55.7     61.3 60.2 44.3
+Hybrid Mamba-2 + M^2RNN-3        40.4  23.5 26.4 56.7     65.2 61.7 45.6
+Hybrid Gated DeltaNet            37.6  22.2 26.0 53.4     61.5 58.0 43.1
+Hybrid Gated DeltaNet + M^2RNN-1 39.8  23.5 25.6 54.6     67.2 62.5 45.5
+Hybrid Gated DeltaNet + M^2RNN-3 39.3  21.4 27.2 54.9     65.1 56.5 44.1
+
+
+Table 3: In-context retrieval performance on real-world data at the 410M parameter scale.
+
+Model                            SQuAD NQ   DROP TriviaQA FDA  SWDE Avg
+Mamba-2                          41.7  26.5 30.0 65.0     33.0 54.4 41.8
+Gated DeltaNet                   40.3  24.2 29.9 64.3     32.4 61.8 42.2
+RNN                              20.0  12.2 20.4 53.1     0.8  9.8  19.4
+GRU                              27.0  16.7 24.6 59.3     5.2  18.4 25.2
+M^2RNN                           37.9  21.1 28.2 62.5     27.6 49.9 37.9
+Transformer++                    22.1  24.0 27.6 62.2     67.0 70.1 45.5
+Hybrid Mamba-2                   48.2  31.4 32.7 67.9     73.1 77.1 55.1
+Hybrid Gated DeltaNet            46.4  31.2 28.3 63.6     67.1 71.9 51.4
+Hybrid M^2RNN                    48.4  31.4 31.4 64.6     78.0 79.8 55.6
+Hybrid Mamba-2                   48.2  31.4 32.7 67.9     73.1 77.1 55.1
+Hybrid Mamba-2 + M^2RNN-1        46.6  30.6 33.6 67.1     78.4 75.0 55.2
+Hybrid Mamba-2 + M^2RNN-5        46.8  31.5 28.7 66.0     78.5 79.7 55.2
+Hybrid Gated DeltaNet            46.4  31.2 28.3 63.6     67.1 71.9 51.4
+Hybrid Gated DeltaNet + M^2RNN-1 46.4  29.6 32.1 66.4     73.1 77.4 54.2
+Hybrid Gated DeltaNet + M^2RNN-5 47.1  32.0 31.2 65.5     77.2 77.9 55.1
+
+
+Table 4: In-context retrieval performance on real-world data at the 7B (1B active) MoE scale.
+
+5.4.2 In-Context Retrieval on Real-World Data
+
+Yang et al. (2024b) show that despite strong synthetic-task performance, DeltaNet still
+underperforms Mamba-2 Dao and Gu (2024) on real-world retrieval. To assess whether this limitation
+persists for M^2RNN, we evaluate in-context retrieval on real-world data for both model scales
+(Tables 3, 4).
+
+As expected, Transformer++ Vaswani et al. (2017) substantially outperforms all recurrent models due
+to its linearly growing key-value cache, which enables direct retrieval from any past position.
+Among purely recurrent architectures, Gated DeltaNet Yang et al. (2024a) outperforms Mamba-2 Dao
+and Gu (2024) and M^2RNN which we attribute to the 3×3\times larger state size of Gated DeltaNet.
+In the hybrid setting, all models significantly improve upon the Transformer++ baseline, with
+Hybrid M^2RNN achieving the largest gains: 12.312.3 and 10.110.1 point gains across the 410M and 7B
+MoE model scales, outperforming both Hybrid Mamba-2 and Hybrid Gated DeltaNet. Further, we find
+that adding M^2RNN layers to Hybrid Gated DeltaNet (Hybrid Gated DeltaNet + M^2RNN) further
+improves upon Hybrid Gated DeltaNet. We observe similar improvements for Hybrid Mamba-2 when
+combined with M^2RNN (Tables 3, 4).
+
+5.5 Long-Context Performance
+
+Model                           GovReport QMSum MultiNews TREC TriviaQA SAMSum LCC  RepoBench-P Avg
+Mamba-2                         6.6       14.3  9.9       26.5 23.2     11.5   13.7 8.9         14.3
+Gated DeltaNet                  7.6       18.2  12.0      19.0 34.1     21.3   14.9 11.8        17.3
+RNN                             9.3       15.2  9.2       0.5  12.2     5.0    17.9 14.9        10.5
+GRU                             7.0       16.5  10.8      1.0  21.4     8.5    12.5 9.0         10.8
+M^2RNN                          6.3       16.4  10.8      22.0 24.3     13.2   10.7 10.1        14.2
+Transformer++                   5.6       5.7   6.2       11.0 9.7      4.6    12.0 9.9         8.1
+Hybrid Mamba-2                  10.0      4.8   10.2      16.0 9.4      9.2    10.5 12.0        10.3
+Hybrid Gated DeltaNet           8.2       16.8  16.1      19.5 28.7     15.9   8.7  9.2         15.4
+Hybrid M^2RNN                   10.0      14.0  7.2       17.5 35.5     14.9   13.4 10.3        15.4
+Hybrid Mamba-2                  10.0      4.8   10.2      16.0 9.4      9.2    10.5 12.0        10.3
+Hybrid Mamba-2 + M^2RNN-1       9.8       9.0   7.5       22.5 13.3     12.6   13.2 9.8         12.2
+Hybrid Mamba-2 + M^2RNN-3       10.5      15.8  13.2      29.0 31.7     12.1   10.7 13.3        17.1
+Hybrid Gated DeltaNet           8.2       16.8  16.1      19.5 28.7     15.9   8.7  9.2         15.4
+Hybrid Gated DeltaNet + M^      9.5       14.8  17.6      47.0 32.1     19.4   7.3  8.5         19.5
+2RNN-1
+Hybrid Gated DeltaNet + M^      16.0      18.1  14.0      43.0 41.5     24.7   12.7 13.9        23.0
+2RNN-3
+
+
+Table 5: Performance comparison on the 410M model across long-context summarization, coding and
+few-shot learning benchmarks.
+
+We evaluate long-context performance on LongBench Bai et al. (2024) (Table 5, 6). In the 2-way
+hybrid setting, we find that Hybrid M^2RNN matches Hybrid Gated DeltaNet at 410M parameter scale
+and outperforms Hybrid Gated DeltaNet by 1.51.5 points on the 7B MoE scale. We find that combining
+M^2RNN layer with Hybrid Gated DeltaNet results in up to 8 points of average accuracy improvement
+across both model scales across long-context summarization, coding, and few-shot learning tasks.
+Similar improvements are observable with Hybrid Mamba-2 + M^2RNN-3 (5 for 7B MoE) models on both
+model scales.
+
+Model                           GovReport QMSum MultiNews TREC TriviaQA SAMSum LCC  RepoBench-P Avg
+Mamba-2                         5.1       16.0  13.4      42.0 59.7     22.0   13.4 8.7         22.5
+Gated DeltaNet                  4.8       20.3  12.2      47.0 61.6     36.2   9.7  7.9         25.0
+RNN                             9.3       16.7  10.5      4.0  27.5     13.0   17.1 15.8        14.2
+GRU                             5.7       18.0  10.8      9.0  52.4     24.6   20.9 13.9        19.4
+M^2RNN                          8.1       19.1  11.8      26.5 51.3     30.7   20.4 19.3        23.4
+Transformer++                   6.1       6.1   17.0      16.0 11.4     10.0   13.1 10.2        11.2
+Hybrid Mamba-2                  9.1       7.7   20.3      62.5 23.3     12.1   5.6  9.8         18.8
+Hybrid Gated DeltaNet           10.4      15.8  16.7      57.5 35.1     23.6   9.7  16.3        23.1
+Hybrid M^2RNN                   10.9      13.9  21.1      52.0 44.7     18.5   19.8 15.7        24.6
+Hybrid Mamba-2                  9.1       7.7   20.3      62.5 23.3     12.1   5.6  9.8         18.8
+Hybrid Mamba-2 + M^2RNN-1       8.6       3.9   21.2      25.5 15.0     11.5   7.5  11.6        13.1
+Hybrid Mamba-2 + M^2RNN-5       18.6      10.3  7.1       60.5 45.7     21.4   9.7  8.0         22.7
+Hybrid Gated DeltaNet           10.4      15.8  16.7      57.5 35.1     23.6   9.7  16.3        23.1
+Hybrid Gated DeltaNet + M^      17.2      16.5  6.0       69.5 64.9     34.1   20.1 15.1        30.4
+2RNN-1
+Hybrid Gated DeltaNet + M^      12.2      16.0  16.1      59.0 73.5     36.0   18.0 18.9        31.2
+2RNN-5
+
+
+Table 6: Performance comparison on the 7B (1B active) MoE model across long-context summarization,
+coding and few-shot learning benchmarks.
+
+5.6 Ablations: Effect of State Size and Forget Gate
+
+We ablate the contributions of state size and the forget gate on the recurrent model performance
+(Table 7). First, we compare a traditional vector-valued RNN (406M parameters) against M^2RNN (410M
+parameters). The matrix-valued M^2RNN model outperforms the vector-valued RNN by more than 10
+perplexity points on WikiText Merity et al. (2017) and 280 points on LAMBADA Paperno et al. (2016),
+underscoring the critical role of state size.
+
+Model       Wiki PPL Lambada PPL state size
+RNN-406M    33.74    317.38      1,360
+GRU-474M    25.80    63.83       1,360
+M^2RNN-410M 22.92    33.63       86,016
+
+
+Table 7: Perplexity comparison for RNN, GRU and M^2RNN models with different state sizes.
+
+To disentangle the effect of gating from that of state size, we additionally train GRU Cho et al.
+(2014a) models with the same state dimensions as the vector-valued RNN. Despite having 16%16\% more
+parameters (474M) due to the additional reset gate, GRUs still underperform M^2RNN by 3 perplexity
+points on WikiText and 30 points on LAMBADA. These results confirm that expanding the state size is
+the primary driver of performance improvements in recurrent architectures, with gating mechanisms
+potentially providing further gains.
+
+5.7 Training Throughput
+
+We measure training throughput for M^2RNN, Gated DeltaNet Yang et al. (2024a), Mamba-2 Dao and Gu
+(2024), and Transformer++ on 8×8\times NVIDIA HGX H100 GPUs connected via NVLink, using our 7B (1B
+active) MoE configuration. As shown in Figure 10, Mamba-2 consistently achieves the highest
+throughput across context lengths, while Transformer++ degrades significantly at longer contexts
+due to its quadratic complexity.
+
+Although M^2RNN has linear time complexity, its higher constant factors make it more expensive than
+the linear baselines in the homogeneous setting. However, replacing a single Gated DeltaNet layer
+with M^2RNN layer to the Hybrid Gated DeltaNet model (Hybrid Gated DeltaNet + M^2RNN-1) achieves
+throughput comparable to Hybrid Gated DeltaNet alone (within 6%6\% at 16k context length) while
+consistently improving model quality across all benchmarks. We consider this a favorable tradeoff,
+making M^2RNN layers practical when used sparingly. Our current implementation is based on the
+Triton DSL Tillet et al. (2019) and is relatively unoptimized, leaving significant room for
+improvement that could further narrow the remaining throughput gap.
+
+
+Figure 10: Training throughput measured in billion tokens per day on a machine with 8x NVIDIA HGX
+H100 GPUs for our 7B MoE configuration.
+
+6 Conclusion
+
+We introduce Matrix-to-Matrix RNN (M^2RNN), a non-linear RNN architecture with matrix-valued hidden
+states that addresses key limitations of existing linear recurrent models. By combining expressive
+non-linear state transitions with a forget gate and an outer product state expansion, M^2RNN
+achieves strong state-tracking capabilities.
+
+Our experiments demonstrate that, in the homogeneous setting, M^2RNN is competitive with Mamba-2
+Dao and Gu (2024) and Gated DeltaNet Yang et al. (2024a) at both the 410M dense and 7B (1B active)
+MoE scales. More importantly, hybrid models combining M^2RNN with attention layers significantly
+outperform equivalent Mamba-2 and Gated DeltaNet hybrids in language modeling, in-context
+retrieval, and long-context generalization. We further show that even a single M^2RNN layer yields
+substantial accuracy gains with only 6%6\% throughput degradation, making it a practical
+enhancement for existing architectures.
+
+The matrix-valued recurrence in M^2RNN eliminates the FLOPs wasted by padding in vector-valued
+recurrences when using the FlashRNN algorithm Pöppel et al. (2025), enabling efficient tensor core
+utilization independent of batch size. Combined with our custom kernels, this makes M^2RNN a viable
+component for training state-of-the-art production language models.
+
+We also present two complementary tensor parallelism strategies for M^2RNN. The topology-aware
+approach adopts a grouped-value formulation that requires no additional communication beyond
+standard TP, while the topology-independent approach preserves the parameter count regardless of TP
+world size at the cost of a small number of extra AllReduce operations. Together, these strategies
+make M^2RNN readily deployable across diverse multi-GPU configurations.
+
+Acknowledgement
+
+We would like to thank Songlin Yang, Bharat Runwal and Kevin Li for providing valuable feedback and
+discussion throughout the duration of this project. We gratefully acknowledge the support of the
+Schmidt Sciences AI2050 fellowship, the Google ML and Systems Junior Faculty Awards, and the Google
+Research Scholar program.
+
+References
+
+  • Ansel et al. (2024) Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain,
+    Michael Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, Geeta Chauhan, Anjali
+    Chourdia, Will Constable, Alban Desmaison, Zachary DeVito, Elias Ellison, Will Feng, Jiong
+    Gong, Michael Gschwind, Brian Hirsh, Sherlock Huang, Kshiteej Kalambarkar, Laurent Kirsch,
+    Michael Lazos, Mario Lezcano, Yanbo Liang, Jason Liang, Yinghai Lu, C. K. Luk, Bert Maher,
+    Yunjie Pan, Christian Puhrsch, Matthias Reso, Mark Saroufim, Marcos Yukio Siraichi, Helen Suk,
+    Shunting Zhang, Michael Suo, Phil Tillet, Xu Zhao, Eikan Wang, Keren Zhou, Richard Zou,
+    Xiaodong Wang, Ajit Mathews, William Wen, Gregory Chanan, Peng Wu, and Soumith Chintala. 
+    Pytorch 2: Faster machine learning through dynamic python bytecode transformation and graph
+    compilation. In Proceedings of the 29th ACM International Conference on Architectural Support
+    for Programming Languages and Operating Systems, Volume 2, ASPLOS ’24, page 929–947, New York,
+    NY, USA, 2024. Association for Computing Machinery. ISBN 9798400703850. 10.1145/3620665.3640366
+    . https://doi.org/10.1145/3620665.3640366.
+  • Bai et al. (2024) Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang,
+    Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. Longbench: A bilingual, multitask benchmark
+    for long context understanding. In Proceedings of the 62nd annual meeting of the association
+    for computational linguistics (volume 1: Long papers), pages 3119–3137, 2024.
+  • Beck et al. (2024) Maximilian Beck, Korbinian Pöppel, Markus Spanring, Andreas Auer, Oleksandra
+    Prudnikova, Michael Kopp, Günter Klambauer, Johannes Brandstetter, and Sepp Hochreiter. xlstm:
+    Extended long short-term memory. Advances in Neural Information Processing Systems,
+    37:107547–107603, 2024.
+  • Bengio et al. (1994) Y. Bengio, P. Simard, and P. Frasconi. Learning long-term dependencies
+    with gradient descent is difficult. IEEE Transactions on Neural Networks, 5(2):157–166, 1994. 
+    10.1109/72.279181.
+  • Bisk et al. (2019) Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. 
+    Piqa: Reasoning about physical commonsense in natural language, 2019. https://arxiv.org/abs/
+    1911.11641.
+  • Blakeman et al. (2025) Aaron Blakeman, Aaron Grattafiori, Aarti Basant, Abhibha Gupta, Abhinav
+    Khattar, Adi Renduchintala, Aditya Vavre, Akanksha Shukla, Akhiad Bercovich, Aleksander Ficek,
+    et al. Nvidia nemotron 3: Efficient and open intelligence. arXiv preprint arXiv:2512.20856,
+    2025.
+  • Blelloch (1990) Guy E. Blelloch. Prefix sums and their applications. Technical Report
+    CMU-CS-90-190, School of Computer Science, Carnegie Mellon University, November 1990.
+  • Brown et al. (2020) Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan,
+    Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. 
+    Language models are few-shot learners. Advances in neural information processing systems,
+    33:1877–1901, 2020.
+  • Cho et al. (2014a) Kyunghyun Cho, Bart Van Merriënboer, Dzmitry Bahdanau, and Yoshua Bengio. On
+    the properties of neural machine translation: Encoder-decoder approaches. arXiv preprint
+    arXiv:1409.1259, 2014a.
+  • Cho et al. (2014b) Kyunghyun Cho, Bart Van Merriënboer, Caglar Gulcehre, Dzmitry Bahdanau,
+    Fethi Bougares, Holger Schwenk, and Yoshua Bengio. Learning phrase representations using rnn
+    encoder-decoder for statistical machine translation. arXiv preprint arXiv:1406.1078, 2014b.
+  • Chowdhery et al. (2023) Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav
+    Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, et al. 
+    Palm: Scaling language modeling with pathways. Journal of Machine Learning Research, 24
+    (240):1–113, 2023.
+  • Chung et al. (2014) Junyoung Chung, Caglar Gulcehre, KyungHyun Cho, and Yoshua Bengio. 
+    Empirical evaluation of gated recurrent neural networks on sequence modeling. arXiv preprint
+    arXiv:1412.3555, 2014.
+  • Clark et al. (2019) Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael
+    Collins, and Kristina Toutanova. Boolq: Exploring the surprising difficulty of natural yes/no
+    questions, 2019. https://arxiv.org/abs/1905.10044.
+  • Clark et al. (2018) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal,
+    Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the
+    ai2 reasoning challenge, 2018. https://arxiv.org/abs/1803.05457.
+  • Danieli et al. (2025) Federico Danieli, Pau Rodriguez, Miguel Sarabia, Xavier Suau, and Luca
+    Zappella. Pararnn: Unlocking parallel training of nonlinear rnns for large language models. 
+    arXiv preprint arXiv:2510.21450, 2025.
+  • Dao (2023) Tri Dao. Flashattention-2: Faster attention with better parallelism and work
+    partitioning. arXiv preprint arXiv:2307.08691, 2023.
+  • Dao and Gu (2024) Tri Dao and Albert Gu. Transformers are ssms: Generalized models and
+    efficient algorithms through structured state space duality. arXiv preprint arXiv:2405.21060,
+    2024.
+  • Dao et al. (2022) Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 
+    Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural
+    information processing systems, 35:16344–16359, 2022.
+  • Dosovitskiy (2020) Alexey Dosovitskiy. An image is worth 16x16 words: Transformers for image
+    recognition at scale. arXiv preprint arXiv:2010.11929, 2020.
+  • Elfwing et al. (2018) Stefan Elfwing, Eiji Uchibe, and Kenji Doya. Sigmoid-weighted linear
+    units for neural network function approximation in reinforcement learning. Neural networks,
+    107:3–11, 2018.
+  • Elman (1990) Jeffrey L Elman. Finding structure in time. Cognitive science, 14(2):179–211,
+    1990.
+  • Fu et al. (2022) Daniel Y Fu, Tri Dao, Khaled K Saab, Armin W Thomas, Atri Rudra, and
+    Christopher Ré. Hungry hungry hippos: Towards language modeling with state space models. arXiv
+    preprint arXiv:2212.14052, 2022.
+  • Gao et al. (2024) Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony
+    DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle
+    McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf,
+    Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. 
+    The language model evaluation harness, 07 2024. https://zenodo.org/records/12608602.
+  • Grattafiori et al. (2024) Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey,
+    Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, Amy
+    Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar,
+    Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, Aurelien Rodriguez, Austen Gregerson,
+    Ava Spataru, Baptiste Roziere, Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux,
+    Chaya Nayak, Chloe Bi, Chris Marra, Chris McConnell, Christian Keller, Christophe Touret,
+    Chunyang Wu, Corinne Wong, Cristian Canton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel
+    Song, Danielle Pintz, Danny Livshits, Danny Wyatt, David Esiobu, Dhruv Choudhary, Dhruv
+    Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab AlBadawy, Elina
+    Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Francisco Guzmán, Frank Zhang,
+    Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Govind Thattai, Graeme Nail, Gregoire
+    Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu, Hugo Touvron,
+    Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann, Ishan Misra, Ivan Evtimov, Jack Zhang,
+    Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer
+    van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang,
+    Jiawen Liu, Jie Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua
+    Johnstun, Joshua Saxe, Junteng Jia, Kalyan Vasuden Alwala, Karthik Prasad, Kartikeya Upasani,
+    Kate Plawiak, Ke Li, Kenneth Heafield, Kevin Stone, Khalid El-Arini, Krithika Iyer, Kshitiz
+    Malik, Kuenley Chiu, Kunal Bhalla, Kushal Lakhotia, Lauren Rantala-Yeary, Laurens van der
+    Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis Martin, Lovish Madaan, Lubo Malo, Lukas
+    Blecher, Lukas Landzaat, Luke de Oliveira, Madeline Muzzi, Mahesh Pasupuleti, Mannat Singh,
+    Manohar Paluri, Marcin Kardas, Maria Tsimpoukelli, Mathew Oldham, Mathieu Rita, Maya Pavlova,
+    Melanie Kambadur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal, Narjes
+    Torabi, Nikolay Bashlykov, Nikolay Bogoychev, Niladri Chatterji, Ning Zhang, Olivier Duchenne,
+    Onur Çelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasic, Peter Weng, Prajjwal
+    Bhargava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing He, Qingxiao Dong,
+    Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Silveira Cabral, Robert Stojnic,
+    Roberta Raileanu, Rohan Maheswari, Rohit Girdhar, Rohit Patel, Romain Sauvestre, Ronnie
+    Polidoro, Roshan Sumbaly, Ross Taylor, Ruan Silva, Rui Hou, Rui Wang, Saghar Hosseini, Sahana
+    Chennabasappa, Sanjay Singh, Sean Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan
+    Narang, Sharath Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon
+    Vandenhende, Soumya Batra, Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan,
+    Sydney Borodinsky, Tamar Herman, Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom,
+    Tobias Speckbacher, Todor Mihaylov, Tong Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor Gupta,
+    Vignesh Ramanathan, Viktor Kerkez, Vincent Gonguet, Virginie Do, Vish Vogeti, Vítor Albiero,
+    Vladan Petrovic, Weiwei Chu, Wenhan Xiong, Wenyin Fu, Whitney Meers, Xavier Martinet, Xiaodong
+    Wang, Xiaofang Wang, Xiaoqing Ellen Tan, Xide Xia, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle
+    Goldschlag, Yashesh Gaur, Yasmine Babaei, Yi Wen, Yiwen Song, Yuchen Zhang, Yue Li, Yuning Mao,
+    Zacharie Delpierre Coudert, Zheng Yan, Zhengxing Chen, Zoe Papakipos, Aaditya Singh, Aayushi
+    Srivastava, Abha Jain, Adam Kelsey, Adam Shajnfeld, Adithya Gangidi, Adolfo Victoria, Ahuva
+    Goldstand, Ajay Menon, Ajay Sharma, Alex Boesenberg, Alexei Baevski, Allie Feinstein, Amanda
+    Kallet, Amit Sangani, Amos Teo, Anam Yunus, Andrei Lupu, Andres Alvarado, Andrew Caples, Andrew
+    Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit Ramchandani, Annie Dong, Annie Franco, Anuj
+    Goyal, Aparajita Saraf, Arkabandhu Chowdhury, Ashley Gabriel, Ashwin Bharambe, Assaf Eisenman,
+    Azadeh Yazdan, Beau James, Ben Maurer, Benjamin Leonhardi, Bernie Huang, Beth Loyd, Beto De
+    Paola, Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Brandon
+    Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton, Catalina
+    Mejia, Ce Liu, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang Chu, Chris Cai,
+    Chris Tindal, Christoph Feichtenhofer, Cynthia Gao, Damon Civin, Dana Beaty, Daniel Kreymer,
+    Daniel Li, David Adkins, David Xu, Davide Testuggine, Delia David, Devi Parikh, Diana
+    Liskovich, Didem Foss, Dingkang Wang, Duc Le, Dustin Holland, Edward Dowling, Eissa Jamil,
+    Elaine Montgomery, Eleonora Presani, Emily Hahn, Emily Wood, Eric-Tuan Le, Erik Brinkman,
+    Esteban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun, Felix Kreuk, Feng Tian, Filippos
+    Kokkinos, Firat Ozgenel, Francesco Caggioni, Frank Kanayet, Frank Seide, Gabriela Medina
+    Florez, Gabriella Schwarz, Gada Badeer, Georgia Swee, Gil Halpern, Grant Herman, Grigory Sizov,
+    Guangyi, Zhang, Guna Lakshminarayanan, Hakan Inan, Hamid Shojanazeri, Han Zou, Hannah Wang,
+    Hanwen Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter Goldman,
+    Hongyuan Zhan, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Ilias Leontiadis, Irina-Elena
+    Veliche, Itai Gat, Jake Weissman, James Geboski, James Kohli, Janice Lam, Japhet Asher,
+    Jean-Baptiste Gaya, Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny Zhen, Jeremy Reizenstein,
+    Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Yang, Joe Cummings, Jon Carvill, Jon Shepard,
+    Jonathan McPhie, Jonathan Torres, Josh Ginsburg, Junjie Wang, Kai Wu, Kam Hou U, Karan Saxena,
+    Kartikay Khandelwal, Katayoun Zand, Kathy Matosich, Kaushik Veeraraghavan, Kelly Michelena,
+    Keqian Li, Kiran Jagadeesh, Kun Huang, Kunal Chawla, Kyle Huang, Lailin Chen, Lakshya Garg,
+    Lavender A, Leandro Silva, Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Yu, Liron Moshkovich,
+    Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish Bhatt, Martynas Mankus, Matan Hasson,
+    Matthew Lennie, Matthias Reso, Maxim Groshev, Maxim Naumov, Maya Lathi, Meghan Keneally, Miao
+    Liu, Michael L. Seltzer, Michal Valko, Michelle Restrepo, Mihir Patel, Mik Vyatskov, Mikayel
+    Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Hermoso, Mo Metanat, Mohammad
+    Rastegari, Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha White, Navyata Bawa,
+    Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikhil Mehta, Nikolay Pavlovich Laptev, Ning Dong,
+    Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin Kent, Parth
+    Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager, Pierre Roux, Piotr Dollar,
+    Polina Zvyagina, Prashant Ratanchandani, Pritish Yuvraj, Qian Liang, Rachad Alao, Rachel
+    Rodriguez, Rafi Ayub, Raghotham Murthy, Raghu Nayani, Rahul Mitra, Rangaprabhu Parthasarathy,
+    Raymond Li, Rebekkah Hogan, Robin Battey, Rocky Wang, Russ Howes, Ruty Rinott, Sachin Mehta,
+    Sachin Siby, Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha
+    Sidorov, Satadru Pan, Saurabh Mahajan, Saurabh Verma, Seiji Yamamoto, Sharadh Ramaswamy, Shaun
+    Lindsay, Shaun Lindsay, Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shishir Patil, Shiva
+    Shankar, Shuqiang Zhang, Shuqiang Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith
+    Chintala, Stephanie Max, Stephen Chen, Steve Kehoe, Steve Satterfield, Sudarshan Govindaprasad,
+    Sumit Gupta, Summer Deng, Sungmin Cho, Sunny Virk, Suraj Subramanian, Sy Choudhury, Sydney
+    Goldman, Tal Remez, Tamar Glaser, Tamara Best, Thilo Koehler, Thomas Robinson, Tianhe Li,
+    Tianjun Zhang, Tim Matthews, Timothy Chou, Tzook Shaked, Varun Vontimitta, Victoria Ajayi,
+    Victoria Montanez, Vijai Mohan, Vinay Satish Kumar, Vishal Mangla, Vlad Ionescu, Vlad Poenaru,
+    Vlad Tiberiu Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang, Wenwen Jiang, Wes Bouaziz, Will
+    Constable, Xiaocheng Tang, Xiaojian Wu, Xiaolan Wang, Xilun Wu, Xinbo Gao, Yaniv Kleinman,
+    Yanjun Chen, Ye Hu, Ye Jia, Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin Nam,
+    Yu, Wang, Yu Zhao, Yuchen Hao, Yundi Qian, Yunlu Li, Yuzi He, Zach Rait, Zachary DeVito, Zef
+    Rosnbrick, Zhaoduo Wen, Zhenyu Yang, Zhiwei Zhao, and Zhiyu Ma. The llama 3 herd of models,
+    2024. https://arxiv.org/abs/2407.21783.
+  • Grazzi et al. (2024) Riccardo Grazzi, Julien Siems, Arber Zela, Jörg KH Franke, Frank Hutter,
+    and Massimiliano Pontil. Unlocking state-tracking in linear rnns through negative eigenvalues. 
+    arXiv preprint arXiv:2411.12537, 2024.
+  • Gu and Dao (2024) Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective
+    state spaces. In First conference on language modeling, 2024.
+  • Gu et al. (2021a) Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long
+    sequences with structured state spaces. arXiv preprint arXiv:2111.00396, 2021a.
+  • Gu et al. (2021b) Albert Gu, Isys Johnson, Karan Goel, Khaled Saab, Tri Dao, Atri Rudra, and
+    Christopher Ré. Combining recurrent, convolutional, and continuous-time models with linear
+    state space layers. Advances in neural information processing systems, 34:572–585, 2021b.
+  • Guo et al. (2025) Wentao Guo, Mayank Mishra, Xinle Cheng, Ion Stoica, and Tri Dao. Sonicmoe:
+    Accelerating moe with io and tile-aware optimizations. arXiv preprint arXiv:2512.14080, 2025.
+  • Hendrycks (2016) D Hendrycks. Gaussian error linear units (gelus). arXiv preprint
+    arXiv:1606.08415, 2016.
+  • Hillis and Steele (1986) W. Daniel Hillis and Guy L. Steele. Data parallel algorithms. Commun.
+    ACM, 29(12):1170–1183, December 1986. ISSN 0001-0782. 10.1145/7902.7903. https://doi.org/
+    10.1145/7902.7903.
+  • Hochreiter and Schmidhuber (1997) Sepp Hochreiter and Jürgen Schmidhuber. Long short-term
+    memory. Neural Computation, 9(8):1735–1780, 1997. 10.1162/neco.1997.9.8.1735.
+  • Hsieh et al. (2024) Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh,
+    Fei Jia, Yang Zhang, and Boris Ginsburg. Ruler: What’s the real context size of your
+    long-context language models? arXiv preprint arXiv:2404.06654, 2024.
+  • Hua et al. (2022) Weizhe Hua, Zihang Dai, Hanxiao Liu, and Quoc Le. Transformer quality in
+    linear time. In International conference on machine learning, pages 9099–9117. PMLR, 2022.
+  • IBM Granite Team (2025) IBM Granite Team. Granite 4.0 language models. https://huggingface.co/
+    collections/ibm-granite/granite-40-language-models, 2025. Hugging Face collection, accessed
+    January 28, 2026.
+  • Kalamkar et al. (2019) Dhiraj Kalamkar, Dheevatsa Mudigere, Naveen Mellempudi, Dipankar Das,
+    Kunal Banerjee, Sasikanth Avancha, Dharma Teja Vooturi, Nataraj Jammalamadaka, Jianyu Huang,
+    Hector Yuen, et al. A study of bfloat16 for deep learning training. arXiv preprint
+    arXiv:1905.12322, 2019.
+  • Katharopoulos et al. (2020) Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François
+    Fleuret. Transformers are rnns: Fast autoregressive transformers with linear attention. In
+    International conference on machine learning, pages 5156–5165. PMLR, 2020.
+  • Kazemnejad et al. (2023) Amirhossein Kazemnejad, Inkit Padhi, Karthikeyan Natesan Ramamurthy,
+    Payel Das, and Siva Reddy. The impact of positional encoding on length generalization in
+    transformers. Advances in Neural Information Processing Systems, 36:24892–24928, 2023.
+  • Le et al. (2015) Quoc V. Le, Navdeep Jaitly, and Geoffrey E. Hinton. A simple way to initialize
+    recurrent networks of rectified linear units, 2015. https://arxiv.org/abs/1504.00941.
+  • Lieber et al. (2024) Opher Lieber, Barak Lenz, Hofit Bata, Gal Cohen, Jhonathan Osin, Itay
+    Dalmedigos, Erez Safahi, Shaked Meirom, Yonatan Belinkov, Shai Shalev-Shwartz, et al. Jamba: A
+    hybrid transformer-mamba language model. arXiv preprint arXiv:2403.19887, 2024.
+  • Liu et al. (2024) Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu,
+    Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report. 
+    arXiv preprint arXiv:2412.19437, 2024.
+  • Loshchilov and Hutter (2019) Ilya Loshchilov and Frank Hutter. Decoupled weight decay
+    regularization, 2019. https://arxiv.org/abs/1711.05101.
+  • Lugosch et al. (2019) Loren Lugosch, Mirco Ravanelli, Patrick Ignoto, Vikrant Singh Tomar, and
+    Yoshua Bengio. Speech model pre-training for end-to-end spoken language understanding. arXiv
+    preprint arXiv:1904.03670, 2019.
+  • Merity et al. (2017) Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer
+    sentinel mixture models. In International Conference on Learning Representations, 2017. https:/
+    /openreview.net/forum?id=Byj72udxe.
+  • Merrill (2019) William Merrill. Sequential neural networks as automata. arXiv preprint
+    arXiv:1906.01615, 2019.
+  • Merrill et al. (2022) William Merrill, Ashish Sabharwal, and Noah A. Smith. Saturated
+    transformers are constant-depth threshold circuits. Transactions of the Association for
+    Computational Linguistics, 10:843–856, 2022. 10.1162/tacl_a_00493. https://aclanthology.org/
+    2022.tacl-1.49/.
+  • Merrill et al. (2024) William Merrill, Jackson Petty, and Ashish Sabharwal. The illusion of
+    state in state-space models. arXiv preprint arXiv:2404.08819, 2024.
+  • Meta AI (2025) Meta AI. The llama 4 herd: The beginning of a new era of natively multimodal ai
+    innovation, 2025. https://ai.meta.com/blog/llama-4-multimodal-intelligence/.
+  • Micikevicius et al. (2017) Paulius Micikevicius, Sharan Narang, Jonah Alben, Gregory Diamos,
+    Erich Elsen, David Garcia, Boris Ginsburg, Michael Houston, Oleksii Kuchaiev, Ganesh Venkatesh,
+    et al. Mixed precision training. arXiv preprint arXiv:1710.03740, 2017.
+  • Mihaylov et al. (2018) Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a
+    suit of armor conduct electricity? a new dataset for open book question answering, 2018. https:
+    //arxiv.org/abs/1809.02789.
+  • Mishra (2024) Mayank Mishra. Lm engine: A hyper-optimized library for pretraining and
+    finetuning, 2024. https://github.com/open-lm-engine/lm-engine.
+  • Mishra et al. (2024) Mayank Mishra, Matt Stallone, Gaoyuan Zhang, Yikang Shen, Aditya Prasad,
+    Adriana Meza Soria, Michele Merler, Parameswaran Selvam, Saptha Surendran, Shivdeep Singh, et
+    al. Granite code models: A family of open foundation models for code intelligence. arXiv
+    preprint arXiv:2405.04324, 2024.
+  • Nelson et al. (2024) Elliot Nelson, Georgios Kollias, Payel Das, Subhajit Chaudhury, and Soham
+    Dan. Needle in the haystack for memory based large language models. arXiv preprint
+    arXiv:2407.01437, 2024.
+  • NVIDIA et al. (2025) NVIDIA, :, Aarti Basant, Abhijit Khairnar, Abhijit Paithankar, Abhinav
+    Khattar, Adithya Renduchintala, Aditya Malte, Akhiad Bercovich, Akshay Hazare, Alejandra Rico,
+    Aleksander Ficek, Alex Kondratenko, Alex Shaposhnikov, Alexander Bukharin, Ali Taghibakhshi,
+    Amelia Barton, Ameya Sunil Mahabaleshwarkar, Amy Shen, Andrew Tao, Ann Guan, Anna Shors,
+    Anubhav Mandarwal, Arham Mehta, Arun Venkatesan, Ashton Sharabiani, Ashwath Aithal, Ashwin
+    Poojary, Ayush Dattagupta, Balaram Buddharaju, Banghua Zhu, Barnaby Simkin, Bilal Kartal, Bita
+    Darvish Rouhani, Bobby Chen, Boris Ginsburg, Brandon Norick, Brian Yu, Bryan Catanzaro, Charles
+    Wang, Charlie Truong, Chetan Mungekar, Chintan Patel, Chris Alexiuk, Christian Munley,
+    Christopher Parisien, Dan Su, Daniel Afrimi, Daniel Korzekwa, Daniel Rohrer, Daria Gitman,
+    David Mosallanezhad, Deepak Narayanan, Dima Rekesh, Dina Yared, Dmytro Pykhtar, Dong Ahn,
+    Duncan Riach, Eileen Long, Elliott Ning, Eric Chung, Erick Galinkin, Evelina Bakhturina, Gargi
+    Prasad, Gerald Shen, Haifeng Qian, Haim Elisha, Harsh Sharma, Hayley Ross, Helen Ngo, Herman
+    Sahota, Hexin Wang, Hoo Chang Shin, Hua Huang, Iain Cunningham, Igor Gitman, Ivan Moshkov,
+    Jaehun Jung, Jan Kautz, Jane Polak Scowcroft, Jared Casper, Jian Zhang, Jiaqi Zeng, Jimmy
+    Zhang, Jinze Xue, Jocelyn Huang, Joey Conway, John Kamalu, Jonathan Cohen, Joseph Jennings,
+    Julien Veron Vialard, Junkeun Yi, Jupinder Parmar, Kari Briski, Katherine Cheung, Katherine
+    Luna, Keith Wyss, Keshav Santhanam, Kezhi Kong, Krzysztof Pawelec, Kumar Anik, Kunlun Li,
+    Kushan Ahmadian, Lawrence McAfee, Laya Sleiman, Leon Derczynski, Luis Vega, Maer Rodrigues de
+    Melo, Makesh Narsimhan Sreedhar, Marcin Chochowski, Mark Cai, Markus Kliegl, Marta
+    Stepniewska-Dziubinska, Matvei Novikov, Mehrzad Samadi, Meredith Price, Meriem Boubdir, Michael
+    Boone, Michael Evans, Michal Bien, Michal Zawalski, Miguel Martinez, Mike Chrzanowski, Mohammad
+    Shoeybi, Mostofa Patwary, Namit Dhameja, Nave Assaf, Negar Habibi, Nidhi Bhatia, Nikki Pope,
+    Nima Tajbakhsh, Nirmal Kumar Juluru, Oleg Rybakov, Oleksii Hrinchuk, Oleksii Kuchaiev,
+    Oluwatobi Olabiyi, Pablo Ribalta, Padmavathy Subramanian, Parth Chadha, Pavlo Molchanov, Peter
+    Dykas, Peter Jin, Piotr Bialecki, Piotr Januszewski, Pradeep Thalasta, Prashant Gaikwad,
+    Prasoon Varshney, Pritam Gundecha, Przemek Tredak, Rabeeh Karimi Mahabadi, Rajen Patel, Ran
+    El-Yaniv, Ranjit Rajan, Ria Cheruvu, Rima Shahbazyan, Ritika Borkar, Ritu Gala, Roger Waleffe,
+    Ruoxi Zhang, Russell J. Hewett, Ryan Prenger, Sahil Jain, Samuel Kriman, Sanjeev Satheesh,
+    Saori Kaji, Sarah Yurick, Saurav Muralidharan, Sean Narenthiran, Seonmyeong Bak, Sepehr Sameni,
+    Seungju Han, Shanmugam Ramasamy, Shaona Ghosh, Sharath Turuvekere Sreenivas, Shelby Thomas,
+    Shizhe Diao, Shreya Gopal, Shrimai Prabhumoye, Shubham Toshniwal, Shuoyang Ding, Siddharth
+    Singh, Siddhartha Jain, Somshubra Majumdar, Soumye Singhal, Stefania Alborghetti, Syeda Nahida
+    Akter, Terry Kong, Tim Moon, Tomasz Hliwiak, Tomer Asida, Tony Wang, Tugrul Konuk, Twinkle
+    Vashishth, Tyler Poon, Udi Karpas, Vahid Noroozi, Venkat Srinivasan, Vijay Korthikanti, Vikram
+    Fugro, Vineeth Kalluru, Vitaly Kurin, Vitaly Lavrukhin, Wasi Uddin Ahmad, Wei Du, Wonmin Byeon,
+    Ximing Lu, Xin Dong, Yashaswi Karnati, Yejin Choi, Yian Zhang, Ying Lin, Yonggan Fu, Yoshi
+    Suhara, Zhen Dong, Zhiyu Li, Zhongbo Zhu, and Zijia Chen. Nvidia nemotron nano 2: An accurate
+    and efficient hybrid mamba-transformer reasoning model, 2025. https://arxiv.org/abs/2508.14444.
+  • (55) NVIDIA Corporation. Parallel Thread Execution (PTX ISA). NVIDIA. https://docs.nvidia.com/
+    cuda/parallel-thread-execution/.
+  • Ortega and Rheinboldt (2000) J. M. Ortega and W. C. Rheinboldt. Iterative Solution of Nonlinear
+    Equations in Several Variables. Society for Industrial and Applied Mathematics, 2000. 10.1137/
+    1.9780898719468. https://epubs.siam.org/doi/abs/10.1137/1.9780898719468.
+  • Paperno et al. (2016) Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham,
+    Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The
+    lambada dataset: Word prediction requiring a broad discourse context. In Proceedings of the
+    54th annual meeting of the association for computational linguistics (volume 1: Long papers),
+    pages 1525–1534, 2016.
+  • Paszke et al. (2019) Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury,
+    Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: An
+    imperative style, high-performance deep learning library. Advances in neural information
+    processing systems, 32, 2019.
+  • Peng et al. (2023) Bo Peng, Eric Alcaide, Quentin Anthony, Alon Albalak, Samuel Arcadinho,
+    Stella Biderman, Huanqi Cao, Xin Cheng, Michael Chung, Matteo Grella, et al. Rwkv: Reinventing
+    rnns for the transformer era. arXiv preprint arXiv:2305.13048, 2023.
+  • Peng et al. (2021) Hao Peng, Nikolaos Pappas, Dani Yogatama, Roy Schwartz, Noah A Smith, and
+    Lingpeng Kong. Random feature attention. arXiv preprint arXiv:2103.02143, 2021.
+  • Pöppel et al. (2025) Korbinian Pöppel, Maximilian Beck, and Sepp Hochreiter. Flashrnn: I/
+    o-aware optimization of traditional rnns on modern hardware, 2025. https://arxiv.org/abs/
+    2412.07752.
+  • Qin et al. (2024) Zhen Qin, Songlin Yang, Weixuan Sun, Xuyang Shen, Dong Li, Weigao Sun, and
+    Yiran Zhong. Hgrn2: Gated linear rnns with state expansion. arXiv preprint arXiv:2404.07904,
+    2024.
+  • Ren et al. (2024) Liliang Ren, Yang Liu, Yadong Lu, Yelong Shen, Chen Liang, and Weizhu Chen. 
+    Samba: Simple hybrid state space models for efficient unlimited context language modeling. 
+    arXiv preprint arXiv:2406.07522, 2024.
+  • Roemmele et al. (2011) Melissa Roemmele, Cosmin Adrian Bejan, and Andrew S. Gordon. Choice of
+    Plausible Alternatives: An Evaluation of Commonsense Causal Reasoning. In AAAI Spring Symposium
+    on Logical Formalizations of Commonsense Reasoning, Stanford University, March 2011. http://
+    ict.usc.edu/pubs/
+    Choice%20of%20Plausible%20Alternatives-%20An%20Evaluation%20of%20Commonsense%20Causal%20Reasoning.pdf
+    .
+  • Sakaguchi et al. (2019) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 
+    Winogrande: An adversarial winograd schema challenge at scale, 2019. https://arxiv.org/abs/
+    1907.10641.
+  • Schlag et al. (2021) Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. Linear transformers
+    are secretly fast weight programmers. In International conference on machine learning, pages
+    9355–9366. PMLR, 2021.
+  • Shah et al. (2024) Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and
+    Tri Dao. Flashattention-3: Fast and accurate attention with asynchrony and low-precision. 
+    Advances in Neural Information Processing Systems, 37:68658–68685, 2024.
+  • Shazeer (2020) Noam Shazeer. Glu variants improve transformer. arXiv preprint arXiv:2002.05202,
+    2020.
+  • Shazeer et al. (2017) Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le,
+    Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated
+    mixture-of-experts layer. arXiv preprint arXiv:1701.06538, 2017.
+  • Shoeybi et al. (2019) Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared
+    Casper, and Bryan Catanzaro. Megatron-lm: Training multi-billion parameter language models
+    using model parallelism. arXiv preprint arXiv:1909.08053, 2019.
+  • Siems et al. (2025) Julien Siems, Timur Carstensen, Arber Zela, Frank Hutter, Massimiliano
+    Pontil, and Riccardo Grazzi. Deltaproduct: Improving state-tracking in linear rnns via
+    householder products. arXiv preprint arXiv:2502.10297, 2025.
+  • Smith et al. (2022) Shaden Smith, Mostofa Patwary, Brandon Norick, Patrick LeGresley, Samyam
+    Rajbhandari, Jared Casper, Zhun Liu, Shrimai Prabhumoye, George Zerveas, Vijay Korthikanti, et
+    al. Using deepspeed and megatron to train megatron-turing nlg 530b, a large-scale generative
+    language model. arXiv preprint arXiv:2201.11990, 2022.
+  • Su et al. (2024) Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. 
+    Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063,
+    2024.
+  • Sun et al. (2023) Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue,
+    Jianyong Wang, and Furu Wei. Retentive network: A successor to transformer for large language
+    models. arXiv preprint arXiv:2307.08621, 2023.
+  • Tay et al. (2022) Yi Tay, Mostafa Dehghani, Dara Bahri, and Donald Metzler. Efficient
+    transformers: A survey, 2022. https://arxiv.org/abs/2009.06732.
+  • Team et al. (2025) Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Jiahao Chen, Ningxin Chen,
+    Ruijue Chen, Yanru Chen, Yuankun Chen, Yutian Chen, et al. Kimi k2: Open agentic intelligence. 
+    arXiv preprint arXiv:2507.20534, 2025.
+  • Terzić et al. (2025) Aleksandar Terzić, Nicolas Menet, Michael Hersche, Thomas Hofmann, and
+    Abbas Rahimi. Structured sparse transition matrices to enable state tracking in state-space
+    models. arXiv preprint arXiv:2509.22284, 2025.
+  • Tillet et al. (2019) Philippe Tillet, H. T. Kung, and David Cox. Triton: an intermediate
+    language and compiler for tiled neural network computations. In Proceedings of the 3rd ACM
+    SIGPLAN International Workshop on Machine Learning and Programming Languages, MAPL 2019, page
+    10–19, New York, NY, USA, 2019. Association for Computing Machinery. ISBN 9781450367196. 
+    10.1145/3315508.3329973. https://doi.org/10.1145/3315508.3329973.
+  • Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+    Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in
+    neural information processing systems, 30, 2017.
+  • Welbl et al. (2017) Johannes Welbl, Nelson F. Liu, and Matt Gardner. Crowdsourcing multiple
+    choice science questions, 2017. https://arxiv.org/abs/1707.06209.
+  • Workshop et al. (2022) BigScience Workshop, Teven Le Scao, Angela Fan, Christopher Akiki, Ellie
+    Pavlick, Suzana Ilić, Daniel Hesslow, Roman Castagné, Alexandra Sasha Luccioni, François Yvon,
+    et al. Bloom: A 176b-parameter open-access multilingual language model. arXiv preprint
+    arXiv:2211.05100, 2022.
+  • Xiong et al. (2020) Ruibin Xiong, Yunchang Yang, Di He, Kai Zheng, Shuxin Zheng, Chen Xing,
+    Huishuai Zhang, Yanyan Lan, Liwei Wang, and Tieyan Liu. On layer normalization in the
+    transformer architecture. In International conference on machine learning, pages 10524–10533.
+    PMLR, 2020.
+  • Yang et al. (2025) An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+    Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint
+    arXiv:2505.09388, 2025.
+  • Yang et al. (2023) Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated
+    linear attention transformers with hardware-efficient training. arXiv preprint arXiv:2312.06635
+    , 2023.
+  • Yang et al. (2024a) Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks:
+    Improving mamba2 with delta rule. arXiv preprint arXiv:2412.06464, 2024a.
+  • Yang et al. (2024b) Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. 
+    Parallelizing linear transformers with the delta rule over sequence length. Advances in neural
+    information processing systems, 37:115491–115522, 2024b.
+  • Zadouri et al. (2026) Ted Zadouri, Markus Hoehnerbach, Jay Shah, Timmy Liu, Vijay Thakkar, and
+    Tri Dao. Flashattention-4: Algorithm and kernel pipelining co-design for asymmetric hardware
+    scaling, 2026. https://arxiv.org/abs/2603.05451.
+  • Zellers et al. (2019) Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 
+    Hellaswag: Can a machine really finish your sentence?, 2019. https://arxiv.org/abs/1905.07830.
+  • Zhang and Sennrich (2019) Biao Zhang and Rico Sennrich. Root mean square layer normalization. 
+    Advances in neural information processing systems, 32, 2019.
+  • Zhang et al. (2025) Muru Zhang, Mayank Mishra, Zhongzhu Zhou, William Brandon, Jue Wang, Yoon
+    Kim, Jonathan Ragan-Kelley, Shuaiwen Leon Song, Ben Athiwaratkun, and Tri Dao. Ladder-residual:
+    parallelism-aware architecture for accelerating large model inference with communication
+    overlapping, 2025. https://arxiv.org/abs/2501.06589v2.
+
+Appendix A State Size Expansion
+
+Attention   Wq\textbf  Wk\textbf  Wv\textbf  Wg\textbf  Wf\     Wo\textbf             State Size
+Pattern     {W}_{q}    {W}_{k}    {W}_{v}    {W}_{g}    textbf  {W}_{o}    Total (PP) (N​K​VNKV)
+                                                        {W}_{f}
+                                                                           ≈N⁡        ≈P​K​V
+            N​K​dmNKd_ N​K​dmNKd_ N​V​dmNVd_ N​V​dmNVd_ N​dmNd_ N​V​dmNVd_ (2​K+3​V)  (2​K+3​V)​dm\
+Multi-Head  {\textrm   {\textrm   {\textrm   {\textrm   {\      {\textrm   ​dm\approx approx\frac
+            {m}}       {m}}       {m}}       {m}}       textrm  {m}}       N(2K+3V)d_ {PKV}{(2K+3V)
+                                                        {m}}               {\textrm   d_{\textrm
+                                                                           {m}}       {m}}}
+                                                        N​dmNd_            ≈N⁡(K+2​V) ≈P​K​V(K+2​V)
+            N​K​dmNKd_ K​dmKd_{\  V​dmVd_{\  N​V​dmNVd_ {\      N​V​dmNVd_ ​dm\approx ​dm\approx\
+Multi-Query {\textrm   textrm{m}} textrm{m}} {\textrm   textrm  {\textrm   N(K+2V)d_  frac{PKV}
+            {m}}                             {m}}       {m}}    {m}}       {\textrm   {(K+2V)d_{\
+                                                                           {m}}       textrm{m}}}
+                                                        N​dmNd_            ≈N⁡(K+2​V) ≈P​K​V(K+2​V)
+            K​dmKd_{\  N​K​dmNKd_ V​dmVd_{\  N​V​dmNVd_ {\      N​V​dmNVd_ ​dm\approx ​dm\approx\
+Multi-Key   textrm{m}} {\textrm   textrm{m}} {\textrm   textrm  {\textrm   N(K+2V)d_  frac{PKV}
+                       {m}}                  {m}}       {m}}    {m}}       {\textrm   {(K+2V)d_{\
+                                                                           {m}}       textrm{m}}}
+                                  N​V​dmNVd_ N​V​dmNVd_ N​dmNd_ N​V​dmNVd_ ≈3​N​V​dm\ ≈P​K3​dm\
+Multi-Value K​dmKd_{\  K​dmKd_{\  {\textrm   {\textrm   {\      {\textrm   approx     approx\frac
+            textrm{m}} textrm{m}} {m}}       {m}}       textrm  {m}}       3NVd_{\    {PK}{3d_{\
+                                                        {m}}               textrm{m}} textrm{m}}}
+
+
+Table 8: Number of parameters in all linear projections. NN denotes the number of heads and dmd_{\
+textrm{m}} denotes the model’s embedding dimension. For all our models, we use K=64K=64 and V=16V=
+16 which results in the largest state size for the multi-value attention formulation for constant
+number of total parameters (PP).
+
+Appendix B Representation Power of M^2RNN Layers
+
+Theorem 1: The M^2RNN recurrence can represent all tasks representable by non-linear vector-valued
+RNNs and hence can represent regular languages.
+
+Proof.
+
+We show that M^2RNN can simulate a vector-valued nonlinear RNN, which is known to recognize all
+regular languages.
+
+Consider the parameter setting
+
+ ft=0,wr=𝟎V,qt=kt=e1∈ℝK,f_{t}=0,\qquad w_{r}=\mathbf{0}_{V},\qquad q_{t}=k_{t}=e_{1}\in\mathbb{R}^
+ {K},
+
+where e1=[1,0,…,0]⊤e_{1}=[1,0,\dots,0]^{\top} is the first standard basis vector.
+
+Under this choice, the matrix-valued recurrence reduces in its first row to
+
+ 𝐙t\            =tanh⁡(𝐇t−1​𝐖+[vt⊤𝟎V⊤𝟎V⊤]),\displaystyle=\tanh\!\left(\mathbf{H}_{t-1}\mathbf
+ displaystyle\  {W}+\begin{bmatrix}v_{t}^{\top}\\ \mathbf{0}_{V}^{\top}\\ \vdots\\ \mathbf{0}  (25)
+ mathbf{Z}_{t}  _{V}^{\top}\end{bmatrix}\right),
+
+and the output is obtained from the first row,
+
+ yt=(𝐙t)1,:.y_{t}=(\mathbf{Z}_{t})_{1,:}.
+
+This is precisely a standard vector-valued nonlinear RNN with tanh\tanh activation applied to the
+first row of the state matrix. Since vector-valued nonlinear RNNs can represent any regular
+language, it follows that M^2RNN can represent any regular language. ∎
+
+Appendix C RMSNormTP Module
+
+The forward computation for RMSNorm Zhang and Sennrich (2019) applied on the input activations xx
+is given by:
+
+ s\displaystyle s    =11d​∑j=1dxj2\displaystyle=\frac{1}{\sqrt{\frac{1}{d}\sum_{j=1}^{d}x_{j}  (26)
+                     ^{2}}}
+ yi\displaystyle y_  =(wi⊙xi)​s\displaystyle=(w_{i}\odot x_{i})s                               (27)
+ {i}
+
+where ii indicates the it​hi^{th} feature of the input or output, dd is the number of features and
+ww is some learnable weight for the RMSNorm module. We cache ss during the forward computation in
+HBM for backward computation. Similarly, the backward computation is given by:
+
+ pi\displaystyle p_{i}                =wi⊙∇yiℒ\displaystyle=w_{i}\odot\nabla_{y_{i}}\mathcal   (28)
+                                      {L}
+ r\displaystyle r                     =∑j=1dpj​xj\displaystyle=\sum_{j=1}^{d}p_{j}x_{j}        (29)
+ ∇xiℒ\displaystyle\nabla_{x_{i}}\     =s​pi−r​s3​xid\displaystyle=sp_{i}-\frac{rs^{3}x_{i}}    (30)
+ mathcal{L}                           {d}
+ ∇wiℒ\displaystyle\nabla_{w_{i}}\     =(∇yiℒ⊙xi)​s\displaystyle=(\nabla_{y_{i}}\mathcal{L}\    (31)
+ mathcal{L}                           odot x_{i})s
+
+To use RMSNorm Zhang and Sennrich (2019) module with M^2RNN layers with Tensor Parallelism (TP), we
+shard the weight ww for RMSNorm among the GPUs participating in TP. Since the incoming activations
+xx are also sharded along the feature dimension, to compute the inverse of the normalization term
+ss, we require an AllReduce operation in the forward. We propose the RMSNormTP module which
+modifies the RMSNorm module to compute ss in forward and rr in backward as:
+
+ s\           =11d​∑n=1NTP∑j∈Dnxj2\displaystyle=\frac{1}{\sqrt{\frac{1}{d}{\color[rgb]{0,0,1}
+ displaystyle \sum_{n=1}^{N_{\textrm{TP}}}}\sum_{j\in D_{n}}x_{j}^{2}}}                        (32)
+ s
+ r\           =∑n=1NTP∑j∈Dnpj​xj\displaystyle={\color[rgb]{0,0,1}{\sum_{n=1}^{N_{\textrm
+ displaystyle {TP}}}}}\sum_{j\in D_{n}}p_{j}x_{j}                                              (33)
+ r
+
+where DnD_{n} indicates the sharded features on nt​hn^{th} GPU for TP. The summation in blue colour
+indicates an AllReduce operation across GPUs in Equations 32, 33. Note that for both AllReduce
+operations, we only need to communicate a single element.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

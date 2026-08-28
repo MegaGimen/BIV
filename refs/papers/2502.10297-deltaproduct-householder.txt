@@ -1,0 +1,2364 @@
+source: https://arxiv.org/html/2502.10297
+arxiv: https://arxiv.org/abs/2502.10297
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Background
+ 4. 3 Related Work
+ 5. 4 DeltaProduct
+     1. 4.1 State-Tracking Capabilities of (Gated) DeltaProduct
+ 6. 5 Experiments
+     1. 5.1 Implementation
+     2. 5.2 State-Tracking
+     3. 5.3 Language Modeling
+ 7. 6 Conclusion and Future Work
+ 8. References
+ 9. A Spectral Properties and Simplifications of Householder Product Matrices
+10. B Expressivity of DeltaProduct
+     1. B.1 Assumptions
+         1. B.1.1 Practical Considerations
+     2. B.2 Group Word Problems
+     3. B.3 Regular Languages
+     4. B.4 Regular language recognition through products of RWKV-7 matrices
+     5. B.5 Dihedral Groups
+     6. B.6 Stability vs. Expressivity of Linear RNNs
+11. C Experiments
+     1. C.1 State-Tracking
+     2. C.2 Chomsky Hierarchy
+     3. C.3 Language Modeling
+         1. C.3.1 Experimental setup
+         2. C.3.2 Throughput
+         3. C.3.3 Additional Benchmarks
+         4. C.3.4 Training behavior
+         5. C.3.5 Additional results on Length Extrapolation
+         6. C.3.6 Additional Results on Scaling Behavior
+
+License: CC BY 4.0
+arXiv:2502.10297v7 [cs.LG] 22 Oct 2025
+
+DeltaProduct: Improving State-Tracking in
+Linear RNNs via Householder Products
+
+Julien Siems Email: juliensiems@gmail.com    Timur Carstensen Email: timurcarstensen@gmail.com    
+Arber Zela Email: riccardograzzi4@gmail.com    Frank Hutter    Massimiliano Pontil    Riccardo
+Grazzi^* ^†^†thanks: Work started while at Istituto Italiano di Tecnologia.    Equal contribution^*
+   University of Freiburg    ELLIS Institute Tübingen    Microsoft Research    Prior Labs    CSML 
+   Istituto Italiano di Tecnologia    AI Centre    University College London
+
+Abstract
+
+Linear Recurrent Neural Networks (linear RNNs) have emerged as competitive alternatives to
+Transformers for sequence modeling, offering efficient training and linear-time inference. However,
+existing architectures face a fundamental trade-off between expressivity and efficiency, dictated
+by the structure of their state-transition matrices. Diagonal matrices, used in models such as
+Mamba, GLA, or mLSTM, yield fast runtime but have limited expressivity. To address this, recent
+architectures such as DeltaNet and RWKV-7 adopted a diagonal plus rank–1 structure, which allows
+simultaneous token and channel mixing, improving associative recall and, as recently shown,
+state-tracking when allowing state-transition matrices to have negative eigenvalues. Building on
+the interpretation of DeltaNet’s recurrence as performing one step of online gradient descent per
+token on an associative recall loss, we introduce DeltaProduct, which instead takes multiple (nhn_
+{h}) steps per token. This naturally leads to diagonal plus rank–nhn_{h} state-transition matrices,
+formed as products of nhn_{h} generalized Householder transformations, providing a tunable
+mechanism to balance expressivity and efficiency. We provide a detailed theoretical
+characterization of the state-tracking capability of DeltaProduct in finite precision, showing how
+it improves by increasing nhn_{h}. Our extensive experiments demonstrate that DeltaProduct
+outperforms DeltaNet in both state-tracking and language modeling, while also showing significantly
+improved length extrapolation capabilities.
+
+1 Introduction
+
+The Transformer architecture [1] has revolutionized natural language processing through its
+self-attention mechanism, enabling both parallel computation across the sequence length and
+effective context retrieval. Consequently, Transformers have largely replaced recurrent models like
+LSTMs [2], which exhibit slower training and poorer retrieval performance. However, the quadratic
+computational complexity of Transformers with sequence length presents challenges when dealing with
+longer sequences. Linear RNNs have emerged as a promising solution that combines parallel training
+across the sequence length with linear inference-time complexity. At the core of these models are
+the state-transition matrices governing the recurrence, which fundamentally determine the
+expressivity of a linear RNN [3]. Early linear RNNs like S4 [4] and LRU [5] used token-independent
+state-transition matrices. For superior expressivity, current linear RNNs now exclusively use
+token-dependent matrices. Among these Mamba [6, 7], GLA [8], and mLSTM [9] use diagonal
+state-transition matrices for efficient sequence processing. Newer architectures have incorporated
+non-diagonal structures, often diagonal plus rank-1, enabling simultaneous mixing of information
+across both tokens and channels of the hidden state. This innovation has led to more expressive
+models such as (Gated) DeltaNet [10, 11], TTT-Linear [12], RWKV-7 [13], and Titans [14], which
+demonstrate superior language modeling and in-context retrieval performance, often with only a
+reasonable decrease in training efficiency.
+
+Recent work has revealed a fundamental trade-off between training efficiency and expressivity of
+linear RNNs, dictated by the structure of their state-transition matrices [3, 15, 16]. Models with
+diagonal state-transition matrices, such as Mamba and GLA, are highly efficient to train but face
+severe expressivity limitations - for instance, they cannot perform addition modulo 3 on sequences
+of arbitrary length in finite precision [16, Theorem 2]. Transformers also face similar limitations
+[17, 18], since they can be seen as special linear RNNs with a state-transition matrix equal to the
+identity, albeit with an infinite dimensional state [19]. DeltaNet partially overcomes these
+limitations through generalized Householder matrices, achieving greater expressivity, though it
+still requires multiple layers for some tasks. At the other extreme, linear RNNs with full
+state-transition matrices offer maximal expressivity [20], capable of recognizing any regular
+language with a single layer [3], but are prohibitively expensive to train.
+
+
+Figure 1: (Left) DeltaProductnh{}_{n_{h}} learns higher-order permutation groups like S5S_{5} in
+one layer, while DeltaNet (nh=1n_{h}{=}1) is limited to S2S_{2} (parity). (Right) Length
+extrapolation of DeltaProduct improves significantly with higher nhn_{h}.
+
+To bridge this gap, we propose DeltaProduct, a method that balances expressivity and efficiency of
+the recurrence computation. While DeltaNet’s recurrence performs a single gradient descent step per
+token on the squared loss of a linear key-to-value mapping [21, 10], DeltaProduct takes nhn_{h}
+gradient steps using additional keys and values, yielding state-transition matrices that are
+products of nhn_{h} generalized Householder matrices. This connection between the number of
+optimization steps and the matrix structure provides an elegant way to interpolate between diagonal
+and dense matrices: increasing the number of gradient steps automatically increases the number of
+Householder matrices in the product, providing a tunable mechanism to control the recurrence’s
+expressivity. DeltaProduct enables precise control over the norm of state transition matrices,
+ensuring it remains ≤1\leq 1 to maintain stability during training on long sequences. We contribute
+DeltaProduct to the flash-linear-attention library [22], our experiment code is provided here.
+
+Concretely, we make the following contributions:
+
+  • •
+   
+    We propose (Gated) DeltaProduct, which generalizes (Gated) DeltaNet by using products of
+    generalized Householder transformations as state-transition matrices (Section 4).
+
+  • •
+   
+    We provide a detailed theoretical characterization of the expressivity of DeltaProduct in
+    finite precision and how it improves by increasing nhn_{h} (Section 4.1). Notably, we prove
+    that for any nh≥1n_{h}\geq 1, DeltaProduct with at most 44 layers (33 if nh≥2n_{h}\geq 2) can
+    solve any group word problem, and Gated DeltaProduct with a finite number of layers can
+    recognize any regular language.
+
+  • •
+   
+    We empirically validate DeltaProduct’s superior performance across multiple domains: solving
+    complex state-tracking tasks beyond DeltaNet’s capabilities (see Figure 1) and improving
+    language modeling performance with significantly enhanced length extrapolation (Section 5),
+    which we study through analysis of the hidden state’s effective rank.
+
+2 Background
+
+Linear RNNs. Linear RNNs consist of stacked layers, each processing an input sequence of vectors
+𝒙1,…,𝒙t∈ℝl{\bm{x}}_{1},\dots,{\bm{x}}_{t}\in\mathbb{R}^{l} (output of the previous layer) to
+produce an output sequence 𝒚^1,…,𝒚^t∈ℝp\hat{{\bm{y}}}_{1},\dots,\hat{{\bm{y}}}_{t}\in\mathbb{R}^
+{p}. We write the forward pass of each layer placing emphasis on the linear recurrence (as in [16])
+
+ 𝑯i=𝑨(𝒙i)𝑯i−1+𝑩(𝒙i),𝒚^i=dec(𝑯i,𝒙i)where i∈1,…,t\displaystyle{\bm{H}}_{i}={\bm{A}}({\bm{x}}_
+ {i}){\bm{H}}_{i-1}+{\bm{B}}({\bm{x}}_{i}),\qquad\hat{{\bm{y}}}_{i}=\mathrm{dec}({\bm{H}}_{i},  (1)
+ {\bm{x}}_{i})\qquad\text{where }i\in{1,\dots,t}
+
+𝑯0∈ℝn×d{\bm{H}}_{0}\in\mathbb{R}^{n\times d} is the initial hidden state, 𝑨:ℝl→ℝn×n{\bm{A}}:\mathbb
+{R}^{l}\to\mathbb{R}^{n\times n} maps the input to a state-transition matrix, 𝑩:ℝl→ℝn×d{\bm{B}}:\
+mathbb{R}^{l}\to\mathbb{R}^{n\times d} controls the information added to the new hidden state, and
+dec:ℝn×d×ℝl→ℝp\mathrm{dec}:\mathbb{R}^{n\times d}\times\mathbb{R}^{l}\to\mathbb{R}^{p} determines
+the output of the recurrence. The functions 𝑨{\bm{A}}, 𝑩{\bm{B}}, and dec\mathrm{dec} are
+learnable, with dec\mathrm{dec} typically containing a feedforward neural network. Different linear
+RNN variants are distinguished by their specific implementations of these functions. For example,
+Mamba [6, 7], GLA [8], and mLSTM [9] use variations of a diagonal state-transition matrix 𝑨⁡(𝒙i){\
+bm{A}}({\bm{x}}_{i}). The linearity of the recurrence allows it to be parallelized along the
+sequence length, either via a chunkwise parallel form [23, 24, 8] or using a parallel scan [25, 26,
+27, 28, 6]. For a comparison of different linear RNN architectures see Yang et al. [10, Table 4].
+
+DeltaNet. We base our work on the DeltaNet architecture [29, 30], which has recently seen renewed
+interest through the work of Yang et al. [10], Yang et al. [11] who demonstrate how to parallelize
+DeltaNet across the sequence length on GPUs. The DeltaNet recurrence is parameterized as
+
+ 𝑨⁡(𝒙i)=𝑰−βi​𝒌i​𝒌i⊤,𝑩⁡(𝒙i)=βi​𝒌i​𝒗i⊤,dec⁡(𝑯i,𝒙i)=ψ⁡(𝑯i⊤​𝒒i)~{\bm{A}}({\bm{x}}_{i})={\bm{I}}-\
+ beta_{i}{\bm{k}}_{i}{\bm{k}}_{i}^{\top},~{\bm{B}}({\bm{x}}_{i})=\beta_{i}{\bm{k}}_{i}{\bm{v}}  (2)
+ _{i}^{\top},~\mathrm{dec}({\bm{H}}_{i},{\bm{x}}_{i})=\psi({\bm{H}}_{i}^{\top}{\bm{q}}_{i})
+
+where βi∈[0,1]\beta_{i}\in[0,1], 𝒒i,𝒌i∈ℝn{\bm{q}}_{i},{\bm{k}}_{i}\in\mathbb{R}^{n} (with ‖𝒒i‖=‖𝒌i‖
+=1\left\lVert{\bm{q}}_{i}\right\rVert=\left\lVert{\bm{k}}_{i}\right\rVert=1), 𝒗i∈ℝd{\bm{v}}_{i}\in\
+mathbb{R}^{d} are outputs of learnable functions of 𝒙i{\bm{x}}_{i}. 𝑨⁡(𝒙i){\bm{A}}({\bm{x}}_{i}) is
+a generalized Householder transformation [31], which is symmetric and has eigenvalues 1
+(multiplicity n−1n-1) and 1−βi1-\beta_{i} (multiplicity 1). From a geometric perspective, βi\beta_
+{i} determines the transformation type, interpolating between identity (βi=0\beta_{i}=0) and
+projection (βi=1\beta_{i}=1). DeltaNet also has a natural interpretation from an online learning
+perspective [10], as each step of its recurrence is one step of online gradient descent on a
+quadratic loss with step size βi\beta_{i}:
+
+ ℒi​(𝑯)=1/2​‖𝑯⊤​𝒌i−𝒗i‖22;𝑯i\displaystyle\  =𝑯i−1−βi∇ℒi(𝑯i−1)=𝑯i−1−βi𝒌i(𝒌i⊤𝑯i−1−𝒗i⊤)\displaystyle=
+ mathcal{L}_{i}({\bm{H}})=1/2\|{\bm{H}}^{\ {\bm{H}}_{i-1}-\beta_{i}\,\nabla\mathcal{L}_{i}({\bm
+ top}{\bm{k}}_{i}-{\bm{v}}_{i}\|_{2}^{2};~ {H}}_{i-1})={\bm{H}}_{i-1}-\beta_{i}\,{\bm{k}}_{i}({\bm
+ {\bm{H}}_{i}                              {k}}_{i}^{\top}{\bm{H}}_{i-1}-{\bm{v}}_{i}^{\top})
+ DeltaNet:𝑯i\displaystyle\text{DeltaNet:}~ =(I−βi​𝒌i​𝒌i⊤)​𝑯i−1+βi​𝒌i​𝒗i⊤\displaystyle=(I-\beta_{i}
+ {\bm{H}}_{i}                              {\bm{k}}_{i}{\bm{k}}_{i}^{\top}){\bm{H}}_{i-1}+\beta_
+                                           {i}{\bm{k}}_{i}{\bm{v}}_{i}^{\top}
+
+State-Tracking and Word Problems. State-tracking is the ability of a model to keep track of the
+state of a system while only observing the updates that are applied to it. It can be modeled as a
+monoid word problem, which consists in mapping sequences x1,…,xtx_{1},\dots,x_{t}, with xix_{i}
+being an element of a monoid GG, into sequences y1,…,yty_{1},\dots,y_{t}, where yi=xi⋅xi−1⋯x1y_{i}=
+x_{i}\cdot x_{i-1}\cdots x_{1} and ⋅\cdot is the associative operation of the monoid. Recognizing a
+regular language can be accomplished by solving the word problem of a finite monoid associated to
+the language and will be the focus of this work. Problems where GG is also a group (group word
+problems) with finite elements, are notoriously hard to solve for both Transformers and linear
+RNNs. Group word problems for the symmetric or permutation groups are particularly important, since
+any group is isomorphic to a subgroup of a symmetric group. For instance, if we denote with SnS_{n}
+the group of permutations of nn elements, parity corresponds to the S2S_{2} word problem, which
+cannot be solved in finite precision by Transformers [17] and diagonal Linear RNNs [15] with
+positive values, while the S5S_{5} word problem cannot be solved by these models even when the
+precision can grow logarithmically with the sequence length, since both Transformers and Linear
+RNNs belong to the TC^0 circuit complexity class while S5S_{5} is in NC^1 [32, 18, 3]. In contrast,
+with unconstrained, full state-transition matrices any regular language can be recognized in one
+layer (see e.g. [3, Theorem 5.2]). However, training using full unstructured matrices is very
+inefficient and also unstable without any control on the norm.
+
+3 Related Work
+
+Linear RNNs have recently been studied from two main perspectives: state-space models and causal
+linear attention. State-space models, originating from continuous dynamical systems, inspired
+variants such as S4 [4], H4 [33], and LRU [5] (see Tiezzi et al. [34] for a comprehensive survey).
+Models like Mamba [6, 7] further enhance these by incorporating input-dependent gating mechanisms,
+significantly improving language modeling performance. In parallel, Katharopoulos et al. [19]
+showed that causal linear attention Transformers can be reformulated as RNNs with linear
+sequence-length scaling. Following this, Gated Linear Attention (GLA) [8] introduced gating
+mechanisms similar to Mamba. Recent studies explored more expressive recurrences via non-diagonal
+transition matrices, such as DeltaNet [29, 35, 10], TTT-Linear [12], RWKV-7 [13], B’MOJO [36], and
+Titans [14]. Additionally, Beck et al. [9] introduced xLSTM, combining linear and nonlinear RNN
+architectures inspired by LSTM [2]. Another line of work explores recurrences in depth, which have
+been shown to increase the expressivity and reasoning capabilities [37, 38]. For instance,
+concurrent work explores how fixed-point iterations of a diagonal linear RNN can increase its
+expressivity turning it non-linear at the fixed-point [39, 40]. Unlike our approach, which enhances
+the expressivity by increasing the complexity of the linear recurrence, their approach works by
+applying the same recurrence multiple times, effectively increasing the depth of the model without
+increasing the parameter count. This approach is orthogonal to ours and the two can be potentially
+combined.
+
+Products of structured matrices [41] have previously been used in the state-update of non-linear
+RNNs – including (Givens) rotation matrices [42, 43, 44], Kronecker products [45], Householder
+reflections [46]—chosen for their orthogonal, norm-preserving properties that encourage long-term
+dependency learning [47, 48]. Recently, Biegun et al. [49] applied rotation matrices as
+state-transition matrices in non-selective state-space models. In contrast, DeltaProduct uses a
+linear recurrence with state-transition matrices adaptive to the current token, expressed as
+products of generalized Householder matrices.
+
+State-Tracking. Recent work by Grazzi et al. [16] demonstrates that expanding the eigenvalue range
+of linear RNNs’ state transition matrices from [0,1][0,1] to [−1,1][-1,1] significantly enhances
+their expressivity. They show how DeltaNet’s eigenvalue range can be extended from [0,1][0,1] to
+[−1,1][-1,1], simply by multiplying βi\beta_{i} by 2, allowing DeltaNet to perform reflections when
+βi=2\beta_{i}=2, which enables it to handle state-tracking tasks such as parity checking and, more
+generally, any group word problem where each element of the input sequence corresponds to a
+permutation of at most two elements, while for other tasks, DeltaNet requires multiple layers [16,
+Theorem 2 and 6]. Their theoretical results also cover the products of Householders used as
+state-transition matrices of DeltaProduct, showing that they allow to solve any group word problem
+in one layer (Theorem 3) and recognize any regular language (Theorem 4), when nhn_{h} is large
+enough and with a finite number of layers. Here, we extend that work by providing experimental
+evidence of the benefit of larger nhn_{h} and, leveraging the analysis by Peng et al. [13], more
+refined theoretical results on the expressivity, e.g. with a greatly improved dependency on nhn_
+{h}. The recent RWKV-7 [13] uses a state transition matrix of the form diag⁡(𝒘t)−c​𝒌t​(𝒌t⊙𝒂t)⊤\
+mathrm{diag}({\bm{w}}_{t})-c{\bm{k}}_{t}({\bm{k}}_{t}\odot{\bm{a}}_{t})^{\top}, with ‖𝒌t‖=1,𝒂t,𝒘t∈
+[0,1]n\left\lVert{\bm{k}}_{t}\right\rVert=1,{\bm{a}}_{t},{\bm{w}}_{t}\in[0,1]^{n} and c∈{1,2}c\in\
+{1,2\}, which provides a potentially asymmetric rank-1 update in contrast to DeltaNet’s symmetric
+update, allowing it to recognize any regular language with only 4 layers. However, the increased
+expressivity comes at the cost of losing the guarantee on the stability of the recurrence. In
+contrast, (Gated) DeltaProduct has a stable recurrence since the spectral norm of every
+state-transition matrix is always ≤1\leq 1.
+
+4 DeltaProduct
+
+       [\left[\vbox{\hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\right.]\left.\vbox{\
+hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\right]       [\left[\vbox{\hrule height=
+40.03386pt,depth=40.03386pt,width=0.0pt}\right.]\left.\vbox{\hrule height=40.03386pt,depth=
+40.03386pt,width=0.0pt}\right]++[\left[\vbox{\hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}
+\right.]\left.\vbox{\hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\right]×\times[\left[\
+vbox{\hrule height=10.86978pt,depth=10.86978pt,width=0.0pt}\right.]\left.\vbox{\hrule height=
+10.86978pt,depth=10.86978pt,width=0.0pt}\right]   [\left[\vbox{\hrule height=40.03386pt,depth=
+40.03386pt,width=0.0pt}\right.]\left.\vbox{\hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\
+right]++[\left[\vbox{\hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\right.]\left.\vbox{\
+hrule height=40.03386pt,depth=40.03386pt,width=0.0pt}\right]nhn_{h}×\times[\left[\vbox{\hrule
+height=20.82825pt,depth=20.82825pt,width=0.0pt}\right.]\left.\vbox{\hrule height=20.82825pt,depth=
+20.82825pt,width=0.0pt}\right]
+
+Diagonal
+Token Mix:
+Channel Mix:
+Expressivity:
+Examples:
+
+Diagonal:
+✓\checkmark
+×\times
+Parity
+Mamba, GLA
+
+Rank 1 Update:
+✓\checkmark
+✓\checkmark
+Reflections
+DeltaNet, TTT, RWKV-7
+
+Rank nhn_{h} Update:
+✓\checkmark
+✓\checkmark
+Reflections, Rotations
+DeltaProduct
+
+
+Figure 2: Overview of state-transition matrices 𝑨⁡(𝒙i){\bm{A}}({\bm{x}}_{i}) in linear RNNs.
+
+While DeltaNet’s recurrence can be seen as performing one step of online gradient descent per
+token, DeltaProduct builds upon DeltaNet by further refining the hidden state by taking multiple
+steps per token. This naturally leads to a more expressive state-transition matrix formed as a
+product of generalized Householder matrices, where each additional step expands the range of
+achievable linear transformations. Formally, for each input token 𝒙i{\bm{x}}_{i} to the layer we
+generate nhn_{h} keys as 𝒌i,j{\bm{k}}_{i,j} = ψ⁡(𝑾j​𝒙i)/∥ψ⁡(𝑾j​𝒙i)∥2\psi({\bm{W}}_{j}{\bm{x}}_{i})/
+\lVert\psi({\bm{W}}_{j}{\bm{x}}_{i})\rVert_{2}, nhn_{h} values as 𝒗i,j=𝑽j​𝒙i{\bm{v}}_{i,j}={\bm{V}}
+_{j}{\bm{x}}_{i}, and nhn_{h} betas as βi,j=ϕ⁡(𝑼j​𝒙i)\beta_{i,j}=\phi({\bm{U}}_{j}{\bm{x}}_{i})
+where 𝑾j,𝑽j,𝑼j{\bm{W}}_{j},{\bm{V}}_{j},{\bm{U}}_{j}, are learnable weight matrices specific to the
+jj-th gradient step, ψ\psi is a nonlinearity (we pick SiLU\mathrm{SiLU} as in DeltaNet), while ϕ\
+phi is either the sigmoid or 2×2\times the sigmoid to increase the expressivity. Then, we compute
+nhn_{h} gradient descent steps using the losses ℒi,j​(𝑯)=‖𝑯⊤​𝒌i,j−𝒗i,j‖22/2\mathcal{L}_{i,j}({\bm
+{H}})=\|{\bm{H}}^{\top}{\bm{k}}_{i,j}-{\bm{v}}_{i,j}\|_{2}^{2}/2, i.e., for j=1​…​nhj=1\dots n_{h}
+
+ 𝑯i,j=𝑯i,j−1−βi,j∇ℒi,j(𝑯i,j−1)=(𝑰−βi,j𝒌i,j𝒌i,j⊤)𝑯i,j−1+βi,j𝒌i,j𝒗i,j⊤,\displaystyle{\bm{H}}_{i,j}=
+ {\bm{H}}_{i,j-1}-\beta_{i,j}\nabla\mathcal{L}_{i,j}({\bm{H}}_{i,j-1})=\left({\bm{I}}-\beta_{i,j}
+ {\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\top}\right){\bm{H}}_{i,j-1}+\beta_{i,j}{\bm{k}}_{i,j}{\bm{v}}_
+ {i,j}^{\top},
+
+where 𝑯i,0=𝑯i−1{\bm{H}}_{i,0}={\bm{H}}_{i-1} and 𝑯i,nh=𝑯i{\bm{H}}_{i,n_{h}}={\bm{H}}_{i}.
+Unrolling, we get 𝑯i=𝑨⁡(𝒙i)​𝑯i−1+𝑩⁡(𝒙i){\bm{H}}_{i}={\bm{A}}({\bm{x}}_{i}){\bm{H}}_{i-1}+{\bm{B}}
+({\bm{x}}_{i}) with
+
+𝑨⁡(𝒙i)=∏j=1nh(𝑰−βi,j​𝒌i,j​𝒌i,j⊤),𝑩⁡(𝒙i)=∑j=1nh(∏k=j+1nh(𝑰−βi,k​𝒌i,k​𝒌i,k⊤))​βi,j​𝒌i,j​𝒗i,j⊤.{\bm
+{A}}({\bm{x}}_{i})=\prod_{j=1}^{n_{h}}\Bigl({\bm{I}}-\beta_{i,j}\,{\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\
+top}\Bigr),\quad{\bm{B}}({\bm{x}}_{i})=\sum_{j=1}^{n_{h}}\Bigl(\prod_{k=j+1}^{n_{h}}\bigl({\bm{I}}-
+\beta_{i,k}\,{\bm{k}}_{i,k}{\bm{k}}_{i,k}^{\top}\bigr)\Bigr)\,\beta_{i,j}\,{\bm{k}}_{i,j}{\bm{v}}_
+{i,j}^{\top}. (3)
+
+Hence, by taking multiple gradient descent steps per token, DeltaProduct’s state-transition
+matrices are products of generalized Householder transformations, and by expanding such a product,
+𝑨⁡(𝒙i){\bm{A}}({\bm{x}}_{i}) takes the form of identity plus a matrix of rank at most nhn_{h} as
+shown in Figure 2. As DeltaNet extends to Gated DeltaNet by incorporating a forget gate [11],
+DeltaProduct can similarly be extended to Gated DeltaProduct by letting 𝑨⁡(𝒙i)=gi​∏j=1nh
+(𝑰−βi,j​𝒌i,j​𝒌i,j⊤){\bm{A}}({\bm{x}}_{i})={\color[rgb]{1,0,0}g_{i}}\prod_{j=1}^{n_{h}}({\bm{I}}-\
+beta_{i,j}\,{\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\top}) where the scalar gate gi∈[0,1]g_{i}\in[0,1] is
+adopted from Mamba 2 [7] and 𝑩⁡(𝒙i){\bm{B}}({\bm{x}}_{i}) remains unchanged. This formulation
+enables DeltaProduct to interpolate between generalized Householder (nh=1n_{h}=1 as in DeltaNet)
+and dense matrices (of norm ≤\leq 1), since increasing nhn_{h} can increase the rank of 𝑨⁡(𝒙i){\bm
+{A}}({\bm{x}}_{i}).
+
+H0H_{0}H1H_{1}𝒌0{\bm{k}}_{0}𝒌1{\bm{k}}_{1}θ\theta2​θ2\thetaxxx′x^{\prime}x′′x^{\prime\prime}
+
+
+Figure 3: Two reflections produce a 2D rotation: Reflecting xx across planes H0H_{0} and H1H_{1}
+(with normals 𝒌0{\bm{k}}_{0} and 𝒌1{\bm{k}}_{1}) yields a rotation by 2​θ2\theta, where θ\theta is
+the angle between the planes.
+
+Expressivity of Householder products. While any state transition matrix of DeltaNet can model a
+single Householder reflection (with βi=2\beta_{i}=2), DeltaProduct’s can model any orthogonal
+matrix. This is a consequence of the Cartan-Dieudonné theorem, which establishes that any n×nn\
+times n orthogonal matrix can be expressed as a product of at most nn reflections (as illustrated
+in Figure 3 for n=2n=2). The Householder product exhibits interesting properties in special cases.
+When all Householder keys are identical, the product simplifies to a single Householder with a
+scaled beta parameter, offering no additional expressivity (Prop. 1.1). Conversely, when the keys
+are mutually orthogonal, the Householder product simplifies to an identity plus a symmetric rank
+nhn_{h} matrix (Prop. 1.2). Only when the keys are non-trivially linearly dependent can we obtain
+non-symmetric matrices, potentially yielding complex eigenvalues (Prop. 1.3). An important
+consequence of using Householder products is that it allows us to effectively bound the norm of 𝑨⁡
+(𝒙i){\bm{A}}({\bm{x}}_{i}). This is because the norm of the product is upper bounded by the product
+of the norms (each ≤1\leq 1), which ensures the stability of the recurrence [16, Prop. 1.1]. This
+bound would not be possible with the more direct parametrization 𝑨⁡(𝒙i)=I−∑j=1nhβi,j​𝒌i,j​𝒌i,j⊤{\bm
+{A}}({\bm{x}}_{i})=I-\sum_{j=1}^{n_{h}}\beta_{i,j}{\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\top}, which also
+restricts the matrix to be symmetric.
+
+4.1 State-Tracking Capabilities of (Gated) DeltaProduct
+
+We present two theorems that characterize the state-tracking capabilities of DeltaProduct. Compared
+to Grazzi et al. [16, Theorem 3 and 4], we focus on results that hold for any nh≥1n_{h}\geq 1. We
+defer proofs, and more details to Appendix B, where we also include results on dihedral groups (
+Theorem 7) and on finite subgroups of the orthogonal and special orthogonal groups (Theorem 4).
+
+Theorem 1.
+
+For any n∈ℕn\in\mathbb{N} there exists a DeltaProduct model with one of the following
+configurations that can solve the word problem of the symmetric group SnS_{n}: (i) one layer with
+nh=n−1n_{h}=n{-}1 [16, Theorem 3] (ii) 3 layers with nh>1n_{h}{>}1 (iii) 4 layers with nh=1n_{h}=1.
+The construction for (ii) and (iii) requires that the MLP at the second last layer computes a
+lookup-table of size 2​m×(n!)2​m2m\times(n!)^{2m}, function of the last 2​m2m input tokens and the
+position modulo 2​m2m with m=⌈(n−1)/nh⌉m=\lceil(n{-}1)/n_{h}\rceil.
+
+Theorem 2.
+
+For any nh≥1n_{h}\geq 1 and any regular language, there exists a Gated DeltaProduct model with a
+finite number of layers (dependent on the language) that recognizes it.
+
+The proof for Theorem 1 uses the same idea as the construction for the theoretical results of Peng
+et al. [13] for RWKV-7. Each element of SnS_{n} can be mapped to a permutation matrix, but
+DeltaProduct’s state transition matrices can only model permutations of up to nh+1n_{h}+1 elements.
+Therefore, if nh+1<nn_{h}+1<n, early layers decompose each product of m=⌈(n−1)/nh⌉m=\lceil(n-1)/n_
+{h}\rceil consecutive permutations into mm simpler permutations, which are applied in the
+recurrence of the last layer but in a delayed fashion. To get such a decomposition and account for
+the delay, the MLP at the second-last layer computes a potentially large lookup table, function of
+the past 2​m2m tokens and the position modulo 2​m2m. To prove Theorem 2, we use the Krohn-Rhodes
+decomposition [50], similarly to Grazzi et al. [16, Theorem 4], where each automaton is decomposed
+into multiple permutation-reset automata, and model each using the same technique of Theorem 1,
+exploiting gates for the resets.
+
+Comparison to other non-diagonal Linear RNNs. Table 1 provides a comparison of the expressivity of
+different non-diagonal linear RNNs. (Gated) DeltaProduct with nh>1n_{h}>1 has improved expressivity
+compared to DeltaNet, and, up to 3 layers, even compared to RWKV-7. Moreover, increasing nhn_{h}
+has clear benefits: reducing the number of layers or the size of the lookup table. Since
+DeltaProduct can solve the S5S_{5} word problem, it is outside of the TC^0 complexity class, just
+as RWKV-7. One might expect DeltaProduct to be able to model any useful state-transition matrix
+since it can model updates of arbitrarily high rank when nhn_{h} is equal to the number of rows of
+the hidden state. This is because DeltaProduct’s state-transition matrices 𝑨⁡(𝒙i){\bm{A}}({\bm{x}}_
+{i}) satisfy the spectral norm condition ‖𝑨⁡(𝒙i)‖=max‖𝒚‖=1⁡‖𝑨⁡(𝒙i)​𝒚‖2≤1\left\lVert{\bm{A}}({\bm
+{x}}_{i})\right\rVert=\max_{\left\lVert{\bm{y}}\right\rVert=1}\left\lVert{\bm{A}}({\bm{x}}_{i}){\bm
+{y}}\right\rVert_{2}\leq 1, ensuring a stable recurrence. RWKV-7 relaxes this constraint and can
+represent matrices with higher spectral norms. In particular, copy matrices – identity matrices
+where one column is replaced by another – with ‖𝑨⁡(𝒙i)‖=2\left\lVert{\bm{A}}({\bm{x}}_{i})\right\
+rVert=\sqrt{2} (when c=2c=2), allowing RWKV-7 to recognize any regular language in just four
+layers. However, this may lead to instability in the recurrence (see Section B.6). We could enhance
+expressivity at the cost of stability by replacing the Householder matrices in DeltaProduct with
+RWKV-7’s state transition matrices. This modification enables us to prove a result analogous to
+Theorem 1, but for regular languages rather than group word problems—see Section B.4 for details.
+Specifically, this approach allows the resulting linear RNN to recognize any regular language
+within a single layer, provided nhn_{h} is sufficiently large.
+
+Remark 1.
+
+For any regular language recognized by a finite-state automaton (FSA) having nn states there exists
+a one layer linear RNN using nh=nn_{h}=n products of RWKV-7 matrices as state-transition matrices
+that can recognize it. This is because a linear RNN with unconstrained state-transition matrices
+can recognize any regular language in a single layer [3, Theorem 5.2] by modeling FSA evaluation
+through matrix-vector products [51]. Peng et al. [13, Lemma 3] further showed that any transition
+matrix of an FSA with nn states can be expressed as products of nn matrices, each of which is
+either a swap, copy, or the identity matrix, all of which are representable by an RWKV-7 matrix.
+
+The above discussion oulines a trade-off between the expressivity of RWKV-7 matrices and the
+guaranteed stability of generalized Householders used in DeltaProduct. It is an open question
+whether there exists a continuous parameterization of state-transition matrices which yields stable
+recurrences and still allows to recognize any regular language in a finite and fixed number of
+layers.
+
+
+Table 1: Expressivity of non-diagonal Linear RNNs shown through the formal language problems they
+can solve in finite precision. SnS_{n}, ℤn\mathbb{Z}_{n}, DnD_{n} are the symmetric, cyclic and
+dihedral groups of order nn, while O⁡(n),SO⁡(n)\mathrm{O}(n),\mathrm{SO}(n) are the orthogonal and
+special orthogonal group of order nn. For SnS_{n}, “only kk-permutations” means that input
+sequences can contain only permutations of up to kk elements. LS is the size of the lookup table
+computed in the second-last layer’s MLP. |Σ||\Sigma| and |Q||Q| are the sizes of the alphabet and
+set of states of a finite state automaton recognizing the regular language. Gated variants’ state
+updates can also model constant (reset) transitions.
+
+Layers   (Gated) DeltaNet               RWKV-7               (Gated) DeltaProductnh>1{}_{n_{h}>1}
+                                                           SnS_{n} only (nh+1)(n_{h}+1)-permut.^a
+  1    SnS_{n} only 22      SnS_{n} only 22-permutations   Finite subgroups of O⁡(nh)\mathrm{O}(n_
+       -permutations.^a                                    {h}), SO⁡(nh+1)\mathrm{SO}(n_{h}+1) if 
+                                                           nhn_{h} is even.^g
+  2    ℤn\mathbb{Z}_{n}^b,  ℤn\mathbb{Z}_{n}, DnD_{n}      
+       DnD_{n}^c
+                                                           SnS_{n} with LS 2​m×(n!)2​m2m\times(n!)^
+  3                                                        {2m} where m=⌈(n−1)/nh⌉m=\lceil(n-1)/n_
+                                                           {h}\rceil.^d
+       SnS_{n} with LS 2​   SnS_{n} with LS as DeltaNet.   
+  4    (n−1)×(n!)2​(n−1)2   Reg. lang. with LS 2​|Q|×(|Σ|)
+       (n-1)\times(n!)^{2   2​|Q|2|Q|{\times}(|\Sigma|)^{2
+       (n-1)}.^d            |Q|}.^e
+f⁡(|Q  Gated: Regular                                      
+|)f(|Q languages^f                                         Gated: Regular languages^f
+  |)
+
+  • a
+   
+    [16, Thm. 3]
+
+  • b
+   
+    [16, Thm. 6]
+
+  • c
+   
+    Thm. 7.
+
+  • d
+   
+    Thm. 1.
+
+  • e
+   
+    [13, Thm. 3]
+
+  • f
+   
+    Thm. 2
+
+  • g
+   
+    Thm. 4
+
+5 Experiments
+
+We evaluate DeltaProduct on state-tracking and standard language modeling to assess its
+expressivity and efficiency. Throughout the experiments we use either the suffix [−1,1][-1,1] or
+[0,1][0,1] after each method, to denote the eigenvalue ranges of its state transition matrices. We
+present additional experiments on languages of different levels of the Chomsky hierarchy [52] in 
+Section C.2.
+
+5.1 Implementation
+
+We use the same macro architecture used by Gated DeltaNet. Since each step of (Gated) DeltaProduct
+follows the same recurrence structure as (Gated) DeltaNet, we can reuse its implementation written
+in Triton [53], available through the Flash-Linear-Attention library [22], which uses the
+chunk-wise parallel form for the recurrence.
+
+
+Figure 4: Training throughput of parameter matched 1.3B DeltaProductnh{}_{n_{h}} on a H100. Matched
+via: (Top) scaling the number of heads, (Bottom) scaling the head dimension.
+
+However, DeltaProduct differs by using nhn_{h} keys, values and betas per token, resulting in a
+recurrence nhn_{h} times longer than DeltaNet’s. Therefore, we arrange keys (and similarly values
+and betas) as [𝐤1,1,…,𝐤1,nh,𝐤2,1,…,𝐤2,nh,…],\left[\mathbf{k}_{1,1},\ldots,\mathbf{k}_{1,n_{h}},\
+mathbf{k}_{2,1},\ldots,\mathbf{k}_{2,n_{h}},\ldots\right], while for gating we construct the
+expanded sequence of gates as: [g1,1,…,1,g2,1,…,1,…]\left[g_{1},1,\ldots,1,g_{2},1,\ldots,1,\ldots\
+right] where each gate gig_{i} is followed by (nh−1)(n_{h}-1) ones to match the number of keys and
+values, so that we use only one gate for each token. Once the recurrence is evaluated, we keep only
+every nhn_{h}-th element of the output, so that the output sequence retains the same length as the
+input sequence.
+
+Throughput. The training (and prefill time) required for the recurrence increases linearly with
+nhn_{h}, since we use the same chunk size for the chunkwise parallel form. In contrast, since we
+keep the embedding dimension fixed, the cost for the MLP following the recurrence does not vary
+with nhn_{h}. To remedy the parameter-overhead introduced by the additional key and value
+projections due to increased nhn_{h}, we demonstrate the throughput when matching parameters in 
+Figure 4. Matching parameters simply by scaling the head dimension is unfavorable (bottom subplot,
+nh=2n_{h}=2) since head dimensions that are not a power of 2 will get padded to the next power
+thereof, effectively giving up the remaining dimensions at no reduction in runtime. See Section 
+C.3.2 for additional results on smaller models. Note that if nh≥1n_{h}\geq 1, we could parallelize
+the recurrence to have a faster runtime also during autoregressive generation. Note that the
+throughput results are obtained using an optimized Triton kernel implementation (developed by
+Songlin Yang and Yu Zhang, available in the flash-linear-attention library) that achieves a 20%
+faster forward pass than DeltaNet’s kernel.
+
+5.2 State-Tracking
+
+
+Figure 5: Accuracy on state-tracking tasks for permutation groups S3S_{3}, S4S_{4}, A5A_{5}, and
+S5S_{5}, plotted against sequence length (x-axis). (Top row) Varying the number of Householder
+products nhn_{h} for a single layer DeltaProduct[−1,1]nh{}_{n_{h}}[-1,1]. (Bottom row) Varying the
+number of layers ll of DeltaProduct[−1,1]1{}_{1}[-1,1]/DeltaNet[−1,1][-1,1] (single Householder).
+Dashed vertical line at training context length 128. Higher nhn_{h} improves extrapolation to
+longer sequences of permutations, e.g., S3S_{3} can be learned with nh=2n_{h}=2 with a single layer
+while three layers are required when keeping nh=1n_{h}=1.
+
+Setup. We evaluate DeltaProduct’s ability to capture complex state dynamics using group word
+problems of increasing difficulty, specifically on the permutation groups S3S_{3}, S4S_{4}, A5A_
+{5}, and S5S_{5}, as implemented by Merrill et al. [3]. These tasks consist in tracking how a
+sequence of permutations rearranges elements. An intuitive parallel is the shell game, where one
+needs to track the position of a hidden object after each shuffle. We train on sequences of 128
+permutations and measure extrapolation up to 512. Throughout, we use the extended eigenvalue range,
+allowing eigenvalues in [−1,1][-1,1]. We find that DeltaProduct models fail to learn even the
+training context-length when restricted to the standard eigenvalue range [0,1][0,1], regardless of
+the number of Householder transformations nhn_{h} as shown in Figure 12. See Section C.1 for
+details on the experiments.
+
+Single layer, varying nh\bm{n_{h}}. Figure 5 (top row) demonstrates the benefits of increasing the
+number of Householders nhn_{h} per token for a single layer DeltaProduct. Grazzi et al. [16,
+Theorem 3] presents a construction for permutations of nn elements requiring n−1n-1 Householders
+and keys of size nn. In agreement, we find that for S3S_{3} achieving reliable performance beyond
+sequence lengths of 128 requires nh=2n_{h}=2, while S5S_{5} needs nh=4n_{h}=4. Unexpectedly, S4S_
+{4} and A5A_{5} can extrapolate robustly using only nh=2n_{h}=2 despite the theorem suggesting 3
+and 4, respectively. This efficiency arises from their isomorphism to subgroups of SO⁡(3,ℝ)\mathrm
+{SO}(3,\mathbb{R}), i.e. the group of 3D rotations, [54, Ch. 1, Sec. 2.4] which only require nh=2n_
+{h}=2 and keys of size 3 (see Theorem 4). Specifically, S4S_{4} is isomorphic to the rotation group
+of the cube (illustrated in Figure 6) and A5A_{5} to the rotation group of the dodecahedron. See 
+Section C.1 for details on the isomorphisms.
+
+1234123490∘90^{\circ}41234123
+
+
+Figure 6: Rotating a cube permutes its diagonals according to the S4S_{4} group. This example shows
+how a 90∘90^{\circ} rotation of the cube leads to the 4-cycle (1→2→3→4→11\to 2\to 3\to 4\to 1).
+
+To empirically validate whether DeltaProduct[−1,1]2{}_{2}[-1,1] exploits the isomorphism of S4S_{4}
+to the rotation group of the cube, we verified two hypotheses: whether both Householders act as
+reflections (βi,0=βi,1=2\beta_{i,0}=\beta_{i,1}=2) composing to form rotations (see Figure 3), and
+whether the keys are in a three-dimensional subspace. By recording βi,0\beta_{i,0} and βi,1\beta_
+{i,1} values (representing the first and second Householder in the product) across all 24
+permutations of S4S_{4}, we find that a single head has indeed learned to use both Householder
+transformations as reflections where βi,0=βi,1=2\beta_{i,0}=\beta_{i,1}=2, effectively creating
+rotation matrices as shown in Section C.1. This pattern is evident in Figure 7 (left), where this
+head predicts both βi,0\beta_{i,0} and βi,1\beta_{i,1} approximately at 2, confirming that the
+model successfully learns to approximate rotations by combining two reflections. Note that the
+eigenvalues of the Householder product become complex in this case allowing it to perform rotations
+(Prop 1.3). To further verify whether the keys are in a three-dimensional subspace, we apply
+Principal Component Analysis [55] to the key vectors of this head. The results in Figure 7 (right)
+demonstrate that three principal components account for over 95% of the variance in the key space.
+This finding strongly supports our theoretical understanding, as it indicates that the model
+primarily operates in a three-dimensional subspace, which aligns with the structure of SO⁡(3,ℝ)\
+mathrm{SO}(3,\mathbb{R}).
+
+
+Figure 7: (Left) Estimated β\beta values for DeltaProduct[−1,1]2{}_{2}[-1,1] on all permutations of
+S4S_{4}, clustering near 2 (reflection). (Right) PCA of key vectors shows that the first three
+components explain most of the variance.
+
+Multiple layers, nh=1n_{h}=1. The bottom row of Figure 5 explores the expressivity of multi-layered
+DeltaNet[−1,1][-1,1] (i.e., nh=1n_{h}=1). While increasing layers with nh=1n_{h}=1 improves
+performance, it is less effective than increasing nhn_{h} and degrades length-extrapolation
+performance. Specifically, to fit the training context length, S3S_{3} required 3 layers, S4S_{4}
+needed 6 layers, and A5A_{5} required 3. For S5S_{5}, even 10 layers proved insufficient. This
+suggests that simply adding depth is less effective in practice than increasing nhn_{h}, despite
+theoretical constructions showing that S3S_{3} can be solved with just 2 layers (Theorem 7) and any
+group word problem can be solved with 4 layers (with a very wide MLP).
+
+5.3 Language Modeling
+
+
+Figure 8: Length extrapolation results. Solid and dashed lines represent models with 8 and 12 heads
+respectively. Note that DeltaProduct[−1,1]2{}_{2}[-1,1] with 8 heads (392M parameters) matches the
+parameter count of DeltaNet (nh=1n_{h}=1) with 12 heads (dotted line), while achieving
+significantly better length extrapolation. For each index of the sequence, we report the moving
+average over 501 tokens as suggested by Lin et al. [56].
+
+Setup. We trained two model variants: DeltaProductnh​[−1,1]\text{DeltaProduct}_{n_{h}}[-1,1] and
+Gated DeltaProductnh​[−1,1]\text{Gated DeltaProduct}_{n_{h}}[-1,1] using the FineWeb dataset [57].
+We provide details about the training pipeline and hyperparameters in Section C.3.1. To assess
+length extrapolation, we measured the cross-entropy loss beyond the training context length of 4096
+tokens on CodeParrot [58] for coding, OpenThoughts-114k-Math [59] for math, and TriviaQA [60] for
+knowledge retrieval. We evaluated the models using language understanding, reasoning, and retrieval
+benchmarks from lm-eval-harness [61], with task specifics in Section C.3.3. Throughout our
+experiments we find that the training process remained stable even as we increased nhn_{h} (see 
+Section C.3.4).
+
+Length extrapolation results. Remarkably, as shown in Figure 8, DeltaProduct’s length extrapolation
+performance increases sharply when going from one to two Householders, and at nh=3n_{h}=3, the
+performance degradation is minimal across the sequence length. We hypothesize that DeltaProduct
+achieves better length extrapolation by enhancing DeltaNet’s forgetting mechanism. While DeltaNet
+requires nn rank-1 updates to reset its state to zero, DeltaProduct can accelerate this forgetting
+process by a factor of nhn_{h}. However, our experiments show that DeltaProduct[−1,1]2{}_{2}[-1,1]
+still performs better with a forget gate, as demonstrated by its improved results when compared to
+the non-gated version (see Section C.3.5).
+
+
+Figure 9: Effective rank of 𝑯i{\bm{H}}_{i} for 4 of 8 heads in layer 20/24 on trivia-qa sequences.
+Solid vertical lines mark new question-answer pairs; dashed vertical line indicates 4096-token
+training context length; colored lines show effective rank per head over the sequence.
+
+
+Figure 10: Scaling analysis w.r.t. (top) final perplexity on FineWeb, (bottom) Lambada and lm-eval
+tasks.
+
+Analyzing state dynamics through effective rank. To test our hypothesis towards a better forgetting
+mechanism, we compare how the information density of the hidden state 𝑯i{\bm{H}}_{i} changes over
+time for (Gated) DeltaProduct[−1,1]3{}_{3}[-1,1] and (Gated) DeltaNet[−1,1][-1,1]. We propose to
+measure the information density of 𝑯i{\bm{H}}_{i} using its effective rank [62] defined as erank
+(𝑯i)=exp(−∑kpklogpk)\operatorname{erank}({\bm{H}}_{i})=\exp(-\sum_{k}p_{k}\log p_{k}), where pk=σk/
+∑i|σi|p_{k}=\sigma_{k}/\sum_{i}|\sigma_{i}| and σi\sigma_{i} is the ii-th singular value of 𝑯i{\bm
+{H}}_{i}, which satisfies 1≤erank⁡(𝑯i)≤rank⁡(𝑯i)1\leq\operatorname{erank}({\bm{H}}_{i})\leq\
+operatorname{rank}({\bm{H}}_{i}). Note that Parnichkun et al. [63] also used the effective rank in
+the context of linear RNNs, but measured on a different quantity: a linear operator associated to
+the recurrence. Similarly, Peng et al. [13] conducted an interpretability study on the hidden state
+of RWKV-7 using the average stable rank [64] across layers. In Figure 9, we present the effective
+rank of DeltaProduct[3], Gated DeltaProduct[3], Gated DeltaNet, and DeltaNet across a sequence of
+tokens from the TriviaQA dataset, which consists of question-answer pairs that test common
+knowledge. We observe that some heads of DeltaProduct learn to update their state with new
+information at the beginning of sequence (BOS) tokens and then decay over the rest of the sequence.
+In comparison, a few heads of Gated DeltaNet and Gated DeltaProduct learn to reduce the effective
+rank of the hidden state close to zero after each BOS token, while the other heads maintain a very
+low effective rank throughout the sequence. In contrast, DeltaNet’s effective rank increases
+substantially beyond the training context. We attribute DeltaNet’s inability to extrapolate to
+longer sequences to this issue, as the training and extrapolation regimes differ, resulting in a
+distribution shift. We present additional results for other layers and the CodeParrot dataset in 
+Section C.3.5.
+
+Scaling Analysis. We test whether it is favorable to increase model size through Householder
+products as opposed to increasing model capacity through e.g., the head dimension. We adjust either
+the head dimension in DeltaNet, or the number of Householder products (nhn_{h}) in DeltaProduct to
+reach a given size. Figure 10 (top) shows that DeltaProduct scales better in terms of training
+perplexity. The results on lm-eval-harness tasks, in Figure 10 (bottom), reinforce our findings as
+DeltaProduct maintains its performance advantage at the largest scale. In total, we test two
+methods to reach parameter equivalence at each model scale: scaling the number of heads or the head
+dimension. We find that the latter shows more consistent scaling. Results for scaling the number of
+heads can be found in Section C.3.6. In Section C.3.3 we report additional results, including gated
+variants, where we find that both DeltaProduct and Gated DeltaProduct on average outperform their
+baseline counterparts (DeltaNet​[−1,1]\text{DeltaNet}[-1,1] and Gated DeltaNet​[−1,1]\text{Gated
+DeltaNet}[-1,1]) across the considered language modeling benchmarks from lm-eval harness when we
+increase nhn_{h}. Interestingly, DeltaProduct3​[−1,1]\text{DeltaProduct}_{3}[-1,1] achieves
+comparable performance to Gated DeltaNet​[−1,1]\text{Gated DeltaNet}[-1,1], despite lacking a
+forget gate.
+
+6 Conclusion and Future Work
+
+We present DeltaProduct, an extension of DeltaNet that uses products of Householder transformations
+as state-transition matrices. Our approach bridges the gap between structured and dense matrices,
+with each recurrence step interpretable as multiple steps of gradient descent on an associative
+recall loss (compared to DeltaNet’s single step). The number of Householder matrices (nhn_{h})
+serves as a tunable parameter balancing expressivity and computational efficiency. Our experiments
+demonstrate DeltaProduct’s superior performance over DeltaNet in state tracking, formal language
+recognition, and language modeling, with particularly strong length extrapolation results.
+DeltaProduct represents a promising step towards developing sequence models that are more capable
+while still remaining scalable. Limitation. The main limitation of DeltaProduct is its increased
+computational cost, which scales linearly with nhn_{h} during training. Future Work. Future
+research could explore more expressive and possibly stable matrix parameterizations or an adaptive
+version of DeltaProduct determining the number of Householders per token similar to Graves [65] in
+order to reduce computation. The additional parameters introduced with higher nhn_{h} could be
+reduced through LoRA MLPs as done in RWKV-7 [13]. In addition, one could combine DeltaProduct with
+fixed point RNNs [39, 40]. Our DeltaProduct implementation could be further optimized through
+custom kernels as suggested in the recent works by Cirone and Salvi [66] or Beck et al. [67]. We
+also identify promising applications for DeltaProduct in reasoning tasks, where the higher token
+counts align well with the strength of linear RNNs. Given that state-tracking benefits reasoning
+tasks [39], future work should examine how increasing nhn_{h} affects reasoning.
+
+Acknowledgements
+
+We would like to thank Songlin Yang, Eddie Bergman, Arjun Krishnakumar, Alma Lindborg, and Julie
+Naegelen for constructive discussions and feedback. We acknowledge the support and assistance of
+the Data Science and Computation Facility and its Support Team, in particular Mattia Pini, in using
+the IIT High-Performance Computing Infrastructure, on which we run part of our experiments. This
+research was partially supported by the following sources: PNRR MUR Project PE000013 CUP
+J53C22003010006 “Future Artificial Intelligence Research (FAIR)“, funded by the European Union –
+NextGenerationEU, and EU Project ELSA under grant agreement No. 101070617. TAILOR, a project funded
+by EU Horizon 2020 research and innovation programme under GA No 952215; the Deutsche
+Forschungsgemeinschaft (DFG, German Research Foundation) under grant number 417962828; the European
+Research Council (ERC) Consolidator Grant ’Deep Learning 2.0’ (grant no. 10). This research was
+partially funded by the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation) under
+grant number 539134284, through EFRE (FEIH 2698644) and the state of Baden-Württemberg. Frank
+Hutter acknowledges financial support by the Hector Foundation. The authors acknowledge support
+from ELLIS and ELIZA. Funded by the European Union. The authors gratefully acknowledge the
+computing time made available to them on the high-performance computers and at the NHR Centers at
+TU Dresden and KIT. These centers are jointly supported by the Federal Ministry of Research,
+Technology and Space of Germany and the state governments participating in the NHR. Views and
+opinions expressed are however those of the author(s) only and do not necessarily reflect those of
+the European Union or the ERC. Neither the European Union nor the ERC can be held responsible for
+them.
+
+[Uncaptioned image]
+[Uncaptioned image]
+
+References
+
+  • [1] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. Gomez, L. Kaiser, and
+    I. Polosukhin. Attention is all you need. In I. Guyon, U. von Luxburg, S. Bengio, H. Wallach,
+    R. Fergus, S. Vishwanathan, and R. Garnett, editors, Proceedings of the 31st International
+    Conference on Advances in Neural Information Processing Systems (NeurIPS’17). Curran
+    Associates, Inc., 2017.
+  • [2] Sepp Hochreiter and Jürgen Schmidhuber. Long Short-Term Memory. Neural Computation, 9
+    (8):1735–1780, 1997.
+  • [3] W. Merrill, J. Petty, and A. Sabharwal. The Illusion of State in State-Space Models. In
+    R. Salakhutdinov, Z. Kolter, K. Heller, A. Weller, N. Oliver, J. Scarlett, and F. Berkenkamp,
+    editors, Proceedings of the 41st International Conference on Machine Learning (ICML’24), volume
+    251 of Proceedings of Machine Learning Research. PMLR, 2024.
+  • [4] A. Gu, K. Goel, and C. Re. Efficiently Modeling Long Sequences with Structured State
+    Spaces. In The Tenth International Conference on Learning Representations (ICLR’22). ICLR,
+    2022.
+  • [5] A. Orvieto, S. L. Smith, A. Gu, A. Fernando, C. Gulcehre, R. Pascanu, and S. De. 
+    Resurrecting recurrent neural networks for long sequences. In A. Krause, E. Brunskill, K. Cho,
+    B. Engelhardt, S. Sabato, and J. Scarlett, editors, Proceedings of the 40th International
+    Conference on Machine Learning (ICML’23), volume 202 of Proceedings of Machine Learning
+    Research. PMLR, 2023.
+  • [6] Albert Gu and Tri Dao. Mamba: Linear-Time Sequence Modeling with Selective State Spaces. In
+    First Conference on Language Modeling, 2024.
+  • [7] T. Dao and A. Gu. Transformers are SSMs: Generalized models and efficient algorithms
+    through structured state space duality. In R. Salakhutdinov, Z. Kolter, K. Heller, A. Weller,
+    N. Oliver, J. Scarlett, and F. Berkenkamp, editors, Proceedings of the 41st International
+    Conference on Machine Learning (ICML’24), volume 251 of Proceedings of Machine Learning
+    Research. PMLR, 2024.
+  • [8] S. Yang, B. Wang, Y. Shen, R. Panda, and Y. Kim. Gated Linear Attention Transformers with
+    Hardware-Efficient Training. In R. Salakhutdinov, Z. Kolter, K. Heller, A. Weller, N. Oliver,
+    J. Scarlett, and F. Berkenkamp, editors, Proceedings of the 41st International Conference on
+    Machine Learning (ICML’24), volume 251 of Proceedings of Machine Learning Research. PMLR,
+    2024a.
+  • [9] M. Beck, K. Pöppel, M. Spanring, A. Auer, O. Prudnikova, M. Kopp, G. Klambauer,
+    J. Brandstetter, and S. Hochreiter. xLSTM: Extended Long Short-Term Memory. In A. Globerson,
+    L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Proceedings of
+    the 37th International Conference on Advances in Neural Information Processing Systems
+    (NeurIPS’24), 2024.
+  • [10] S. Yang, B. Wang, Y. Zhang, Y. Shen, and Y. Kim. Parallelizing Linear Transformers with
+    the Delta Rule over Sequence Length. In A. Globerson, L. Mackey, D. Belgrave, A. Fan,
+    U. Paquet, J. Tomczak, and C. Zhang, editors, Proceedings of the 37th International Conference
+    on Advances in Neural Information Processing Systems (NeurIPS’24), 2024b.
+  • [11] S. Yang, J. Kautz, and A. Hatamizadeh. Gated delta networks: Improving mamba2 with delta
+    rule. In The Thirteenth International Conference on Learning Representations (ICLR’25). ICLR,
+    2025.
+  • [12] Y. Sun, X. Li, K. Dalal, J. Xu, A. Vikram, G. Zhang, Y. Dubois, X. Chen, X. Wang,
+    S. Koyejo, T. Hashimoto, and C. Guestrin. Learning to (learn at test time): RNNs with
+    expressive hidden states. arXiv:2407.04620 [cs.LG], 2024.
+  • [13] Bo Peng, Ruichong Zhang, Daniel Goldstein, Eric Alcaide, Haowen Hou, Janna Lu, William
+    Merrill, Guangyu Song, Kaifeng Tan, Saiteja Utpala, Nathan Wilce, Johan S. Wind, Tianyi Wu,
+    Daniel Wuttke, and Christian Zhou-Zheng. RWKV-7 ”Goose” with Expressive Dynamic State
+    Evolution, 2025.
+  • [14] Ali Behrouz, Peilin Zhong, and Vahab Mirrokni. Titans: Learning to memorize at test time. 
+    arXiv preprint arXiv:2501.00663, 2024.
+  • [15] Y. Sarrof, Y. Veitsman, and M. Hahn. The Expressive Capacity of State Space Models: A
+    Formal Language Perspective. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet,
+    J. Tomczak, and C. Zhang, editors, Proceedings of the 37th International Conference on Advances
+    in Neural Information Processing Systems (NeurIPS’24), 2024.
+  • [16] R. Grazzi, J. Siems, A. Zela, J. Franke, F. Hutter, and M. Pontil. Unlocking
+    State-Tracking in Linear RNNs Through Negative Eigenvalues. In The Thirteenth International
+    Conference on Learning Representations (ICLR’25). ICLR, 2025.
+  • [17] Michael Hahn. Theoretical limitations of self-attention in neural sequence models. 
+    Transactions of the Association for Computational Linguistics, 8:156–171, 2020.
+  • [18] William Merrill and Ashish Sabharwal. The parallelism tradeoff: Limitations of
+    log-precision transformers. Transactions of the Association for Computational Linguistics,
+    11:531–545, 2023.
+  • [19] A. Katharopoulos, A. Vyas, N. Pappas, and F. Fleuret. Transformers are RNNs: Fast
+    Autoregressive Transformers with Linear Attention. In H. Daume III and A. Singh, editors,
+    Proceedings of the 37th International Conference on Machine Learning (ICML’20), volume 98.
+    Proceedings of Machine Learning Research, 2020.
+  • [20] N. M. Cirone, A. Orvieto, B. Walker, C. Salvi, and T. Lyons. Theoretical Foundations of
+    Deep Selective State-Space Models. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet,
+    J. Tomczak, and C. Zhang, editors, Proceedings of the 37th International Conference on Advances
+    in Neural Information Processing Systems (NeurIPS’24), 2024.
+  • [21] Ke Alexander Wang, Jiaxin Shi, and Emily B Fox. Test-time regression: A unifying framework
+    for designing sequence models with associative memory. arXiv preprint arXiv:2501.12352, 2025.
+  • [22] Songlin Yang and Yu Zhang. FLA: A Triton-Based Library for Hardware-Efficient
+    Implementations of Linear Attention Mechanism, January 2024. URL https://github.com/
+    sustcsonglin/flash-linear-attention.
+  • [23] W. Hua, Z. Dai, H. Liu, and Q. Le. Transformer quality in linear time. In K. Chaudhuri,
+    S. Jegelka, L. Song, C. Szepesvári, G. Niu, and S. Sabato, editors, Proceedings of the 39th
+    International Conference on Machine Learning (ICML’22), volume 162 of Proceedings of Machine
+    Learning Research. PMLR, 2022.
+  • [24] Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, and
+    Furu Wei. Retentive network: A successor to transformer for large language models. arXiv
+    preprint arXiv:2307.08621, 2023.
+  • [25] Guy E. Blelloch. Prefix sums and their applications. Technical Report CMU-CS-90-190,
+    School of Computer Science, Carnegie Mellon University, 1990.
+  • [26] E. Martin and C. Cundy. Parallelizing Linear Recurrent Neural Nets Over Sequence Length. 
+    In The Sixth International Conference on Learning Representations (ICLR’18). ICLR, 2018.
+  • [27] J. Smith, A. Warrington, and S. Linderman. Simplified State Space Layers for Sequence
+    Modeling. In The Eleventh International Conference on Learning Representations (ICLR’23). ICLR,
+    2023.
+  • [28] Ting-Han Fan, Ta-Chung Chi, and Alexander Rudnicky. Advancing Regular Language Reasoning
+    in Linear Recurrent Neural Networks. In Proceedings of the 2024 Conference of the North
+    American Chapter of the Association for Computational Linguistics: Human Language Technologies
+    (Volume 2: Short Papers), pages 45–53, 2024.
+  • [29] I. Schlag, K. Irie, and J. Schmidhuber. Linear transformers are secretly fast weight
+    programmers. In M. Meila and T. Zhang, editors, Proceedings of the 38th International
+    Conference on Machine Learning (ICML’21), volume 139 of Proceedings of Machine Learning
+    Research. PMLR, 2021a.
+  • [30] I. Schlag, T. Munkhdalai, and J. Schmidhuber. Learning Associative Inference Using Fast
+    Weight Memory. In The Ninth International Conference on Learning Representations (ICLR’21).
+    ICLR, 2021b.
+  • [31] Alston S Householder. Unitary triangularization of a nonsymmetric matrix. Journal of the
+    ACM (JACM), 5(4):339–342, 1958.
+  • [32] B. Liu, J. Ash, S. Goel, A. Krishnamurthy, and C. Zhang. Transformers Learn Shortcuts to
+    Automata. In The Eleventh International Conference on Learning Representations (ICLR’23). ICLR,
+    2023.
+  • [33] D. Fu, T. Dao, K. Saab, A. Thomas, A. Rudra, and C. Re. Hungry Hungry Hippos: Towards
+    Language Modeling with State Space Models. In The Eleventh International Conference on Learning
+    Representations (ICLR’23). ICLR, 2023.
+  • [34] Matteo Tiezzi, Michele Casoni, Alessandro Betti, Tommaso Guidi, Marco Gori, and Stefano
+    Melacci. Back to recurrent processing at the crossroad of transformers and state-space models. 
+    Nature Machine Intelligence, may 2025. ISSN 2522-5839. doi: 10.1038/s42256-025-01034-6.
+  • [35] Kazuki Irie, Róbert Csordás, and Jürgen Schmidhuber. Practical computational power of
+    linear transformers and their recurrent and self-referential extensions. In The 2023 Conference
+    on Empirical Methods in Natural Language Processing, 2023.
+  • [36] L. Zancato, A. Seshadri, Y. Dukler, A. Golatkar, Y. Shen, B. Bowman, M. Trager,
+    A. Achille, and S. Soatto. B’MOJO: Hybrid State Space Realizations of Foundation Models with
+    Eidetic and Fading Memory. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet,
+    J. Tomczak, and C. Zhang, editors, Proceedings of the 37th International Conference on Advances
+    in Neural Information Processing Systems (NeurIPS’24), 2024.
+  • [37] D. Mostafa, G. Stephan, V. Oriol, J. Uszkoreit, and L. Kaiser. Universal Transformers. In
+    The Seventh International Conference on Learning Representations (ICLR’19). ICLR, 2019.
+  • [38] Jonas Geiping, Sean McLeish, Neel Jain, John Kirchenbauer, Siddharth Singh, Brian R
+    Bartoldson, Bhavya Kailkhura, Abhinav Bhatele, and Tom Goldstein. Scaling up test-time compute
+    with latent reasoning: A recurrent depth approach. arXiv preprint arXiv:2502.05171, 2025.
+  • [39] Mark Schöne, Babak Rahmani, Heiner Kremer, Fabian Falck, Hitesh Ballani, and Jannes
+    Gladrow. Implicit Language Models are RNNs: Balancing Parallelization and Expressivity. arXiv
+    preprint arXiv:2502.07827, 2025.
+  • [40] Sajad Movahedi, Felix Sarnthein, Nicola Muca Cirone, and Antonio Orvieto. Fixed-point
+    RNNs: From diagonal to dense in a few iterations. In First Workshop on Scalable Optimization
+    for Efficient and Adaptive Foundation Models, 2025.
+  • [41] Matthias Kissel and Klaus Diepold. Structured matrices and their application in neural
+    networks: A survey. New Generation Computing, 41(3):697–722, 2023.
+  • [42] Victor D. Dorobantu, Per Andre Stromhaug, and Jess Renteria. DizzyRNN: Reparameterizing
+    Recurrent Neural Networks for Norm-Preserving Backpropagation. arXiv preprint arXiv:1612.04035,
+    2016.
+  • [43] L. Jing, Y. Shen, T. Dubcek, J. Peurifoy, S. Skirlo, Y. LeCun, M. Tegmark, and
+    M. Soljacic. Tunable Efficient Unitary Neural Networks (EUNN) and their application to RNNs. In
+    D. Precup and Y. Teh, editors, Proceedings of the 34th International Conference on Machine
+    Learning (ICML’17), volume 70. Proceedings of Machine Learning Research, 2017.
+  • [44] Rumen Dangovski, Li Jing, Preslav Nakov, Mićo Tatalović, and Marin Soljačić. Rotational
+    unit of memory: a novel representation unit for rnns with scalable applications. Transactions
+    of the Association for Computational Linguistics, 7:121–138, 2019.
+  • [45] C. Jose, M. Cisse, and F. Fleuret. Kronecker recurrent units. In J. Dy and A. Krause,
+    editors, Proceedings of the 35th International Conference on Machine Learning (ICML’18),
+    volume 80. Proceedings of Machine Learning Research, 2018.
+  • [46] Z. Mhammedi, A. Hellicar, A. Rahman, and J. Bailey. Efficient orthogonal parametrisation
+    of recurrent neural networks using householder reflections. In D. Precup and Y. Teh, editors,
+    Proceedings of the 34th International Conference on Machine Learning (ICML’17), volume 70.
+    Proceedings of Machine Learning Research, 2017.
+  • [47] Sepp Hochreiter. Untersuchungen zu dynamischen neuronalen netzen. Diploma, Technische
+    Universität München, 91(1):31, 1991.
+  • [48] Yoshua Bengio, Patrice Simard, and Paolo Frasconi. Learning long-term dependencies with
+    gradient descent is difficult. IEEE transactions on neural networks, 5(2):157–166, 1994.
+  • [49] Kai Biegun, Rares Dolga, Jake Cunningham, and David Barber. RotRNN: Modelling Long
+    Sequences with Rotations. arXiv preprint arXiv:2407.07239, 2024.
+  • [50] Kenneth Krohn and John Rhodes. Algebraic theory of machines. i. prime decomposition
+    theorem for finite semigroups and machines. Transactions of the American Mathematical Society,
+    116:450–464, 1965.
+  • [51] Anil Nerode. Linear automaton transformations. Proceedings of the American Mathematical
+    Society, 9(4):541–544, 1958.
+  • [52] G. Delétang, A. Ruoss, J. Grau-Moya, T. Genewein, L. K. Wenliang, E. Catt, C. Cundy,
+    M. Hutter, S. Legg, J. Veness, and P. A. Ortega. Neural Networks and the Chomsky Hierarchy. In
+    The Eleventh International Conference on Learning Representations (ICLR’23). ICLR, 2023.
+  • [53] Philippe Tillet, Hsiang-Tsung Kung, and David Cox. Triton: An intermediate language and
+    compiler for tiled neural network computations. In Proceedings of the 3rd ACM SIGPLAN
+    International Workshop on Machine Learning and Programming Languages, pages 10–19, 2019.
+  • [54] Yvette Kosmann Schwarzbach. Groups and symmetries from finite groups to lie groups, 2010.
+  • [55] Karl Pearson. LIII. On lines and planes of closest fit to systems of points in space. The
+    London, Edinburgh, and Dublin philosophical magazine and journal of science, 2(11):559–572,
+    1901.
+  • [56] Zhixuan Lin, Evgenii Nikishin, Xu Owen He, and Aaron Courville. Forgetting transformer:
+    Softmax attention with a forget gate. arXiv preprint arXiv:2503.02130, 2025.
+  • [57] Guilherme Penedo, Hynek Kydlíček, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell,
+    Colin Raffel, Leandro Von Werra, and Thomas Wolf. The FineWeb Datasets: Decanting the Web for
+    the Finest Text Data at Scale, 2024.
+  • [58] Lewis Tunstall, Leandro Von Werra, and Thomas Wolf. Natural Language Processing with
+    Transformers. O’Reilly Media, Inc., 2022.
+  • [59] OpenThoughts Team. Open Thoughts. https://open-thoughts.ai, January 2025.
+  • [60] Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. Triviaqa: A large scale
+    distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th
+    Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages
+    1601–1611, 2017.
+  • [61] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles
+    Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas
+    Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron,
+    Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. A framework for
+    few-shot language model evaluation, 07 2024.
+  • [62] Olivier Roy and Martin Vetterli. The effective rank: A measure of effective
+    dimensionality. In 2007 15th European signal processing conference, pages 606–610. IEEE, 2007.
+  • [63] Rom N Parnichkun, Neehal Tumma, Armin W Thomas, Alessandro Moro, Qi An, Taiji Suzuki,
+    Atsushi Yamashita, Michael Poli, and Stefano Massaroli. Quantifying Memory Utilization with
+    Effective State-Size. arXiv preprint arXiv:2504.19561, 2025.
+  • [64] Mark Rudelson and Roman Vershynin. Sampling from large matrices: An approach through
+    geometric functional analysis. Journal of the ACM (JACM), 54(4):21–es, 2007.
+  • [65] Alex Graves. Adaptive computation time for recurrent neural networks. arXiv preprint
+    arXiv:1603.08983, 2016.
+  • [66] Nicola Muca Cirone and Cristopher Salvi. ParallelFlow: Parallelizing Linear Transformers
+    via Flow Discretization. arXiv preprint arXiv:2504.00492, 2025.
+  • [67] Maximilian Beck, Korbinian Pöppel, Phillip Lippe, and Sepp Hochreiter. Tiled Flash Linear
+    Attention: More Efficient Linear RNN and xLSTM Kernels. In ICLR 2025 Workshop on Foundation
+    Models in the Wild, 2025.
+  • [68] Robert Schreiber and Beresford Parlett. Block reflectors: Theory and computation. SIAM
+    Journal on Numerical Analysis, 25(1):189–205, 1988.
+  • [69] Joseph Gallian. Contemporary abstract algebra. Chapman and Hall/CRC, 2021.
+  • [70] Lorraine L Foster. On the symmetry group of the dodecahedron. Mathematics Magazine, 63
+    (2):106–107, 1990.
+  • [71] I. Loshchilov and F. Hutter. Decoupled weight decay regularization. In The Seventh
+    International Conference on Learning Representations (ICLR’19). ICLR, 2019.
+  • [72] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin,
+    N. Gimelshein, L. Antiga, A. Desmaison, A. Köpf, E. Yang, Z. DeVito, M. Raison, A. Tejani,
+    S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala. Pytorch: An imperative style,
+    high-performance deep learning library. In H. Wallach, H. Larochelle, A. Beygelzimer,
+    F. d’Alche Buc, E. Fox, and R. Garnett, editors, Proceedings of the 32nd International
+    Conference on Advances in Neural Information Processing Systems (NeurIPS’19), 2019.
+  • [73] I. Loshchilov and F. Hutter. SGDR: Stochastic gradient descent with warm restarts. In The
+    Fifth International Conference on Learning Representations (ICLR’17). ICLR, 2017.
+  • [74] J. Fiotto-Kaufman, A. R. Loftus, E. Todd, J. Brinkmann, K. Pal, D. Troitskii, M. Ripa,
+    A. Belfki, C. Rager, C. Juang, A. Mueller, S. Marks, A. Sen Sharma, F. Lucchetti, N. Prakash,
+    C. Brodley, A. Guha, J. Bell, B. C. Wallace, and D. Bau. Nnsight and ndif: Democratizing access
+    to foundation model internals. In The Twelfth International Conference on Learning
+    Representations (ICLR’24). ICLR, 2024.
+  • [75] Fabian Pedregosa, Gaël Varoquaux, Alexandre Gramfort, Vincent Michel, Bertrand Thirion,
+    Olivier Grisel, Mathieu Blondel, Peter Prettenhofer, Ron Weiss, Vincent Dubourg, et al. 
+    Scikit-learn: Machine learning in Python. the Journal of machine Learning research,
+    12:2825–2830, 2011.
+  • [76] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. Zero: Memory
+    optimizations toward training trillion parameter models. In SC20: International Conference for
+    High Performance Computing, Networking, Storage and Analysis, pages 1–16. IEEE, 2020.
+  • [77] Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham, Raffaella Bernardi,
+    Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The LAMBADA dataset: Word
+    prediction requiring a broad discourse context. In Proceedings of the 54th Annual Meeting of
+    the Association for Computational Linguistics (Volume 1: Long Papers), pages 1525–1534, 2016.
+  • [78] Yonatan Bisk, Rowan Zellers, Ronan Le bras, Jianfeng Gao, and Yejin Choi. PIQA: Reasoning
+    about physical commonsense in natural language. Proceedings of the AAAI Conference on
+    Artificial Intelligence, 34(05):7432–7439, Apr. 2020.
+  • [79] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. HellaSwag: Can a
+    Machine Really Finish Your Sentence? In Proceedings of the 57th Annual Meeting of the
+    Association for Computational Linguistics, pages 4791–4800, 2019.
+  • [80] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An
+    adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.
+  • [81] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick,
+    and Oyvind Tafjord. Think you have solved question answering? Try arc, the ai2 reasoning
+    challenge. arXiv preprint arXiv:1803.05457, 2018.
+
+Supplementary Material
+
+The supplementary material is structured as follows:
+
+Appendix A presents a proposition that provides special cases of the generalized Householder
+product for specific choices of keys and betas and characterizes the spectrum of the product of two
+generalized Householders.
+
+Appendix B characterizes the expressivity of DeltaProduct.
+
+  • •
+   
+    B.2 demonstrates how DeltaProduct can solve any group word problem in a single layer when nhn_
+    {h} is sufficiently high, or alternatively using up to 4 layers when nhn_{h} is limited.
+
+  • •
+   
+    B.3 shows how DeltaProduct can recognize any regular language in a finite number of layers
+    using the Krohn-Rhodes decomposition.
+
+  • •
+   
+    B.4 details the expressivity of a linear RNN with products of RWKV-7 state-transition matrices.
+
+  • •
+   
+    B.5 demonstrates how DeltaNet can solve any dihedral group in 2 layers using a specific
+    construction.
+
+  • •
+   
+    B.6 discusses the tradeoff between expressivity and stability in linear RNNs.
+
+Appendix C provides comprehensive details on our experiments and additional results.
+
+We provide the code for our experiments at https://github.com/automl/DeltaProduct
+
+Notation. Mathematical objects are typically styled as follows. Matrices: uppercase letters (e.g.,
+𝑨,𝑯,𝑴{\bm{A}},{\bm{H}},{\bm{M}}). Vectors: lowercase letters (e.g., 𝒌,𝒗,𝒙{\bm{k}},{\bm{v}},{\bm
+{x}}). Standard sets: ℝ\mathbb{R} for reals, ℂ\mathbb{C} for complexes, ℕ\mathbb{N} for naturals.
+Common symbols and operations are denoted as follows. 𝑰{\bm{I}}: Identity matrix. ⊤\top: Transpose
+operator (e.g., 𝒌⊤{\bm{k}}^{\top}). ‖𝒗‖\|{\bm{v}}\| or ‖𝒗‖2\|{\bm{v}}\|_{2}: Euclidean norm of a
+vector 𝒗{\bm{v}}. ‖𝑨‖\|{\bm{A}}\|: the operator norm for a matrix 𝑨{\bm{A}}. |⋅||\cdot|: Absolute
+value for real scalars, or modulus for complex numbers. ⊙\odot: Element-wise (Hadamard) product. σ⁡
+(𝑨),ρ⁡(𝑨)\sigma({\bm{A}}),\rho({\bm{A}}): Spectrum (set of eigenvalues) and spectral radius of
+matrix 𝑨{\bm{A}}. tr​(𝑨),det(𝑨)\text{tr}({\bm{A}}),\det({\bm{A}}): Trace and determinant of matrix
+𝑨{\bm{A}}. δi​j\delta_{ij}: Kronecker delta (1 if i=ji=j, 0 otherwise). 𝒆i∈{0,1}n{\bm{e}}_{i}\in\
+{0,1\}^{n} is the ii-th element of the canonical basis of ℝn\mathbb{R}^{n}.
+
+Appendix A Spectral Properties and Simplifications of Householder Product Matrices
+
+The following proposition characterizes conditions under which the product structure simplifies and
+the spectrum is real, contrasting with the general case which allows for complex spectra. It
+provides illustrative special cases for the more general Proposition 1 in Grazzi et al. [16].
+
+Proposition 1.
+
+Let 𝐀∈ℝn×n{\bm{A}}\in\mathbb{R}^{n\times n} be a matrix defined as the product of nh≥1n_{h}\geq 1
+generalized Householder transformations: 𝐀=∏j=1nh𝐇j{\bm{A}}=\prod_{j=1}^{n_{h}}{\bm{H}}_{j} where
+each 𝐇j=𝐈−βj​𝐤j​𝐤j⊤{\bm{H}}_{j}={\bm{I}}-\beta_{j}{\bm{k}}_{j}{\bm{k}}_{j}^{\top}, with 𝐤j∈ℝn{\bm
+{k}}_{j}\in\mathbb{R}^{n} being a unit vector (‖𝐤j‖2=1\left\lVert{\bm{k}}_{j}\right\rVert_{2}=1)
+and βj∈[0,2]\beta_{j}\in[0,2]. Let σ⁡(𝐀)⊂ℂ\sigma({\bm{A}})\subset\mathbb{C} denote the spectrum
+(set of eigenvalues) of 𝐀{\bm{A}}. Then, all eigenvalues λ∈σ⁡(𝐀)\lambda\in\sigma({\bm{A}}) satisfy
+|λ|≤1\left\lvert\lambda\right\rvert\leq 1 and the following hold.
+
+ 1. 1.
+   
+    (Identical Direction Vector) Let 𝒌∈ℝn{\bm{k}}\in\mathbb{R}^{n} be nonzero and 𝒌j=𝒌/‖𝒌‖{\bm{k}}_
+    {j}={\bm{k}}/\left\lVert{\bm{k}}\right\rVert for all j=1..mj=1..m. Then ∏j=1m(𝑰−βj​𝒌​𝒌⊤)=
+    𝑰−β∗​𝒌​𝒌⊤\prod_{j=1}^{m}\bigl({\bm{I}}-\beta_{j}\,{\bm{k}}{\bm{k}}^{\top}\bigr)={\bm{I}}-\beta^
+    {*}\,{\bm{k}}{\bm{k}}^{\top} for some real scalar β∗\beta^{*} depending on {β}j=1m\{\beta\}_{j=
+    1}^{m}. The product collapses to a single effective transformation of the same form.
+    Consequently, if 𝑨{\bm{A}} is formed using only a single direction vector 𝒌1{\bm{k}}_{1}, it is
+    symmetric and its spectrum is real.
+
+ 2. 2.
+   
+    (Orthogonal Vectors) If the direction vectors {𝒌j}j=1nh\{{\bm{k}}_{j}\}_{j=1}^{n_{h}} form an
+    orthonormal set (i.e., 𝒌j⊤​𝒌l=δj​l{\bm{k}}_{j}^{\top}{\bm{k}}_{l}=\delta_{jl}; this requires 
+    nh≤nn_{h}\leq n), then the factors 𝑯j{\bm{H}}_{j} commute, and the product simplifies to 𝑨=𝑰−∑j
+    =1nhβj​𝒌j​𝒌j⊤{\bm{A}}={\bm{I}}-\sum_{j=1}^{n_{h}}\beta_{j}{\bm{k}}_{j}{\bm{k}}_{j}^{\top}. This
+    matrix 𝑨{\bm{A}} is symmetric, and its spectrum is purely real: σ(𝑨)={1−β1,…,1−βnh}∪{1 
+    (multiplicity n−nh)}\sigma({\bm{A}})=\{1-\beta_{1},\dots,1-\beta_{n_{h}}\}\cup\{1\text{
+    (multiplicity }n-n_{h})\}. When βj=2\beta_{j}=2 for all j∈{1,…,nh}j\in\{1,...,n_{h}\} then 𝑨{\
+    bm{A}} is known as a block reflector [68].
+
+ 3. 3.
+   
+    (Complex Spectrum via Non-orthogonal Directions) For nh=2n_{h}=2, 𝑨{\bm{A}} has complex
+    eigenvalues if two consecutive direction vectors, e.g. 𝒌1,𝒌2{\bm{k}}_{1},{\bm{k}}_{2} satisfy 0
+    <|𝒌1⊤​𝒌2|<10<|{\bm{k}}_{1}^{\top}{\bm{k}}_{2}|<1 and their coefficients β1,β2\beta_{1},\beta_
+    {2} exceed a threshold β∗​(θ)<2\beta^{*}(\theta)<2 dependent on the angle θ\theta between them.
+    Conversely, if 0≤β1≤10\leq\beta_{1}\leq 1 or 0≤β2≤10\leq\beta_{2}\leq 1, these eigenvalues from
+    the 2D span are guaranteed to be real.
+
+Proof.
+
+Identical Direction Vector If m=1m=1, then the statement is trivially satisfied with β∗=β1\beta^{*}
+=\beta_{1}. Suppose the statement is true for m≥1m\geq 1, i.e., ∏j=1m(𝑰−βj​𝒌​𝒌⊤)=𝑰−β(m)​𝒌​𝒌⊤.\prod_
+{j=1}^{m}({\bm{I}}-\beta_{j}\,{\bm{k}}{\bm{k}}^{\top})={\bm{I}}-\beta^{(m)}\,{\bm{k}}{\bm{k}}^{\
+top}. Multiplying by (𝑰−βm+1​𝒌​𝒌⊤)({\bm{I}}-\beta_{m+1}\,{\bm{k}}{\bm{k}}^{\top}) produces (𝑰−β(m)
+​𝒌​𝒌⊤)​(𝑰−βm+1​𝒌​𝒌⊤)=𝑰−[β(m)+βm+1−β(m)​βm+1]​𝒌​𝒌⊤.({\bm{I}}-\beta^{(m)}\,{\bm{k}}{\bm{k}}^{\top})
+({\bm{I}}-\beta_{m+1}\,{\bm{k}}{\bm{k}}^{\top})={\bm{I}}-\bigl[\beta^{(m)}+\beta_{m+1}-\beta^{(m)}\
+beta_{m+1}\bigr]\,{\bm{k}}{\bm{k}}^{\top}. Hence, by induction, the product of any number of such
+factors remains of the form 𝑰−β∗​𝒌​𝒌⊤{\bm{I}}-\beta^{*}{\bm{k}}{\bm{k}}^{\top}. Since the resulting
+matrix 𝑨=𝑰−β∗​𝒌​𝒌⊤{\bm{A}}={\bm{I}}-\beta^{*}{\bm{k}}{\bm{k}}^{\top} (where 𝒌=𝒌1{\bm{k}}={\bm{k}}_
+{1}) is symmetric, its eigenvalues are real.
+
+Orthogonal Vectors Assume {𝒌j}j=1nh\{{\bm{k}}_{j}\}_{j=1}^{n_{h}} is an orthonormal set (𝒌j⊤​𝒌l=
+δj​l{\bm{k}}_{j}^{\top}{\bm{k}}_{l}=\delta_{jl}, nh≤nn_{h}\leq n). Let 𝑷j=𝒌j​𝒌j⊤{\bm{P}}_{j}={\bm
+{k}}_{j}{\bm{k}}_{j}^{\top}. Then 𝑷j​𝑷l=δj​l​𝑷j{\bm{P}}_{j}{\bm{P}}_{l}=\delta_{jl}{\bm{P}}_{j}.
+The factors 𝑯j=𝑰−βj​𝑷j{\bm{H}}_{j}={\bm{I}}-\beta_{j}{\bm{P}}_{j} commute because 𝑷j​𝑷l=𝟎{\bm{P}}_
+{j}{\bm{P}}_{l}=\bm{0} for j≠lj\neq l. The product simplifies via induction to 𝑨=𝑰−∑j=1nhβj​𝑷j{\bm
+{A}}={\bm{I}}-\sum_{j=1}^{n_{h}}\beta_{j}{\bm{P}}_{j}. This matrix is symmetric. Its eigenvalues
+are (1−βl)(1-\beta_{l}) for l=1,…,nhl=1,\dots,n_{h} (eigenvector 𝒌l{\bm{k}}_{l}) and 11 with
+multiplicity n−nhn-n_{h} (subspace orthogonal to all 𝒌j{\bm{k}}_{j}). The spectrum is real.
+
+Complex Spectrum via Non-orthogonal Directions and Real Subcase
+
+
+Figure 11: Visualization of complex eigenvalues of (𝑰−β1​𝒌1​𝒌1⊤)​(𝑰−β2​𝒌2​𝒌2⊤)({\bm{I}}-\beta_{1}{\
+bm{k}}_{1}{\bm{k}}_{1}^{\top})({\bm{I}}-\beta_{2}{\bm{k}}_{2}{\bm{k}}_{2}^{\top}) with cos⁡θ=𝒌1⊤​𝒌2
+\cos\theta={\bm{k}}_{1}^{\top}{\bm{k}}_{2}. Complex region in red, real in white.
+
+Let 𝒌1,𝒌2{\bm{k}}_{1},{\bm{k}}_{2} span a 2D subspace S⊂ℝnS\subset\mathbb{R}^{n} with cos⁡θ=𝒌1⊤​𝒌2\
+cos\theta={\bm{k}}_{1}^{\top}{\bm{k}}_{2} such that 0<|cos⁡θ|<10<|\cos\theta|<1. The product 𝑨=
+𝑯2​𝑯1{\bm{A}}={\bm{H}}_{2}{\bm{H}}_{1} acts as the identity on S⟂S^{\perp} (preserving n−2n-2
+eigenvalues at 1) and non-trivially on SS. The restriction 𝑨S{\bm{A}}_{S} of 𝑨{\bm{A}} to SS has
+trace tr​(𝑨S)=2−β1−β2+β1​β2​cos2⁡θ\text{tr}({\bm{A}}_{S})=2-\beta_{1}-\beta_{2}+\beta_{1}\beta_{2}\
+cos^{2}\theta and determinant det(𝑨S)=(1−β1)​(1−β2)\det({\bm{A}}_{S})=(1-\beta_{1})(1-\beta_{2}).
+The discriminant of its characteristic equation is D=[tr​(𝑨S)]2−4​det(𝑨S)D=[\text{tr}({\bm{A}}_
+{S})]^{2}-4\det({\bm{A}}_{S}). Complex eigenvalues arise if D<0D<0.
+
+To find the explicit bounds, we expand the inequality D<0D<0:
+
+ (2−β1−β2+β1​β2​cos2⁡θ)2−4​(1−β1)​(1−β2)<0(2-\beta_{1}-\beta_{2}+\beta_{1}\beta_{2}\cos^{2}\theta)
+ ^{2}-4(1-\beta_{1})(1-\beta_{2})<0
+
+Rearranging this expression as a quadratic in x=cos2⁡θx=\cos^{2}\theta yields:
+
+ (β1​β2)2​x2+2​(2−β1−β2)​β1​β2​x+(β1−β2)2<0(\beta_{1}\beta_{2})^{2}x^{2}+2(2-\beta_{1}-\beta_{2})\
+ beta_{1}\beta_{2}x+(\beta_{1}-\beta_{2})^{2}<0
+
+This inequality holds if and only if x=cos2⁡θx=\cos^{2}\theta lies strictly between the two roots
+of the corresponding equation. Solving for the roots gives the explicit bounds for complex
+eigenvalues:
+
+ (β1−1−β2−1)2β1​β2<cos2⁡θ<(β1−1+β2−1)2β1​β2\frac{(\sqrt{\beta_{1}-1}-\sqrt{\beta_{2}-1})^{2}}{\
+ beta_{1}\beta_{2}}<\cos^{2}\theta<\frac{(\sqrt{\beta_{1}-1}+\sqrt{\beta_{2}-1})^{2}}{\beta_{1}\
+ beta_{2}}
+
+This inequality is only satisfiable when β1,β2∈(1,2]\beta_{1},\beta_{2}\in(1,2]. For the special
+case of two standard reflections where β1=β2=2\beta_{1}=\beta_{2}=2, the condition simplifies to 0
+<cos2⁡θ<10<\cos^{2}\theta<1, confirming that the product of any two distinct reflections is a
+rotation.
+
+Conversely, we show that if at least one coefficient βi∈[0,1]\beta_{i}\in[0,1], the eigenvalues are
+real as D≥0D\geq 0. We analyze this by cases:
+
+  • •
+   
+    Case 1: One coefficient is in [0,1][0,1], the other is in (1,2](1,2]. Without loss of
+    generality, let β1∈[0,1]\beta_{1}\in[0,1] and β2∈(1,2]\beta_{2}\in(1,2]. This implies (1−β1)≥0
+    (1-\beta_{1})\geq 0 and (1−β2)<0(1-\beta_{2})<0, so their product det(𝑨S)≤0\det({\bm{A}}_{S})\
+    leq 0. The term −4det(𝑨S)-4\det({\bm{A}}_{S}) is therefore non-negative. Since [tr​(𝑨S)]2≥0[\
+    text{tr}({\bm{A}}_{S})]^{2}\geq 0, their sum DD must be non-negative.
+
+  • •
+   
+    Case 2: Both coefficients are in [0,1][0,1]. By the AM-GM inequality on the non-negative terms
+    (1−β1)(1-\beta_{1}) and (1−β2)(1-\beta_{2}), we have (1−β1)+(1−β2)≥2​(1−β1)​(1−β2)=2​det(𝑨S)(1-
+    \beta_{1})+(1-\beta_{2})\geq 2\sqrt{(1-\beta_{1})(1-\beta_{2})}=2\sqrt{\det({\bm{A}}_{S})}.
+    Since tr​(𝑨S)\text{tr}({\bm{A}}_{S}) includes an additional non-negative term β1​β2​cos2⁡θ\
+    beta_{1}\beta_{2}\cos^{2}\theta, it also holds that tr​(𝑨S)≥2​det(𝑨S)\text{tr}({\bm{A}}_{S})\
+    geq 2\sqrt{\det({\bm{A}}_{S})}. Squaring both sides gives [tr​(𝑨S)]2≥4​det(𝑨S)[\text{tr}({\bm
+    {A}}_{S})]^{2}\geq 4\det({\bm{A}}_{S}), ensuring D≥0D\geq 0.
+
+This analysis confirms that complex eigenvalues, which enable rotations, can only arise if and only
+if both β1>1\beta_{1}>1 and β2>1\beta_{2}>1. When at least one βi≤1\beta_{i}\leq 1, real
+eigenvalues restrict the transformations in that subspace to scaling or reflection. This clear
+distinction in behavior, dictated by the β\beta values and θ\theta, is illustrated in Figure 11. ∎
+
+Appendix B Expressivity of DeltaProduct
+
+In this section, we characterize the expressivity of (Gated) DeltaProduct in solving group word
+problems and recognizing regular languages, in support of Section 4.1. The results hold in finite
+precision (since our constructions require a finite number of values), and take inspiration from
+Peng et al. [13, Appendix D] and [16]. We begin by stating and discussing our key assumptions in
+Section B.1. We then present our main results for group word problems in Section B.2, followed by
+our findings for regular languages in Section B.3. In Section B.5, we examine a result specific to
+dihedral groups. Finally, we explore the fundamental tradeoff between expressivity and stability of
+the recurrence in Section B.6.
+
+B.1 Assumptions
+
+We consider a (Gated) DeltaProduct model where each layer is structured as
+
+ 𝑯i=𝑨(𝒙i)𝑯i−1+𝑩(𝒙i),𝒚^i=dec(𝑯i,𝒙i)where i∈1,…,t\displaystyle{\bm{H}}_{i}={\bm{A}}({\bm{x}}_{i}){\
+ bm{H}}_{i-1}+{\bm{B}}({\bm{x}}_{i}),\qquad\hat{{\bm{y}}}_{i}=\mathrm{dec}({\bm{H}}_{i},{\bm{x}}_
+ {i})\qquad\text{where }i\in{1,\dots,t}
+ 𝑨⁡(𝒙i)=gi​∏j=1nh(𝑰−βi,j​𝒌i,j​𝒌i,j⊤),𝑩⁡(𝒙i)=∑j=1nh(∏k=j+1nh(𝑰−βi,k​𝒌i,k​𝒌i,k⊤))​βi,j​𝒌i,j​𝒗i,j⊤,\
+ displaystyle{\bm{A}}({\bm{x}}_{i})={\color[rgb]{1,0,0}g_{i}}\prod_{j=1}^{n_{h}}\Bigl({\bm{I}}-\
+ beta_{i,j}\,{\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\top}\Bigr),\quad{\bm{B}}({\bm{x}}_{i})=\sum_{j=1}^{n_
+ {h}}\Bigl(\prod_{k=j+1}^{n_{h}}\bigl({\bm{I}}-\beta_{i,k}\,{\bm{k}}_{i,k}{\bm{k}}_{i,k}^{\top}\
+ bigr)\Bigr)\,\beta_{i,j}\,{\bm{k}}_{i,j}{\bm{v}}_{i,j}^{\top},
+
+where gig_{i} is only present in the gated variant and there is only one head per layer. If HH
+heads are considered, head jj will run the recurrence 𝑯ij=𝑨j​(𝒙i)​𝑯i−1+𝑩j​(𝒙i){\bm{H}}^{j}_{i}={\bm
+{A}}^{j}({\bm{x}}_{i}){\bm{H}}_{i-1}+{\bm{B}}^{j}({\bm{x}}_{i}), (with different learnable
+parameters from all other heads) and all the states will be passed to the decoder to get the output
+as 𝒚^i=dec⁡((𝑯i1,…,𝑯iH),𝒙i)\hat{\bm{y}}_{i}=\mathrm{dec}(({\bm{H}}_{i}^{1},\dots,{\bm{H}}_{i}^{H}),
+{\bm{x}}_{i}).
+
+Each layer receives the outputs of all previous layers. We assume that the output of all layers is
+passed as input to all following layers: this can be achieved by using the residual connections
+(which would be inside dec\mathrm{dec}) and by placing the output of different layers onto separate
+subspaces.
+
+Task-dependent initial state. We assume that the initial state 𝑯0{\bm{H}}_{0} can be set
+appropriately depending on the task and is of rank at most nhn_{h}.
+
+Arbitrary decoder and state transition functions. We also assume that for every i,ji,j, gi∈[0,1]g_
+{i}\in[0,1], βi,j∈[0,2],𝒌i,j∈ℝd\beta_{i,j}\in[0,2],{\bm{k}}_{i,j}\in\mathbb{R}^{d}, ‖𝒌i,j‖=1\left\
+lVert{\bm{k}}_{i,j}\right\rVert=1 and 𝒗i,j∈ℝd{\bm{v}}_{i,j}\in\mathbb{R}^{d} are arbitrary
+continuous functions of 𝒙i{\bm{x}}_{i}. The function dec\mathrm{dec} can also be arbitrary
+(continuous). Since in all our setups the possible values of 𝒙i{\bm{x}}_{i} and 𝑯i{\bm{H}}_{i} are
+finite, this implies that the functions dec\mathrm{dec}, 𝑨,𝑩{\bm{A}},{\bm{B}} can model an
+arbitrary function of their discrete domain of interest, with the only restriction coming from the
+structural assumption of the output spaces of 𝑨{\bm{A}} (product of nhn_{h} Householders) and 𝑩{\bm
+{B}} (rank nhn_{h}). This assumption can always be fulfilled in practice if dec\mathrm{dec} is a
+sufficiently wide MLP (see the next section for practical concerns) and, in the case of 𝑨,𝑩{\bm
+{A}},{\bm{B}}, which generally do not contain MLPs, by setting the dimension of 𝒙i{\bm{x}}_{i}
+sufficiently large, which can be achieved by adjusting the embedding layer or the dimensionality of
+the output of dec\mathrm{dec}. Note that the width of the MLP will grow with the complexity of the
+function to be approximated, which in our case depends on the complexity of the problem.
+
+B.1.1 Practical Considerations
+
+Beginning of sequence token. Alternatively, the assumption on 𝑯0{\bm{H}}_{0} (task-dependent with
+rank at most nhn_{h}) can be replaced by using a beginning of sequence token x1=$x_{1}=\$ and
+setting 𝑯0=0{\bm{H}}_{0}=0, as done in practice, so that 𝑯1=𝑩⁡($){\bm{H}}_{1}={\bm{B}}(\$) is a
+learnable matrix of rank at most nhn_{h} which acts as the 𝑯0{\bm{H}}_{0} in our constructions.
+
+Decoder implementation. In our implementation, dec\mathrm{dec} is the same as in Gated DeltaNet:
+
+ dec⁡((𝑯t1,…​𝑯tH),𝒙t)=MLP⁡(RMSnorm⁡(𝒙t+𝒐t)),\displaystyle\mathrm{dec}(({\bm{H}}^{1}_{t},\dots{\bm
+ {H}}_{t}^{H}),{\bm{x}}_{t})=\mathrm{MLP}(\mathrm{RMSnorm}({\bm{x}}_{t}+{\bm{o}}_{t})),
+ 𝒐t=∑j=1H𝑾oj​RMSnorm​((𝑯tj)⊤​𝒒tj),𝒒tj=ψ⁡(𝑾qj​𝒙t)/‖ψ⁡(𝑾qj​𝒙t)‖\displaystyle\quad{\bm{o}}_{t}=\sum_
+ {j=1}^{H}{\bm{W}}^{j}_{o}\mathrm{RMSnorm}(({\bm{H}}^{j}_{t})^{\top}{\bm{q}}^{j}_{t}),\quad{\bm
+ {q}}^{j}_{t}=\psi({\bm{W}}^{j}_{q}{\bm{x}}_{t})/||\psi({\bm{W}}^{j}_{q}{\bm{x}}_{t})||
+
+where 𝑾oj,𝑾qj{\bm{W}}^{j}_{o},{\bm{W}}^{j}_{q} are two learned matrices, ψ=SiLU\psi=\mathrm{SiLU},
+RMSnorm⁡(𝒙)=𝒂⊙𝒙/ϵ+d−1​∑i=1dxi2\mathrm{RMSnorm}({\bm{x}})={\bm{a}}\odot{\bm{x}}/\sqrt{\epsilon+d^
+{-1}\sum_{i=1}^{d}x_{i}^{2}} corresponds (when ϵ=0\epsilon=0) to a projection onto an axis aligned
+ellipse where 𝒂∈ℝd{\bm{a}}\in\mathbb{R}^{d} is learnable and determines the lengths of the axis and
+ϵ>0\epsilon>0 is a small value set to avoid numerical errors. Meanwhile, MLP\mathrm{MLP} is a two
+layer MLP. This structure can be limiting. For instance, when 𝑯tj∈ℝd{\bm{H}}_{t}^{j}\in\mathbb{R}^
+{d}, then bt=(𝑯tj)⊤​𝒒t∈ℝb_{t}=({\bm{H}}^{j}_{t})^{\top}{\bm{q}}_{t}\in\mathbb{R} and if bt>>ϵb_
+{t}>>\epsilon, then |RMSNorm⁡(bt)|≈1|\mathrm{RMSNorm}(b_{t})|\approx 1, which means that after
+RMSNorm we are left with effectively only 2 possible values, while our constructions might require
+more: as many as the number of possible states. Indeed, for all our constructions to work in
+practice, we would need a sufficiently large ϵ\epsilon, so that the output of RMSnorm\mathrm
+{RMSnorm} can retain some magnitude information. Since in our constructions the number of states is
+finite, with ϵ>0\epsilon>0 and an appropriate value for 𝒒tj{\bm{q}}_{t}^{j} we are guaranteed that
+the map 𝑯tj↦RMSnorm⁡((𝑯tj)⊤​𝒒tj){\bm{H}}^{j}_{t}\mapsto\mathrm{RMSnorm}(({\bm{H}}^{j}_{t})^{\top}{\
+bm{q}}^{j}_{t}), and consequently (by appropriately setting 𝑾oj{\bm{W}}_{o}^{j}) the map from
+states and inputs 𝒙t{\bm{x}}_{t}, to the input of the MLP, is injective, which we show in the next
+lemma. Hence, thanks to the MLP, the decoder can approximate any continuous function of (𝑯t,𝒙t)({\
+bm{H}}_{t},{\bm{x}}_{t}) even after the bottlenecks caused by the scalar product with 𝒒tj{\bm{q}}_
+{t}^{j} and the RMSnorm.
+
+Lemma 1.
+
+Let 𝒮⊂ℝ\mathcal{S}\subset\mathbb{R} be a finite set of values. Define δmin=minx,y∈𝒮,x≠y⁡|x−y|\
+delta_{\min}=\min_{x,y\in\mathcal{S},x\neq y}|x-y| and δmax=maxx,y∈𝒮⁡|x−y|\delta_{\max}=\max_{x,y\
+in\mathcal{S}}|x-y|. Let 𝐛=(b,b2,…,bd)⊤{\bm{b}}=(b,b^{2},\dots,b^{d})^{\top} and set 𝐪=𝐛/‖𝐛‖{\bm
+{q}}={\bm{b}}/\left\lVert{\bm{b}}\right\rVert. If bb satisfies b≥δmaxδmin+1b\geq\frac{\delta_{\
+max}}{\delta_{\min}}+1, then the mapping f:𝒮d→ℝf:\mathcal{S}^{d}\to\mathbb{R} given by f⁡(𝐇)=
+RMSnorm⁡(𝐇⊤​𝐪)f({\bm{H}})=\mathrm{RMSnorm}({\bm{H}}^{\top}{\bm{q}}) is injective.
+
+Proof.
+
+The mapping ff is a composition f=g3∘g2∘g1f=g_{3}\circ g_{2}\circ g_{1}, where the component
+functions are:
+
+ g1​(𝑯)=∑i=1dhi​bi,g2​(x)=x‖𝒃‖,g3​(x)=RMSnorm⁡(x),g_{1}({\bm{H}})=\sum_{i=1}^{d}h_{i}b^{i},\qquad
+ g_{2}(x)=\frac{x}{\left\lVert{\bm{b}}\right\rVert},\qquad g_{3}(x)=\mathrm{RMSnorm}(x),
+
+where 𝑯=(h1,…,hd)⊤{\bm{H}}=(h_{1},\dots,h_{d})^{\top}. The overall mapping is injective if each
+component is injective.
+
+1. Injectivity of g1g_{1}: Intuitively, g1g_{1} encodes the vector 𝑯{\bm{H}} as a scalar as a
+number in base bb, where each hih_{i} acts as a “digit” drawn from the finite set 𝒮\mathcal{S}. By
+choosing bb sufficiently large relative to the spread of 𝒮\mathcal{S} (captured by δmax/δmin\delta_
+{\max}/\delta_{\min}), we ensure that different vectors produce distinct scalars. To prove this
+formally, we show that for any non-zero difference vector 𝚫=(Δ1,…,Δd)⊤=𝑯1−𝑯2\bm{\Delta}=(\Delta_
+{1},\dots,\Delta_{d})^{\top}={\bm{H}}_{1}-{\bm{H}}_{2}, the difference g1​(𝑯1)−g1​(𝑯2)=∑i=1dΔi​big_
+{1}({\bm{H}}_{1})-g_{1}({\bm{H}}_{2})=\sum_{i=1}^{d}\Delta_{i}b^{i} is also non-zero. This is true
+since bb is by definition greater than Cauchy polynomial upper bound for the roots of the
+polynomial P⁡(b)=∑i=1dΔi​biP(b)=\sum_{i=1}^{d}\Delta_{i}b^{i}. For an elementary proof, let k=max⁡
+{i∣Δi≠0}k=\max\{i\mid\Delta_{i}\neq 0\}. The magnitude of the highest-order term is lower-bounded
+by:
+
+ |Δk​bk|=|Δk|​bk≥δmin​bk|\Delta_{k}b^{k}|=|\Delta_{k}|b^{k}\geq\delta_{\min}b^{k}
+
+The magnitude of the sum of lower-order terms is upper-bounded as
+
+ |∑i=1k−1Δi​bi|≤∑i=1k−1|Δi|​bi≤∑i=1k−1δmax​bi=δmax​(bk−bb−1)≤δmin​(bk−b),\left|\sum_{i=1}^{k-1}\
+ Delta_{i}b^{i}\right|\leq\sum_{i=1}^{k-1}|\Delta_{i}|b^{i}\leq\sum_{i=1}^{k-1}\delta_{\max}b^{i}=
+ \delta_{\max}\left(\frac{b^{k}-b}{b-1}\right)\leq\delta_{\min}(b^{k}-b),
+
+where we used the triangle inequality and the assumption on bb, which implies δmax≤δmin​(b−1)\
+delta_{\max}\leq\delta_{\min}(b-1). Comparing the bounds, we see that
+
+ |Δk​bk|≥δmin​bk>δmin​(bk−b)≥|∑i=1k−1Δi​bi||\Delta_{k}b^{k}|\geq\delta_{\min}b^{k}>\delta_{\min}(b
+ ^{k}-b)\geq\left|\sum_{i=1}^{k-1}\Delta_{i}b^{i}\right|
+
+Since the magnitude of the highest-order term is strictly greater than that of the sum of all other
+terms, their sum cannot be zero. Thus, g1g_{1} is injective.
+
+2. Injectivity of g2g_{2} and g3g_{3}: The function g2g_{2} is a linear scaling by the non-zero
+constant 1/‖𝒃‖1/\left\lVert{\bm{b}}\right\rVert and is therefore injective. For g3​(x)=RMSnorm​(x)
+g_{3}(x)=\mathrm{RMSnorm}(x), its derivative is strictly positive for ϵ>0\epsilon>0, meaning g3g_
+{3} is strictly monotonic and also injective.
+
+Since g1g_{1}, g2g_{2}, and g3g_{3} are all injective, their composition ff is also injective. ∎
+
+When the state is one-hot, i.e. 𝑯tj=𝒆i∈{0,1}d{\bm{H}}_{t}^{j}={\bm{e}}_{i}\in\{0,1\}^{d}, with
+1≤i≤d1\leq i\leq d (i-th element of the canonical basis), an alternative to the above construction
+is to replicate the recurrence onto dd heads, where the jj-th head has 𝑾oj=𝒒tj=𝒆j{\bm{W}}^{j}_{o}=
+{\bm{q}}^{j}_{t}={\bm{e}}_{j}, so that, assuming that in the RMSnorm 𝒂=(d,…,d)⊤{\bm{a}}=(\sqrt{d},\
+dots,\sqrt{d})^{\top} and ϵ=0\epsilon=0, we get 𝒐t=𝑯t=𝒆i{\bm{o}}_{t}={\bm{H}}_{t}={\bm{e}}_{i}.
+This is the strategy used in Peng et al. [13, Appendix D]. However, for some problems using the
+one-hot encoding states 𝒆1,…​𝒆n{\bm{e}}_{1},\dots{\bm{e}}_{n} is not very efficient. For instance,
+to solve the SnS_{n} word problem one would need n!n!-dimensional one-hot vectors as states, while
+in our Theorem 1 we use nn-dimensional vectors. Moreover, learning multiple identical heads is
+redundant and indeed we observe that in our synthetic experiments, the model is learning to use
+only one head to solve the tasks (see Section 5.2).
+
+B.2 Group Word Problems
+
+The next theorem establishes that DeltaProduct can solve the word problem for the symmetric group
+SnS_{n}, which implies that it can also solve any group word problem, since for every group GG
+there exists nn such that GG is isomorphic to a subgroup of SnS_{n}.
+
+Theorem 3 (Restatement of Theorem 1).
+
+For any n∈ℕn\in\mathbb{N} there exists a DeltaProduct model with one of the following
+configurations that can solve the word problem of the symmetric group SnS_{n}: (i) one layer with
+nh=n−1n_{h}=n{-}1 [16, Theorem 3] (ii) 3 layers with nh>1n_{h}{>}1 (iii) 4 layers with nh=1n_{h}{=}
+1. The construction for (ii) and (iii) requires that the MLP at the second last layer computes a
+lookup-table of size 2​m×(n!)2​m2m\times(n!)^{2m}, function of the last 2​m2m input tokens and the
+position modulo 2​m2m with m=⌈(n−1)/nh⌉m=\lceil(n{-}1)/n_{h}\rceil.
+
+Proof.
+
+One way to solve the group word problem for the symmetric group SnS_{n} is to map each element of
+the group g∈Sng\in S_{n} to the corresponding permutation matrix 𝑷g∈{0,1}n{\bm{P}}_{g}\in\{0,1\}^
+{n} and then for each input sequence x1,…,xtx_{1},\dots,x_{t} with xi∈Snx_{i}\in S_{n} compute each
+element of the output sequence y1,…,yty_{1},\dots,y_{t} as
+
+ yi=xi⋅xi−1⋯x1=ϕ(𝑷xi⋯𝑷x1𝒖0),𝒖0=(1,…,n)⊤,y_{i}=x_{i}\cdot x_{i-1}\cdots x_{1}=\phi({\bm{P}}_{x_{i}}
+ \cdots{\bm{P}}_{x_{1}}{\bm{u}}_{0}),\quad{\bm{u}}_{0}=(1,\dots,n)^{\top},
+
+where ϕ\phi is a surjective map from vectors in {1,…,n}n\{1,\dots,n\}^{n} to the n!n! elements of
+SnS_{n}, which we consider integers for simplicity, i.e. xi,yi∈{1,…,n!}x_{i},y_{i}\in\{1,\dots,n!
+\}.
+
+(i). Since a permutation of nn elements is a series of at most n−1n-1 swaps of 22 elements, if nh=
+n−1n_{h}=n-1, then we can solve the problem with a 1-layer DeltaProduct by setting 𝑯0=𝒖0{\bm{H}}_
+{0}={\bm{u}}_{0}, dec⁡(𝑯i,xi)=ϕ⁡(𝑯i)\mathrm{dec}({\bm{H}}_{i},x_{i})=\phi({\bm{H}}_{i}), 𝑩⁡(xi)=0{\
+bm{B}}(x_{i})=0 (𝒗i,j=0{\bm{v}}_{i,j}=0), 𝑨⁡(xi)=𝑷xi{\bm{A}}(x_{i})={\bm{P}}_{x_{i}}. The latter is
+achieved by setting for the jj-th element in the product ∏j=1nh(I−βi,j​𝒌i,j​𝒌i,j⊤CLOSE\prod_{j=1}^
+{n_{h}}(I-\beta_{i,j}{\bm{k}}_{i,j}{\bm{k}}_{i,j}^{\top}), either βi,j=2\beta_{i,j}=2 and 𝒌i,j=
+(𝒆k−𝒆p)/2{\bm{k}}_{i,j}=({\bm{e}}_{k}-{\bm{e}}_{p})/\sqrt{2} with 𝒆i{\bm{e}}_{i} being the ii-th
+element of the canonical basis of ℝn\mathbb{R}^{n} (swap element at index kk with the one at index
+pp), or βi,j=0\beta_{i,j}=0 (identity).
+
+(ii) and (iii). If nh<n−1n_{h}<n-1, then the state transition matrix is not sufficiently expressive
+to represent all permutations of nn elements. However, we can use additional layers to overcome
+this issue as follows. We divide the input sequence into blocks of mm elements: we factorize the
+position i∈{1,…​t}i\in\{1,\dots t\} into i=l​m+i~i=lm+\tilde{i} where l≥0l\geq 0 is the index of
+the previous block and i~∈{1,…,m}\tilde{i}\in\{1,\dots,m\} is the position within the current block
+(index l+1l+1). First, consider the case when l≥1l\geq 1. Let 𝑷~l=𝑷x(l−1)​m+m​…​𝑷x(l−1)​m+1\tilde{\
+bm{P}}_{l}={\bm{P}}_{x_{(l-1)m+m}}\dots{\bm{P}}_{x_{(l-1)m+1}} be the product of the permutations
+of the previous block. Since 𝑷~l\tilde{\bm{P}}_{l} is a permutation matrix of nn elements, we can
+factor it into 𝑷~l=𝑮l,m⋯𝑮l,1\tilde{\bm{P}}_{l}={\bm{G}}_{l,m}\cdots{\bm{G}}_{l,1} where we recall
+that m=⌈(n−1)/nh⌉m=\lceil(n-1)/n_{h}\rceil and each of 𝑮l,1,…,𝑮l,m{\bm{G}}_{l,1},\dots,{\bm{G}}_
+{l,m} is a product of nhn_{h} generalized Householder matrices and thus can be a state-transition
+matrix of our model. We fix one factorization for each possible permutation matrix and we set 𝑷~0=
+𝑮0,m⋯𝑮0,1\tilde{\bm{P}}_{0}={\bm{G}}_{0,m}\cdots{\bm{G}}_{0,1}, with 𝑮0,i=I{\bm{G}}_{0,i}=I to
+handle the case when l=0l=0.
+
+Now let 𝒙i{\bm{x}}_{i} be the input of the last layer. if 𝒙i{\bm{x}}_{i} contains enough
+information about previous tokens (as we specify later), we can set the recurrence and decoder of
+the last layer as
+
+ 𝑯i=𝑮l,i~​𝑯i−1,dec⁡(𝑯i,𝒙i)=ϕ⁡(𝑷xi⋯𝑷xl​m+1⏟current block​𝑮l,m⋯𝑮l,i~+1⏟previous block​𝑯i).{\bm{H}}_
+ {i}={\bm{G}}_{l,\tilde{i}}{\bm{H}}_{i-1},\quad\mathrm{dec}({\bm{H}}_{i},{\bm{x}}_{i})=\phi\Big(\
+ underbrace{{\bm{P}}_{x_{i}}\cdots{\bm{P}}_{x_{lm+1}}}_{\text{current block}}\underbrace{{\bm{G}}_
+ {l,m}\cdots{\bm{G}}_{l,\tilde{i}+1}}_{\text{previous block}}{\bm{H}}_{i}\Big).
+
+where 𝑯0=𝒖0{\bm{H}}_{0}={\bm{u}}_{0}, 𝑩⁡(𝒙i)=0{\bm{B}}({\bm{x}}_{i})=0, 𝑨⁡(𝒙i)=𝑮l,i~{\bm{A}}({\bm
+{x}}_{i})={\bm{G}}_{l,\tilde{i}}, using the construction at point (i) since 𝑮l,i~{\bm{G}}_{l,\tilde
+{i}} is a product of at most nhn_{h} Householers. Note that 𝑯i{\bm{H}}_{i} contains the product of
+the input permutations only up to token x(l−1)​mx_{(l-1)m} and a partial computation of previous
+block of permutations 𝑷~l\tilde{\bm{P}}_{l}. Hence, the decoder completes the computation by
+applying two additional components: (1) the remaining transformations 𝑮l,i~+1{\bm{G}}_{l,\tilde{i}
++1} through 𝑮l,m{\bm{G}}_{l,m} needed to complete 𝑷~l\tilde{\bm{P}}_{l}, and (2) the actual
+permutations from the current partial block 𝑷xl​m+1{\bm{P}}_{x_{lm+1}} through 𝑷xi{\bm{P}}_{x_{i}}.
+The delay in the recurrence is necessary, since to compute even the first matrix of the
+factorization for a block of mm elements of the input sequence, all the elements in such a block
+need to be processed.
+
+We can check that this ends up computing the correct output yiy_{i} by substituting the expression
+for 𝑯i{\bm{H}}_{i} and unrolling the recurrence as follows.
+
+ dec⁡(𝑯i,𝒙i)\displaystyle =ϕ(𝑷xl​m+i~⋯𝑷xl​m+1𝑮l,m⋯𝑮l,1𝑮l−1,m⋯𝑮l−1,1…𝑮0,m…𝑮0,1𝑯0).\displaystyle=\
+ \mathrm{dec}({\bm{H}}_   phi({\bm{P}}_{x_{lm+\tilde{i}}}\cdots{\bm{P}}_{x_{lm+1}}{\bm{G}}_{l,m}\
+ {i},{\bm{x}}_{i})        cdots{\bm{G}}_{l,1}{\bm{G}}_{l-1,m}\cdots{\bm{G}}_{l-1,1}\dots{\bm{G}}_
+                          {0,m}\dots{\bm{G}}_{0,1}{\bm{H}}_{0}).
+                          =ϕ(𝑷xl​m+i~⋯𝑷xl​m+1𝑷~l𝑷~l−1…𝑷~0𝒖0).\displaystyle=\phi({\bm{P}}_{x_{lm+\
+                          tilde{i}}}\cdots{\bm{P}}_{x_{lm+1}}\tilde{\bm{P}}_{l}\tilde{\bm{P}}_
+                          {l-1}\dots\tilde{\bm{P}}_{0}{\bm{u}}_{0}).
+                          =ϕ(𝑷xl​m+i~⋯𝑷xl​m+1𝑷x(l−1)​m+m⋯𝑷x(l−1)​m+1…𝑷xm⋯𝑷x1𝑷~0𝒖0).\displaystyle=\
+                          phi({\bm{P}}_{x_{lm+\tilde{i}}}\cdots{\bm{P}}_{x_{lm+1}}{\bm{P}}_{x_
+                          {(l-1)m+m}}\cdots{\bm{P}}_{x_{(l-1)m+1}}\dots{\bm{P}}_{x_{m}}\cdots{\bm
+                          {P}}_{x_{1}}\tilde{\bm{P}}_{0}{\bm{u}}_{0}).
+                          =ϕ(𝑷xi⋯𝑷x1𝒖0)=yi,\displaystyle=\phi({\bm{P}}_{x_{i}}\cdots{\bm{P}}_{x_
+                          {1}}{\bm{u}}_{0})=y_{i},
+
+Note that to compute 𝑨⁡(𝒙i)=𝑮l,i~{\bm{A}}({\bm{x}}_{i})={\bm{G}}_{l,\tilde{i}} and dec⁡(𝑯i,𝒙i)\
+mathrm{dec}({\bm{H}}_{i},{\bm{x}}_{i}), 𝒙i{\bm{x}}_{i} should contain i~=imodm\tilde{i}=i\bmod m
+and the last m+i~m+\tilde{i} (in general the last 2​m2m) tokens, corresponding to the current and
+previous blocks. Hence, the layers before the last one are dedicated to compute at each time-step
+ii a lookup table for the possible values of (imod2​m,xi,…,xi−2​m+1)(i\bmod 2m,x_{i},\dots,x_
+{i-2m+1}) whose output will be included in the input of the last layer 𝒙i{\bm{x}}_{i}. The first
+layers (two layers if nh=1n_{h}=1, one if nh>1n_{h}>1) can provide imod2​mi\bmod 2m by using Lemma 
+2 with d=2​md=2m. Finally, the second to last layer can output any function of the last 2​m2m
+tokens and the position modulo 2​m2m through Lemma 3 with d=2​md=2m and at=xta_{t}=x_{t}, by using
+imod2​mi\bmod 2m from the first layer(s). ∎
+
+Lemma 2.
+
+The following DeltaProduct configurations can count modulo d∈ℕd\in\mathbb{N}. (i) 2 layers each
+with one head and nh=1n_{h}=1 [16, Theorem 6]. (ii) 1 layer with one head and nh≥2n_{h}\geq 2.
+
+Proof.
+
+For (i), we can use the same construction as in [16, Theorem 6], where the first layer does
+counting modulo 2 and the second layer computes addition modulo dd. In this case, since we just
+want to count modulo dd we can ignore input tokens and add 11 modulo dd at each time-step. For
+(ii), note that if nh>2n_{h}>2, we can set, for any time-step tt, 𝑩⁡(𝒙t)=0{\bm{B}}({\bm{x}}_{t})=0
+and the state transition matrix 𝑨⁡(𝒙t){\bm{A}}({\bm{x}}_{t}) equal to a 2D rotation with an angle
+of 2​π/d2\pi/d by appropriately setting two keys, say 𝒌t,1,𝒌t,2{\bm{k}}_{t,1},{\bm{k}}_{t,2},
+setting βt,1,βt,2=2\beta_{t,1},\beta_{t,2}=2 (while for the other Householders we set βi,j=0\beta_
+{i,j}=0). Then, we can count modulo dd by setting 𝑯0{\bm{H}}_{0} in the span of 𝒌t,1,𝒌1,2{\bm{k}}_
+{t,1},{\bm{k}}_{1,2} and dec\mathrm{dec} appropriately to map the dd values that 𝑯t{\bm{H}}_{t} can
+take to the correspondent element in {1,…,d}\{1,\dots,d\}. ∎
+
+Lemma 3.
+
+A DeltaProduct layer with nh=1n_{h}=1, receiving in its input at time-step tt the tuple (tmodd,at)
+(t\bmod d,a_{t}) (t≥1t\geq 1) where at∈D⊂ℝa_{t}\in D\subset\mathbb{R} with DD being a discrete set
+of values, can implement any function of (tmodd,at−d+1,…,at)(t\bmod d,a_{t-d+1},\dots,a_{t}), where
+for simplicity we set ai=a∉Da_{i}=a\notin D for i∈{2−d,…,0}i\in\{2-d,\dots,0\}.
+
+Proof.
+
+Let t~=tmodd+1\tilde{t}=t\bmod d+1 Set 𝑯0=0∈ℝd{\bm{H}}_{0}=0\in\mathbb{R}^{d} and the recurrence
+update as
+
+ 𝑯t=(I−𝒆t~​𝒆t~⊤)​𝑯t−1+𝒆t~​at,{\bm{H}}_{t}=(I-{\bm{e}}_{\tilde{t}}{\bm{e}}_{\tilde{t}}^{\top}){\bm
+ {H}}_{t-1}+{\bm{e}}_{\tilde{t}}a_{t},
+
+where 𝒆i{\bm{e}}_{i} is the ii-th element of the canonical basis of ℝd\mathbb{R}^{d}. This can be
+implemented by setting βt,1=1\beta_{t,1}=1, 𝒌t,1=𝒆t~{\bm{k}}_{t,1}={\bm{e}}_{\tilde{t}}, 𝒗t,1=at{\
+bm{v}}_{t,1}=a_{t} and βt,j,𝒌t,j,𝒗t,j=0\beta_{t,j},{\bm{k}}_{t,j},{\bm{v}}_{t,j}=0. With this
+choice, 𝑯t{\bm{H}}_{t} contains at−d+1,…,ata_{t-d+1},\dots,a_{t}. The result follows since dec\
+mathrm{dec} can be an arbitrary continuous function of both 𝑯t{\bm{H}}_{t} and 𝒙t{\bm{x}}_{t} and
+the latter contains tmoddt\bmod d. ∎
+
+Finally, the next results concern finite subgroups of the orthogonal and special orthogonal groups.
+
+Theorem 4.
+
+Let GG be a group isomorphic either to a subgroup of O⁡(n)\mathrm{O}(n), or to a subgroup of SO⁡
+(n+1)\mathrm{SO}(n+1) if nn is even, then if nh=nn_{h}=n, there exists a DeltaProduct model that
+solves the group word problem for GG.
+
+Proof.
+
+From the assumption we can map each element g∈Gg\in G to an orthogonal matrix 𝑮g{\bm{G}}_{g}. For
+the word problem for GG, each element of the input sequence belongs to GG: xi∈Gx_{i}\in G for every
+ii.
+
+If 𝑮g∈O⁡(n){\bm{G}}_{g}\in\mathrm{O}(n), then, since nh=nn_{h}=n and every orthogonal n×nn\times n
+matrix can be written as the product of at most nn Householder matrices, we can set 𝑯0=I∈ℝn×n{\bm
+{H}}_{0}=I\in\mathbb{R}^{n\times n} and 𝑨⁡(xi)=𝑮xi{\bm{A}}(x_{i})={\bm{G}}_{x_{i}}, 𝑩⁡(xi)=0{\bm
+{B}}(x_{i})=0 and dec⁡(𝑯t,xi)=ϕ⁡(𝑯i)\mathrm{dec}({\bm{H}}_{t},x_{i})=\phi({\bm{H}}_{i}) with ϕ:O⁡
+(n)→G\phi:\mathrm{O}(n)\to G bijective (which exists due to the isomorphism). The Householder
+product structure enables 𝑨⁡(xi){\bm{A}}(x_{i}) to represent general orthogonal matrices 𝑮xi{\bm
+{G}}_{x_{i}}, including rotations.
+
+If instead 𝑮g∈SO⁡(n+1){\bm{G}}_{g}\in\mathrm{SO}(n+1), since nn is even in this case then we can
+still write 𝑮g{\bm{G}}_{g} as a product of an even number (at most nn since n+1n+1 is odd) of
+Householder matrices of dimension n+1×n+1n+1\times n+1. This is because the determinant of 𝑮g{\bm
+{G}}_{g} is +1+1, which is only possible if it is a product of an even number of Householder
+matrices, each having determinant −1-1. Thus, we can set 𝑨⁡(xi)=𝑮xi∈ℝn+1×n+1{\bm{A}}(x_{i})={\bm
+{G}}_{x_{i}}\in\mathbb{R}^{n+1\times n+1}, 𝑩⁡(xi)=0{\bm{B}}(x_{i})=0. Now if we let 𝑮¯=𝑮xi𝑮xi−1⋯𝑮x1
+\bar{\bm{G}}={\bm{G}}_{x_{i}}{\bm{G}}_{x_{i-1}}\cdots{\bm{G}}_{x_{1}} and set 𝑯0=diag⁡(1,…,1,0)∈ℝ
+(n+1)×(n+1){\bm{H}}_{0}=\mathrm{diag}(1,\dots,1,0)\in\mathbb{R}^{(n+1)\times(n+1)} (we are only
+allowed a rank n matrix), then 𝑯i=𝑮¯​𝑯0{\bm{H}}_{i}=\bar{\bm{G}}{\bm{H}}_{0} will have all the
+first nn columns equal to 𝑮¯\bar{\bm{G}} and the last set to zero. However, the last column can be
+found as a function of the others since it must be the unique unit vector orthogonal to all other
+columns of 𝑮¯\bar{\bm{G}} and for which det⁡(𝑮¯)=+1\operatorname{det}(\bar{\bm{G}})=+1. Therefore,
+there exists a bijective functon from states to elements of the group, which can be implemented in
+dec\mathrm{dec}. ∎
+
+B.3 Regular Languages
+
+This section details how Gated DeltaProduct networks can recognize any regular language in a finite
+number of layers. The core idea is to show that Gated DeltaProduct can simulate any Finite State
+Automaton (FSA), since FSAs are the computational models that define regular languages. The proof
+proceeds in two main steps: First, we leverage the Krohn-Rhodes theorem, a fundamental result in
+automata theory, which states that any FSA can be decomposed into a cascade of simpler FSAs known
+as permutation-reset automata. These simpler automata only perform two types of operations:
+permuting their states or resetting all states to a single state. Second, we demonstrate in Lemma 4
+that Gated DeltaProduct is well-equipped to simulate these permutation-reset automata. The
+“DeltaProduct” mechanism, using products of Householder transformations, naturally handles
+permutations, while the “Gated” aspect allows for the reset operations by nullifying the previous
+state’s influence and setting a new one. By simulating these building blocks and cascading them,
+Gated DeltaProduct can thus simulate any FSA and, consequently, recognize any regular language.
+
+Definition 1 (Finite state automaton (FSA)).
+
+A finite state automaton (FSA) is a tuple (Σ,Q,q0,δ,F)(\Sigma,Q,q_{0},\delta,F), where Σ\Sigma is a
+finite set called alphabet, QQ is the finite set of states, q0∈Qq_{0}\in Q is the initial state,
+for every w∈Σw\in\Sigma, δw:Q→Q\delta_{w}:Q\to Q is a state transition function and F⊂QF\subset Q
+is the set of accepting states.
+
+Definition 2 (Permutation-reset automaton).
+
+An FSA is permutation-reset if for every w∈Σw\in\Sigma, δw\delta_{w} is either bijective or
+constant.
+
+Definition 3 (Regular language).
+
+A regular language is a set of sequences LL such that there exists an FSA that accepts it, i.e.
+such that L⊂Σ∗L\subset\Sigma^{*}, where Σ∗\Sigma^{*} is the set of sequences with elements in Σ\
+Sigma, and that for every word 𝐰=w1​w2​…​wt∈Σ∗{\bm{w}}=w_{1}w_{2}\dots w_{t}\in\Sigma^{*}
+
+ δ𝒘(q0):=δwt∘δwt−1∘⋯∘δw1(q0)∈F⇔𝒘∈L.\delta_{\bm{w}}(q_{0}):=\delta_{w_{t}}\circ\delta_{w_{t-1}}  (4)
+ \circ\cdots\circ\delta_{w_{1}}(q_{0})\in F\iff{\bm{w}}\in L.
+
+Notably, the computation of any FSA can be also done using only matrix and vector multiplications.
+Indeed, if we let Q={1,…,n}Q=\{1,\dots,n\} (for simplicity), then we can map each state qq to the
+one hot vector 𝒆q{\bm{e}}_{q} (element of the canonical basis of ℝn\mathbb{R}^{n}) and each
+transition δw\delta_{w} to the matrix 𝑴w∈{0,1}n×n{\bm{M}}_{w}\in\{0,1\}^{n\times n} with element at
+row qq and column q′q^{\prime} being 1 if and only if δ⁡(q′)=q\delta(q^{\prime})=q. This way, by
+setting 𝒓∈{0,1}n{\bm{r}}\in\{0,1\}^{n} such that rq=1r_{q}=1 if q∈Fq\in F and rq=0r_{q}=0
+otherwise, we have that for every word 𝒘=w1​w2​…​wn∈Σ∗{\bm{w}}=w_{1}w_{2}\dots w_{n}\in\Sigma^{*}
+
+ 𝒓⊤𝑴wt𝑴wt−1⋯𝑴w1𝒆q0=1⇔𝒘∈L.{\bm{r}}^{\top}{\bm{M}}_{w_{t}}{\bm{M}}_{w_{t-1}}\cdots{\bm{M}}_{w_    (5)
+ {1}}{\bm{e}}_{q_{0}}=1\iff{\bm{w}}\in L.
+
+We observe that if δw\delta_{w} is bijective and changes kk states, then the corresponding 𝑴w{\bm
+{M}}_{w} is a permutation matrix that can be written as a product of k−1k-1 Householder matrices,
+each corresponding to a swap of two elements. Moreover, if δw\delta_{w} is a reset (constant), i.e.
+if δw​(q)=q¯\delta_{w}(q)=\bar{q} for every q∈Qq\in Q, then 𝑴w​𝒆q=𝒆q¯{\bm{M}}_{w}{\bm{e}}_{q}={\bm
+{e}}_{\bar{q}}. As we will see, constant transitions can be modeled by setting the gate to zero. We
+are now ready to state our main result.
+
+Theorem 5 (Restatement of Theorem 2).
+
+For any regular language LL and any nh∈ℕn_{h}\in\mathbb{N}, there exists a Gated DeltaProduct model
+with a finite number of layers that recognizes the language, i.e., for every word 𝐰∈Σ∗{\bm{w}}\in\
+Sigma^{*} outputs 11 if 𝐰∈L{\bm{w}}\in L and 00 otherwise.
+
+Proof.
+
+Using the landmark theorem by Krohn and Rhodes [50] we can decompose the FSA corresponding to the
+regular language LL into a cascade of permutation-reset FSA. We can use a group of at most 4
+consecutive layers to represent each automaton in the cascade via Lemma 4. Then, we can combine the
+different FSA in the cascade in a feedforward manner using the same construction as the one in the
+proof of [16, Theorem 3], where the input of each FSA is the output concatenated with the input of
+the previous FSA in the cascade. ∎
+
+Lemma 4.
+
+For any permutation-reset FSA with |Q|=n|Q|=n and |Σ|=s|\Sigma|=s, where each bijective
+state-transition function δw\delta_{w} changes at most kk states, there exists a Gated DeltaProduct
+model with the following configuration that can implement it, i.e., for any word 𝐰=w1,…,wt∈Σ{\bm
+{w}}=w_{1},\dots,w_{t}\in\Sigma in input, it can output the corresponding sequence of states
+q1,…,qtq_{1},\dots,q_{t} of the FSA. (i) one layer with nh=k−1n_{h}=k-1. (ii) 3 layers with nh>1n_
+{h}>1. (iii) 4 layers with nh=1n_{h}=1. The construction for (ii) and (iii) requires that the MLP
+at the second last layer computes a lookup-table of size 2​m×s2​m2m\times s^{2m}, function of the
+last 2​m2m input tokens and the position modulo 2​m2m with m=⌈(k−1)/nh⌉m=\lceil(k-1)/n_{h}\rceil.
+
+Proof.
+
+We use the matrix vector multiply construction to implement the FSA. For every time-step ii we set
+xi=wix_{i}=w_{i} as the input to the model. The proof follows a path similar to the one of Theorem 
+3 (where more details are provided), where in addition to modeling permutations, the
+state-transition matrix uses the gate to model constant transitions.
+
+(i). Set 𝑯0=𝒆q0{\bm{H}}_{0}={\bm{e}}_{q_{0}}. When δwi\delta_{w_{i}} is bijective, by assumption it
+changes at most kk states. Thus, by setting nh=k−1n_{h}=k-1 we can represent the corresponding 𝑴wi
+{\bm{M}}_{w_{i}} matrix using 𝑨⁡(wi){\bm{A}}(w_{i}) with gate gi=1g_{i}=1 (product of k−1k-1
+generalized Householder matrices), and thus we set 𝑩⁡(wi)=0{\bm{B}}(w_{i})=0. If instead δwi\delta_
+{w_{i}} is constant, i.e., δi​(q)=q¯\delta_{i}(q)=\bar{q} and 𝑴w​𝒆q=𝒆q¯{\bm{M}}_{w}{\bm{e}}_{q}={\
+bm{e}}_{\bar{q}} for every q∈Qq\in Q, then we can set the gate gi=0g_{i}=0 so that 𝑨⁡(wi)=0{\bm{A}}
+(w_{i})=0 and 𝑩⁡(wi)=𝒌i=𝒆q¯{\bm{B}}(w_{i})={\bm{k}}_{i}={\bm{e}}_{\bar{q}}. Finally, we set dec⁡
+(𝑯i,xi)=𝑯i⊤​(1,…,n)⊤\mathrm{dec}({\bm{H}}_{i},x_{i})={\bm{H}}_{i}^{\top}(1,\dots,n)^{\top} to
+retrieve the correct state at step ii (for simplicity Q={1,…,n}Q=\{1,\dots,n\}).
+
+(ii) and (iii). If nh<k−1n_{h}<k-1, then the state transition matrix is not sufficiently expressive
+to represent all permutations of kk elements. However, we can use additional layers to overcome
+this issue.
+
+We factorize the position i∈{1,…​t}i\in\{1,\dots t\} into i=l​m+i~i=lm+\tilde{i} for integers l≥0l\
+geq 0 and i~∈{1,…,m}\tilde{i}\in\{1,\dots,m\}. First, consider the case when l≥1l\geq 1. The
+product 𝑴~l=𝑴w(l−1)​m+1​…​𝑴w(l−1)​m+m\tilde{\bm{M}}_{l}={\bm{M}}_{w_{(l-1)m+1}}\dots{\bm{M}}_{w_
+{(l-1)m+m}} is either a permutation matrix of kk elements or, if for some ii δwi\delta_{w_{i}} is
+constant, then there exists q¯\bar{q} such that 𝑴~l​𝒆q=q¯\tilde{\bm{M}}_{l}{\bm{e}}_{q}=\bar{q} for
+every q∈Qq\in Q. Therefore, we factor 𝑴~l\tilde{\bm{M}}_{l} into 𝑴~l=𝑮l,m⋯𝑮l,1\tilde{\bm{M}}_{l}={\
+bm{G}}_{l,m}\cdots{\bm{G}}_{l,1} where each of 𝑮l,1,…,𝑮l,m{\bm{G}}_{l,1},\dots,{\bm{G}}_{l,m} is
+either a product of nhn_{h} generalized Householder matrices or 𝑮l,i​𝒆q=𝒆q¯{\bm{G}}_{l,i}{\bm{e}}_
+{q}={\bm{e}}_{\bar{q}} for every q∈Qq\in Q, which can be modeled setting the gate to zero as in
+point (i). We fix one factorization for each possible permutation matrix. In the last layer and
+with enough information in its input 𝒙i{\bm{x}}_{i} about past tokens, we can thus set 𝑯0=𝒆0{\bm
+{H}}_{0}={\bm{e}}_{0} and
+
+ 𝑯i=𝑮l,i~𝑯i−1,dec(𝑯i,𝒙i)=(𝑴l​m+i~⋯𝑴l​m+1𝑮l,m⋯𝑮l,i~+1𝑯i)⊤(1,…,n)⊤{\bm{H}}_{i}={\bm{G}}_{l,\tilde
+ {i}}{\bm{H}}_{i-1},\quad\mathrm{dec}({\bm{H}}_{i},{\bm{x}}_{i})=({\bm{M}}_{lm+\tilde{i}}\cdots{\
+ bm{M}}_{lm+1}{\bm{G}}_{l,m}\cdots{\bm{G}}_{l,\tilde{i}+1}{\bm{H}}_{i})^{\top}(1,\dots,n)^{\top}
+
+The case when l=0l=0 is handled by setting 𝑴~0=𝑮0,m⋯𝑮0,1\tilde{\bm{M}}_{0}={\bm{G}}_{0,m}\cdots{\bm
+{G}}_{0,1} with 𝑮0,i=I{\bm{G}}_{0,i}=I. Note that both 𝑴l,i~{\bm{M}}_{l,\tilde{i}} and dec⁡(𝑯t,𝒙t)\
+mathrm{dec}({\bm{H}}_{t},{\bm{x}}_{t}) are functions of i~=imodm\tilde{i}=i\bmod m and the last
+m+i~m+\tilde{i} (in general the last 2​m2m) tokens. Hence, the layers before the last are dedicated
+to output at each time-step ii a lookup table for the possible values of (imod2​m,wi,…,wi−2​m+1)(i\
+bmod 2m,w_{i},\dots,w_{i-2m+1}). The first layers (2 if nh=1n_{h}=1, 1 if nh>1n_{h}>1) can provide
+imod2​mi\bmod 2m by using Lemma 2 with d=2​md=2m. Finally, the second last layer can output any
+function of the last 2​m2m tokens and the position modulo 2​m2m through Lemma 3 with d=2​md=2m and
+at=wta_{t}=w_{t}, by using imod2​mi\bmod 2m from the first layer(s). ∎
+
+B.4 Regular language recognition through products of RWKV-7 matrices
+
+To enhance the expressivity at the cost of stability, we can replace the product of Householder
+matrices of DeltaProduct with a product of RWKV-7 matrices, i.e. for each layer set
+
+ 𝑨⁡(𝒙i)=∏j=1nh(diag⁡(𝒘i,j)−c​𝒌i,j​(𝒌i,j⊙𝒂i,j)),{\bm{A}}({\bm{x}}_{i})=\prod_{j=1}^{n_{h}}(\     (6)
+ mathrm{diag}({\bm{w}}_{i,j})-c{\bm{k}}_{i,j}({\bm{k}}_{i,j}\odot{\bm{a}}_{i,j})),
+
+where 𝒘i,j{\bm{w}}_{i,j}, 𝒂i,j{\bm{a}}_{i,j}, 𝒌i,j{\bm{k}}_{i,j} are computed from 𝒙i{\bm{x}}_{i}
+such that 𝒂i,j,𝒘i,j∈[0,1]n{\bm{a}}_{i,j},{\bm{w}}_{i,j}\in[0,1]^{n}, ‖𝒌i,j‖=1||{\bm{k}}_{i,j}||=1
+and c∈{1,2}c\in\{1,2\}. Even without using gates, the resulting model will be capable of
+recognizing regular languages effectively as the following theorem shows.
+
+Theorem 6.
+
+For any regular language recognized by a finite-state automaton (FSA) with n∈ℕn\in\mathbb{N}
+states, there exists a linear RNN using products of RWKV-7 matrices as state-transition matrices
+(as in (6) with c=2c=2) with one of the following configurations that can recognize it: (i) one
+layer with nh=nn_{h}=n (ii) 3 layers with nh>1n_{h}>1 (iii) 4 layers with nh=1n_{h}=1 [13, Theorem
+3]. The construction for (ii) and (iii) requires that the MLP at the second last layer computes a
+lookup-table of size 2​m×(n!)2​m2m\times(n!)^{2m}, function of the last 2​m2m input tokens and the
+position modulo 2​m2m with m=⌈n/nh⌉m=\lceil n/n_{h}\rceil.
+
+Proof.
+
+The computation of an FSA with nn states can be done using matrix-vector multiplications as shown
+in (4), where the n×nn\times n state transition matrices 𝑴wt{\bm{M}}_{w_{t}} have elements in {0,1}
+\{0,1\} and a single one in each column. Peng et al. [13, Lemma 3] prove that any of those matrices
+can be expressed as products of nn matrices, each of which is either a swap (identity with two
+columns swapped), copy (identity with one row copied onto another), or the identity matrix and can
+be modeled by a single RWKV-7 matrix. The proof for (ii) and (iii) follows similarly to Theorem 1
+but now tackling all state transition matrices, while Theorem 1 could handle only permutations
+since a generalized Householders matrix cannot be a copy matrix. ∎
+
+B.5 Dihedral Groups
+
+In Grazzi et al. [16, Theorem 6] it is shown that with 2 layers and the extended eigenvalue range,
+DeltaNet can compute addition modulo mm, which corresponds to solving the group word problem for
+the cyclic group ℤm\mathbb{Z}_{m}, for any m∈ℕm\in\mathbb{N}. We extend this result and prove that,
+under identical assumptions, DeltaNet (DeltaProduct with nh=1n_{h}=1) can solve the group word
+problem for the dihedral group DmD_{m}, for any m∈ℕm\in\mathbb{N}. The dihedral group DmD_{m}
+represents the symmetries (both rotations and reflections) of a regular mm-sided polygon. As a
+notable example, D3D_{3} is isomorphic to the symmetric group S3S_{3}.
+
+The linear RNN construction used in this result can be implemented using a 2-layer DeltaNet Model
+with two heads in the first layer. In the first layer, the linear RNN will compute parity for
+rotations and reflections separately, i.e. it will record if the number of past rotations
+(reflections) is even or odd. The recurrent state of the second layer will have 2​m2m possible
+values (same as the order of DmD_{m}) and each will be decoded differently based on the parity of
+reflections. The parity of rotations, combined with the group element, determines which reflection
+matrix to use as the state transition matrix of the second layer.
+
+Theorem 7 (Dihedral group word problems with reflections).
+
+For any m∈Nm\in N, consider the group word problem of the dihedral group DmD_{m}. There exist
+DeltaProduct models with the following configurations that can solve it. (ii) Two layers with nh=
+1n_{h}=1 and at least two heads in the first layer and one in the second layer. (ii) One layer with
+nh≥2n_{h}\geq 2.
+
+Proof.
+
+The elements of the dihedral group DmD_{m} can be divided into mm rotations ℛ={r0,…,rm−1}\mathcal
+{R}=\{r_{0},\dots,r_{m-1}\} and mm reflections 𝒮={s0,…,sm−1}\mathcal{S}=\{s_{0},\dots,s_{m-1}\}.
+The identity is r0r_{0}. To be able to solve the corresponding word problem, we would like to map
+sequences of group elements x1,…,xtx_{1},\dots,x_{t} with xi∈ℛ∪𝒮x_{i}\in\mathcal{R}\cup\mathcal{S}
+into sequences y1,…,yty_{1},\dots,y_{t} with yi=xi⋅xi−1⋯x1y_{i}=x_{i}\cdot x_{i-1}\cdots x_{1} and
+⋅\cdot is the group operation, that for dihedral groups is defined as
+
+ ri⋅rj=ri+jmodm,ri⋅sj=si+jmodm,si⋅rj=si−jmodm,si⋅sj=ri−jmodm.r_{i}\cdot r_{j}=r_{i+j\bmod m},\
+ quad r_{i}\cdot s_{j}=s_{i+j\bmod m},\quad s_{i}\cdot r_{j}=s_{i-j\bmod m},\quad s_{i}\cdot    (7)
+ s_{j}=r_{i-j\bmod m}.
+
+Note that a product of two rotations is commutative, while the product of two reflections or a
+reflection with a rotation is not. Indeed for m≥3m\geq 3 DmD_{m}, is not an abelian group.
+
+(i) The constructions of the two layers of DeltaProduct with nh=1n_{h}=1 builds upon the one for
+the cyclic group ZmZ_{m} outlined in [16, Theorem 6]. The first layer functions as a pre-processor,
+calculating auxiliary information from the input sequence. Specifically, for each time step tt, it
+determines two parities: the parity of the total number of reflections and the parity of the total
+number of rotations in the sequence x1,…,xtx_{1},\dots,x_{t}. This information is then passed to
+the second layer.
+
+The second layer is responsible for computing the cumulative group product. It uses a 2D hidden
+state to geometrically model the group elements and their compositions. The core challenge lies in
+modeling the group operations, i.e. rotations and reflections, using only a reflection as
+state-transition matrices (rotation matrices cannot be represented with nh=1n_{h}=1). To address
+this, the state representation in the second layer must encode more than just the previous group
+product. It is designed to also incorporate the rotation parity computed by the first layer. This
+is achieved by maintaining two distinct sets of mm state vectors each and two distinct sets of
+2​m2m reflection matrices each to represent the group elements. The choice of which set to use is
+determined by the rotation parity. Moreover, the reflection parity is also used but only in the
+decoder. This design allows a single, unified update mechanism, based solely on geometric
+reflections, to correctly implement all four of the distinct multiplication rules defined in (7).
+
+We define rotation by and reflection matrices as
+
+ Rotation:𝑹(α)=(cos⁡(α)−sin⁡(α)sin⁡(α)cos⁡(α))Reflection:𝑯(α)=(cos⁡(α)sin⁡(α)sin⁡(α)−cos⁡(α)),
+ \text{Rotation:}\quad{\bm{R}}(\alpha)=\begin{pmatrix}\cos(\alpha)&-\sin(\alpha)\\ \sin(\       (8)
+ alpha)&\cos(\alpha)\end{pmatrix}\quad\text{Reflection:}\quad{\bm{H}}(\alpha)=\begin{pmatrix}\
+ cos(\alpha)&\sin(\alpha)\\ \sin(\alpha)&-\cos(\alpha)\end{pmatrix},
+
+where 𝑹⁡(α){\bm{R}}(\alpha) is a rotation by an angle of α\alpha, while 𝑯⁡(α){\bm{H}}(\alpha) is a
+reflection by a line having an angle of α/2\alpha/2 with the line passing from the origin and the
+point (1,0)(1,0). Note that both 𝑹{\bm{R}} and 𝑯{\bm{H}} are periodic with period 2​π2\pi.
+Moreover, let α,γ∈ℝ\alpha,\gamma\in\mathbb{R}, the following are standard identities of products of
+matrix representations of 2D rotations and reflections.
+
+ 𝑹⁡(α)​𝑹​(γ)=𝑹(α+γ),𝑯⁡(α)​𝑯​(γ)=𝑹⁡(α−γ),𝑹⁡(α)​𝑯​(γ),=𝑯⁡(α+γ)𝑯⁡(γ)​𝑹​(α)=𝑯⁡(γ−α).\displaystyle\
+ begin{aligned} {\bm{R}}(\alpha){\bm{R}}(\gamma)&={\bm{R}}(\alpha+\gamma),\quad&&{\bm{H}}(\
+ alpha){\bm{H}}(\gamma)={\bm{R}}(\alpha-\gamma),\\ {\bm{R}}(\alpha){\bm{H}}(\gamma),&={\bm{H}}  (9)
+ \left(\alpha+\gamma\right)&&{\bm{H}}(\gamma){\bm{R}}(\alpha)={\bm{H}}\left(\gamma-\alpha\
+ right).\end{aligned}
+
+For the first layer we use the following diagonal recurrence which indicates in the first (second)
+coordinate whether the number of rotations (reflections) is even (0) or odd (1).
+
+ 𝒉0(1)=0,𝒉t(1)=𝒂⁡(xt)⊙𝒉t−1(1)+𝒃⁡(xt),𝒚t(1)=dec(1)​(𝒉t,xt)=(xt,ht,1,ht,2).\displaystyle{\bm{h}}^
+ {(1)}_{0}=0,\quad{\bm{h}}_{t}^{(1)}={\bm{a}}(x_{t})\odot{\bm{h}}^{(1)}_{t-1}+{\bm{b}}(x_{t}),\
+ quad{\bm{y}}^{(1)}_{t}=\mathrm{dec}^{(1)}({\bm{h}}_{t},x_{t})=(x_{t},h_{t,1},h_{t,2}).
+ 𝒂​(xi)1={−1if ​xi∈ℛ1if ​xi∈𝒮𝒂​(xi)2={−1if ​xi∈𝒮1if ​xi∈ℛ\displaystyle{\bm{a}}(x_{i})_{1}=\begin
+ {cases}-1&\text{if }x_{i}\in\mathcal{R}\\ 1&\text{if }x_{i}\in\mathcal{S}\end{cases}\quad{\bm{a}}
+ (x_{i})_{2}=\begin{cases}-1&\text{if }x_{i}\in\mathcal{S}\\ 1&\text{if }x_{i}\in\mathcal{R}\end
+ {cases}
+ 𝒃​(xi)1={1if ​xi∈ℛ0if ​xi∈𝒮𝒃​(xi)2={1if ​xi∈𝒮0if ​xi∈ℛ\displaystyle{\bm{b}}(x_{i})_{1}=\begin
+ {cases}1&\text{if }x_{i}\in\mathcal{R}\\ 0&\text{if }x_{i}\in\mathcal{S}\end{cases}\quad{\bm{b}}
+ (x_{i})_{2}=\begin{cases}1&\text{if }x_{i}\in\mathcal{S}\\ 0&\text{if }x_{i}\in\mathcal{R}\end
+ {cases}
+
+This recurrence can be implemented also by DeltaProduct with nh=1n_{h}=1 using 2 heads each with
+scalar hidden states: one for the rotations and the other for the reflections. For the second
+layer, we have instead the following constructions, which selects the appropriate reflection based
+on the parity of the rotations and uses the parity of the reflections for dec\mathrm{dec}.
+
+ 𝒉0(2)=(1,0)⊤,𝒉t(2)=𝑨(2)​(𝒚t(1))​𝒉t−1(2),𝒚t(2)=dec(2)​(𝒉t(2),𝒚t(1)),\displaystyle{\bm{h}}^{(2)}_
+ {0}=(1,0)^{\top},\quad{\bm{h}}^{(2)}_{t}={\bm{A}}^{(2)}({\bm{y}}^{(1)}_{t}){\bm{h}}^{(2)}_{t-1},\
+ quad{\bm{y}}^{(2)}_{t}=\mathrm{dec}^{(2)}({\bm{h}}_{t}^{(2)},{\bm{y}}^{(1)}_{t}),
+ 𝑨(2)​(𝒚)=𝑯⁡(θ⁡(y1,y2)),\displaystyle{\bm{A}}^{(2)}({\bm{y}})={\bm{H}}(\theta(y_{1},y_{2})),
+ dec(2)​(𝒉,𝒚)={ri∗if ​y3=0sm−i∗if ​y3=1,i∗=arg​maxi∈{0,…,m−1}​max​(𝐜i⊤​𝐡,𝐝i⊤​𝐡)\displaystyle\
+ mathrm{dec}^{(2)}({\bm{h}},{\bm{y}})=\begin{cases}r_{i^{*}}&\text{if }y_{3}=0\\ s_{m-i^{*}}&\text
+ {if }y_{3}=1\end{cases},\quad i^{*}=\argmax_{i\in\{0,\dots,m-1\}}\max({\bm{c}}_{i}^{\top}{\bm
+ {h}},{\bm{d}}_{i}^{\top}{\bm{h}})\quad
+
+where 𝒚=(y1,y2,y3)⊤∈ℛ∪𝒮×{0,1}×{0,1}{\bm{y}}=(y_{1},y_{2},y_{3})^{\top}\in\mathcal{R}\cup\mathcal{S}
+\times\{0,1\}\times\{0,1\} and θ:ℛ∪𝒮×{0,1}→ℝ\theta:\mathcal{R}\cup\mathcal{S}\times\{0,1\}\to\
+mathbb{R} determines the angle of the reflection and is defined for all i∈{0,…,m−1}i\in\{0,\
+dots,m-1\} as
+
+ θ⁡(ri,1)\        =(1−2​i)​πm,θ⁡(ri,0)=(1+2​i)​πm,θ⁡(si,1)=−2​i​πm,θ⁡(si,0)=(2+2​i)​πm.\
+ displaystyle\    displaystyle=\frac{(1-2i)\pi}{m},\quad\theta(r_{i},0)=\frac{(1+2i)\pi}{m},\quad\
+ theta(r_{i},1)   quad\theta(s_{i},1)=\frac{-2i\pi}{m},\quad\theta(s_{i},0)=\frac{(2+2i)\pi}{m}.
+
+Moreover, 𝒞={𝒄0,…,𝒄m−1}\mathcal{C}=\{{\bm{c}}_{0},\dots,{\bm{c}}_{m-1}\} and 𝒟={𝒅0,…,𝒅m−1}\mathcal
+{D}=\{{\bm{d}}_{0},\dots,{\bm{d}}_{m-1}\} are two sets of states and are defined as
+
+ 𝒅0=𝒉0(2)=(1,0)⊤,𝒄0=𝑯⁡(π/m)​𝒅0,\displaystyle{\bm{d}}_{0}={\bm{h}}_{0}^{(2)}=(1,0)^{\top},\quad{\bm
+ {c}}_{0}={\bm{H}}(\pi/m){\bm{d}}_{0},
+ 𝒅i=𝑹(2iπ/m)𝒅0,𝒄i=𝑹(−2iπ/m)𝒄0for all i∈{0,…,m−1}.\displaystyle{\bm{d}}_{i}={\bm{R}}(2i\pi/m){\bm
+ {d}}_{0},\quad{\bm{c}}_{i}={\bm{R}}(-2i\pi/m){\bm{c}}_{0}\quad\text{for all }i\in\{0,\dots,m-1\}.
+
+From our choice of 𝒅0=(1,0)⊤{\bm{d}}_{0}=(1,0)^{\top} and 𝒄0{\bm{c}}_{0} and from (8)-(9), for any
+α∈ℝ\alpha\in\mathbb{R} we have
+
+ 𝑹⁡(α)​𝒅0\displaystyle
+ {\bm{R}}(\alpha){\bm  =𝑯⁡(α)​𝒅0,and\displaystyle={\bm{H}}(\alpha){\bm{d}}_{0},\quad\text{and}
+ {d}}_{0}
+ 𝑹⁡(α)​𝒄0\displaystyle =𝑹⁡(α)​𝑯​(π/m)​𝒅0=𝑹⁡(α)​𝑹​(π/m)​𝒅0=𝑹⁡(α+π/m+π/m−π/m)​𝒅0\displaystyle={\bm
+ {\bm{R}}(\alpha){\bm  {R}}(\alpha){\bm{H}}(\pi/m){\bm{d}}_{0}={\bm{R}}(\alpha){\bm{R}}(\pi/m){\bm
+ {c}}_{0}              {d}}_{0}={\bm{R}}(\alpha+\pi/m+\pi/m-\pi/m){\bm{d}}_{0}
+                       =𝑯⁡(α+2​π/m)​𝑯​(π/m)​𝒅0=𝑯⁡(α+2​π/m)​𝒄0.\displaystyle={\bm{H}}(\alpha+2\pi/
+                       m){\bm{H}}(\pi/m){\bm{d}}_{0}={\bm{H}}(\alpha+2\pi/m){\bm{c}}_{0}.
+
+Moreover, from our choice of θ\theta, 𝒅i{\bm{d}}_{i} and 𝒄i{\bm{c}}_{i}, using the identities above
+and the the fact that 𝑹{\bm{R}} is a periodic function with period 2​π2\pi we have that
+
+ 𝒅i\displaystyle  =𝑹⁡(2​i​π/m)​𝒅0=𝑹⁡(2​i​π/m)​𝑯​(π/m)​𝒄0=𝑯⁡(θ⁡(ri,0))​𝒄0\displaystyle={\bm{R}}(2i\
+ {\bm{d}}_{i}     pi/m){\bm{d}}_{0}={\bm{R}}(2i\pi/m){\bm{H}}(\pi/m){\bm{c}}_{0}={\bm{H}}(\theta
+                  (r_{i},0)){\bm{c}}_{0}
+ 𝒄i\displaystyle  =𝑹(−2iπ/m)𝒄0=𝑹(−2iπ/m)𝑯(π/m)𝒅0=𝑯(θ(ri,1))𝒅0\displaystyle={\bm{R}}(-2i\pi/m){\bm
+ {\bm{c}}_{i}     {c}}_{0}={\bm{R}}(-2i\pi/m){\bm{H}}(\pi/m){\bm{d}}_{0}={\bm{H}}(\theta(r_{i},1))
+                  {\bm{d}}_{0}
+ 𝒅m−i\            =𝑹(−2iπ/m)𝒅0=𝑯(−2iπ/m)𝒅0=𝑯(θ(si,1))𝒅0\displaystyle={\bm{R}}(-2i\pi/m){\bm{d}}_
+ displaystyle{\bm {0}={\bm{H}}(-2i\pi/m){\bm{d}}_{0}={\bm{H}}(\theta(s_{i},1)){\bm{d}}_{0}
+ {d}}_{m-i}
+ 𝒄m−i\            =𝑹(+2iπ/m)𝒄0=𝑯((2+2i)π/m)𝒄0=𝑯(θ(si,0))𝒄0\displaystyle={\bm{R}}(+2i\pi/m){\bm{c}}
+ displaystyle{\bm _{0}={\bm{H}}((2+2i)\pi/m){\bm{c}}_{0}={\bm{H}}(\theta(s_{i},0)){\bm{c}}_{0}
+ {c}}_{m-i}
+
+for every i∈{0,…,m−1}i\in\{0,\dots,m-1\}. Therefore, we can write
+
+ 𝑯⁡(θ⁡(rj,1))​𝒅i\           =𝑹(θ(rj,1)−θ(ri,0))𝒄0=𝑹(−2(i+j)π/m)𝒄0=𝒄i+jmodm,\displaystyle={\bm
+ displaystyle{\bm{H}}(\     {R}}(\theta(r_{j},1)-\theta(r_{i},0)){\bm{c}}_{0}={\bm{R}}(-2
+ theta(r_{j},1)){\bm{d}}_   (i+j)\pi/m){\bm{c}}_{0}={\bm{c}}_{i+j\bmod m},
+ {i}
+ 𝑯⁡(θ⁡(rj,0))​𝒄i\           =𝑹⁡(θ⁡(rj,0)−θ⁡(ri,1))​𝒅0=𝑹⁡(2​(i+j)​π/m)​𝒅0=𝒅i+jmodm,\
+ displaystyle{\bm{H}}(\     displaystyle={\bm{R}}(\theta(r_{j},0)-\theta(r_{i},1)){\bm{d}}_
+ theta(r_{j},0)){\bm{c}}_   {0}={\bm{R}}(2(i+j)\pi/m){\bm{d}}_{0}={\bm{d}}_{i+j\bmod m},
+ {i}                                                                                           (10)
+ 𝑯⁡(θ⁡(sj,1))​𝒅i\           =𝑹(θ(sj,1)−θ(sm−i,1))𝒅0=𝑹(−2(i+j)π/m)𝒅0=𝒅−i−jmodm,\displaystyle=
+ displaystyle{\bm{H}}(\     {\bm{R}}(\theta(s_{j},1)-\theta(s_{m-i},1)){\bm{d}}_{0}={\bm{R}}
+ theta(s_{j},1)){\bm{d}}_   (-2(i+j)\pi/m){\bm{d}}_{0}={\bm{d}}_{-i-j\bmod m},
+ {i}
+ 𝑯⁡(θ⁡(sj,0))​𝒄i\           =𝑹⁡(θ⁡(sj,0)−θ⁡(sm−i,0))​𝒄0=𝑹⁡(2​(i+j)​π/m)​𝒄0=𝒄−i−jmodm,\
+ displaystyle{\bm{H}}(\     displaystyle={\bm{R}}(\theta(s_{j},0)-\theta(s_{m-i},0)){\bm{c}}_
+ theta(s_{j},0)){\bm{c}}_   {0}={\bm{R}}(2(i+j)\pi/m){\bm{c}}_{0}={\bm{c}}_{-i-j\bmod m},
+ {i}
+
+for every i,j∈{0,…,m−1}i,j\in\{0,\dots,m-1\}. We proceed to verify that the output of the second
+layer is computed correctly: satisfying the product rule for the dihedral group in (7), i.e., we
+want to verify that
+
+ yt(2)={ri+jmodmif ​yt−1(2)=ri,xt=rjsi+jmodmif ​yt−1(2)=ri,xt=sjsi−jmodmif ​yt−1(2)=si,xt=
+ rjri−jmodmif ​yt−1(2)=si,xt=sjy^{(2)}_{t}=\begin{cases}r_{i+j\bmod m}&\text{if }y^{(2)}_
+ {t-1}=r_{i},x_{t}=r_{j}\\ s_{i+j\bmod m}&\text{if }y^{(2)}_{t-1}=r_{i},x_{t}=s_{j}\\ s_{i-j\  (11)
+ bmod m}&\text{if }y^{(2)}_{t-1}=s_{i},x_{t}=r_{j}\\ r_{i-j\bmod m}&\text{if }y^{(2)}_{t-1}=
+ s_{i},x_{t}=s_{j}\\ \end{cases}
+
+Where we set y0(2)=r0y^{(2)}_{0}=r_{0}. First note that when yt(2)∈𝒮y^{(2)}_{t}\in\mathcal{S}, then
+yt,3(1)=1y^{(1)}_{t,3}=1 and when yt(2)∈ℛy^{(2)}_{t}\in\mathcal{R}, then yt,3(1)=0y^{(1)}_{t,3}=0.
+We consider two cases.
+
+Case 1. If yt−1(2)=riy^{(2)}_{t-1}=r_{i} and hence yt−1,3(1)=0y^{(1)}_{t-1,3}=0, then using (10) we
+obtain
+
+ 𝒉t(2)=𝑨(2)​(𝒚(1))​𝒉t−1(2)={𝑯⁡(θ⁡(rj,1))​𝒅i=𝒄i+jmodmif ​xt=rj,yt,2(1)=1𝑯⁡(θ⁡(rj,0))​𝒄i=
+ 𝒅i+jmodmif ​xt=rj,yt,2(1)=0𝑯⁡(θ⁡(sj,1))​𝒅i=𝒅−i−jmodmif ​xt=sj,yt,2(1)=1𝑯⁡(θ⁡(sj,0))​𝒄i=
+ 𝒄−i−jmodmif ​xt=sj,yt,2(1)=0\displaystyle{\bm{h}}^{(2)}_{t}={\bm{A}}^{(2)}({\bm{y}}^{(1)}){\bm
+ {h}}^{(2)}_{t-1}=\begin{cases}{\bm{H}}(\theta(r_{j},1)){\bm{d}}_{i}={\bm{c}}_{i+j\bmod m}&\text
+ {if }x_{t}=r_{j},y^{(1)}_{t,2}=1\\ {\bm{H}}(\theta(r_{j},0)){\bm{c}}_{i}={\bm{d}}_{i+j\bmod m}&\
+ text{if }x_{t}=r_{j},y^{(1)}_{t,2}=0\\ {\bm{H}}(\theta(s_{j},1)){\bm{d}}_{i}={\bm{d}}_{-i-j\bmod
+ m}&\text{if }x_{t}=s_{j},y^{(1)}_{t,2}=1\\ {\bm{H}}(\theta(s_{j},0)){\bm{c}}_{i}={\bm{c}}_{-i-j\
+ bmod m}&\text{if }x_{t}=s_{j},y^{(1)}_{t,2}=0\end{cases}
+
+This, together with the definition of dec(2)\mathrm{dec}^{(2)} implies that
+
+ yt(2)=dec(2)​(𝒉t(2),𝒚t(1))={ri+jmodmif ​xt=rj,yt,3(1)=0si+jmodmif ​xt=sj,yt,3(1)=1\
+ displaystyle y^{(2)}_{t}=\mathrm{dec}^{(2)}({\bm{h}}^{(2)}_{t},{\bm{y}}^{(1)}_{t})=\begin     (12)
+ {cases}r_{i+j\bmod m}&\text{if }x_{t}=r_{j},y^{(1)}_{t,3}=0\\ s_{i+j\bmod m}&\text{if }x_{t}
+ =s_{j},y^{(1)}_{t,3}=1\end{cases}
+
+Case 2. If instead yt−1(2)=siy^{(2)}_{t-1}=s_{i} and hence yt−1,3(1)=1y^{(1)}_{t-1,3}=1, then using
+(10) we obtain
+
+ 𝒉t(2)=𝑨(2)​(𝒚(1))​𝒉t−1(2)={𝑯⁡(θ⁡(rj,1))​𝒅m−i=𝒄j−imodmif ​xt=rj,yt,2(1)=1𝑯⁡(θ⁡(rj,0))​𝒄m−i=
+ 𝒅j−imodmif ​xt=rj,yt,2(1)=0𝑯⁡(θ⁡(sj,1))​𝒅m−i=𝒅i−jmodmif ​xt=sj,yt,2(1)=1𝑯⁡(θ⁡(sj,0))​𝒄m−i=
+ 𝒄i−jmodmif ​xt=sj,yt,2(1)=0\displaystyle{\bm{h}}^{(2)}_{t}={\bm{A}}^{(2)}({\bm{y}}^{(1)}){\bm{h}}
+ ^{(2)}_{t-1}=\begin{cases}{\bm{H}}(\theta(r_{j},1)){\bm{d}}_{m-i}={\bm{c}}_{j-i\bmod m}&\text{if
+ }x_{t}=r_{j},y^{(1)}_{t,2}=1\\ {\bm{H}}(\theta(r_{j},0)){\bm{c}}_{m-i}={\bm{d}}_{j-i\bmod m}&\
+ text{if }x_{t}=r_{j},y^{(1)}_{t,2}=0\\ {\bm{H}}(\theta(s_{j},1)){\bm{d}}_{m-i}={\bm{d}}_{i-j\bmod
+ m}&\text{if }x_{t}=s_{j},y^{(1)}_{t,2}=1\\ {\bm{H}}(\theta(s_{j},0)){\bm{c}}_{m-i}={\bm{c}}_{i-j\
+ bmod m}&\text{if }x_{t}=s_{j},y^{(1)}_{t,2}=0\end{cases}
+
+This, together with the definition of dec(2)\mathrm{dec}^{(2)} implies that
+
+ yt(2)=dec(2)​(𝒉t(2),𝒚t(1))={si−jmodmif ​xt=rj,yt,3(1)=1ri−jmodmif ​xt=sj,yt,3(1)=0.\
+ displaystyle y^{(2)}_{t}=\mathrm{dec}^{(2)}({\bm{h}}^{(2)}_{t},{\bm{y}}^{(1)}_{t})=\begin     (13)
+ {cases}s_{i-j\bmod m}&\text{if }x_{t}=r_{j},y^{(1)}_{t,3}=1\\ r_{i-j\bmod m}&\text{if }x_{t}
+ =s_{j},y^{(1)}_{t,3}=0\end{cases}.
+
+Note that (12) and (13) imply (11). Setting the output of the linear RNN equal to the output of the
+second layer concludes the proof.
+
+(ii) It follows from Theorem 4 since DmD_{m} is a finite subgroup of O⁡(2)\mathrm{O}(2), the group
+of 2D orthogonal transformations: rotations and reflections. ∎
+
+B.6 Stability vs. Expressivity of Linear RNNs
+
+In this section, we discuss the tradeoff between expressivity and stability of a linear RNN
+recurrence 𝑯i=𝑨i​𝑯i−1+𝑩i{\bm{H}}_{i}={\bm{A}}_{i}{\bm{H}}_{i-1}+{\bm{B}}_{i}, where 𝑨i=𝑨⁡(𝒙i){\bm
+{A}}_{i}={\bm{A}}({\bm{x}}_{i}), 𝑩i=𝑩⁡(𝒙i){\bm{B}}_{i}={\bm{B}}({\bm{x}}_{i}). We say that such a
+recurrence is stable if
+
+ ∃M∈[0,∞)​ such that ​‖∏j=1i𝑨j‖<M∀i∈ℕ,\exists M\in[0,\infty)\text{ such that }\left\lVert\     (14)
+ prod_{j=1}^{i}{\bm{A}}_{j}\right\rVert<M\quad\forall i\in\mathbb{N},
+
+where ‖⋅‖\left\lVert\cdot\right\rVert is the spectral norm. This property is true if and only if ρ⁡
+(∏j=1i𝑨j)≤1\rho(\prod_{j=1}^{i}{\bm{A}}_{j})\leq 1 where ρ⁡(𝑴)\rho({\bm{M}}) is the spectral radius
+of 𝑴{\bm{M}}, i.e. the maximum modulus of its eigenvalues. When this property is not satisfied, the
+norm of the state will diverge. An effective way to satisfy (14) with M=1M=1 is to enforce ‖𝑨i‖≤1\
+left\lVert{\bm{A}}_{i}\right\rVert\leq 1 for every ii, since the norm of the product is less than
+or equal to the product of the norms (due to the submultiplicativity property). However, this
+restriction excludes some boolean matrices which are useful for recognizing regular languages.
+Indeed, in the construction shown in (4), all matrices involved are n×nn\times n with entries
+taking values in {0,1}\{0,1\} and having only a single one in each column. This class of matrices ℬ
+\mathcal{B} satisfies (14) with M=nM=\sqrt{n} because it is closed under matrix multiplication,
+i.e. ∀𝑩,𝑩′∈ℬ\forall{\bm{B}},{\bm{B}}^{\prime}\in\mathcal{B}, we have 𝑩​𝑩′∈ℬ{\bm{B}}{\bm{B}}^{\
+prime}\in\mathcal{B}, and max𝑩∈ℬ⁡‖𝑩‖=n\max_{{\bm{B}}\in\mathcal{B}}\left\lVert{\bm{B}}\right\rVert=
+\sqrt{n}, which is achieved by matrices with ones only in one row. In particular, all matrices in ℬ
+\mathcal{B} that are not permutations have spectral norm greater than one and therefore cannot be
+expressed if we enforce ‖𝑨i‖≤1\left\lVert{\bm{A}}_{i}\right\rVert\leq 1.
+
+The (Gated) DeltaProduct state transition matrix 𝑨i=∏l=1nhgl​(I−βl​𝒌l​𝒌l⊤){\bm{A}}_{i}=\prod_{l=1}^
+{n_{h}}g_{l}(I-\beta_{l}{\bm{k}}_{l}{\bm{k}}_{l}^{\top}) satisfies ‖𝑨i‖≤1\left\lVert{\bm{A}}_{i}\
+right\rVert\leq 1 since gl∈[0,1]g_{l}\in[0,1], βl∈[0,2]\beta_{l}\in[0,2], and ‖𝒌l‖=1\left\lVert{\bm
+{k}}_{l}\right\rVert=1. Thus, from the matrices in ℬ\mathcal{B}, it can represent only permutations
+of up to nh+1n_{h}+1 elements. Instead, the state-transition matrix of RWKV-7, 𝑨i=diag⁡(wi)−c​𝒌i​
+(𝒌i⊙𝒂i)⊤{\bm{A}}_{i}=\mathrm{diag}(w_{i})-c{\bm{k}}_{i}({\bm{k}}_{i}\odot{\bm{a}}_{i})^{\top} with
+c=2c=2, can represent not only the identity and permutations of two elements, but also any copy
+matrix, which is obtained by copying one column of the identity onto another and has spectral norm
+equal to 2\sqrt{2}. However, as we show in the next theorem, even with the less expressive c=1c=1
+setup that is used in practice, the RWKV-7 recurrence is not stable unless 𝒂i{\bm{a}}_{i} is the
+same for every ii, which is the case studied in Peng et al. [13, Theorem 1]. Having different 𝒂i{\
+bm{a}}_{i} values is key to modeling the copy matrix, since this requires a value different from
+that of a permutation matrix.
+
+Theorem 8.
+
+Consider the RWKV-7 state transition matrix 𝐀i=diag⁡(wi)−c​𝐤i​(𝐤i⊙𝐚i)⊤{\bm{A}}_{i}=\mathrm{diag}(w_
+{i})-c{\bm{k}}_{i}({\bm{k}}_{i}\odot{\bm{a}}_{i})^{\top} with c=1c=1 (as set in practice), wi=
+(1,…,1)⊤∈ℝnw_{i}=(1,\dots,1)^{\top}\in\mathbb{R}^{n}, 𝐚i∈[0,1]n{\bm{a}}_{i}\in[0,1]^{n}, 𝐤i∈ℝn{\bm
+{k}}_{i}\in\mathbb{R}^{n} with ‖𝐤i‖=1\|{\bm{k}}_{i}\|=1, and n≥2n\geq 2. There exists an infinite
+set ℳ\mathcal{M} of matrix pairs such that for every (𝐀,𝐀′)∈ℳ({\bm{A}},{\bm{A}}^{\prime})\in\
+mathcal{M}, we have ρ⁡(𝐀​𝐀′)>1.2\rho({\bm{A}}{\bm{A}}^{\prime})>1.2, where ρ\rho denotes the
+spectral radius. Thus, if we set
+
+ 𝑨i={𝑨if ​imod2=0𝑨′if ​imod2=1,which implieslimi→∞‖∏j=1i𝑨j‖=limi→∞=∞.{\bm{A}}_{i}=\begin{cases}{\
+ bm{A}}&\text{if }i\bmod 2=0\\ {\bm{A}}^{\prime}&\text{if }i\bmod 2=1\end{cases},\quad\text{which
+ implies}\quad\lim_{i\to\infty}\left\|\prod_{j=1}^{i}{\bm{A}}_{j}\right\|=\lim_{i\to\infty}=\
+ infty.
+
+Proof.
+
+We demonstrate this by construction for n=2n=2; the generalization to n≥2n\geq 2 is
+straightforward.
+
+Let θ=π/3\theta=\pi/3, 𝒂=(0,1)⊤{\bm{a}}=(0,1)^{\top}, 𝒂′=(1,0)⊤{\bm{a}}^{\prime}=(1,0)^{\top}. 𝒌=
+(cos⁡θ,sin⁡θ)⊤=[1/2,3/2]⊤{\bm{k}}=(\cos\theta,\sin\theta)^{\top}=[1/2,\sqrt{3}/2]^{\top}. 𝒌′=
+(sin⁡θ,cos⁡θ)⊤=(3/2,1/2)⊤{\bm{k}}^{\prime}=(\sin\theta,\cos\theta)^{\top}=(\sqrt{3}/2,1/2)^{\top}.
+Note that ‖𝒌‖=‖𝒌′‖=1\|{\bm{k}}\|=\|{\bm{k}}^{\prime}\|=1. We construct 𝑨{\bm{A}} and 𝑨′{\bm{A}}^{\
+prime} as
+
+ 𝑨\displaystyle =I−𝒌​(𝒌⊙𝒂)⊤=I−(3/21/2)⁡[01/2]=(1−3/403/4)\displaystyle=I-{\bm{k}}({\bm{k}}\odot{\
+ {\bm{A}}       bm{a}})^{\top}=I-\begin{pmatrix}\sqrt{3}/2\\ 1/2\end{pmatrix}[0\quad 1/2]=\begin
+                {pmatrix}1&-\sqrt{3}/4\\ 0&3/4\end{pmatrix}
+ 𝑨′\            =I−𝒌′​(𝒌′⊙𝒂′)⊤=I−(1/23/2)⁡[1/20]=(3/40−3/41)\displaystyle=I-{\bm{k}}^{\prime}({\bm
+ displaystyle{\ {k}}^{\prime}\odot{\bm{a}}^{\prime})^{\top}=I-\begin{pmatrix}1/2\\ \sqrt{3}/2\end
+ bm{A}}^{\      {pmatrix}[1/2\quad 0]=\begin{pmatrix}3/4&0\\ -\sqrt{3}/4&1\end{pmatrix}
+ prime}
+
+Now, consider the product matrix
+
+ 𝑴=𝑨​𝑨′=(1−3/403/4)​(3/40−3/41)=(15/16−3/4−33/163/4){\bm{M}}={\bm{A}}{\bm{A}}^{\prime}=\begin
+ {pmatrix}1&-\sqrt{3}/4\\ 0&3/4\end{pmatrix}\begin{pmatrix}3/4&0\\ -\sqrt{3}/4&1\end{pmatrix}=\
+ begin{pmatrix}15/16&-\sqrt{3}/4\\ -3\sqrt{3}/16&3/4\end{pmatrix}
+
+To find the spectral radius ρ⁡(M)\rho(M), we examine its eigenvalues. The characteristic equation
+is λ2−Tr⁡(𝑴)​λ+det(𝑴)=0\lambda^{2}-\operatorname{Tr}({\bm{M}})\lambda+\det({\bm{M}})=0, with Tr⁡(𝑴)
+=27/16\operatorname{Tr}({\bm{M}})=27/16 and det(𝑴)=9/16\det({\bm{M}})=9/16. Hence, the
+characteristic equation is 16​λ2−27​λ+9=016\lambda^{2}-27\lambda+9=0. Thus, the eigenvalues are λ1=
+27+15332\lambda_{1}=\frac{27+\sqrt{153}}{32} and λ2=27−15332\lambda_{2}=\frac{27-\sqrt{153}}{32}
+and the spectral radius is ρ⁡(𝑴)=max⁡{|λ1|,|λ2|}=λ1≈1.23\rho({\bm{M}})=\max\{|\lambda_{1}|,|\
+lambda_{2}|\}=\lambda_{1}\approx 1.23. Also, since the spectral radius is a continuous function of
+the matrix entries, which are a continuous function of θ\theta, then this means that there is an
+infinite set of matrices, namely ℳ\mathcal{M}, obtained by varying θ\theta around π/3\pi/3 whose
+product has spectral radius greater than 1.21.2.
+
+From our construction of 𝑨i{\bm{A}}_{i}, we have ∏j=12​i𝑨j=𝑴i\prod_{j=1}^{2i}{\bm{A}}_{j}={\bm{M}}^
+{i}. By the definition of the spectral norm and spectral radius, ‖𝑴i‖≥‖λ1i​𝒙‖=|λ|i=ρ​(𝑴)i\left\
+lVert{\bm{M}}^{i}\right\rVert\geq\left\lVert\lambda_{1}^{i}{\bm{x}}\right\rVert=|\lambda|^{i}=\rho
+({\bm{M}})^{i}, where 𝒙{\bm{x}} is the eigenvector associated with the dominant eigenvalue λ1\
+lambda_{1}. The result follows since limi→∞ρ​(𝑴)i=∞\lim_{i\to\infty}\rho({\bm{M}})^{i}=\infty. ∎
+
+Appendix C Experiments
+
+C.1 State-Tracking
+
+
+Figure 12: Results for permutation groups S3S_{3}, S4S_{4}, A5A_{5}, and S5S_{5} when limiting the
+eigenvalue range of the state-transition matrix to [0,1][0,1]. (Top row) Varying the number of
+Householder products nhn_{h} for a single layer DeltaProduct[0,1]nh{}_{n_{h}}[0,1]. (Bottom row)
+Varying the number of layers ll of DeltaProduct[0,1]1{}_{1}[0,1]/DeltaNet[0,1][0,1] (single
+Householder). Dashed vertical line at training context length 128. Higher nhn_{h} improves
+extrapolation to longer sequences of permutations, e.g., S3S_{3} can be learned with nh=2n_{h}=2
+with a single layer while three layers are required when keeping nh=1n_{h}=1.
+
+Clarification on the isomorphisms of S3S_{3}, S4S_{4}, A5A_{5}, and S5S_{5}
+
+S3S_{3}: The group consisting of all isometries that map an equilateral triangle onto itself,
+including both orientation-preserving rotations and orientation-reversing reflections, is
+isomorphic to S3S_{3}.
+
+S4S_{4}: The rotation group of a cube is isomorphic to the symmetric group S4S_{4}. This
+correspondence arises because the cube has exactly four space diagonals, and every proper rotation
+—that is, every orientation-preserving isometry of the cube about an axis through its
+center—permutes these diagonals in all possible ways (see Figure 6 for an example). In particular,
+these proper rotations include, for example, the 90∘90^{\circ}, 180∘180^{\circ}, and 270∘270^{\
+circ} rotations about axes passing through the centers of opposite faces, the 180∘180^{\circ}
+rotations about axes through the midpoints of opposite edges, and the 120∘120^{\circ}/240∘240^{\
+circ} rotations about axes through opposite vertices. Hence, the proper rotational symmetries of
+the cube correspond precisely to the permutations of its four space diagonals [69].
+
+A5A_{5}: Similarly, a regular dodecahedron contains exactly five special cubes symmetrically
+arranged within it. Each proper rotation of the dodecahedron—that is, every orientation-preserving
+rigid motion mapping the dodecahedron onto itself—rearranges these inscribed cubes by an even
+permutation. This property makes the rotation group of the dodecahedron isomorphic to the
+alternating group A5A_{5}, the group of all even permutations of five elements [70].
+
+S5S_{5}: When both proper rotations and reflections (orientation-reversing symmetries) are
+considered, the full symmetry group of the dodecahedron corresponds exactly to the symmetric group
+S5S_{5}, since reflections allow both even and odd permutations of the five hidden cubes [70].
+
+Experimental Details. We used the experimental setup from Merrill et al. [3] and sampled 2,000,0002
+{,}000{,}000 training datapoints at sequence length 128 and 500,000500{,}000 test datapoints at
+sequence length 512. We did not use a curriculum over sequence length during training. The models
+were trained using AdamW optimizer [71] with parameters β1=0.9\beta_{1}=0.9, β2=0.999\beta_{2}=
+0.999, and ϵ=10−8\epsilon=10^{-8} in PyTorch [72]. We used a learning rate of 10−310^{-3} with
+cosine annealing [73] and trained for 100 epochs with a batch size of 1024, except for the S3S_{3}
+models which required a batch size of 2048 for more reliable results. All models used a
+single-layer DeltaProduct architecture featuring 12 heads (more heads made the results more
+reliable) and a head dimension of 32. We applied a weight decay coefficient of 10−610^{-6}. The β\
+beta values were extracted from the forward pass of the trained models using NNsight [74]. We use
+the PCA implementation in scikit-learn [75].
+
+
+Figure 13: β0\beta_{0} and β1\beta_{1} values across all 24 permutations in S4S_{4} in DeltaProduct
+[−1,1]2{}_{2}[-1,1]. We find that only head 6 (shown in Figure 7) learns to use both Householders
+as reflections (β0≈2\beta_{0}\approx 2, β1≈2\beta_{1}\approx 2) allowing it to learn the rotations
+to solve S4S_{4}.
+
+C.2 Chomsky Hierarchy
+
+Setup. We conducted experiments on selected formal language tasks originally introduced by Delétang
+et al. [52]. Our goal was to demonstrate the improvements in length extrapolation that can be
+achieved using multiple Householder matrices in the state-transition matrix compared to DeltaNet.
+Following Grazzi et al. [16], we focus on three tasks: parity, modular arithmetic without brackets
+(both regular languages), and modular arithmetic with brackets (a context-free language). We
+trained DeltaProductnh{}_{n_{h}} with nh∈{2,3,4}n_{h}\in\{2,3,4\} on sequences of length 3 to 40
+and tested on sequences ranging from 40 to 256 to evaluate generalization to longer inputs. We
+compare our results against the results obtained by Grazzi et al. [16] for Transformer, mLSTM and
+sLSTM from Beck et al. [9], Mamba [6], and DeltaNet [10]. For both Mamba and DeltaNet, we
+experiment with an eigenvalue range restricted to [0,1][0,1] and extended to [−1,1][-1,1].
+
+Experimental Details. All DeltaProduct and DeltaNet models contain 3 layers with 1 head each and
+heads’ dimensions set to 128, except for modular arithmetic with brackets, where we use 12 heads
+and set the heads’ dimensions to 32. Both models use a causal depthwise 1D convolution with a
+kernel size of 4 after the query/key/value projection. For modular arithmetic, we also use a
+gradient clipping norm of 1.0. We train each model using AdamW [71] using a learning rate of 5e-4,
+batch size of 1024, 0.1 weight decay, and a cosine annealing learning rate schedule [73] (minimum
+learning rate: 1e-6) after 10% warm-up steps. We train on the modular arithmetic and parity tasks
+for 100k and 20k steps in total, respectively. At each training step, we make sure to generate a
+valid random sample from the task at hand (see below). We repeat the runs 3 times with different
+seeds each, and later pick the best to report in Table 2.
+
+Considered Tasks. We empirically evaluated three tasks—parity, modular arithmetic without brackets,
+and modular arithmetic with brackets—spanning different levels of the Chomsky Hierarchy. Below, we
+provide details for each task, where |Σ||\Sigma| denotes the vocabulary size and A​c​cr​a​n​dAcc_
+{rand} represents the accuracy of random guessing:
+
+  • •
+   
+    Parity (|Σ|=2|\Sigma|=2, A​c​cr​a​n​d=0.5Acc_{rand}=0.5). Given a binary sequence 𝒙=x1​…​xt∈
+    {0,1}t{\bm{x}}=x_{1}\dots x_{t}\in\{0,1\}^{t}, the parity label yt∈{0,1}y_{t}\in\{0,1\} is 1 if
+    the total number of ones in the sequence is odd, and 0 otherwise. This task is equivalent to
+    computing the sum of all previous values modulo 2, i.e., yt=(∑i=1txi)mod2y_{t}=(\sum_{i=1}^{t}
+    x_{i})\bmod 2.
+
+  • •
+   
+    Modular Arithmetic without Brackets (|Σ|=10|\Sigma|=10, A​c​cr​a​n​d=1/5Acc_{rand}=1/5). Given
+    a set of special tokens Σs={+,−,∗,=,[𝙿𝙰𝙳]}\Sigma_{s}=\{\mathtt{+,-,*,=,[PAD]}\} and a modulus
+    m≥1m\geq 1, we define Σ=Σs∪{0,…,m−1}\Sigma=\Sigma_{s}\cup\{0,\dots,m-1\}. The label yty_{t}
+    corresponds to the result of evaluating the arithmetic operations in the sequence 𝒙=x1,…,xt{\bm
+    {x}}=x_{1},\dots,x_{t}, computed modulo mm. In our experiments, we set m=5m=5. An example is:
+
+     𝟸+𝟷−𝟸∗𝟸−𝟹=𝟷[𝙿𝙰𝙳]\displaystyle\mathtt{2+1-2*2-3=\mathbin{\color[rgb]{1,0,0}{1}}\ [PAD]}
+
+  • •
+   
+    Modular Arithmetic with Brackets (|Σ|=12|\Sigma|=12, A​c​cr​a​n​d=1/5Acc_{rand}=1/5). This task
+    follows the same definition as modular arithmetic without brackets but includes an extended set
+    of special tokens, Σs={+,−,∗,=,),(,[𝙿𝙰𝙳]}\Sigma_{s}=\{\mathtt{+,-,*,=,),(,[PAD]}\}, allowing
+    for nested expressions. Again, we set m=5m=5. An example sequence is:
+
+     ((𝟷−(−𝟸))+((𝟺)+𝟹))=𝟶[𝙿𝙰𝙳]\displaystyle\mathtt{((1-(-2))+((4)+3))=\mathbin{\color[rgb]{1,0,0}
+     {0}}\ [PAD]}
+
+Results. As shown in Table 2, DeltaProductnh{}_{n_{h}} with nh≥2n_{h}\geq 2 has better average
+accuracy compared to DeltaNet and other baselines. This performance improvement is particularly
+pronounced when using the extended eigenvalue range [−1,1][-1,1], which aligns with the findings of
+Grazzi et al. [16]. Notably, we observe the most significant improvement in the modular arithmetic
+with brackets task, which is also the most challenging.
+
+
+Table 2: Performance of DeltaProduct[−1,1]nh{}_{n_{h}}[-1,1], nh∈{2,3,4}n_{h}\in\{2,3,4\}, on
+formal language tasks. We report the best of 3 runs. Scores are scaled accuracy, with 1.0
+indicating perfect performance and 0.0 random guessing. The results for the other models were taken
+directly from Grazzi et al. [16].
+
+                                    Mod. Arithm.   Mod. Arithm.  
+           Model             Parity (w/o brackets) (w/ brackets) Avg.
+
+        Transformer          0.022  0.031          0.067         0.040
+           mLSTM             0.087  0.040          0.114         0.080
+           sLSTM             1.000  0.787          0.178         0.655
+      Mamba [0,1][0,1]       0.000  0.095          0.123         0.073
+     Mamba [−1,1][-1,1]      1.000  0.241          0.116         0.452
+    DeltaNet [0,1][0,1]      0.233  0.302          0.253         0.263
+ DeltaProduct[2] [0,1][0,1]  0.264  0.402          0.249         0.305
+ DeltaProduct[3] [0,1][0,1]  0.285  0.402          0.288         0.325
+ DeltaProduct[4] [0,1][0,1]  0.295  0.369          0.288         0.317
+   DeltaNet [−1,1][-1,1]     0.982  0.915          0.281         0.726
+DeltaProduct[2] [−1,1][-1,1] 0.896  0.887          0.329         0.704
+DeltaProduct[3] [−1,1][-1,1] 0.932  0.736          0.330         0.666
+DeltaProduct[4] [−1,1][-1,1] 0.982  0.893          0.342         0.739
+
+C.3 Language Modeling
+
+C.3.1 Experimental setup
+
+We follow the same basic training setup as in [16]. We use the training pipeline flame from the
+flash-linear-attention [22] repository. All of our models are trained on NVIDIA L40s, NVIDIA A100
+40GB or NVIDIA H100 94GB GPUs. We used 16 to 32 GPUs at a time to train one model, in a 2 to 8 node
+setup, depending on resource availability. We used DeepSpeed with ZeRO-2 [76] for distributed
+training. All models were trained with an effective batch size of 524 288524\,288 tokens, and a
+learning rate of 3e-4. We optimized the models with AdamW [71] (0.010.01 weight decay) and used
+cosine annealing [73] for the learning rate schedule with linear warm up for 512 steps. We used a
+total of 10 500 GPU hours to train all of our models.
+
+C.3.2 Throughput
+
+
+Figure 14: Training throughput of a parameter matched DeltaProduct 1.3B. Parameter matching is
+achieved by decreasing the inner dimension in the SwiGLU MLP for nh>1n_{h}>1.
+
+C.3.3 Additional Benchmarks
+
+
+Table 3: Performance comparison of models shown in Figure 10. Parameter equivalence was achieved by
+scaling the head dimension. To account for the increased parameter count we scaled the training
+token budget from 19B (213M parameters) to 55B (805M parameters) on FineWeb [57]. Models were
+trained on 4096 token context length.
+
+   Model Wiki. LMB. LMB. PIQA Hella. Wino. ARC-e ARC-c Avg. ppl ↓\downarrow ppl ↓\downarrow acc ↑\
+uparrow acc ↑\uparrow acc_n ↑\uparrow acc ↑\uparrow acc ↑\uparrow acc_n ↑\uparrow ↑\uparrow 19B /
+213M DeltaNet[−1,1][-1,1] 32.39 107.41 20.4 65.3 35.1 52 44.1 24.5 40.23 DeltaProduct[−1,1]2{}_{2}
+[-1,1] 31.46 78.98 23.9 64.6 36.2 52.6 45 23 40.88 DeltaProduct[−1,1]3{}_{3}[-1,1] 30.94 70.5 24.6 
+66.3 36.8 49.1 46 23.7 41.01 35B / 392M DeltaNet[−1,1][-1,1] 25.5 40.32 30.2 68.5 41 51.9 47.3 23.3
+43.7 DeltaProduct[−1,1]2{}_{2}[-1,1] 24.82 34.31 33.3 68.9 43.4 50.7 49.2 25 45.08 DeltaProduct
+[−1,1]3{}_{3}[-1,1] 24.81 37.13 31.1 68.5 43.3 50 48.2 23.7 44.1 55B / 805M DeltaNet[−1,1][-1,1] 
+20.81 20.57 37.8 71.5 48.9 55.6 51.9 25.6 48.55 DeltaProduct[−1,1]2{}_{2}[-1,1] 20.54 19.56 38.3 71
+50.7 55.2 52.1 26.7 49 DeltaProduct[−1,1]3{}_{3}[-1,1] 20.01 15.56 42.9 71.4 51.4 53 54.6 26.4 
+49.95
+
+
+Table 4: Performance comparison of models shown in Figure 21. Parameter equivalence was achieved by
+scaling the number of heads in the attention. To account for the increased parameter count we
+scaled the training token budget from 19B (213M parameters) to 55B (805M parameters) on FineWeb [57
+]. Models were trained on 4096 token context length.
+
+   Model Wiki. LMB. LMB. PIQA Hella. Wino. ARC-e ARC-c Avg. ppl ↓\downarrow ppl ↓\downarrow acc ↑\
+uparrow acc ↑\uparrow acc_n ↑\uparrow acc ↑\uparrow acc ↑\uparrow acc_n ↑\uparrow ↑\uparrow 19B /
+213M DeltaNet[−1,1][-1,1] 31.96 85.36 22.5 65.2 35.4 50.8 44.7 22.4 40.17 DeltaProduct[−1,1]2{}_{2}
+[-1,1] 30.87 89.23 23.1 65.4 36.5 51.2 43.5 22.4 40.35 DeltaProduct[−1,1]3{}_{3}[-1,1] 30.85 71.52 
+24.1 66.3 36.1 51.6 44.1 23.9 41.02 35B / 392M DeltaNet[−1,1][-1,1] 24.86 39.1 30.8 69.2 41.4 50.5 
+46.7 24.4 43.83 DeltaProduct[−1,1]2{}_{2}[-1,1] 24.97 35.68 31.9 69.6 42.5 52.6 47.4 25.9 44.98 
+DeltaProduct[−1,1]3{}_{3}[-1,1] 25.2 40.96 30.5 69.1 42.3 51.4 47.7 23.9 44.15 55B / 805M DeltaNet
+[−1,1][-1,1] 20.6 21.18 38.7 71.5 48.7 52.8 51.9 25.7 48.22 DeltaProduct[−1,1]2{}_{2}[-1,1] 20.26 
+17.41 40.7 72.6 50.3 53.9 52.4 24.9 49.13 DeltaProduct[−1,1]3{}_{3}[-1,1] 19.97 17.78 40.79 72.3 
+50.9 52.1 53.9 26.4 49.4
+
+
+Table 5: Performance comparison of models trained with 20482048 context length. (SlimPajama (SPJ)
+reproduced from Yang et al. [10], Fine-Web (FW) ours). Results are shown for DeltaProduct and Gated
+DeltaProduct. We use 8 heads for each layer, unless otherwise specified.
+
+   Model Wiki. LMB. LMB. PIQA Hella. Wino. ARC-e ARC-c Avg. ppl ↓\downarrow ppl ↓\downarrow acc ↑\
+uparrow acc ↑\uparrow acc_n ↑\uparrow acc ↑\uparrow acc ↑\uparrow acc_n ↑\uparrow ↑\uparrow 15B
+tokens SPJ 340M params      Transformer++ 28.39 42.69 31.0 63.3 34.0 50.4 44.5 24.2 41.2      Mamba
+[0,1][0,1] 28.39 39.66 30.6 65.0 35.4 50.1 46.3 23.6 41.8      GLA [0,1][0,1] 29.47 45.53 31.3 65.1
+33.8 51.6 44.4 24.6 41.8      DeltaNet [0,1][0,1] 28.24 37.37 32.1 64.8 34.3 52.2 45.8 23.5 42.1 
+35B FW DeltaNet[−1,1][-1,1] 340M 26.92 43.07 29.8 69.0 41.0 50.9 46.6 24.5 43.6 DeltaNet[−1,1]
+[-1,1] 12 heads, 392M 26.57 36.76 31.8 69.2 42.3 50.9 47.2 24.4 44.3 DeltaProduct[−1,1]2{}_{2}
+[-1,1] 392M 26.43 30.66 34.0 68.9 42.4 53.1 48.9 25.9 45.5 DeltaProduct[−1,1]3{}_{3}[-1,1] 443M 
+25.94 29.91 34.2 69.9 43.2 51.9 48.2 24.1 45.2 Gated DeltaNet[−1,1][-1,1] 340M 25.97 33.57 33.1 
+69.5 44.1 51.1 50.9 26.7 45.9 Gated DeltaProduct[−1,1]2{}_{2}[-1,1] 393M 25.12 30.03 34.2 69.1 44.6
+55.3 49.8 25.3 46.4
+
+In Table 3 we report evaluations for the models in Figure 10 on tasks from lm-eval-harness [61]. In
+addition, we also train and evaluate models with 20482048 context length at the 340​M340M parameter
+scale and report the results in Table 5 and compare them with the results in [10] which are trained
+under a comparable setup. We observe that DeltaProduct outperforms DeltaNet in terms of average
+accuracy for both training setups.
+
+Tasks Details. We use the lm-eval-harness benchmark [61] to assess model performance. Following
+Yang et al. [10], the evaluation encompasses multiple task categories: Language Understanding
+Tasks. The evaluation includes LAMBADA (LMB) [77] for testing text comprehension, PIQA [78] for
+physical reasoning assessment, HellaSwag (Hella.) [79] for situational understanding, and
+Winogrande (Wino.) [80] for commonsense reasoning evaluation. Reasoning. The ARC dataset provides
+two distinct testing sets: ARC-easy (ARC-e) and ARC-challenge (ARC-c) [81], measuring varying
+levels of scientific knowledge comprehension.
+
+C.3.4 Training behavior
+
+The training behavior of DeltaProductnh\text{DeltaProduct}_{n_{h}} is stable as shown in Figure 15.
+This is also true for all considered model sizes in Figures 10 and 21 and Section C.3.5.
+
+
+Figure 15: Training loss curves of DeltaProductnh​[−1,1]\text{DeltaProduct}_{n_{h}}[-1,1]. The
+curves demonstrate stable training behavior as nhn_{h} increases, with higher values of nhn_{h}
+consistently yielding lower losses throughout training and convergence. While the absolute
+differences in loss between different nhn_{h} values are relatively small, they correspond to
+significant differences in length extrapolation performance.
+
+C.3.5 Additional results on Length Extrapolation
+
+In this section we show additional plots on length extrapolation. In Figure 16 we show the length
+extrapolation behavior of (Gated) DeltaProductnh\text{(Gated) DeltaProduct}_{n_{h}} scaling up nhn_
+{h} without adjusting any of the other model configuration parameters. As discussed in Section 5.3,
+increasing nhn_{h} increases the parameter count of the model. Hence, Figures 17 and 18 show the
+per-token loss and perplexity of DeltaProductnh\text{DeltaProduct}_{n_{h}} at three different
+scales where the parameter counts are matched at the respective scales following the configuration
+parameters shown in Table 6. Note that these are the same models as shown in Figure 21.
+
+
+Figure 16: Per token loss and perplexity on context lengths up to 32.768 for (Gated) DeltaProductnh
+\text{(Gated) DeltaProduct}_{n_{h}}. (Top) per token loss. (Bottom) Perplexity. Per token losses
+smoothed with a window-size of 300.
+
+
+Figure 17: Per token loss of DeltaProductnh\text{DeltaProduct}_{n_{h}} on contexts up to 32.768 at
+different model sizes. Models are parameter equivalent at each scale. Parameter equivalence is
+achieved by scaling the number of heads. Exact model configurations can be found in Table 6 (Top)
+213M parameters. (Middle) 392M parameters. (Bottom) 805M parameters.
+
+
+Figure 18: Perplexity analogue of Figure 17
+
+
+Table 6: Model configuration parameters for models shown in Figures 17 and 18. All other
+configuration parameters are the same as in [16].
+
+Model Scale # Householders  Hidden size # Heads
+            1               768         8
+   213M     2               736         6
+            3               768         4
+            1               1024        12
+   392M     2               1024        8
+            3               1024        6
+            1               1536        16
+   805M     2               1468        12
+            3               1536        8
+
+Layer 22
+
+Layer 19
+
+Layer 16
+
+Layer 13
+
+Layer 10
+
+Layer 7
+
+Layer 4
+
+Layer 1
+
+
+Figure 19: Effective rank of 𝑯i{\bm{H}}_{i} for 4 of 8 heads for a selection of the layers on 
+CodeParrot sequences. Solid vertical lines mark new code sequences; dashed vertical line indicates
+4096-token training context length; colored lines show effective rank per head over the sequence.
+
+Layer 22
+
+Layer 19
+
+Layer 16
+
+Layer 13
+
+Layer 10
+
+Layer 7
+
+Layer 4
+
+Layer 1
+
+
+Figure 20: Effective rank of 𝑯i{\bm{H}}_{i} for 4 of 8 heads for a selection of the layers on 
+TriviaQA sequences. Solid vertical lines mark new question-answer pairs; dashed vertical line
+indicates 4096-token training context length; colored lines show effective rank per head over the
+sequence.
+
+C.3.6 Additional Results on Scaling Behavior
+
+In Figure 10 parameter equivalence is achieved at each scale mainly by decreasing the the head
+dimension for models with nh>1n_{h}>1. In Figure 21 we show perplexity of FineWeb for another set
+of scaling results where parameter equivalence is reached by reducing the the number of heads in
+the attention. The result for this alternative type of scaling still shows the superiority of
+DeltaProduct compared to DeltaNet. However, in this case, models with higher nhn_{h} are not
+strictly better than those with fewer Householders.
+
+
+Figure 21: Scaling analysis w.r.t. (top) final perplexity on FineWeb, (bottom) Lambada and lm-eval
+tasks. Parameter equivalence is achieved by scaling the number of heads. Models trained at each
+scale with number of tokens as reported in Table 4.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

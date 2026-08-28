@@ -1,0 +1,2300 @@
+source: https://arxiv.org/html/2411.12537
+arxiv: https://arxiv.org/abs/2411.12537
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+ 4. 3 Background
+     1. 3.1 Linear Recurrent Neural Networks (LRNNs)
+     2. 3.2 Formal Language Theory
+ 5. 4 Theoretical Analysis
+     1. 4.1 Limitations of Current LRNNs
+     2. 4.2 Allowing Negative Eigenvalues
+     3. 4.3 Expressivity of Products of Generalized Householder Matrices
+ 6. 5 Experiments
+     1. 5.1 Chomsky Hierarchy
+     2. 5.2 State-Tracking
+     3. 5.3 Language Modeling
+ 7. 6 Conclusion
+ 8. References
+ 9. A Additional Background
+     1. A.1 Notation
+     2. A.2 Details of
+     3. A.3 Regular Languages and Recurrent Neural Networks
+     4. A.4 Finite Precision
+         1. A.4.1 Initial State, Matrix-valued States, and The Decoder function
+10. B Parity and Modular Counting – Proofs
+     1. B.1 Proof of
+     2. B.2 Proof of
+11. C Products of Generalized Householder Matrices – Proofs
+     1. C.1 Products of Two Householders and Modular Counting
+     2. C.2 Proof of
+     3. C.3 Proof of
+     4. C.4 Krohn-Rhodes Theorem
+     5. C.5 Proof of
+12. D LRNNs Can Do Modular Addition Using Only Reflections
+13. E Experiments
+     1. E.1 Chomsky Hierarchy
+         1. E.1.1 Details on the experimental setup
+         2. E.1.2 Details on the evaluated tasks
+     2. E.2 State-Tracking
+         1. E.2.1 Details of the Experiments
+         2. E.2.2 Cyclic Groups
+     3. E.3 Language Modeling
+         1. E.3.1 Details on the experimental setup
+         2. E.3.2 Details on the evaluated tasks
+     4. E.4 Implementation
+         1. E.4.1 Implementation of Extended Eigenvalue Range
+
+License: CC BY 4.0
+arXiv:2411.12537v5 [cs.LG] 18 Mar 2025
+
+Unlocking State-Tracking in Linear RNNs
+Through Negative Eigenvalues
+
+Riccardo Grazzi Email: riccardograzzi4@gmail.com    Julien Siems Email: juliensiems@gmail.com    
+Arber Zela    Jörg K.H. Franke    Frank Hutter    Massimiliano Pontil    Equal contribution^*    
+CSML    Istituto Italiano di Tecnologia    University of Freiburg    ELLIS Institute Tübingen    AI
+Centre    University College London
+
+Abstract
+
+Linear Recurrent Neural Networks (LRNNs) such as Mamba, RWKV, GLA, mLSTM, and DeltaNet have emerged
+as efficient alternatives to Transformers for long sequences. However, both Transformers and LRNNs
+struggle to perform state-tracking, which may impair performance in tasks such as code evaluation.
+In one forward pass, current architectures are unable to solve even parity, the simplest
+state-tracking task, which non-linear RNNs can handle effectively. Recently, Sarrof et al. (2024)
+demonstrated that the failure of LRNNs like Mamba to solve parity stems from restricting the value
+range of their diagonal state-transition matrices to [0,1][0,1] and that incorporating negative
+values can resolve this issue. We extend this result to non-diagonal LRNNs such as DeltaNet. We
+prove that finite precision LRNNs with state-transition matrices having only positive eigenvalues
+cannot solve parity, while non-triangular matrices are needed to count modulo 33. Notably, we also
+prove that LRNNs can learn any regular language when their state-transition matrices are products
+of identity minus vector outer product matrices, each with eigenvalues in the range [−1,1][-1,1].
+Our experiments confirm that extending the eigenvalue range of Mamba and DeltaNet to include
+negative values not only enables them to solve parity but consistently improves their performance
+on state-tracking tasks. We also show that state-tracking enabled LRNNs can be pretrained stably
+and efficiently at scale (1.3B parameters), achieving competitive performance on language modeling
+and showing promise on code and math tasks.
+
+
+
+1 Introduction
+
+
+Figure 1: Extending the eigenvalue range of the state transition matrices of diagonal LRNNs
+improves performance from random guessing (range [0,1][0,1]) to perfect score (range [−1,1][-1,1])
+on learning parity. Trained on sequences up to length 40; Tested on lengths 40–256 (3 seeds).
+
+Transformer architectures (Vaswani et al., 2017) have revolutionized NLP but scale quadratically in
+sequence length, posing computational challenges for long sequences. To address this, Linear
+Recurrent Neural Networks (LRNNs) have emerged as promising alternatives that offer linear scaling
+while maintaining competitive performance (Gu & Dao, 2024; Dao & Gu, 2024; Yang et al., 2024a; Peng
+et al., 2023; Deletang et al., 2023; Sun et al., 2024; Beck et al., 2024). LRNNs update their state
+via matrix-vector products with structured and often input-dependent state-transition matrices. The
+structure of the state-transition matrices largely determines the expressivity of LRNNs. While
+successful models like Mamba (Gu & Dao, 2024) and GLA (Yang et al., 2024a) use diagonal matrices
+(diagonal LRNN) which only mix tokens along the sequence dimension, recent work explores more
+complex forms. Notably, non-diagonal matrices using generalized Householder (GH) transformations,
+defined as 𝑰−𝒖​𝒖⊤{\bm{I}}-{\bm{u}}{\bm{u}}^{\top} where 𝒖{\bm{u}} is a learnable vector and 𝑰{\bm
+{I}} is the identity, enable models like DeltaNet (Schlag et al., 2021; Yang et al., 2024b) and
+TTT-Linear (Sun et al., 2024) to achieve richer expressiveness through simultaneous token-channel
+mixing while maintaining efficiency.
+
+Surprisingly, both Transformers and current LRNNs face a fundamental limitation: they struggle to
+learn how to track the state of even simple finite-state machines from sequences of
+state-transitions (Deletang et al., 2023). This limitation may impair performance on tasks such as
+entity tracking in narratives, handling nested structures in code, and reasoning tasks that can
+benefit from maintaining and updating an internal state over time (Merrill et al., 2024). Even the
+simplest state-tracking task, computing the parity of a sequence of bits, cannot be solved by
+modern architectures, while non-linear RNNs like LSTM (Hochreiter & Schmidhuber, 1997) and sLSTM (
+Beck et al., 2024) can effectively track the state of any finite state machine. However,
+parallelizing non-linear RNNs across the sequence length presents significant challenges (Lim
+et al., 2024; Gonzalez et al., 2024).
+
+Recently, Sarrof et al. (2024) demonstrated that the inability of diagonal LRNNs to solve the 
+parity problem stems from the fact that the eigenvalues of their state-transition matrices are
+constrained to be positive. Specifically, they proved that finite precision diagonal LRNNs with
+exclusively positive real eigenvalues, cannot solve the parity problem in one forward pass for
+sequences of arbitrary length. However, their work did not provide empirical evidence showing that
+diagonal LRNNs with negative eigenvalues can be successfully trained to overcome this limitation.
+We prove that the same limitation also affects LRNNs with non-diagonal state-transition matrices,
+and further prove that additionally, non-triangular matrices are necessary to solve the more
+challenging task of modular counting (when the modulus is not a power of two). Our findings also
+apply to the GH matrices used by DeltaNet, as they share the same eigenvalue limitations. To
+overcome this, we propose a simple yet powerful solution: extend the range of possible eigenvalues
+from [0,1][0,1] to [−1,1][-1,1]. This change enables state-tracking and significantly improves the
+expressivity of LRNNs without compromising their efficiency and training stability. As illustrated
+in Figure 1, it allows diagonal LRNNs to learn parity successfully. The code for part of our
+experiments is available at https://github.com/automl/unlocking_state_tracking
+
+In summary, we make the following contributions:
+
+ 1. 1.
+   
+    We prove that any finite precision LRNN with only positive real eigenvalues in the
+    state-transition matrices (most LRNNs used in practice) cannot solve parity at arbitrary
+    sequence lengths (Theorem 1), while non-triangular matrices are also required to learn counting
+    modulo 33 (Theorem 2).
+
+ 2. 2.
+   
+    By extending the eigenvalue range, we significantly improve the state-tracking capabilities of
+    LRNNs. We prove that LRNNs with state-transition matrices formed by products of generalized
+    Householder (GH) matrices, each with eigenvalues in the range [−1,1][-1,1], can learn any
+    regular language (Theorem 4), in some cases with just one layer (Theorem 3). Notably, this
+    range extension allows LRNNs using just one GH matrix (like DeltaNet), to learn substantially
+    harder tasks, as the repeated composition of permutations of two (over n) elements, compared to
+    diagonal LRNNs.
+
+ 3. 3.
+   
+    We show that the eigenvalue range of Mamba and DeltaNet can be extended to [−1,1][-1,1] without
+    compromising efficiency or training stability. We test the modified methods on parity, modular
+    arithmetic, and permutation composition, demonstrating improved state-tracking performance.
+
+ 4. 4.
+   
+    We pre-train modified versions of DeltaNet and Mamba (up to 1.3B parameters) and show that they
+    reach performance comparable to the original models on generative language modeling tasks,
+    while DeltaNet shows improved perplexity on code and math datasets.
+
+2 Related Work
+
+Linear RNNs.  Linear RNNs encompass state-space models and causal, linear attention mechanisms.
+State-space models, originally used for continuous dynamical systems, inspired LRNN variants like
+S4 (Gu et al., 2022) and H4 (Fu et al., 2021) (see Tiezzi et al. (2024) for a survey). Recent
+advancements, such as Mamba (Gu & Dao, 2024; Dao & Gu, 2024), introduced input-dependent gating of
+the hidden state, significantly improving language modeling performance. Concurrently, linear
+attention has emerged as an alternative to classical softmax attention, with Katharopoulos et al.
+(2020) demonstrating that causal linear attention Transformers can be reformulated as RNNs with
+linear scaling in sequence length. Building on this, Yang et al. (2024a) proposed Gated Linear
+Attention (GLA), adding a gating mechanism similar to Mamba, while DeltaNet (Schlag et al., 2021;
+Yang et al., 2024b) and TTT-Linear (Sun et al., 2024) explored more expressive recurrences with
+non-diagonal state-transition matrices. Beck et al. (2024) recently proposed xLSTM, a successor to
+LSTM (Hochreiter & Schmidhuber, 1997) which combines non-linear and linear RNNs.
+
+Expressivity Results.  Several studies have explored the expressive power of Transformers and RNNs
+(see e.g. (Merrill et al., 2020; Strobl et al., 2024; Bhattamishra et al., 2024)). Here, we focus
+on the ones most relevant to our work. While Hahn (2020) proved that Transformers cannot model
+periodic languages such as parity, see also (Bhattamishra et al., 2020, Lemma C.4), and some
+context-free languages at arbitrary sequence lengths, Liu et al. (2023) demonstrated that
+Transformers can learn shortcut solutions for solvable finite state automata, though these
+solutions lack generalizability to arbitrary sequence lengths and perform poorly
+out-of-distribution. Unlike RNNs, the high parallelizability of Transformers prevents them from
+learning unsolvable finite state automata (Merrill & Sabharwal, 2023). These findings typically use
+techniques from algebraic formal language theory (we refer to Liu et al. (2023) for a short
+tutorial) and circuit complexity, using the log-precision assumption and a number of layers scaling
+linearly or logarithmically with sequence length. While earlier research established Transformers’
+Turing completeness, it relied on either arbitrary precision (Pérez et al., 2021) or arbitrary
+depth and weight sharing (Giannou et al., 2023). Diagonal LRNNs can simulate any RNN with infinite
+depth (Gu et al., 2021) and approximate regular enough functions when the state dimension grows
+linearly with sequence length (Orvieto et al., 2024). However, things change when depth and state
+size are fixed. Merrill et al. (2024) proved that finite-depth diagonal LRNNs, like Transformers,
+struggle to learn unsolvable finite state automata when restricted to log-precision arithmetic. The
+work by Fan et al. (2024) highlights a similar limitation, while in a finite precision setting,
+Sarrof et al. (2024) showed that diagonal LRNNs with positive values in the state-transition
+matrix, while capable of learning all star-free languages, cannot solve even the simple parity
+problem, a non-star-free language recognizable by an automaton with two states. However, their
+analysis was limited to the diagonal case and they did not test the benefit of negative eigenvalues
+in practice. Using a continuous time framework, also Cirone et al. (2025) pointed out the
+limitations of diagonal state transition matrices. Irie et al. (2021); Irie et al. (2023)
+empirically showed how state-tracking can be enabled by modifying DeltaNet as a fast weight
+programmer (Schmidhuber, 1992), but this makes its recurrence non-linear, hence hard to
+parallelize.
+Unlike previous work, we demonstrate that non-diagonal LRNNs like DeltaNet can achieve robust
+state-tracking through a minimal modification while maintaining efficient large-scale training.
+
+3 Background
+
+3.1 Linear Recurrent Neural Networks (LRNNs)
+
+We describe LRNNs using notation inspired by Sarrof et al. (2024), focusing on the core linear
+recurrences while abstracting away the non-linear computations for each token. LRNNs are stacks of
+layers that share a common structure but have distinct learnable parameters. Each layer takes input
+vectors 𝒙1,…,𝒙t∈ℝl{\bm{x}}_{1},\dots,{\bm{x}}_{t}\in\mathbb{R}^{l} (outputs of the previous layer)
+and outputs 𝒚^1,…,𝒚^t∈ℝp\hat{{\bm{y}}}_{1},\dots,\hat{{\bm{y}}}_{t}\in\mathbb{R}^{p} as:
+
+ 𝑯i=𝑨(𝒙i)𝑯i−1+𝑩(𝒙i),𝒚^i=dec(𝑯i,𝒙i), for all i∈
+ {1,…,t},𝑯0∈ℂn×d,𝑨:ℝl→ℂn×n,𝑩:ℝl→ℂn×d,dec:ℂn×d×ℝl→ℝp\begin{gathered}{\bm{H}}_{i}={\bm{A}}({\bm
+ {x}}_{i}){\bm{H}}_{i-1}+{\bm{B}}({\bm{x}}_{i}),\quad\hat{{\bm{y}}}_{i}=\mathrm{dec}({\bm{H}}_
+ {i},{\bm{x}}_{i}),\quad\text{ for all }i\in\{1,\dots,t\},\\ {\bm{H}}_{0}\in\mathbb{C}^{n\      (1)
+ times d},\quad{\bm{A}}:\mathbb{R}^{l}\to\mathbb{C}^{n\times n},\quad{\bm{B}}:\mathbb{R}^{l}\
+ to\mathbb{C}^{n\times d},\quad\mathrm{dec}:\mathbb{C}^{n\times d}\times\mathbb{R}^{l}\to\
+ mathbb{R}^{p}\end{gathered}
+
+Here, 𝑨,𝑩{\bm{A}},{\bm{B}} and dec\mathrm{dec} are learnable, generally non-linear functions, with
+dec\mathrm{dec} usually containing a feed-forward neural network. This definition encompasses most
+LRNN variants, which differ in the form of 𝑨{\bm{A}}, 𝑩{\bm{B}} and dec\mathrm{dec}. Table 1
+illustrates how three popular LRNNs fit this framework. For other architectures see (Yang et al.,
+2024b, Table 4). Additional details on the notation are in Section A.1.
+
+
+Table 1: Instances of LRNN layers in (1), where 𝜶t=sigmoid⁡(𝑾α​𝒙t)\bm{\alpha}_{t}{=}\mathrm
+{sigmoid}({\bm{W}}_{\alpha}{\bm{x}}_{t}), 𝚫t=softplus⁡(𝑾Δ​𝒙t)\bm{\Delta}_{t}{=}\mathrm{softplus}({\
+bm{W}}_{\Delta}{\bm{x}}_{t}), βt=sigmoid⁡(𝒘β⊤​𝒙t)\beta_{t}{=}\mathrm{sigmoid}({\bm{w}}_{\beta}^{\
+top}{\bm{x}}_{t}), while 𝒒t,𝒌t∈ℝn,𝒗t∈ℝd{\bm{q}}_{t},{\bm{k}}_{t}\in\mathbb{R}^{n},{\bm{v}}_{t}\in\
+mathbb{R}^{d} are output of learnable functions of 𝒙t{\bm{x}}_{t}. Also, ψ:ℝd→ℝd\psi:\mathbb{R}^{d}
+\to\mathbb{R}^{d} is another learnable function usually containing an MLP and a normalization,
+while 𝑾1∈ℝn×d{\bm{W}}_{1}\in\mathbb{R}^{n\times d}, 𝑾Δ∈ℝd×l{\bm{W}}_{\Delta}\in\mathbb{R}^{d\times
+l}, 𝑾α∈ℝn×l{\bm{W}}_{\alpha}\in\mathbb{R}^{n\times l}, 𝒘β∈ℝl{\bm{w}}_{\beta}\in\mathbb{R}^{l} and
+𝒘2∈ℝd{\bm{w}}_{2}\in\mathbb{R}^{d} are learnable parameters. For simplicity, we omitted 1D
+convolutions. For Mamba, the matrices in the first two columns represent the recurrence for the
+i-th row of 𝑯t{\bm{H}}_{t} and we set 𝒌t=(kt,1,…,kt,n)⊤{\bm{k}}_{t}{=}(k_{t,1},\dots,k_{t,n})^{\
+top}, 𝑾1=(𝒘1,1,…,𝒘1,n)⊤{\bm{W}}_{1}{=}({\bm{w}}_{1,1},\dots,{\bm{w}}_{1,n})^{\top}, and l=dl=d.
+
+𝑨⁡(𝒙t){\bm{A}}({\bm{x}}_{t}) 𝑩⁡(𝒙t){\bm{B}}({\bm{x}}_{t}) dec⁡(𝑯t,𝒙t)\mathrm{dec}({\bm{H}}_{t},{\bm
+{x}}_{t}) Mamba Diag(exp(−𝚫t⊙exp(𝒘1,i)))\mathrm{Diag}\left(\exp\left(-\bm{\Delta}_{t}\odot\exp({\bm
+{w}}_{1,i})\right)\right) kt,i​𝚫t⊙𝒙tk_{t,i}\bm{\Delta}_{t}\odot{\bm{x}}_{t} ψ⁡(𝑯t⊤​𝒒t+𝒘2⊙𝒙t)\psi({\
+bm{H}}_{t}^{\top}{\bm{q}}_{t}+{\bm{w}}_{2}\odot{\bm{x}}_{t}) GLA Diag⁡(𝜶t)\mathrm{Diag}\left(\bm{\
+alpha}_{t}\right) 𝒌t​𝒗t⊤{\bm{k}}_{t}{\bm{v}}_{t}^{\top} ψ⁡(𝑯t⊤​𝒒t)\psi({\bm{H}}_{t}^{\top}{\bm{q}}_
+{t}) DeltaNet 𝑰−βt​𝒌t​𝒌t⊤{\bm{I}}-\beta_{t}{\bm{k}}_{t}{\bm{k}}_{t}^{\top} βt​𝒌t​𝒗t⊤\beta_{t}{\bm
+{k}}_{t}{\bm{v}}_{t}^{\top} ψ⁡(𝑯t⊤​𝒒t)\psi({\bm{H}}_{t}^{\top}{\bm{q}}_{t})
+
+The state-transition matrices 𝑨⁡(𝒙t){\bm{A}}({\bm{x}}_{t}) are typically diagonal or generalized
+Householder (GH), i.e., identity minus vector outer product, as shown in Table 1, to enable
+efficient matrix-vector products on modern hardware. These matrices consistently have eigenvalues
+(and norm) in the range [0,1][0,1].
+
+3.2 Formal Language Theory
+
+Finite State Automata and Regular Languages.  A (deterministic) finite state automaton (FSA) is a
+tuple 𝒜=(Σ,Q,q0,δ)\mathcal{A}\,{=}\,(\Sigma,Q,q_{0},\delta) where Σ\Sigma is a finite set of
+letters called alphabet, QQ is a finite set of states, q0∈Qq_{0}\,{\in}\,Q is the starting state
+and δ:Q×Σ→Q\delta\,{:}\,Q\,{\times}\,\Sigma\,{\to}\,Q is the state-transition function (see
+Hopcroft & Ullman, 2001, for an introduction). We define the set Σ∗,\Sigma^{*}, whose elements are
+sequences called words, as the smallest superset of Σ\Sigma that contains the empty word ε\
+varepsilon and is closed under word concatenation. We extend the state-transition function to
+δ:Q×Σ∗→Q\delta\,{:}\,Q\,{\times}\,\Sigma^{*}\,{\to}\,Q by defining δ⁡(q,ε)=q\delta(q,\varepsilon)\,
+{=}\,q and δ⁡(q,𝒘)=δ⁡(δ⁡(q,w1​…​wi−1),wi)\delta(q,{\bm{w}})\,{=}\,\delta(\delta(q,w_{1}\dots w_
+{i-1}),w_{i}) for any 𝒘=w1​…​wi∈Σ∗{\bm{w}}=w_{1}\dots w_{i}\in\Sigma^{*} with i≥2i\geq 2. We say
+that δ⁡(q0,𝒘)\delta(q_{0},{\bm{w}}) is the state that 𝒜\mathcal{A} reaches after reading the word
+𝒘∈Σ∗{\bm{w}}\in\Sigma^{*}. A language L⊆Σ∗L\subseteq\Sigma^{*} is said to be recognized by 𝒜\
+mathcal{A} if there exists a recognizing set R⊆QR\,{\subseteq}\,Q such that L={𝒘∈Σ∗:δ⁡(q0,𝒘)∈R}L\,
+{=}\,\{{\bm{w}}\,{\in}\,\Sigma^{*}:\delta(q_{0},{\bm{w}})\,{\in}\,R\}. Regular languages are the
+ones that can be recognized by an FSA. Given an FSA 𝒜\mathcal{A}, the set 𝒯⁡(𝒜)={δ⁡(⋅,𝒘):𝒘∈Σ∗}\
+mathcal{T}(\mathcal{A})\,{=}\,\{\delta(\cdot,{\bm{w}}):{\bm{w}}\in\Sigma^{*}\} of functions ρ:Q→Q\
+rho\,{:}\,Q\,{\to}\,Q, together with the function composition operation forms a monoid called 
+transition monoid, i.e. it is associative, closed and contains the identity δ⁡(⋅,ε)\delta(\cdot,\
+varepsilon). This monoid has a finite number of elements, since |Q|<∞|Q|\,{<}\,\infty. Moreover, if
+δ⁡(⋅,w)\delta(\cdot,w) is bijective for every w∈Σw\in\Sigma, then 𝒯⁡(𝒜)\mathcal{T}(\mathcal{A})
+forms a group, i.e. it contains the inverse of each element.
+
+State-Tracking and Monoid Word Problems.  State-tracking is the problem of determining the state of
+a system only by observing a sequence of updates applied to it. Formally, it can be expressed as a 
+monoid word problem (Merrill et al., 2024), where given a monoid (M,⋅)(M,\cdot) (MM is the set and
+⋅\cdot is the associative operation), we want to send words m1​…​mt∈M∗m_{1}\dots m_{t}\in M^{*},
+describing the sequence of updates, to their product m1⋅m2⋯mt∈Mm_{1}\cdot m_{2}\cdots m_{t}\in M,
+representing the state of the system after the updates. If MM is finite there is a corresponding
+FSA (M,M,e,δ)(M,M,e,\delta) that solves the word problem, where the starting state is ee (the
+identity element), and the transition function is δ⁡(m1,m2)=m2⋅m1\delta(m_{1},m_{2})=m_{2}\cdot m_
+{1} for m1,m2∈Mm_{1},m_{2}\in M. In this work, we focus on group word problems, i.e. problems where
+the monoid is also a group. In particular, on the cyclic group ℤm\mathbb{Z}_{m}, i.e. addition
+modulo mm, and the symmetric group SmS_{m}, i.e. the group of permutations on mm elements. Parity
+is equivalent to the S2S_{2} word problem, while many state-tracking problems such as tracking
+chess moves or code evaluation, can be shown to be harder than the S5S_{5} word problem, which
+cannot be solved by Transformers and diagonal LRNNs even in log-precision for arbitrary word
+lengths (Merrill et al., 2024; Merrill & Sabharwal, 2023).
+
+One LRNN Layer is an automaton.  Given an alphabet Σ⊂ℕ\Sigma\subset\mathbb{N}, we can view one
+layer of an LRNN in (1) as the automaton 𝒜lin=(Σ,ℋ,𝑯0,δlin)\mathcal{A}_{\mathrm{lin}}=(\Sigma,\
+mathcal{H},{\bm{H}}_{0},\delta_{\mathrm{lin}}), where δlin​(𝑯,w)=𝑨⁡(w)​𝑯+𝑩⁡(w)\delta_{\mathrm{lin}}
+({\bm{H}},w)={\bm{A}}(w){\bm{H}}+{\bm{B}}(w), which is extended as we saw previously^1^1 1 We let
+δlin:ℝn×d×Σ→ℝn×d\delta_{\mathrm{lin}}:\mathbb{R}^{n{\times}d}\,{\times}\,\Sigma\,{\to}\,\mathbb{R}^
+{n\times d} and extend it to δlin:ℝn×d×Σ∗→ℝn×d\delta_{\mathrm{lin}}:\mathbb{R}^{n{\times}d}\,{\
+times}\,\Sigma^{*}\,{\to}\,\mathbb{R}^{n\times d}, then we define ℋ\mathcal{H}., and ℋ={δlin​
+(𝑯0,𝒘):𝒘∈Σ∗}⊆ℝn×d\mathcal{H}=\{\delta_{\mathrm{lin}}({\bm{H}}_{0},{\bm{w}})\,:\,{\bm{w}}\in\Sigma^
+{*}\}\subseteq\mathbb{R}^{n\times d}. We say that an LRNN layer in (1) implements the FSA 𝒜=
+(Σ,Q,q0,δ)\mathcal{A}=(\Sigma,Q,q_{0},\delta) if 𝒜lin\mathcal{A}_{\mathrm{lin}} can mimic the state
+transitions of 𝒜\mathcal{A}^2^2 2 This definition is equivalent to that of FSA homomorphism, see (
+Maler & Pnueli, 1994, Definition 3).. Formally, if there exists a surjective function g:ℋ→Qg:\
+mathcal{H}\to Q, such that for any 𝑯∈ℋ{\bm{H}}\in\mathcal{H}, w∈Σw\in\Sigma δ⁡(g⁡(𝑯),w)=g⁡(δlin​
+(𝑯,w))=g⁡(𝑨⁡(w)​𝑯+𝑩⁡(w))\quad\delta(g({\bm{H}}),w)=g(\delta_{\mathrm{lin}}({\bm{H}},w))=g({\bm{A}}
+(w){\bm{H}}+{\bm{B}}(w)). Every language LL recognized by 𝒜\mathcal{A} can also be recognized by
+this LRNN layer with a sufficiently powerful dec\mathrm{dec}. In particular if R⊆QR\,{\subseteq}\,Q
+is the recognizing set for LL and q0=g⁡(𝑯0)q_{0}=g({\bm{H}}_{0}), then the decoder dec(𝑯t,wt)=𝟏{g
+(𝑯t)∈R}\mathrm{dec}({\bm{H}}_{t},w_{t})=\mathbf{1}\{g({\bm{H}}_{t})\in R\}, will correctly
+determine if 𝒘∈L{\bm{w}}\in L. Therefore, implementing 𝒜\mathcal{A} is at least as hard as
+recognizing LL. A principal goal of this work is to show that current LRNNs cannot recognize simple
+languages such as parity (negative results) while appropriate modifications to the state-transition
+matrices, enable LRNNs to implement broader classes of FSA (positive results), with certain classes
+of FSA requiring a single layer. Note, that while LRNNs with one layer can recognize any regular
+language, the state transition matrices might not fit into the structure imposed by current LRNNs,
+such as those in Table 1 (see Section A.3 for more details).
+
+4 Theoretical Analysis
+
+4.1 Limitations of Current LRNNs
+
+t States
+converge
+or diverge 𝒉t=𝑨⁡(1)​𝒉t−1+𝑩⁡(1){\bm{h}}_{t}={\bm{A}}(1){\bm{h}}_{t-1}+{\bm{B}}(1), eigs⁡(𝑨⁡(1))≥0\ \
+mathrm{eigs}({\bm{A}}(1))\geq 0tOddEven Clear state separation ht=a⁡(1)​ht+1+b⁡(1),a⁡(1)=−1h_{t}=a
+(1)h_{t+1}+b(1),\ {\color[rgb]{0,0,1}a(1)=-1}𝐄𝐯𝐞𝐧\mathbf{Even}𝐎𝐝𝐝\mathbf{Odd}1111Parity automaton
+
+
+Figure 2: Parity requires negative eigenvalues. States of one-layer LRNNs with the sequence
+1111​…1111\ldots as input. If the eigenvalues of 𝐀⁡(1)\mathbf{A}(1) are nonnegative, the states
+either diverge or converge monotonically, and so, for large enough tt and in finite precision,
+cannot be distinguished. In contrast, the LRNN with a⁡(1)=−1a(1)=-1 alternates between two states
+like the parity automaton.
+
+In this section, we describe how positive eigenvalues and non-triangular state transition matrices
+limit LRNNs state-tracking capabitlies. In particular, we focus on parity and modular addition. The
+parity yt∈{0,1}y_{t}\in\{0,1\} of a sequence of ones and zeros x1​…​xt∈{0,1}tx_{1}\dots x_{t}\in\
+{0,1\}^{t} is 1 if the total number of ones in the sequence is odd, and 0 if it’s even. Equivalent
+to addition modulo 2, it can be computed by summing the values in the input sequence and then
+applying the modulo 2 function: yt=(∑i=1txi)mod2y_{t}=(\sum_{i=1}^{t}x_{i})\bmod 2. This solution
+can be implemented by an LRNN with one layer and scalar states by setting 𝑨⁡(xt)=1{\bm{A}}(x_{t})=
+1, 𝑩⁡(xt)=xt{\bm{B}}(x_{t})=x_{t}, 𝑯0=0{\bm{H}}_{0}=0, and dec⁡(𝑯t,xt)=𝑯tmod2\mathrm{dec}({\bm{H}}_
+{t},x_{t})={\bm{H}}_{t}\bmod 2 in (1). However, implementing such a solution with finite precision
+presents an issue: the state hth_{t} can grow indefinitely with tt, eventually reaching the limit
+of our precision range. Indeed, ht∈{0,…,t}h_{t}\in\{0,\dots,t\}, requiring log2⁡(t+1)\log_{2}(t+1)
+bits for storage. Moreover, in practice dec\mathrm{dec} must approximate the modulus 2 function,
+which is challenging to learn due to its discontinuous and periodic nature.
+
+A more efficient solution, which implements the two-state FSA solving this problem, can still be
+realized by a finite precision LRNN with one layer and scalar states (and consequently also with
+vector states and diagonal state-transition matrices) using the recurrence ht=a⁡(xt)​ht−1+b⁡(xt),h0
+=b⁡(0)=0,b⁡(1)=a⁡(0)=1,a⁡(1)=−1,yt=hth_{t}=a(x_{t})h_{t-1}+b(x_{t}),\quad h_{0}=b(0)=0,\quad b(1)=a
+(0)=1,\quad{\color[rgb]{0,0,1}a(1)=-1},\quad y_{t}=h_{t}. Note that the state-transition scalar a⁡
+(1)a(1) is negative, while current diagonal LRNNs do not allow negative values. (Sarrof et al.,
+2024, Theorem 2) states that this fact makes real-valued diagonal LRNNs unable to solve parity,
+which raises the question: can non-diagonal LRNNs which allow only positive eigenvalues, such as
+DeltaNet, solve parity? The following result answers this question negatively by generalizing
+Sarrof et al. (2024, Theorem 2) to non-diagonal matrices. To solve parity, the state transition
+matrices must allow at least one eigenvalue to be neither real nor positive. For non-diagonal
+matrices, this eigenvalue could simply have nonzero imaginary part. The main idea of the theorem is
+illustrated in Figure 2.
+
+Theorem 1 (Parity).
+
+A finite precision LRNN with finitely many layers as in (1) can solve parity for arbitrary input
+lengths, in particular, it can recognize the language (11)∗(11)^{*}, only if in at least one layer,
+there exist 𝐱{\bm{x}} such that 𝐀⁡(𝐱){\bm{A}}({\bm{x}}) has at least one eigenvalue λ∉{x∈ℝ:x≥0}\
+lambda\notin\{x\in\mathbb{R}\,:\,x\geq 0\}.
+
+The proof in Section B.1 uses the same core idea as the one in (Sarrof et al., 2024, Theorem 2).
+For one layer, we show that when 𝒙=1k{\bm{x}}=1^{k} and the conditions for the eigenvalues of 𝑨⁡(1)
+{\bm{A}}(1) are not met, the mapping k↦𝑯kk\mapsto{\bm{H}}_{k} and consequently also the one k↦𝒚^kk\
+mapsto\hat{\bm{y}}_{k} will be constant (in finite precision and for large enough kk), while k↦ykk\
+mapsto y_{k}, with yky_{k} being the parity of 𝒙{\bm{x}}, alternates between 00 and 11. To show
+this, we use the expression for the powers of the Jordan canonical form of 𝑨⁡(1){\bm{A}}(1).
+
+We now study the problem of counting modulo mm, an easier version of addition modulo mm where the
+input of length kk never changes and is 𝒙=1k{\bm{x}}=1^{k}, while the correct output is yk=(∑i=
+1kxi)modmy_{k}=(\sum_{i=1}^{k}x_{i})\bmod m. The following theorem shows that to solve this
+problem, products of state-transition matrices must have at least one eigenvalue with nonzero
+imaginary part.
+
+Theorem 2 (Modular Counting).
+
+A finite precision LRNN with LL layers, each as in (1), can count modulo mm, i.e. it can recognize
+the language (1m)∗(1^{m})^{*}, with mm not a power of two, only if there exist i∈{1,…,L}i\in\{1,\
+dots,L\} and 𝐱1,…,𝐱2i−1{\bm{x}}_{1},\dots,{\bm{x}}_{2^{i-1}} such that for the ii-th layer the
+product 𝐀(𝐱1)𝐀(𝐱2)⋯𝐀(𝐱2i−1){\bm{A}}({\bm{x}}_{1}){\bm{A}}({\bm{x}}_{2})\cdots{\bm{A}}({\bm{x}}_{2^
+{i-1}}) has at least one eigenvalue λ\lambda with nonzero imaginary part, i.e. λ∉ℝ\lambda\notin\
+mathbb{R}.
+
+The proof is in Section B.2. When L=1L=1 a key step is to show that if 𝑨⁡(1){\bm{A}}(1) has real
+(even negative) eigenvalues, the map k→𝑯kk\to{\bm{H}}_{k} will alternate between two values (in
+finite precision and for large enough kk), not enough to count modulo m>2m>2. For L>1L>1, we
+proceed by induction using our assumption on the eigenvalues of the product of state-transition
+matrices.
+
+Discussion Theorems 1 and 2 identify a fundamental limitation of current design choices on the
+structure of the state-transition matrices of LRNNs. Specifically, current LRNNs, as the ones
+outlined in Table 1, are incapable of solving parity, as the eigenvalues of their state-transition
+matrices are confined to the interval [0,1][0,1]. Further, even if we allow negative eigenvalues,
+LRNNs using common structures for the state transition matrices, such as diagonal or triangular
+with real entries, cannot solve counting modulo mm. In contrast, as we will show, LRNNs with
+state-transition matrices that are (products of) generalized Householder matrices, each with
+eigenvalues in the range [−1,1][-1,1], are much more expressive.
+
+4.2 Allowing Negative Eigenvalues
+
+We focus on two classes of LRNNs determined by the structure of their state-transition matrices:
+diagonal (such as Mamba, Mamba2, and GLA) and generalized Householder (GH, as in DeltaNet). In
+particular, if we let 𝒔:ℝl→[0,1]n{\bm{s}}:\mathbb{R}^{l}\to[0,1]^{n}, ϕ:ℝl→[0,1]\phi:\mathbb{R}^{l}
+\to[0,1] and 𝒗:ℝl→ℝn{\bm{v}}:\mathbb{R}^{l}\to\mathbb{R}^{n}, being learnable functions such that
+‖𝒗⁡(𝒙)‖=1\left\lVert{\bm{v}}({\bm{x}})\right\rVert=1 for every 𝒙∈ℝl{\bm{x}}\in\mathbb{R}^{l}, then
+the state transition matrices of each layer of many LRNNs, such as those in Table 1, can be written
+as either
+
+ 𝑨diag​(𝒙):=Diag⁡(𝒔⁡(𝒙)), or 𝑨GH​(𝒙):=𝑰−ϕ⁡(𝒙)​𝒗​(𝒙)​𝒗​(𝒙)⊤,{\bm{A}}_{\mathrm{diag}}({\bm{x}}):=\
+ mathrm{Diag}({\bm{s}}({\bm{x}})),\quad\text{ or }\quad{\bm{A}}_{\mathrm{GH}}({\bm{x}}):={\bm{I}}-
+ \phi({\bm{x}}){\bm{v}}({\bm{x}}){\bm{v}}({\bm{x}})^{\top},
+
+where 𝑨diag​(𝒙){\bm{A}}_{\mathrm{diag}}({\bm{x}}) is diagonal with eigenvalues s​(𝒙)i∈[0,1]s({\bm
+{x}})_{i}\in[0,1], while 𝑨GH​(𝒙){\bm{A}}_{\mathrm{GH}}({\bm{x}}) is GH with all eigenvalues equal
+to one except for the one associated to the eigenvector 𝒗⁡(𝒙){\bm{v}}({\bm{x}}), which is equal to
+1−ϕ⁡(𝒙)∈[0,1]1-\phi({\bm{x}})\in[0,1]. To address the limitations discussed in the previous
+section, we propose the following modification that can be easily applied to LRNNs belonging to
+either class.
+
+ 𝑨diag−​(𝒙):=Diag⁡(2​𝒔​(𝒙)−1),𝑨GH−​(𝒙):=𝑰−2​ϕ​(𝒙)​𝒗​(𝒙)​𝒗​(𝒙)⊤.{\bm{A}}^{-}_{\mathrm{diag}}({\
+ bm{x}}):=\mathrm{Diag}({\color[rgb]{0,0,1}2}{\bm{s}}({\bm{x}}){\color[rgb]{0,0,1}-1}),\quad{\  (2)
+ bm{A}}^{-}_{\mathrm{GH}}({\bm{x}}):={\bm{I}}-{\color[rgb]{0,0,1}2}\phi({\bm{x}}){\bm{v}}({\bm
+ {x}}){\bm{v}}({\bm{x}})^{\top}.
+
+Hence, 𝑨diag−​(𝒙){\bm{A}}^{-}_{\mathrm{diag}}({\bm{x}}) has eigenvalues 2​s​(𝒙)i−1∈[−1,1]2s({\bm
+{x}})_{i}-1\in[-1,1] and 𝑨GH−​(𝒙){\bm{A}}^{-}_{\mathrm{GH}}({\bm{x}}) has one eigenvalue equal to
+1−2​ϕ​(𝒙)∈[−1,1]1-2\phi({\bm{x}})\in[-1,1]. Thus, we have extended the eigenvalues range from [0,1]
+[0,1] to [−1,1][-1,1]. The norm of the matrix is still less than or equal to one, keeping the
+recurrence stable at long sequence lengths.
+
+LRNNs with the modified state transition matrices can implement the solution to parity in (2) by
+setting s⁡(1)=0s(1)=0 and ϕ⁡(1)=1\phi(1)=1 so that if we consider a scalar recursion, then 𝑨diag−​
+(1)=−1{\bm{A}}^{-}_{\mathrm{diag}}(1)=-1. However, Theorem 2 shows that we cannot count modulo 33
+with triangular state transition matrices, even when allowing negative eigenvalues. Therefore, in
+the next section, we examine the impact of our change to the eigenvalue range on non-triangular
+state-transition matrices.
+
+4.3 Expressivity of Products of Generalized Householder Matrices
+
+We focus on state-transition matrices that are products of kk GH matrices. For DeltaNet k=1k=1. For
+any n,k∈ℕn,k\in\mathbb{N}, we define the set of all matrices in ℝn×n\mathbb{R}^{n\times n} that can
+be expressed as a product of kk GH matrices, each having the only interesting eigenvalue in the
+range Ω⊆ℝ\Omega\subseteq\mathbb{R}, as
+
+ ℳkn(Ω):={𝑪1𝑪2⋯𝑪k:𝑪i=𝑰−βi𝒗i𝒗i⊤,(1−βi)∈Ω,𝒗i∈ℝn,∥𝒗i∥=1}.\mathcal{M}_{k}^{n}(\Omega):=\left\{{\bm
+ {C}}_{1}{\bm{C}}_{2}\cdots{\bm{C}}_{k}\ :\ {\bm{C}}_{i}={\bm{I}}-\beta_{i}{\bm{v}}_{i}{\bm     (3)
+ {v}}_{i}^{\top},\quad(1-\beta_{i})\in\Omega,\quad{\bm{v}}_{i}\in\mathbb{R}^{n},\,\lVert{\bm
+ {v}}_{i}\rVert=1\right\}.
+
+Intuitively, higher kk means higher expressivity but also higher cost for matrix-vector products.
+Furthermore, as long as Ω⊆[−1,1]\Omega\subseteq[-1,1], the norm of the matrices is bounded by one,
+which guarantees that repeated matrix product do not diverge. We observe that if 𝑴∈ℳ1n​({−1}){\bm
+{M}}\in\mathcal{M}_{1}^{n}(\{-1\}), then 𝑴{\bm{M}} is a reflection (or Householder) matrix, and
+that for any 𝒙∈ℝl{\bm{x}}\in\mathbb{R}^{l}, 𝑨GH​(𝒙)∈ℳ1n​([0,1]){\bm{A}}_{\mathrm{GH}}({\bm{x}})\in\
+mathcal{M}_{1}^{n}([0,1]) and 𝑨GH−​(𝒙)∈ℳ1n​([−1,1]){\bm{A}}^{-}_{\mathrm{GH}}({\bm{x}})\in\mathcal
+{M}_{1}^{n}([-1,1]) so that with our change we also include reflections. Moreover, ℳkn​(Ω)⊆ℳk′n​
+(Ω′)\mathcal{M}_{k}^{n}(\Omega)\subseteq\mathcal{M}_{k^{\prime}}^{n}(\Omega^{\prime}) if Ω⊆Ω′\Omega
+\subseteq\Omega^{\prime} and either k′=kk^{\prime}=k or k′≥kk^{\prime}\geq k, 1∈Ω1\in\Omega.
+
+Our next result shows that products of GH matrices can represent any matrix with Euclidean norm
+less than or equal to 1, but only when [−1,1]⊆Ω[-1,1]\subseteq\Omega. In contrast, repeated
+products of (e.g. upper) triangular matrices with eigenvalues in [−1,1][-1,1] remain triangular,
+with eigenvalues in the same range.
+
+Proposition 1 (Expressivity of products of GH matrices).
+
+The following hold for ℳkn\mathcal{M}_{k}^{n} in (3):
+
+ 1. 1.
+   
+    For any 𝑵∈ℳkn​([−1,1]){\bm{N}}\in\mathcal{M}_{k}^{n}([-1,1]), ∥𝑵∥≤1\lVert{\bm{N}}\rVert\leq 1.
+
+ 2. 2.
+   
+    For any 𝑴∈ℝn×n{\bm{M}}\in\mathbb{R}^{n\times n} with ∥𝑴∥≤1\lVert{\bm{M}}\lVert\leq 1, then 
+    𝑴∈ℳ3​nn​([−1,1]){\bm{M}}\in\mathcal{M}_{3n}^{n}([-1,1]) and if 𝑴{\bm{M}} is orthogonal then 
+    𝑴∈ℳnn​({−1,1}){\bm{M}}\in\mathcal{M}_{n}^{n}(\{-1,1\}), while 𝑴∈ℳn−1n​({−1,1}){\bm{M}}\in\
+    mathcal{M}_{n-1}^{n}(\{-1,1\}) when 𝑴{\bm{M}} is a permutation matrix.
+
+ 3. 3.
+   
+    Any eigenvalue λ\lambda of any matrix 𝑵∈ℳkn((−1,1]){\bm{N}}\in\mathcal{M}_{k}^{n}((-1,1]) is
+    either 11 or satisfies |λ|<1|\lambda|<1 and if in addition 𝑵∈ℳkn​([0,1]){\bm{N}}\in\mathcal{M}_
+    {k}^{n}([0,1]) and k≤2k\leq 2, then λ∈[0,1]⊂ℝ\lambda\in[0,1]\subset\mathbb{R}.
+
+The proof in Section C.2 uses mainly linear algebra arguments such as the SVD decomposition and the
+fact that every n×nn\times n orthogonal matrix can be written as a product of nn reflections, due
+to the Cartan–Dieudonné Theorem (Gallier & Gallier, 2011).
+
+A consequence of Proposition 1.3 is that LRNNs with layers of the form (1), where 𝑨:ℝl→ℳkn​([0,1])
+{\bm{A}}:\mathbb{R}^{l}\to\mathcal{M}_{k}^{n}([0,1]), have state transition matrices that are
+either the identity or not orthogonal, and hence cannot be reflections or rotations. Also, if k≤2k\
+leq 2 the eigenvalues are positive and hence the LRNN cannot learn parity due to Theorem 1. In
+contrast, if we allow 𝑨:ℝl→ℳkn​([−1,1]){\bm{A}}:\mathbb{R}^{l}\to\mathcal{M}_{k}^{n}([-1,1]) and kk
+is large enough, the following theorem shows that an LRNN with one layer can implement any FSA
+whose transition monoid is a group, and that n=k=2n=k=2 is enough for cyclic groups (modular
+addition).
+
+213132231swapswap(010100001)\begin{pmatrix}0&1&0\\ 1&0&0\\ 0&0&1\end{pmatrix}𝑰−2​𝒗1​𝒗1⊤{\bm{I}}-2{\
+bm{v}}_{1}{\bm{v}}_{1}^{\top}(100001010)\begin{pmatrix}1&0&0\\ 0&0&1\\ 0&1&0\end{pmatrix}𝑰−2​𝒗2​𝒗2⊤
+{\bm{I}}-2{\bm{v}}_{2}{\bm{v}}_{2}^{\top}(010001100)\begin{pmatrix}0&1&0\\ 0&0&1\\ 1&0&0\end
+{pmatrix}×\times==
+
+
+
+Figure 3: A permutation of kk elements is also a composition of at most k−1k{-}1 swaps. This maps
+to a product of k−1k{-}1 Hoseholders, each representing a swap. Illustrated for k=3k=3.
+𝐯1⊤=(12,−12,0)\mathbf{v}_{1}^{\top}{=}\left(\frac{1}{\sqrt{2}},-\frac{1}{\sqrt{2}},0\right), 𝐯2⊤=
+(0,12,−12)\mathbf{v}_{2}^{\top}{=}\left(0,\frac{1}{\sqrt{2}},-\frac{1}{\sqrt{2}}\right).
+
+Theorem 3.
+
+Every FSA 𝒜=(Σ,Q,q0,δ)\mathcal{A}=(\Sigma,Q,q_{0},\delta) whose transition monoid 𝒯⁡(𝒜)\mathcal{T}
+(\mathcal{A}) is a group, can be implemented by a finite precision LRNN with one layer and
+𝐀:Σ→ℳk−1n​({−1,1}){\bm{A}}:\Sigma\to\mathcal{M}_{k-1}^{n}(\{-1,1\}), where nn is the smallest
+natural number such that 𝒯⁡(𝒜)\mathcal{T}(\mathcal{A)} is isomorphic to a subgroup of SnS_{n}, and
+k=maxw∈Σ∑q∈Q𝟏{δ(q,w)≠q}k=\max_{w\in\Sigma}\sum_{q\in Q}\mathbf{1}\{\delta(q,w)\neq q\} is the
+maximum number of changed states after applying a single transition. Moreover, if 𝒯⁡(𝒜)\mathcal{T}
+(\mathcal{A}) is isomorphic to the cyclic group ℤm\mathbb{Z}_{m}, then we can set 𝐀:Σ→ℳ22​([−1,1])
+{\bm{A}}:\Sigma\to\mathcal{M}_{2}^{2}([-1,1]) and if m=2m=2 (parity) we can set 𝐀:Σ→{−1,1}{\bm{A}}:
+\Sigma\to\{-1,1\}.
+
+In the proof in Section C.3, we map each state-transition function to a matrix representation. This
+can always be done using permutation matrices, but for cyclic groups, we can also use rotation
+matrices (Section C.1). For permutations, if every state-transition permutes at most kk states then
+the corresponding permutation matrix will be in ℳk−1n​({−1,1})\mathcal{M}_{k-1}^{n}(\{-1,1\}),
+since it is either the identity or can be written as a product of at most k−1k-1 permutations of
+two elements (swaps), each in ℳ1n​({−1})\mathcal{M}_{1}^{n}(\{-1\}) (see Figure 3). A consequence
+of Theorem 3 is that if every transition function of the FSA has a permutation representation
+corresponding to a swap or the identity, then an LRNN layer with 𝑨=𝑨GH−{\bm{A}}={\bm{A}}^{-}_{\
+mathrm{GH}}, can implement it. This is useful in practice because the time complexity of an LRNN
+having a product of kk GH matrices as one state-transition matrix increases linearly with kk. Also,
+for natural language tasks, the state-transitions for the FSA might be either simple or encoded
+using multiple letters. For example, for addition modulo 55, a word may look like “3+2+4=4” (two
+letters per addition). This allows an LRNN with state-transition matrices in ℳ1n​([−1,1])\mathcal
+{M}_{1}^{n}([-1,1]) to model complex transitions. Indeed, if each transition uses kk letters and we
+set 𝑩≡0{\bm{B}}\equiv 0 and 𝑨:ℝl→ℳ1n​([−1,1]){\bm{A}}:\mathbb{R}^{l}\to\mathcal{M}_{1}^{n}([-1,1])
+in (1), then the LRNN layer can model permutations that change up to k+1k+1 elements since
+
+ 𝑯t=𝑪(xt,…,xt−k)𝑯t−k,𝑪(xt,…,xt−k):=𝑨(xt)𝑨(xt−1)⋯𝑨(xt−k)∈ℳkn([−1,1]).{\bm{H}}_{t}={\bm{C}}(x_{t},\
+ dots,x_{t-k}){\bm{H}}_{t-k},\quad{\bm{C}}(x_{t},\dots,x_{t-k}):={\bm{A}}(x_{t}){\bm{A}}(x_{t-1})\
+ cdots{\bm{A}}(x_{t-k})\in\mathcal{M}_{k}^{n}([-1,1]).
+
+In Appendix D we also show that, interestingly, an LRNN with two layers (instead of just one), each
+having only reflections (instead of rotations) as state-transition matrices, can solve addition
+modulo mm. We now present an important result on the expressivity of LRNNs with multiple layers.
+
+Theorem 4.
+
+LRNNs with state transition matrices that are repeated products of GH matrices, each with
+eigenvalues in the range [−1,1][-1,1], can recognize any regular language. In particular, every FSA
+𝒜=(Σ,Q,q0,δ)\mathcal{A}=(\Sigma,Q,q_{0},\delta) can be implemented by a finite precision LRNN with
+s≤2|Q|s\leq 2^{|Q|} layers, each of the form 1, where n≤|Q|n\leq|Q|, p≤sp\leq s, d=1d=1, 𝐀:ℝl→ℳnn​
+([−1,1]){\bm{A}}:\mathbb{R}^{l}\to\mathcal{M}_{n}^{n}([-1,1]) and 𝐁:ℝl→ℕn{\bm{B}}:\mathbb{R}^{l}\to
+\mathbb{N}^{n}.
+
+The proof in Section C.5 exploits the landmark Theorem by Krohn & Rhodes (1965), which states that
+every FSA can be decomposed as a cascade of simpler FSAs whose state-transition functions are
+either one-to-one or constant. Each layer of the LRNN will implement one FSA (with nn states) of
+the cascade using n×nn\times n permutation matrices, which are in ℳn−1n​({−1,1})\mathcal{M}_{n-1}^
+{n}(\{-1,1\}), for the one-to-one transitions, while for constant (state-independent) transitions
+it will set the corresponding state-transition matrix to 0∈ℳnn​({0})0\in\mathcal{M}_{n}^{n}(\{0\})
+and the function 𝑩{\bm{B}} appropriately. Note that we can obtain the zero matrix only
+inefficiently as a product of nn GH matrices, while it could also be obtained with a single
+diagonal matrix. This points towards LRNNs using a mix of GH and diagonal matrices, as recently
+explored by Gated DeltaNet (Yang et al., 2025) and RWKV-7.
+
+Discussion The results in Theorems 3 and 4 for LRNNs are in sharp contrast with the ones for
+Transformers (Liu et al., 2023; Merrill & Sabharwal, 2023) and diagonal LRNNs (Merrill et al., 2024
+), which require either the number of layers or the precision growing with the input sequence
+length, and can only implement an FSA if all groups in its transition monoid are solvable, i.e.
+excluding groups isomorphic to SnS_{n} with n≥5n\geq 5. However, compared to LRNNs without any
+restriction to the norm of the state-transition matrices, which need only one layer to recognize
+any regular language, our result requires both the number of layers and the width of the LRNN to be
+(in the worst case) exponential in the number of states of the FSA, although we conjecture that the
+number of layers might be reduced to at most linear using a more refined decomposition.
+
+5 Experiments
+
+
+Table 2: Summary of modifications to the state-transition matrices 𝑨⁡(𝒙t){\bm{A}}({\bm{x}}_{t}) to
+extend the eigenvalue range from [0,1][0,1] (Table 1) to [−1,1][-1,1]. We set 𝒔⁡(𝒙t)=exp⁡(−𝚫t​exp⁡
+(𝒘1,i)){\bm{s}}({\bm{x}}_{t})=\exp\left(-\bm{\Delta}_{t}\exp({\bm{w}}_{1,i})\right).
+
+                     [0,1][0,1]                                  [−1,1][-1,1]
+ Mamba   Diag⁡(𝒔⁡(𝒙t))\mathrm{Diag}({\bm    Diag⁡(2​𝒔​(𝒙t)−1)\mathrm{Diag}({\color[rgb]{0,0,1}2}{\
+         {s}}({\bm{x}}_{t}))                bm{s}}({\bm{x}}_{t}){\color[rgb]{0,0,1}-1})
+DeltaNet 𝑰−βt​𝒌t​𝒌t⊤{\bm{I}}-\beta_{t}{\bm  𝑰−2​βt​𝒌t​𝒌t⊤{\bm{I}}-{\color[rgb]{0,0,1}2}\beta_{t}{\
+         {k}}_{t}{\bm{k}}_{t}^{\top}        bm{k}}_{t}{\bm{k}}_{t}^{\top}
+
+We investigate the effects of expanding the eigenvalue range of state-transition matrices from
+[0,1][0,1] to [−1,1][-1,1], as explained in Section 4.2, on both synthetic tasks and language
+modeling. Our experiments involve Mamba, and DeltaNet, with variants trained using both the
+original and extended eigenvalue ranges, as shown in Table 2. We label these variants accordingly.
+Note that the changes increase the expressivity of Mamba and DeltaNet while coming at no additional
+computational cost. Detailed information on the implementation can be found in Section E.4.
+
+5.1 Chomsky Hierarchy
+
+
+Table 3: Performance comparison of various recurrent models on formal language tasks. We report the
+best of 3 runs (Table 5 in the Appendix reports the median). Scores are scaled accuracy, with 1.0
+indicating perfect performance and 0.0 random guessing. The positive impact of allowing negative
+eigenvalues ([−1,1][-1,1] range) versus restricting to positive eigenvalues ([0,1][0,1] range) is
+evident for both Mamba and DeltaNet. Results in parenthesis are as reported in Beck et al. (2024).
+
+                                   Mod. Arithm.   Mod. Arithm.
+                      Parity       (w/o brackets) (w/ brackets)
+
+     Transformer      0.022        0.031          0.067
+        mLSTM         0.087 (0.04) 0.040 (0.04)   0.114 (0.03)
+        sLSTM         1.000 (1.00) 0.787 (1.00)   0.178 (0.57)
+  Mamba [0,1][0,1]    0.000        0.095          0.123
+ Mamba [−1,1][-1,1]   1.000        0.241          0.116
+ DeltaNet [0,1][0,1]  0.017        0.314          0.194
+DeltaNet [−1,1][-1,1] 1.000        0.971          0.260
+
+We conducted experiments with some of the formal language tasks proposed by Deletang et al. (2023)
+and similarly used to benchmark xLSTM (Beck et al., 2024). Our focus was on tasks where mLSTM (an
+LRNN) previously underperformed while sLSTM (a non-linear RNN) succeeded, specifically parity,
+modular arithmetic without brackets (both regular languages) and modular arithmetic with brackets
+(context-free language). As in Beck et al. (2024), we trained each model with sequence lengths
+ranging from 3 to 40 and evaluated on lengths from 40 to 256, to assess length generalization. Note
+that our theoretical results cover just regular languages, excluding modular arithmetic with
+brackets. We compared a Transformer, mLSTM and sLSTM against two variants each of Mamba and
+DeltaNet - with and without eigenvalue range extension.
+
+Results Our findings, presented in Table 3, demonstrate that expanding the range of eigenvalues
+from [0,1][0,1] to [−1,1][-1,1] enables all examined models to fully solve the parity task,
+confirming Theorem 1. For both modular arithmetic tasks, this expansion led to substantial
+performance improvements for Mamba and especially DeltaNet, since the latter has non-diagonal
+state-transition matrices that are more suited for these tasks (see Theorem 3). In Figure 6 in the
+Appendix, we visualize the length extrapolation performance of each model on all considered tasks.
+Note that we were unable to reproduce the sLSTM results reported by Beck et al. (2024) for the
+modular arithmetic tasks. Additional experiments and details on the tasks in Section E.1.
+
+5.2 State-Tracking
+
+We perform experiments on group word problems, relying on the code provided by Merrill et al., 2024
+. We focus on the S5S_{5} group—the first unsolvable symmetric group where current LRNNs and
+Transformers are known to underperform. We also report results for addition modulo 6060 (i.e., the
+cyclic group ℤ60\mathbb{Z}_{60}) in Section E.2.2, and note that parity corresponds to S2S_{2}. In
+these experiments, the model receives a sequence of group elements as input, and the supervision is
+another sequence of group elements, each representing the product of the preceding input elements.
+Since solving S5S_{5} might need LRNNs with state-transition matrices formed by repeated products
+of four GH matrices (see Theorem 3), each with eigenvalues in [−1,1][-1,1], we also consider three
+simplified setups: (i) allowing only permutations of up to 2 elements (identity and swaps), (ii)
+allowing only permutations of up to 3 elements, and (iii) using 4 tokens for each permutation.
+Additional details are in Section E.2. We stress that, even when restricting the inputs to only
+identity and swaps, the group elements for the supervision still cover the entire group, because
+swaps are generators of the group.
+
+Results Figure 4 shows that, as predicted by Theorem 3, restricting the inputs to only swap
+permutations allows DeltaNet [−1,1][-1,1] with even one layer to fully learn the task (since its
+state-transition matrices can model swaps), while DeltaNet [0,1][0,1] with 5 layers generalizes
+just slightly beyond the training length. In contrast, by including also permutations of 33
+elements, we notice a substantial decrease in the performance of all models. Interestingly,
+extending the range is still advantageous in this case and DeltaNet [−1,1][-1,1] with 5 layers
+reaches a good length generalization. Moreover, using 4 tokens per group element seems also
+beneficial compared to standard S5S_{5}, since DeltaNet [−1,1][-1,1] with 5 layers manages to
+extrapolate very well until around length 200200, which corresponds to 5050 group elements, while
+on standard S5S_{5} all models have 00 sequence accuracy prior to sequence length 3030. We also
+report that Mamba, a diagonal LRNN, performs poorly on all setups, with and without increased
+eigenvalue range.
+
+
+Figure 4: Sequence accuracy for varying sequence lengths on S5S_{5} after 100 epochs of training.
+We report the best of 3 seeds for each method (in Figure 7 we report all seeds). The dashed
+vertical line indicates the sequence length used during training (32 except for the third plot from
+the left where it is 64). Each method is labeled with name, eigenvalue range, and number of layers.
+The dashed vertical line indicates the sequence length used during training. ”Full matrix simple”
+is a one-layer baseline where the state update matrices are full and we have no control over the
+eigenvalue range.
+
+5.3 Language Modeling
+
+Experimental Setup We train DeltaNet models with 340M and 1.3B parameters and Mamba models with
+370M parameters, each using both original and extended eigenvalue ranges. Training is done on the
+full FineWeb-100B dataset (Penedo et al., 2024). We chose FineWeb rather than FineWeb-Edu since it
+contains more code. We aligned our training pipeline with Yang et al. (2024b); see Section E.3.1
+for details. Given our previous theoretical and experimental findings, we hypothesize that models
+(especially DeltaNet) with extended eigenvalue range will perform better on language modeling tasks
+linked to state-tracking such as coding or mathematics, compared to unmodified models. To test this
+hypothesis, we evaluate the perplexity of these models in a length extrapolation setup using
+various datasets: CodeParrot (Tunstall et al., 2022) for coding, Math-Hard (Hendrycks et al., 2021)
+for mathematics, TriviaQA (Joshi et al., 2017), and SlimPajama (Soboleva et al., 2023).
+
+
+Figure 5: Performance vs sequence length of DeltaNet variants (340M (top) and 1.3B (bottom)
+parameters) on four datasets. DeltaNet with eigenvalue range [−1,1][-1,1] improves perplexity in
+coding and math compared to the [0,1][0,1] baseline. Dashed vertical line at training context
+length (2048).
+
+Results  All models trained stably with our modification and without changing the learning rate.
+The validation perplexity of the proposed variants was comparable, albeit slightly worse than that
+of the original models throughout training (see Figure 9 in the Appendix). The experiments in 
+Figure 5 demonstrate that on coding and math datasets, DeltaNet with an eigenvalue range of [−1,1]
+[-1,1] achieves lower perplexity than the baseline with range [0,1][0,1] for both model sizes. For
+TriviaQA, the perplexity of DeltaNet [−1,1][-1,1] is slightly higher. Note, that this is a task
+relying on memorization, not linked to state-tracking, and hence we do not expect an improvement.
+On SlimPajama, we also observe slight improvement with our modification. For Mamba instead, our
+modifications consistently degrades the performance on these tasks (Figure 10 in the Appendix).
+
+To ensure that our models are comparable with those obtained by Yang et al. (2024b), we evaluate
+them on the same benchmark tasks from lm-harness (Gao et al., 2024) in Table 4. Note, that we
+trained on 100B tokens of FineWeb, while Yang et al. (2024b) reported results from training on 15B
+and 100B tokens of SlimPajama. At 340-370M parameters, with the extended range both architectures
+show enhanced performance in some of the tasks: Mamba in the second subset of tasks (+2.1% average
+accuracy) and DeltaNet in retrieval tasks (+2% SWDE, +4.4% SQUAD). At 1.3B parameters, extending
+the eigenvalue range of DeltaNet shows mixed results, suggesting that the increased expressivity
+may need training beyond 100B tokens to fully unlock the model’s capacity.
+
+
+Table 4: Performance comparison using lm-harness benchmark (Gao et al., 2024) (SlimPajama (SPJ)
+reproduced from Yang et al. (2024b), Fine-Web (FW) ours). Results are shown for the original and
+extended eigenvalue range. Our models show comparable performance across tasks.
+
+   Model Wiki. LMB. LMB. PIQA Hella. Wino. ARC-e ARC-c Avg. SWDE SQUAD FDA ppl ↓\downarrow ppl ↓\
+downarrow acc ↑\uparrow acc ↑\uparrow acc_n ↑\uparrow acc ↑\uparrow acc ↑\uparrow acc_n ↑\uparrow ↑
+\uparrow cont. ↑\uparrow cont. ↑\uparrow cont. ↑\uparrow SlimPajama 15B 340M params     
+Transformer++ 28.39 42.69 31.0 63.3 34.0 50.4 44.5 24.2 41.2 42.2 22.1 21.4      Mamba [0,1][0,1] 
+28.39 39.66 30.6 65.0 35.4 50.1 46.3 23.6 41.8 12.4 23.0 2.1      GLA [0,1][0,1] 29.47 45.53 31.3 
+65.1 33.8 51.6 44.4 24.6 41.8 24.0 24.7 7.3      DeltaNet [0,1][0,1] 28.24 37.37 32.1 64.8 34.3 
+52.2 45.8 23.5 42.1 26.4 28.9 12.8 FineWeb 100B 340M params      DeltaNet [0,1][0,1] 24.68 31.49 
+33.7 70.3 45.1 51.3 50.0 26.1 46.1 35.2 28.7 11.8      DeltaNet [−1,1][-1,1] 24.54 31.15 34.0 69.9 
+44.6 51.9 50.0 24.4 45.8 37.2 33.1 6.6 370M params      Mamba [0,1][0,1] 24.84 24.69 35.6 70.6 48.4
+51.2 53.4 24.8 47.3 21.6 27.7 2.8      Mamba [−1,1][-1,1] 25.02 24.71 36.2 70.5 47.8 53.3 54.7 26.7
+48.2 20.9 24.8 2.5 SlimPajama 100B 1.3B params     Transformer++ 16.85 13.44 48.9 70.8 49.6 53.6 
+56.0 26.5 50.9 66.6 31.5 27.4     Mamba [0,1][0,1] 17.06 13.89 46.2 72.2 40.1 54.1 59.0 28.2 50.0 
+41.4 35.2 6.2     GLA [0,1][0,1] 17.22 14.47 46.9 71.8 49.8 53.9 57.2 26.6 51.0 50.6 42.6 19.9    
+DeltaNet [0,1][0,1] 16.87 12.21 48.9 71.2 50.2 53.6 57.2 28.3 51.6 49.5 37.4 17.2 FW 100B 1.3B
+params     DeltaNet [0,1][0,1] 18.54 14.32 43.5 73.7 56.2 56.9 58.2 29.9 53.1 49.1 35.1 8.6    
+DeltaNet [−1,1][-1,1] 18.57 12.73 43.7 73.3 55.8 56.8 56.9 27.9 52.4 48.8 33.9 12.3
+
+6 Conclusion
+
+In this work, we showed the substantial impact of extending the eigenvalue range of
+state-transition matrices in LRNNs from [0,1][0,1] to [−1,1][-1,1]. This modification provably
+enhances LRNN expressivity in state-tracking tasks, without adding overhead in training or
+inference. While Mamba successfully solves the parity problem, its diagonal matrix structure limits
+further gains. In contrast, DeltaNet, thanks to its non-diagonal state transition matrices which
+enable simultaneous token and channel mixing, excels across a broader spectrum of tasks. Our
+results underscore the critical role of non-diagonal state-transition matrices in augmenting
+state-tracking capabilities, highlighting a promising direction for future LRNN advancements.
+
+Limitations and Future work  Our modification is not directly compatible with a numerical technique
+used by some diagonal LRNNs such as Mamba2, GLA and mLSTM. In particular, these models rely on
+positive state-transition matrices to compute cumulative products in log space, which improves
+numerical accuracy and potentially training stability (see Section E.4 for details). Further
+research is needed to assess the impact of training large-scale language models with state-tracking
+capabilities. To this end, we aim to understand the potential downsides of increased expressivity.
+For example, we hypothesize a fundamental trade-off between state-tracking and associative recall,
+which is also of theoretical interest and could guide hybrid model design. Moreover, the
+theoretical expressivity of DeltaNet [−1,1][-1,1] with multiple layers is still unclear. We showed
+that it can solve addition modulo mm (in Appendix D) which is equivalent to the ℤ3\mathbb{Z}_{3}
+group word problem, but we do not know if it can also solve other word problems, such as the ones
+for the symmetric groups SnS_{n} with n≥3n\geq 3.
+
+Acknowledgments
+
+We would like to thank David Salinas, Herilalaina Rakotoarison, Eric Alcaide, Arya Akhavan, Matia
+Bojovic, Erfan Mirzaei and the active members of the Flash Linear Attention discord channel for
+their constructive discussions and feedback. We acknowledge the support and assistance of the Data
+Science and Computation Facility and its Support Team, in particular Mattia Pini, in utilizing the
+IIT High-Performance Computing Infrastructure, on which we run our largest experiments. This
+research was partially supported by the following sources: PNRR MUR Project PE000013 CUP
+J53C22003010006 “Future Artificial Intelligence Research (FAIR)“, funded by the European Union –
+NextGenerationEU, and EU Project ELSA under grant agreement No. 101070617. TAILOR, a project funded
+by EU Horizon 2020 research and innovation programme under GA No 952215; the Deutsche
+Forschungsgemeinschaft (DFG, German Research Foundation) under grant number 417962828; the European
+Research Council (ERC) Consolidator Grant “Deep Learning 2.0” (grant no. 101045765). Frank Hutter
+acknowledges financial support by the Hector Foundation. The authors acknowledge support from ELLIS
+and ELIZA. Funded by the European Union. The authors gratefully acknowledge the Gauss Center for
+Supercomputing eV (www.gauss-centre.eu) for funding this project by providing computing time on the
+GCS supercomputer JUWELS at Jülich Supercomputing Center (JSC). The MATH-HARD dataset which we use
+in one of our experiments was compiled from AoPS & the AoPS Community, MATHCOUNTS, the MAA, the
+Centre for Education in Mathematics and Computing, the Harvard-MIT Math Tournament, the Math Prize
+for Girls, MOEMS, the Mandelbrot Competition, and the Institute of Mathematics and Applications.
+Views and opinions expressed are however those of the author(s) only and do not necessarily reflect
+those of the European Union or the ERC. Neither the European Union nor the ERC can be held
+responsible for them.
+
+[Uncaptioned image]
+
+References
+
+  • Arora et al. (2023) Simran Arora, Brandon Yang, Sabri Eyuboglu, Avanika Narayan, Andrew Hojel,
+    Immanuel Trummer, and Christopher Ré. Language Models Enable Simple Systems for Generating
+    Structured Views of Heterogeneous Data Lakes. Proceedings of the VLDB Endowment, 17(2):92–105,
+    2023.
+  • Beck et al. (2024) Maximilian Beck, Korbinian Pöppel, Markus Spanring, Andreas Auer, Oleksandra
+    Prudnikova, Michael Kopp, Günter Klambauer, Johannes Brandstetter, and Sepp Hochreiter. xLSTM:
+    Extended Long Short-Term Memory. In Advances in Neural Information Processing Systems. Curran
+    Associates, Inc., 2024.
+  • Bhattamishra et al. (2020) Satwik Bhattamishra, Kabir Ahuja, and Navin Goyal. On the ability
+    and limitations of transformers to recognize formal languages. In Proceedings of the 2020
+    Conference on Empirical Methods in Natural Language Processing (EMNLP), pp. 7096–7116, 2020.
+  • Bhattamishra et al. (2024) Satwik Bhattamishra, Michael Hahn, Phil Blunsom, and Varun Kanade. 
+    Separations in the representational capabilities of transformers and recurrent architectures. 
+    Advances in Neural Information Processing Systems, 36, 2024.
+  • Bisk et al. (2020) Yonatan Bisk, Rowan Zellers, Ronan Le bras, Jianfeng Gao, and Yejin Choi. 
+    PIQA: Reasoning about physical commonsense in natural language. Proceedings of the AAAI
+    Conference on Artificial Intelligence, 34(05):7432–7439, Apr. 2020.
+  • Cirone et al. (2025) Nicola Muca Cirone, Antonio Orvieto, Benjamin Walker, Cristopher Salvi,
+    and Terry Lyons. Theoretical foundations of deep selective state-space models. Advances in
+    Neural Information Processing Systems, 37:127226–127272, 2025.
+  • Clark et al. (2018) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal,
+    Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? Try arc, the
+    ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.
+  • Dao & Gu (2024) Tri Dao and Albert Gu. Transformers are SSMs: Generalized models and efficient
+    algorithms through structured state space duality. In International Conference on Machine
+    Learning. PMLR, 2024.
+  • Deletang et al. (2023) Gregoire Deletang, Anian Ruoss, Jordi Grau-Moya, Tim Genewein, Li Kevin
+    Wenliang, Elliot Catt, Chris Cundy, Marcus Hutter, Shane Legg, Joel Veness, et al. Neural
+    Networks and the Chomsky Hierarchy. In The Eleventh International Conference on Learning
+    Representations, 2023.
+  • Fan et al. (2024) Ting-Han Fan, Ta-Chung Chi, and Alexander Rudnicky. Advancing Regular
+    Language Reasoning in Linear Recurrent Neural Networks. In Proceedings of the 2024 Conference
+    of the North American Chapter of the Association for Computational Linguistics: Human Language
+    Technologies (Volume 2: Short Papers), pp. 45–53, 2024.
+  • Fu et al. (2021) Daniel Y Fu, Tri Dao, Khaled Kamal Saab, Armin W Thomas, Atri Rudra, and
+    Christopher Re. Hungry Hungry Hippos: Towards Language Modeling with State Space Models. In The
+    Eleventh International Conference on Learning Representations, 2021.
+  • Gallier & Gallier (2011) Jean Gallier and Jean Gallier. The Cartan–Dieudonné Theorem. Geometric
+    Methods and Applications: For Computer Science and Engineering, pp. 231–280, 2011.
+  • Gao et al. (2024) Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony
+    DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle
+    McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf,
+    Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. A
+    framework for few-shot language model evaluation, 07 2024.
+  • Giannou et al. (2023) Angeliki Giannou, Shashank Rajput, Jy-yong Sohn, Kangwook Lee, Jason D
+    Lee, and Dimitris Papailiopoulos. Looped transformers as programmable computers. In
+    International Conference on Machine Learning, pp. 11398–11442. PMLR, 2023.
+  • Gonzalez et al. (2024) Xavier Gonzalez, Andrew Warrington, Jimmy T.H. Smith, and Scott
+    Linderman. Towards Scalable and Stable Parallelization of Nonlinear RNNs. In The Thirty-eighth
+    Annual Conference on Neural Information Processing Systems, 2024.
+  • Gu & Dao (2024) Albert Gu and Tri Dao. Mamba: Linear-Time Sequence Modeling with Selective
+    State Spaces. In First Conference on Language Modeling, 2024.
+  • Gu et al. (2021) Albert Gu, Isys Johnson, Karan Goel, Khaled Saab, Tri Dao, Atri Rudra, and
+    Christopher Ré. Combining recurrent, convolutional, and continuous-time models with linear
+    state space layers. Advances in neural information processing systems, 34:572–585, 2021.
+  • Gu et al. (2022) Albert Gu, Karan Goel, and Christopher Re. Efficiently Modeling Long Sequences
+    with Structured State Spaces. In International Conference on Learning Representations, 2022.
+  • Gugger et al. (2022) Sylvain Gugger, Lysandre Debut, Thomas Wolf, Philipp Schmid, Zachary
+    Mueller, Sourab Mangrulkar, Marc Sun, and Benjamin Bossan. Accelerate: Training and inference
+    at scale made simple, efficient and adaptable. https://github.com/huggingface/accelerate, 2022.
+  • Hahn (2020) Michael Hahn. Theoretical limitations of self-attention in neural sequence models. 
+    Transactions of the Association for Computational Linguistics, 8:156–171, 2020.
+  • Hendrycks et al. (2021) Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven
+    Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with
+    the math dataset. In Thirty-fifth Conference on Neural Information Processing Systems Datasets
+    and Benchmarks Track (Round 2), 2021.
+  • Hochreiter & Schmidhuber (1997) Sepp Hochreiter and Jürgen Schmidhuber. Long Short-Term Memory.
+    Neural Computation, 9(8):1735–1780, 1997.
+  • Hopcroft & Ullman (2001) John Hopcroft and Jeffrey Ullman. Introduction to Automata Theory,
+    Languages, and Computation. Addison-Wesley, 2001.
+  • Horn & Johnson (2012) Roger A Horn and Charles R Johnson. Matrix Analysis. Cambridge University
+    Press, 2012.
+  • Irie et al. (2021) Kazuki Irie, Imanol Schlag, Róbert Csordás, and Jürgen Schmidhuber. Going
+    beyond linear transformers with recurrent fast weight programmers. Advances in neural
+    information processing systems, 34:7703–7717, 2021.
+  • Irie et al. (2023) Kazuki Irie, Róbert Csordás, and Jürgen Schmidhuber. Practical computational
+    power of linear transformers and their recurrent and self-referential extensions. arXiv
+    preprint arXiv:2310.16076, 2023.
+  • Joshi et al. (2017) Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. Triviaqa: A
+    large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of
+    the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+    Papers), pp. 1601–1611, 2017.
+  • Katharopoulos et al. (2020) Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François
+    Fleuret. Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention. In
+    International Conference on Machine Learning, pp. 5156–5165. PMLR, 2020.
+  • Krohn & Rhodes (1965) Kenneth Krohn and John Rhodes. Algebraic theory of machines. i. prime
+    decomposition theorem for finite semigroups and machines. Transactions of the American
+    Mathematical Society, 116:450–464, 1965.
+  • Lim et al. (2024) Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. 
+    Parallelizing non-linear sequential models over the sequence length. In The Twelfth
+    International Conference on Learning Representations, 2024.
+  • Liu et al. (2023) Bingbin Liu, Jordan T Ash, Surbhi Goel, Akshay Krishnamurthy, and Cyril
+    Zhang. Transformers Learn Shortcuts to Automata. In The Eleventh International Conference on
+    Learning Representations, 2023.
+  • Lockard et al. (2019) Colin Lockard, Prashant Shiralkar, and Xin Luna Dong. When open
+    information extraction meets the semi-structured web. NAACL-HLT. Association for Computational
+    Linguistics, 2019.
+  • Loshchilov & Hutter (2017) Ilya Loshchilov and Frank Hutter. SGDR: Stochastic Gradient Descent
+    with Warm Restarts. In International Conference on Learning Representations, 2017.
+  • Loshchilov & Hutter (2019) Ilya Loshchilov and Frank Hutter. Decoupled Weight Decay
+    Regularization. In International Conference on Learning Representations, 2019.
+  • Maler & Pnueli (1994) Oded Maler and Amir Pnueli. On the cascaded decomposition of automata,
+    its complexity and its application to logic. ACTS Mobile Communication, 48, 1994.
+  • Merrill & Sabharwal (2023) William Merrill and Ashish Sabharwal. The parallelism tradeoff:
+    Limitations of log-precision transformers. Transactions of the Association for Computational
+    Linguistics, 11:531–545, 2023.
+  • Merrill et al. (2020) William Merrill, Gail Weiss, Yoav Goldberg, Roy Schwartz, Noah A Smith,
+    and Eran Yahav. A Formal Hierarchy of RNN Architectures. In Proceedings of the 58th Annual
+    Meeting of the Association for Computational Linguistics, pp. 443–459, 2020.
+  • Merrill et al. (2024) William Merrill, Jackson Petty, and Ashish Sabharwal. The Illusion of
+    State in State-Space Models. In Forty-first International Conference on Machine Learning, 2024.
+  • Orvieto et al. (2024) Antonio Orvieto, Soham De, Caglar Gulcehre, Razvan Pascanu, and Samuel L
+    Smith. Universality of Linear Recurrences Followed by Non-linear Projections: Finite-Width
+    Guarantees and Benefits of Complex Eigenvalues. In Forty-first International Conference on
+    Machine Learning, 2024.
+  • Paperno et al. (2016) Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham,
+    Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The
+    LAMBADA dataset: Word prediction requiring a broad discourse context. In Proceedings of the
+    54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers),
+    pp. 1525–1534, 2016.
+  • Penedo et al. (2024) Guilherme Penedo, Hynek Kydlíček, Loubna Ben allal, Anton Lozhkov,
+    Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The FineWeb Datasets:
+    Decanting the Web for the Finest Text Data at Scale, 2024.
+  • Peng et al. (2023) Bo Peng, Eric Alcaide, Quentin Gregory Anthony, Alon Albalak, Samuel
+    Arcadinho, Stella Biderman, Huanqi Cao, Xin Cheng, Michael Nguyen Chung, Leon Derczynski,
+    et al. RWKV: Reinventing RNNs for the Transformer Era. In The 2023 Conference on Empirical
+    Methods in Natural Language Processing, 2023.
+  • Pérez et al. (2021) Jorge Pérez, Pablo Barceló, and Javier Marinkovic. Attention is
+    turing-complete. Journal of Machine Learning Research, 22(75):1–35, 2021.
+  • Rajbhandari et al. (2020) Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. 
+    Zero: Memory optimizations toward training trillion parameter models. In SC20: International
+    Conference for High Performance Computing, Networking, Storage and Analysis, pp. 1–16. IEEE,
+    2020.
+  • Rajpurkar et al. (2018) Pranav Rajpurkar, Robin Jia, and Percy Liang. Know what you don’t know:
+    Unanswerable questions for squad. In Proceedings of the 56th Annual Meeting of the Association
+    for Computational Linguistics (Volume 2: Short Papers), pp. 784–789, 2018.
+  • Sakaguchi et al. (2021) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 
+    Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64
+    (9):99–106, 2021.
+  • Sarrof et al. (2024) Yash Sarrof, Yana Veitsman, and Michael Hahn. The Expressive Capacity of
+    State Space Models: A Formal Language Perspective. Advances in Neural Information Processing
+    Systems, 2024.
+  • Schlag et al. (2021) Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. Linear transformers
+    are secretly fast weight programmers. In International Conference on Machine Learning, pp.
+    9355–9366. PMLR, 2021.
+  • Schmidhuber (1992) Jürgen Schmidhuber. Learning to control fast-weight memories: An alternative
+    to dynamic recurrent networks. Neural Computation, 4(1):131–139, 1992.
+  • Soboleva et al. (2023) Daria Soboleva, Faisal Al-Khateeb, Robert Myers, Jacob R Steeves, Joel
+    Hestness, and Nolan Dey. SlimPajama: A 627B token cleaned and deduplicated version of
+    RedPajama, June 2023.
+  • Strobl et al. (2024) Lena Strobl, William Merrill, Gail Weiss, David Chiang, and Dana Angluin. 
+    What Formal Languages can Transformers express? A Survey. Transactions of the Association for
+    Computational Linguistics, 12:543–561, 2024.
+  • Sun et al. (2024) Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann
+    Dubois, Xinlei Chen, Xiaolong Wang, Sanmi Koyejo, et al. Learning to (learn at test time): RNNs
+    with expressive hidden states. arXiv preprint arXiv:2407.04620, 2024.
+  • Tiezzi et al. (2024) Matteo Tiezzi, Michele Casoni, Alessandro Betti, Marco Gori, and Stefano
+    Melacci. State-Space Modeling in Long Sequence Processing: A Survey on Recurrence in the
+    Transformer Era, 2024.
+  • Torres (2024) Alexandre Torres. mamba.py: A simple, hackable and efficient Mamba implementation
+    in pure PyTorch and MLX., 2024. URL https://github.com/alxndrTL/mamba.py.
+  • Tunstall et al. (2022) Lewis Tunstall, Leandro Von Werra, and Thomas Wolf. Natural Language
+    Processing with Transformers. O’Reilly Media, Inc., 2022.
+  • Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+    Aidan N Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is All you Need. In Advances in
+    Neural Information Processing Systems, volume 30. Curran Associates, Inc., 2017.
+  • Yang & Zhang (2024) Songlin Yang and Yu Zhang. FLA: A Triton-Based Library for
+    Hardware-Efficient Implementations of Linear Attention Mechanism, January 2024. URL https://
+    github.com/sustcsonglin/flash-linear-attention.
+  • Yang et al. (2024a) Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated
+    Linear Attention Transformers with Hardware-Efficient Training. In Forty-first International
+    Conference on Machine Learning, 2024a.
+  • Yang et al. (2024b) Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. 
+    Parallelizing Linear Transformers with the Delta Rule over Sequence Length. Advances in Neural
+    Information Processing Systems, 36, 2024b.
+  • Yang et al. (2025) Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated Delta Networks:
+    Improving Mamba2 with Delta Rule. In The Thirteenth International Conference on Learning
+    Representations, 2025.
+  • Zellers et al. (2019) Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 
+    HellaSwag: Can a Machine Really Finish Your Sentence? In Proceedings of the 57th Annual Meeting
+    of the Association for Computational Linguistics, pp. 4791–4800, 2019.
+
+Supplementary Material
+
+The supplementary material is structured as follows.
+
+  • •
+   
+    Appendix A contains additional details on the notation used, on Table 1, on the relationship
+    between RNNs and regular languages, on the assumption of finite precision, on the states, and
+    on the function dec\mathrm{dec}.
+
+  • •
+   
+    Appendices B and C contain the proofs for the theoretical results in Sections 4.1 and 4.3.
+
+  • •
+   
+    Appendix D contains a theorem showing that a 2 Layer LRNN having reflections as
+    state-transition matrices can solve addition modulo mm.
+
+  • •
+   
+    Appendix E contains additional details on the experiments and additonal results.
+
+Appendix A Additional Background
+
+A.1 Notation
+
+We denote with ℂ,ℝ,ℕ\mathbb{C},\mathbb{R},\mathbb{N} the sets of complex, real, and natural
+numbers, respectively. We use lowercase letters for scalar quantities (e.g. x∈ℝx\in\mathbb{R}),
+bold lowercase letters for (column) vectors (e.g. 𝒗∈ℝn{\bm{v}}\in\mathbb{R}^{n}), and bold
+uppercase letters for matrices (e.g. 𝑴∈ℝn×d{\bm{M}}\in\mathbb{R}^{n\times d}). Some functions with
+matrix (vector) outputs, such as 𝑨{\bm{A}} and 𝑩{\bm{B}} in (1), are also bold upper (lower) case
+letters to emphasize the fact that they output matrices (vectors). We use ⊙\odot to indicate the
+element-wise (Hadamard) product between two vectors or matrices. We denote with ‖𝒗‖\left\lVert{\bm
+{v}}\right\rVert the Euclidean norm of the vector 𝒗∈ℝn{\bm{v}}\in\mathbb{R}^{n}. When 𝑴∈ℝn×d{\bm
+{M}}\in\mathbb{R}^{n\times d}, ‖𝑴‖\left\lVert{\bm{M}}\right\rVert also refers to the Euclidean
+norm, corresponding to the largest singular value. The vector 𝒆i∈ℝn{\bm{e}}_{i}\in\mathbb{R}^{n} is
+the ii-th vector of the canonical bases in ℝn\mathbb{R}^{n}, i.e. the one-hot vector with 11 only
+in the ii-th component and 00 in the others. We define the binomial coefficient for every k,j∈ℕk,j\
+in\mathbb{N} with j≤kj\leq k as
+
+ (k0):=1,(kj):=k⁡(k−1)​…​(k−j+1)j!.\binom{k}{0}:=1,\quad\binom{k}{j}:=\frac{k(k-1)\dots(k-j+1)}
+ {j!}.
+
+We also define for a Boolean ss and x∈ℝx\in\mathbb{R}
+
+ 𝟏​{s}:={1​ if s is true0​ if s is false ,sign⁡(x):={1if ​x≥0−1if ​x<0.\mathbf{1}\{s\}:=\begin
+ {cases}1\text{ if $s$ is true}\\ 0\text{ if $s$ is false }\end{cases},\qquad\mathrm{sign}(x):=\
+ begin{cases}1&\text{if }x\geq 0\\ -1&\text{if }x<0\end{cases}.
+
+We define sigmoid⁡(x):=1/(1+e−x)\mathrm{sigmoid}(x):=1/(1+e^{-x}) and softplus⁡(x):=ln⁡(1+ex)\
+mathrm{softplus}(x):=\ln(1+e^{x}).
+
+We sometimes use regular expressions (Hopcroft & Ullman, 2001, see e.g.), to represent their
+corresponding regular language. So that e.g. (11)∗={11}∗(11)^{*}=\{11\}^{*}, where {11}\{11\} is
+the set containing the word 1111 and ∗* is the Kleene star operation, is the language containing
+the empty word ϵ\epsilon and all the words with an even number of ones, while (1m)∗={1m}∗(1^{m})^
+{*}=\{1^{m}\}^{*} is the language containing the words with a number of ones divisible by mm since
+1m1^{m} indicates the word containing 11 repeated mm times. A language is star-free if it can be
+expressed with a regular expression that does not contain the Kleene star.
+
+A.2 Details of Table 1
+
+The Mamba recurrence in Equations 3 and 4 in (Gu & Dao, 2024) is applied independently to each
+channel of the input sequence. Expressing the full recurrence in the matrix-form of (1) is
+challenging, as it would require concatenating the rows of the matrix 𝑯t{\bm{H}}_{t}. For
+simplicity, in Table 1 we write instead the recurrence for each row of 𝑯t{\bm{H}}_{t}. In
+particular, Let 𝒙t∈ℝd{\bm{x}}_{t}\in\mathbb{R}^{d} be the input of the layer, 𝑾Δ∈ℝd×d{\bm{W}}_{\
+Delta}\in\mathbb{R}^{d\times d}, 𝒘2∈ℝd{\bm{w}}_{2}\in\mathbb{R}^{d}, 𝑾1=(𝒘1,…,𝒘n)⊤∈ℝn×d{\bm{W}}_{1}
+=({\bm{w}}_{1},\dots,{\bm{w}}_{n})^{\top}\in\mathbb{R}^{n\times d} be learnable parameters,
+𝒒t∈ℝn,𝒌t=(kt,1,…,kt,n)⊤∈ℝn{\bm{q}}_{t}\in\mathbb{R}^{n},{\bm{k}}_{t}=(k_{t,1},\dots,k_{t,n})^{\top}
+\in\mathbb{R}^{n} be learnable functions of the input and 𝚫t=softplus⁡(𝑾Δ​𝒙t)\bm{\Delta}_{t}=\
+mathrm{softplus}({\bm{W}}_{\Delta}{\bm{x}}_{t}). Then, if we set 𝑯t=(𝒉t,1,…,𝒉t,n)⊤∈ℝn×d{\bm{H}}_{t}
+=({\bm{h}}_{t,1},\dots,{\bm{h}}_{t,n})^{\top}\in\mathbb{R}^{n\times d} and 𝑯0=0{\bm{H}}_{0}=0, we
+can write the recurrence for the ii-th row of 𝑯t{\bm{H}}_{t} and the output as
+
+ 𝒉t,i=𝑨i(𝒙t)𝒉t−1,i+𝑩i(𝒙t),𝒚^t=ψ(𝑯t⊤𝒒t+𝒘2⊙𝒙t))\displaystyle{\bm{h}}_{t,i}={\bm{A}}_{i}({\bm{x}}_
+ {t}){\bm{h}}_{t-1,i}+{\bm{B}}_{i}({\bm{x}}_{t}),\qquad\hat{\bm{y}}_{t}=\psi({\bm{H}}_{t}^{\top}{\
+ bm{q}}_{t}+{\bm{w}}_{2}\odot{\bm{x}}_{t}))
+
+where 𝑨i​(𝒙t){\bm{A}}_{i}({\bm{x}}_{t}) and 𝑩i​(𝒙t){\bm{B}}_{i}({\bm{x}}_{t}) are the matrices
+stated in Table 1, i.e.
+
+ 𝑨i(𝒙t):=Diag(exp(−𝚫t⊙exp(𝒘1,i)))∈ℝd×d,𝑩i(𝒙t):=kt,i𝚫t⊙𝒙t∈ℝd.\displaystyle{\bm{A}}_{i}({\bm{x}}_
+ {t}):=\mathrm{Diag}\left(\exp\left(-\bm{\Delta}_{t}\odot\exp({\bm{w}}_{1,i})\right)\right)\in\
+ mathbb{R}^{d\times d},\qquad{\bm{B}}_{i}({\bm{x}}_{t}):=k_{t,i}\bm{\Delta}_{t}\odot{\bm{x}}_{t}\
+ in\mathbb{R}^{d}.
+
+Alternatively, as done in (Yang et al., 2024b, Table 4), one could write the full matrix recurrence
+as:
+
+ 𝑯t=exp(−𝟏𝚫t⊤⊙exp(𝑾1))⏟𝑨⁡(𝒙t)⊙𝑯t−1+𝒌t​(𝚫t⊙𝒙t)⊤⏟𝑩⁡(𝒙t).{\bm{H}}_{t}=\underbrace{\exp\left(-\bm{\
+ mathbf{1}\Delta}_{t}^{\top}\odot\exp({\bm{W}}_{1})\right)}_{{\bm{A}}({\bm{x}}_{t})}\odot{\bm{H}}_
+ {t-1}+\underbrace{{\bm{k}}_{t}(\bm{\Delta}_{t}\odot{\bm{x}}_{t})^{\top}}_{{\bm{B}}({\bm{x}}_
+ {t})}.
+
+where 𝟏\mathbf{1} is the vector of nn ones. However, such a recurrence is not in the form (1),
+since we have replaced the matrix-matrix product 𝑨⁡(𝒙t)​𝑯t{\bm{A}}({\bm{x}}_{t}){\bm{H}}_{t} with
+the element-wise product 𝑨⁡(𝒙t)⊙𝑯t{\bm{A}}({\bm{x}}_{t})\odot{\bm{H}}_{t}. Note that we follow the
+implementation of 𝑩⁡(𝒙t){\bm{B}}({\bm{x}}_{t}) used in the official Mamba codebase, which
+simplifies the expression originally presented in Equation 4 of (Gu & Dao, 2024) as described by
+the authors in a GitHub Issue^3^3 3 https://github.com/state-spaces/mamba/issues/19.
+
+A.3 Regular Languages and Recurrent Neural Networks
+
+RNNs Can Recognize Any Regular Language  A layer of a general RNN can be formulated similarly to (1
+) just by replacing the linear state update with a generic state-transition function gg as:
+
+ 𝒉t=g⁡(𝒉t−1,𝒙t),𝒉0∈ℝn.{\bm{h}}_{t}=g({\bm{h}}_{t-1},{\bm{x}}_{t}),\quad{\bm{h}}_{0}\in\mathbb{R}^
+ {n}.
+
+Clearly, any FSA can be implemented by an RNN layer if gg is sufficiently expressive to model its
+state transition function.
+
+LRNNs Can Recognize Any Regular Language  As explained in (Liu et al., 2023, Appendix A.2) and in
+the proof of (Merrill et al., 2024, Theorem 5), we can implement any FSA 𝒜=(Σ,Q,q0,δ)\mathcal{A}=(\
+Sigma,Q,q_{0},\delta), and thus recognize any regular language, using matrix-vector multiplication.
+As a result, a single-layer LRNN by using one-hot vectors as the LRNN states and having boolean
+state transition matrices can recognize any language. More specifically, in (1), we can set n=|Q|n=
+|Q|, 𝑯0=(1,0​…,0)⊤{\bm{H}}_{0}=(1,0\dots,0)^{\top} and for any letter w∈Σw\,{\in}\,\Sigma,  𝑩⁡(w)=
+ 0{\bm{B}}(w)\,{=}\,0 and 𝑨⁡(w)∈ℝn×n{\bm{A}}(w)\,{\in}\,\mathbb{R}^{n\times n} being the matrix
+with entries 𝑨(w)q′,q= 1{δ(w,q)=q′}{\bm{A}}(w)_{q^{\prime},q}\,{=}\,\mathbf{1}\{\delta(w,q)\,{=}\,q
+^{\prime}\}. Note that in such a construction, the matrix 𝑨⁡(w){\bm{A}}(w) can have norm greater
+than one, and enabling the state-transition matrix of LRNNs to have norm greater than one can make
+the recurrence unstable and is therefore never done in language models (see e.g. Table 1).
+
+A.4 Finite Precision
+
+For our positive results on LRNNs expressivity (Theorems 3 and 4), by finite precision we mean that
+since we have a finite number of quantities involved in the computations, then there exists a
+finite set 𝔻⊂ℝ\mathbb{D}\subset\mathbb{R} that contains them and thus we do not require
+computations to be done in the reals but we can use 𝔻\mathbb{D} as datatype. In particular, 𝔻\
+mathbb{D} does not depend on the length of the input sequence. In practice, such data type is
+chosen beforehand, e.g. floating point numbers requiring a given number of bits of precision, which
+may not capture all quantities in our constructions.
+
+In our negative results of Theorems 1 and 2 instead, we can pick the finite set 𝔻⊂ℝ\mathbb{D}\
+subset\mathbb{R} arbitrarily, e.g. floating point numbers, and we also make the use of the function
+cast:ℝ→𝔻\mathrm{cast}:\mathbb{R}\to\mathbb{D}, defined in (4). that we extend to ℂ\mathbb{C} by
+applying it separately to the real and imaginary part and to vector and matrices by applying it
+element-wise. The cast\mathrm{cast} function is used because some computations of the state of the
+LRNN will be allowed to be in infinite precision and then transformed to finite precision using
+cast\mathrm{cast} as specified in the proofs. This function provides a simplification of the actual
+conversion that happens in practice.
+
+We believe that the finite precision setup is not only realistic but also allows a better focus on
+the drawbacks of modern LRNN. Note that for Transformers, results usually rely instead on the
+weaker notion of log-precision (Liu et al., 2023), meaning that the size of 𝔻\mathbb{D} grows
+logarithmically with the sequence length. This is mainly due to their limited expressivity compared
+to LRNNs. We also note that concerning the state-transition matrices of modern LRNNs (see Table 1),
+the values at the extremes of the eigenvalue range are technically not included (because of the use
+of the sigmoid\mathrm{sigmoid} and softplus\mathrm{softplus} functions). However, since we are
+working with finite precision, we can still include them by choosing the appropriate datatype 𝔻\
+mathbb{D}, which in practice includes key values such as 00, 11, and −1-1.
+
+A.4.1 Initial State, Matrix-valued States, and The Decoder function
+
+When introducing the LRNN layer in (1), we mention that 𝑨{\bm{A}}, 𝑩{\bm{B}} and dec\mathrm{dec}
+are learnable functions. However, to learn the constructions in our theoretical results, we need
+also 𝑯0⊆ℂn×d{\bm{H}}_{0}\subseteq\mathbb{C}^{n\times d} to be learnable. We do this only to
+simplify the results, since the same effect can also be achieved by using a special token $\$ at
+the beginning of each sequence input to the model, called the beginning of sequence token and
+setting, 𝑯0=0{\bm{H}}_{0}=0 for each LRNN layer so that 𝑩⁡(𝒙1){\bm{B}}({\bm{x}}_{1}) will have the
+same role as the learnable 𝑯0{\bm{H}}_{0} in our constructions. This practice is standard and used
+in all our experiments.
+
+While we mention that the states 𝑯t{\bm{H}}_{t} are generally matrices of dimension n×dn\times d,
+for our theoretical constructions (excluding the first two theorems), we set d=1d=1, so that states
+are vector-valued. Hence, for the problems that we consider, we find that having a matrix-valued
+state (d>1d>1) brings no theoretical advantage, while it is very important for associative recall.
+
+To compute the output 𝒚^t\hat{\bm{y}}_{t} from the state 𝑯t{\bm{H}}_{t} and the vector 𝒙t{\bm{x}}_
+{t} of an LRNN layer in (1), we use the function dec\mathrm{dec}, to abstract away the computations
+that are done on 𝑯t{\bm{H}}_{t} and 𝒙t{\bm{x}}_{t}, since they are not part of the recurrence. In
+this work, we do not consider the internal structure of dec\mathrm{dec}, but it usually contains a
+normalization and a feed-forward neural network and it can approximate any continuous function.
+
+In our negative results on LRNNs expressivity in Theorems 1 and 2, our choice of an arbitrary
+decoder guarantees the stronger results. For our positive results instead, we either do not
+consider the decoder (Theorem 3) or we make use of a linear decoder (Theorem 4). We point out that
+to recognize regular languages efficiently and with a smaller LRNN state it is beneficial to have a
+more powerful (non-linear) decoder, as in the case of word problems for cyclic or permutation
+groups. However, such a decoder may be hard to learn.
+
+Appendix B Parity and Modular Counting – Proofs
+
+We report the proofs for the theorems in Section 4.1. We start by defining the function cast:ℝ→𝔻\
+mathrm{cast}:\mathbb{R}\to\mathbb{D}, for a finite set 𝔻⊂ℝ\mathbb{D}\subset\mathbb{R}, which
+provides a simple model for the conversion of real numbers into a finite precision representation.
+
+ cast⁡(x)=minz∈𝒟min⁡z,𝒟min:=arg​minz∈𝔻⁡|z−x|.\mathrm{cast}(x)=\min_{z\in\mathcal{D}_{\min}}z,\  (4)
+ quad\mathcal{D}_{\min}:=\argmin_{z\in\mathbb{D}}|z-x|.
+
+Note that 𝒟min\mathcal{D}_{\min} might not be a singleton. We naturally extend this function on
+complex numbers by applying it separately to the real and imaginary part, and then to
+complex-valued matrices by applying it element-wise. The following lemma is a key element of the
+proofs of Theorems 1 and 2. There, the sequence aka_{k} in the lemma takes the form of the
+imaginary or real part of the elements of the kk-th power of a matrix with real eigenvalues (λi\
+lambda_{i} will be one eigenvalue), expressed using the Jordan canonical form. See Section B.1 for
+more details on the Jordan Canonical Form. Intuitively, the lemma shows that if some of the λi\
+lambda_{i}-s are negative then for kk large enough, aka_{k} in finite precision will alternate
+between two values. Instead, if the λi\lambda_{i}-s are only nonnegative, aka_{k} in finite
+precision becomes constant for large enough kk.
+
+Lemma 1.
+
+Let n,m¯∈ℕn,\bar{m}\in\mathbb{N} and for every k>m¯k>\bar{m} let
+
+ ak:=∑i=1nci​(kmi)​λik−mi,with ​ci,λi∈ℝ,mi∈ℕ,mi≤m¯,∀i∈{1,…,n},a_{k}:=\sum_{i=1}^{n}c_{i}\binom{k}
+ {m_{i}}\lambda_{i}^{k-m_{i}},\quad\text{with }c_{i},\lambda_{i}\in\mathbb{R},m_{i}\in\mathbb
+ {N},m_{i}\leq\bar{m},\quad\forall i\in\{1,\dots,n\},
+
+then there exist k¯∈ℕ\bar{k}\in\mathbb{N} such that for every k≥k¯k\geq\bar{k} there exist
+a¯1,a¯2∈𝔻\bar{a}_{1},\bar{a}_{2}\in\mathbb{D} such that
+
+ cast⁡(a2​k)=a¯1,cast⁡(a2​k+1)=a¯2.\mathrm{cast}(a_{2k})=\bar{a}_{1},\quad\mathrm{cast}(a_{2k+1})=
+ \bar{a}_{2}.
+
+Furthermore, if λi≥0\lambda_{i}\geq 0 for every i∈{1,…,n}i\in\{1,\dots,n\}, then cast⁡(ak)=a¯1=a¯2\
+mathrm{cast}(a_{k})=\bar{a}_{1}=\bar{a}_{2} for k≥k¯k\geq\bar{k}.
+
+Proof.
+
+If ci=0c_{i}=0 for every ii, or λi=0\lambda_{i}=0 for every ii, then ak=0a_{k}=0 for all kk and the
+statement is trivially satisfied. Without loss of generality we can assume that that ci≠0c_{i}\neq
+0 and λi≠0\lambda_{i}\neq 0 for every i∈{1,…,n}i\in\{1,\dots,n\}, since for each ii where this is
+not true we can remove the corresponding term in the sum (since it will be 0) and use smaller value
+for nn. We divide the proof into two parts.
+
+Positive powers: Assume that λi>0\lambda_{i}>0 for all i∈{1,…,n}i\in\{1,\dots,n\}. This yields that
+for every ii and every k>m¯k{>}\bar{m}, (kmi)​λik−mi>0\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}}>0.
+Since the cast\mathrm{cast} function is piecewise constant with a finite number of pieces, we can
+divide the real line into a finite number of intervals where cast\mathrm{cast} is constant. We now
+show that for kk large enough, the interval where aka_{k} belongs, and hence cast⁡(ak)\mathrm{cast}
+(a_{k}), does not vary with kk.
+
+Without loss of generality we assume that for every i,j∈{1,…,n}i,j\in\{1,\dots,n\} we have that
+(mi,λi)≠(mj,λj)(m_{i},\lambda_{i})\neq(m_{j},\lambda_{j}), since otherwise we can factor out (kmi)
+​λik−mi\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}} and use a smaller nn. Note that (kmi)​λik−mi=k(k−1)⋯
+(k−mi+1)mi!​λik−mi\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}}=\frac{k(k-1)\cdots(k-m_{i}+1)}{m_{i}!}\
+lambda_{i}^{k-m_{i}} and hence gi​(k)=(kmi)​λik−mig_{i}(k)=\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}}
+for large kk behaves like the function kmi​λkk^{m_{i}}\lambda^{k}, i.e. the product of a polynomial
+and an exponential function of kk. Without loss of generality, we therefore take the order of the
+indices of the terms in the sum such that the functions gig_{i} are in decreasing order of growth:
+
+ λi>λj or λi=λj,mi>mj∀i,j:i>j.\lambda_{i}>\lambda_{j}\text{ or }\lambda_{i}=\lambda_{j},m_{i}>m_
+ {j}\qquad\forall i,j:i>j.
+
+By factoring out g1​(k)g_{1}(k), i.e. the fastest growing term, from aka_{k} we get
+
+ ak=(km1)​λ1k−m1​(c1+bk)bk:=∑i=2nci​(kmi)​λik−mi(km1)​λ1k−m1,a_{k}=\binom{k}{m_{1}}\lambda_{1}^
+ {k-m_{1}}\left(c_{1}+b_{k}\right)\qquad b_{k}:=\sum_{i=2}^{n}c_{i}\frac{\binom{k}{m_{i}}\lambda_
+ {i}^{k-m_{i}}}{\binom{k}{m_{1}}\lambda_{1}^{k-m_{1}}},
+
+with limk→∞bk=0\lim_{k\to\infty}b_{k}=0 and therefore, since for every ii and every k>m¯k>\bar{m},
+(kmi)​λik−mi>0\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}}>0 and c1≠0c_{1}\neq 0, there exist k^∈ℕ\hat{k}\
+in\mathbb{N} such that for every k≥k^k\geq\hat{k}, sign⁡(ak)=sign⁡(c1+bk)=sign⁡(c1)\sign(a_{k})=\
+sign(c_{1}+b_{k})=\sign(c_{1}). Now let 𝔻={z1,…,zd}\mathbb{D}=\{z_{1},\dots,z_{d}\} with z1<z2<⋯
+<zdz_{1}<z_{2}<\dots<z_{d} and let y1=−∞y_{1}=-\infty, yd+1=∞y_{d+1}=\infty and yi=(zi−1+zi)/2y_{i}
+=(z_{i-1}+z_{i})/2 for i∈{2,…,d}i\in\{2,\dots,d\}. From its definition, cast\mathrm{cast} is a
+piecewise constant function such that cast⁡(x)=zi\mathrm{cast}(x)=z_{i} for every x∈(yi,yi+1)x\in
+(y_{i},y_{i+1}). We now consider three cases according to the values of λ1\lambda_{1} and m1m_{1}.
+
+1) If λ1>1\lambda_{1}>1 or λ1=1,m1>0\lambda_{1}=1,m_{1}>0, then limk→∞(km1)​λ1k−mi=∞\lim_{k\to\
+infty}\binom{k}{m_{1}}\lambda_{1}^{k-m_{i}}=\infty and there exists k¯≥k^\bar{k}\geq\hat{k} such
+that for every k≥k¯k\geq\bar{k}, either ak>yda_{k}>y_{d} (if sign⁡(c1)=1\sign(c_{1})=1) or ak<y2a_
+{k}<y_{2} (if sign⁡(c1)=−1\sign(c_{1})=-1) and hence cast⁡(ak)=a¯∈{z1,zd}\mathrm{cast}(a_{k})=\bar
+{a}\in\{z_{1},z_{d}\}.
+
+2) If λ1<1\lambda_{1}<1 then limk→∞(km1)​λ1k−mi=0\lim_{k\to\infty}\binom{k}{m_{1}}\lambda_{1}^{k-m_
+{i}}=0 and hence there exist ϵ>0\epsilon>0, j∈{1,…,d}j\in\{1,\dots,d\}, k¯>k^\bar{k}>\hat{k} such
+that for every k≥k¯k\geq\bar{k}, ak∈Ω⊆(yj,yj+1)a_{k}\in\Omega\subseteq(y_{j},y_{j+1}), where Ω=
+(0,ϵ)\Omega=(0,\epsilon) if sign⁡(c1)=1\sign(c_{1})=1 and Ω=(−ϵ,0)\Omega=(-\epsilon,0) if sign⁡(c1)
+=−1\sign(c_{1})=-1. Therefore, cast⁡(ak)=zj\mathrm{cast}(a_{k})=z_{j} for every k≥k¯k\geq\bar{k}.
+
+3) If λ1=1,m1=0\lambda_{1}=1,m_{1}=0, then (km1)​λ1k−mi=1\binom{k}{m_{1}}\lambda_{1}^{k-m_{i}}=1
+for every kk and hence
+
+ ak=c1+bk,bk=∑i=2nci​(kmi)​λik−miwith ​λi<1​∀i∈{2,…,n}a_{k}=c_{1}+b_{k},\quad b_{k}=\sum_{i=2}^{n}
+ c_{i}\binom{k}{m_{i}}\lambda_{i}^{k-m_{i}}\qquad\text{with }\lambda_{i}<1\ \forall i\in\{2,\
+ dots,n\}
+
+Note that bkb_{k} has now the same structure as aka_{k}, just with one less term in the sum,
+therefore we can factor out the term (λ2m2)​λk−m2\binom{\lambda_{2}}{m_{2}}\lambda^{k-m_{2}} and,
+since λ2<1\lambda_{2}<1, apply the same reasoning as for the second case (λ1<1\lambda_{1}<1) to
+c1+bkc_{1}+b_{k} and prove that there exist ϵ>0\epsilon>0, j∈{1,…,d}j\in\{1,\dots,d\}, k¯>k^\bar
+{k}>\hat{k} such that for every k≥k¯k\geq\bar{k}, we have that sign⁡(bk)=sign⁡(c2)\sign(b_{k})=\
+sign(c_{2}), ak∈Ω⊆(yj,yj+1)a_{k}\in\Omega\subseteq(y_{j},y_{j+1}), where Ω=(c1,ϵ)\Omega=(c_{1},\
+epsilon) if sign⁡(c2)=1\sign(c_{2})=1 and Ω=(−ϵ,c1)\Omega=(-\epsilon,c_{1}) if sign⁡(c2)=−1\sign(c_
+{2})=-1. Therefore cast⁡(ak)=zj\mathrm{cast}(a_{k})=z_{j} for every k≥k¯k\geq\bar{k}.
+
+In summary, we proved that when λi≥0\lambda_{i}\geq 0 for every ii, there exist a¯∈𝔻\bar{a}\in\
+mathbb{D}, k¯∈ℕ\bar{k}\in\mathbb{N} such that for every k≥k¯k\geq\bar{k} ak=a¯a_{k}=\bar{a}, which
+concludes the first part of the proof.
+
+Some powers can be negative: Consider the general case where λi∈ℝ\lambda_{i}\in\mathbb{R} can be
+negative. We can write
+
+ ak=∑i=1nci​(kmi)​sign​(λi)k−mi​|λi|k−mi.a_{k}=\sum_{i=1}^{n}c_{i}\binom{k}{m_{i}}\mathrm{sign}(\
+ lambda_{i})^{k-m_{i}}|\lambda_{i}|^{k-m_{i}}.
+
+Since sign​(x)2​k−mi\mathrm{sign}(x)^{2k-m_{i}} and sign​(x)2​k+1−mi\mathrm{sign}(x)^{2k+1-m_{i}}
+do not vary with kk we consider the two subsequences
+
+ a2​k\         =∑i=1nc^i​(2​kmi)​|λi|2​k−mi,c^i=ci​sign​(λi)2​k−mi\displaystyle=\sum_{i=1}^{n}\hat
+ displaystyle  {c}_{i}\binom{2k}{m_{i}}|\lambda_{i}|^{2k-m_{i}},\quad\hat{c}_{i}=c_{i}\mathrm
+ a_{2k}        {sign}(\lambda_{i})^{2k-m_{i}}
+ a2​k+1\       =∑i=1nc~i​(2​k+1mi)​|λi|2​k+1−mi,c~i=ci​sign​(λi)2​k+1−mi,\displaystyle=\sum_{i=1}^
+ displaystyle  {n}\tilde{c}_{i}\binom{2k+1}{m_{i}}|\lambda_{i}|^{2k+1-m_{i}},\quad\tilde{c}_{i}=c_
+ a_{2k+1}      {i}\mathrm{sign}(\lambda_{i})^{2k+1-m_{i}},
+
+and we can apply the same proof as for the case when λi>0\lambda_{i}>0 for every ii to each of the
+subsequences above, which gives the final result in the case λi∈ℝ\lambda_{i}\in\mathbb{R} for every
+ii. ∎
+
+B.1 Proof of Theorem 1
+
+The language (11)∗(11)^{*} contains all sequences with an even number of ones. An FSA recognizing
+the language, for the sequence 1k1^{k} will output yk=1y_{k}=1 if kk is even and yk=0y_{k}=0 if kk
+is odd. Consider an LRNN with one layer as in (1). We will prove that if 𝑨⁡(1){\bm{A}}(1) has only
+nonnegative eigenvalues, then there exists a k¯>0\overline{k}>0 such that for every k≥k¯k\geq\
+overline{k}, the finite precision version of the state 𝑯k{\bm{H}}_{k} corresponding to the sequence
+1k1^{k} does not depend on kk and is equal to 𝑯¯\overline{{\bm{H}}}. Hence, no matter the choice of
+dec\mathrm{dec}, also the finite precision version of 𝒚^k\hat{{\bm{y}}}_{k} will not vary with kk
+and thus for some k′≥k¯k^{\prime}\geq\bar{k}, 𝒚^k′≠k′mod2=yk′\hat{\bm{y}}_{k^{\prime}}\neq k^{\
+prime}\mod 2=y_{k^{\prime}}. An inductive argument can then be used for the case of LRNNs with
+multiple (finitely many) layers, using the fact that the input of the next layer will be constant
+for kk large enough, as the input of the first layers.
+
+By unrolling the recursion in 1 we obtain a closed-form expression for the state
+
+ 𝑯k=∑i=1k−1(∏j=i+1k−1𝑨⁡(𝒙j))​𝑩​(𝒙i)+(∏i=1k𝑨⁡(𝒙i))​𝑯0,{\bm{H}}_{k}=\sum_{i=1}^{k-1}\Bigg(\prod_{j=
+ i+1}^{k-1}{\bm{A}}({\bm{x}}_{j})\Bigg){\bm{B}}({\bm{x}}_{i})+\Bigg(\prod_{i=1}^{k}{\bm{A}}({\bm
+ {x}}_{i})\Bigg){\bm{H}}_{0},
+
+where we set ∏j=kk−1𝑨⁡(xj)=𝑰\prod_{j=k}^{k-1}{\bm{A}}(x_{j})={\bm{I}} to avoid clutter. We follow
+Merrill et al. (2024) and make the simplifying assumption that in finite precision the state at
+time kk is computed by first evaluating all products involving the matrices 𝑨⁡(𝒙j){\bm{A}}({\bm{x}}
+_{j}) separately and in infinite precision, followed by casting them into finite precision, and
+finally executing the sum also in infinite precision and casting the result in finite precision.
+This avoids having to deal with the individual matrix sums and products in finite precision, which
+would break associativity and be harder to analyze. Hence, if we set 𝒙1​…​𝒙k=1k{\bm{x}}_{1}\dots{\
+bm{x}}_{k}=1^{k}, we get the following exact and finite precision expressions for the state at time
+kk.
+
+ 𝑯k=∑i=0k−1𝑨​(1)i​𝑩​(1)+𝑨​(1)k​𝑯0,𝑯^k=cast⁡(∑i=0k−1cast⁡(𝑨​(1)i​𝑩​(1))+cast⁡(𝑨​(1)k​𝑯0)),{\bm{H}}_
+ {k}=\sum_{i=0}^{k-1}{\bm{A}}(1)^{i}{\bm{B}}(1)+{\bm{A}}(1)^{k}{\bm{H}}_{0},\quad\widehat{\bm{H}}_
+ {k}=\mathrm{cast}\left(\sum_{i=0}^{k-1}\mathrm{cast}\left({\bm{A}}(1)^{i}{\bm{B}}(1)\right)+\
+ mathrm{cast}\left({\bm{A}}(1)^{k}{\bm{H}}_{0}\right)\right),
+
+where cast, defined in (4), is an operation that converts matrices with complex values element-wise
+into finite precision by e.g. separately converting real and imaginary parts.
+
+Using the Jordan canonical form theorem (see e.g. Horn & Johnson, 2012, Chap. 3.1), we can write 𝑨⁡
+(1)=𝑷​𝑱​𝑷−1{\bm{A}}(1)={\bm{P}}{\bm{J}}{\bm{P}}^{-1}, where 𝑱{\bm{J}} is block diagonal made of the
+Jordan blocks 𝑱1,…,𝑱s{\bm{J}}_{1},\dots,{\bm{J}}_{s} with s≤ns\leq n, 𝑱i∈ℝki×ki{\bm{J}}_{i}\in\
+mathbb{R}^{k_{i}\times k_{i}} and with corresponding complex eigenvalues λ1​…​λs\lambda_{1}\dots\
+lambda_{s} (with multiplicity taken into account). Such decomposition is useful because it allows,
+for k≥maxi⁡ki−1k\geq\max_{i}k_{i}-1, to write
+
+ 𝑨​(1)k=𝑷​𝑱k​𝑷−1,𝑱ik=[λik(k1)​λik−1(k2)​λik−2⋯⋯(kki−1)​λik−ki+1λik(k1)​λik−1⋯⋯(kki−2)
+ ​λik−ki+2⋱⋱⋮⋮⋱⋱⋮λik(k1)​λik−1λik].{\bm{A}}(1)^{k}={\bm{P}}{\bm{J}}^{k}{\bm{P}}^{-1},\quad{\bm{J}}
+ _{i}^{k}=\left[\begin{array}[]{cccccc}\lambda_{i}^{k}&\binom{k}{1}\lambda_{i}^{k-1}&\binom{k}{2}\
+ lambda_{i}^{k-2}&\cdots&\cdots&\binom{k}{k_{i}-1}\lambda_{i}^{k-k_{i}+1}\\ &\lambda_{i}^{k}&\
+ binom{k}{1}\lambda_{i}^{k-1}&\cdots&\cdots&\binom{k}{k_{i}-2}\lambda_{i}^{k-k_{i}+2}\\ &&\ddots&\
+ ddots&\vdots&\vdots\\ &&&\ddots&\ddots&\vdots\\ &&&&\lambda_{i}^{k}&\binom{k}{1}\lambda_{i}^{k-1}
+ \\ &&&&&\lambda_{i}^{k}\end{array}\right].
+
+Then, from the structure of the Jordan decomposition, the imaginary and real part of each element
+of the matrices 𝑨​(1)k​𝑩​(1){\bm{A}}(1)^{k}{\bm{B}}(1) and 𝑨​(1)k​𝑯0{\bm{A}}(1)^{k}{\bm{H}}_{0}
+will be a linear combination of elements of the Jordan blocks taking the same form of aka_{k} in
+Lemma 1. Therefore since λi≥0\lambda_{i}\geq 0 for every ii, we can apply Lemma 1 component-wise
+and conclude that there exists τ∈ℕ\tau\in\mathbb{N}, 𝑪^∈ℂn×d\widehat{\bm{C}}\in\mathbb{C}^{n\times
+d} and 𝑫^∈ℂn×d\widehat{\bm{D}}\in\mathbb{C}^{n\times d} such that for every k≥τk\geq\tau, 𝑪^k=cast⁡
+(𝑨​(1)k​𝑩​(1))=𝑪^\widehat{\bm{C}}_{k}=\mathrm{cast}({\bm{A}}(1)^{k}{\bm{B}}(1))=\widehat{\bm{C}}
+and 𝑫^k=cast⁡(𝑨​(1)k​𝑯0)=𝑫^\widehat{\bm{D}}_{k}=\mathrm{cast}({\bm{A}}(1)^{k}{\bm{H}}_{0})=\widehat
+{\bm{D}} and hence
+
+ 𝑯^k=cast⁡(∑i=0τ−1𝑪^i+𝑫^+(1−τ)​𝑪^+k​𝑪^).\widehat{\bm{H}}_{k}=\mathrm{cast}\left(\sum_{i=0}^{\
+ tau-1}\widehat{\bm{C}}_{i}+\widehat{\bm{D}}+(1-\tau)\widehat{\bm{C}}+k\widehat{\bm{C}}\right).
+
+Note that only the matrix k​𝑪^k\widehat{\bm{C}} varies with kk and for large enough kk, the real
+and imaginary parts of each element of k​𝑪^k\widehat{\bm{C}} will be either 00, smaller than
+minx∈ℝ⁡cast⁡(x)\min_{x\in\mathbb{R}}\mathrm{cast}(x) or larger than maxx∈ℝ⁡cast⁡(x)\max_{x\in\
+mathbb{R}}\mathrm{cast}(x). Therefore, we obtain that there exists 𝑯¯∈ℂn×d\overline{{\bm{H}}}\in\
+mathbb{C}^{n\times d} and k¯≥τ\bar{k}\geq\tau such that for every k≥k¯k\geq\bar{k} we have 𝑯^k=𝑯¯\
+widehat{\bm{H}}_{k}=\overline{{\bm{H}}}, which concludes the proof. ∎
+
+B.2 Proof of Theorem 2
+
+One Layer Let 𝑯^k\widehat{\bm{H}}_{k} and y^k:=cast⁡(dec⁡(𝑯^k,xk))\hat{y}_{k}:=\mathrm{cast}(\
+mathrm{dec}(\widehat{\bm{H}}_{k},x_{k})) be the finite precision versions of the state 𝑯k{\bm{H}}_
+{k} and (scalar) output of a one-layer LRNN on the input 𝒙=x1​…​xk=1k{\bm{x}}=x_{1}\dots x_{k}=1^
+{k}. Let also yk=𝟏{kmodm=0}y_{k}=\mathbf{1}\{k\mod m=0\} be the correct output recognizing the word
+𝒙{\bm{x}}. We will show that if the assumptions on the eigenvalues are not satisfied, i.e. if for
+any xx, every eigenvalue λ\lambda of 𝑨⁡(x){\bm{A}}(x) is real, then there exist 𝑯¯1,𝑯¯2∈ℂn×n\
+overline{{\bm{H}}}_{1},\overline{{\bm{H}}}_{2}\in\mathbb{C}^{n\times n}, y¯1,y¯2∈ℝp\bar{y}_{1},\bar
+{y}_{2}\in\mathbb{R}^{p} and τ∈ℕ\tau\in\mathbb{N} such that for all k≥τk\geq\tau
+
+ 𝑯^k:={𝑯¯1if ​kmod2=0𝑯¯2otherwise,y^k={y¯1if ​kmod2=0y¯2otherwise\widehat{\bm{H}}_{k}:=\begin
+ {cases}\overline{{\bm{H}}}_{1}\quad\text{if }k\mod 2=0\\ \overline{{\bm{H}}}_{2}\quad\text     (5)
+ {otherwise}\end{cases},\quad\hat{y}_{k}=\begin{cases}\bar{y}_{1}\quad\text{if }k\mod 2=0\\ \
+ bar{y}_{2}\quad\text{otherwise}\end{cases}
+
+where without loss of generality we take y¯1,y¯2∈{0,1}\bar{y}_{1},\bar{y}_{2}\in\{0,1\}. If y¯1=y¯2
+\bar{y}_{1}=\bar{y}_{2}, then, similarly to parity, y^k=y^k+1\hat{y}_{k}=\hat{y}_{k+1} for all k>
+τk>\tau, while since m>2m>2, if kmodm=m−1k\mod m=m-1, then 1=yk+1≠yk=01=y_{k+1}\neq y_{k}=0.
+Otherwise if y¯1≠y¯2\bar{y}_{1}\neq\bar{y}_{2} then if we assume that kmodd=1k\mod d=1 and y^k=yk=0
+\hat{y}_{k}=y_{k}=0, then 1=y^k+1≠yk+1=01=\hat{y}_{k+1}\neq y_{k+1}=0 since m>2m>2. This will prove
+the result for a one-layer LRNN. Then, we will proceed with the proof of finitely many layers.
+
+To prove (5), we set
+
+ 𝑯^k=cast⁡(∑i=0k−1cast⁡(𝑨​(1)i​𝑩​(1))+cast⁡(𝑨​(1)k​𝑯0)),\widehat{\bm{H}}_{k}=\mathrm{cast}\left(\
+ sum_{i=0}^{k-1}\mathrm{cast}\left({\bm{A}}(1)^{i}{\bm{B}}(1)\right)+\mathrm{cast}\left({\bm{A}}
+ (1)^{k}{\bm{H}}_{0}\right)\right),
+
+and proceed similarly to Theorem 1. Indeed, using the kk-th power formula for the Jordan
+Decomposition of the matrix 𝑨⁡(1){\bm{A}}(1) with eigenvalues λ1,…,λs\lambda_{1},\dots,\lambda_{s},
+the imaginary and real part of each element of the matrices 𝑨​(1)k​𝑩​(1){\bm{A}}(1)^{k}{\bm{B}}(1)
+and 𝑨​(1)k​𝑯0{\bm{A}}(1)^{k}{\bm{H}}_{0} will be a linear combination of elements of the Jordan
+blocks taking the same form of aka_{k} in Lemma 1. Therefore since our assumptions with L=1L=1
+imply that λi∈ℝ\lambda_{i}\in\mathbb{R} for every ii, we can apply Lemma 1 to show that there exist
+τ¯∈ℕ\bar{\tau}\in\mathbb{N}, 𝑪¯1,𝑪¯2,𝑫¯1,𝑫¯2∈ℂn×d\overline{{\bm{C}}}_{1},\overline{{\bm{C}}}_{2},\
+overline{{\bm{D}}}_{1},\overline{{\bm{D}}}_{2}\in\mathbb{C}^{n\times d} such that for every k≥τk\
+geq\tau we have
+
+ 𝑪^k:=cast⁡(𝑨​(1)k​𝑩)={𝑪¯1​ if ​kmod2=1𝑪¯2​ if ​kmod2=0​𝑫^k:=cast⁡(𝑨​(1)k​𝑯0)={𝑫¯1​ if ​kmod2=
+ 1𝑫¯2​ if ​kmod2=0\widehat{\bm{C}}_{k}:=\mathrm{cast}({\bm{A}}(1)^{k}{\bm{B}})=\begin{cases}\
+ overline{{\bm{C}}}_{1}\text{ if }k\bmod 2=1\\ \overline{{\bm{C}}}_{2}\text{ if }k\bmod 2=0\end
+ {cases}\widehat{\bm{D}}_{k}:=\mathrm{cast}({\bm{A}}(1)^{k}{\bm{H}}_{0})=\begin{cases}\overline{{\
+ bm{D}}}_{1}\text{ if }k\bmod 2=1\\ \overline{{\bm{D}}}_{2}\text{ if }k\bmod 2=0\end{cases}
+
+Finally, if for simplicity we consider τmod2=0\tau\bmod 2=0, we have that for 2​k≥τ2k\geq\tau
+
+ 𝑯^2​k\            =cast⁡(∑i=1τ−1𝑪^i+(k−τ2+1)​𝑪¯2+(k−τ2)​𝑪¯1+k​𝑫¯2)\displaystyle=\mathrm{cast}\
+ displaystyle\     left(\sum_{i=1}^{\tau-1}\widehat{\bm{C}}_{i}+\left(k-\frac{\tau}{2}+1\right)\
+ widehat{\bm{H}}_  overline{{\bm{C}}}_{2}+\left(k-\frac{\tau}{2}\right)\overline{{\bm{C}}}_{1}+k\
+ {2k}              overline{{\bm{D}}}_{2}\right)
+ 𝑯^2​k+1\          =cast⁡(∑i=1τ−1𝑪^i+(k−τ2+1)​(𝑪¯2+𝑪¯1)+k​𝑫¯1)\displaystyle=\mathrm{cast}\left(\
+ displaystyle\     sum_{i=1}^{\tau-1}\widehat{\bm{C}}_{i}+\left(k-\frac{\tau}{2}+1\right)(\
+ widehat{\bm{H}}_  overline{{\bm{C}}}_{2}+\overline{{\bm{C}}}_{1})+k\overline{{\bm{D}}}_{1}\right)
+ {2k+1}
+
+where by factoring out kk inside cast\mathrm{cast}, we note that for large enough kk, the real and
+imaginary parts of each element of the matrices inside cast\mathrm{cast} will be either constant,
+smaller than minx∈ℝ⁡cast⁡(x)\min_{x\in\mathbb{R}}\mathrm{cast}(x) or larger than maxx∈ℝ⁡cast⁡(x)\
+max_{x\in\mathbb{R}}\mathrm{cast}(x). Thus there exist 𝑯¯1,𝑯¯2∈ℂn×d\overline{{\bm{H}}}_{1},\
+overline{{\bm{H}}}_{2}\in\mathbb{C}^{n\times d} and k¯≥τ\bar{k}\geq\tau such that (5) is satisfied,
+concluding the proof for the case of a single layer.
+
+Multiple Layers  Note that for one layer we have two subsequences (one of even and one of odd
+elements) of the output sequence 𝒚^1,𝒚^2,…\hat{\bm{y}}_{1},\hat{\bm{y}}_{2},\dots converging after
+a finite number of elements. This means that there exist 𝒂,𝒃∈ℝp{\bm{a}},{\bm{b}}\in\mathbb{R}^{p}
+such that for all k≥k¯k\geq\bar{k} we have
+
+ 𝒚^2​k=𝒂,𝒚^2​k+1=𝒃.\hat{{\bm{y}}}_{2k}={\bm{a}},\quad\hat{{\bm{y}}}_{2k+1}={\bm{b}}.
+
+Now, consider an additional layer that takes as input 𝒙1(2),…,𝒙k(2){\bm{x}}^{(2)}_{1},\dots,{\bm
+{x}}^{(2)}_{k}, with 𝒙i(2)=𝒚^i{\bm{x}}^{(2)}_{i}=\hat{\bm{y}}_{i} and outputs 𝒚^1(2),…,𝒚^k(2)\hat{\
+bm{y}}^{(2)}_{1},\dots,\hat{\bm{y}}^{(2)}_{k} as
+
+ 𝑯k(2)=𝑨(2)​(𝒙k(2))​𝑯k−1(2)+𝑩(2)​(𝒙k(2)),𝒚^k(2)=dec(2)​(𝑯k(2),𝒙k(2)).{\bm{H}}_{k}^{(2)}={\bm{A}}^
+ {(2)}({\bm{x}}^{(2)}_{k}){\bm{H}}^{(2)}_{k-1}+{\bm{B}}^{(2)}({\bm{x}}^{(2)}_{k}),\quad\hat{\bm
+ {y}}^{(2)}_{k}=\mathrm{dec}^{(2)}({\bm{H}}^{(2)}_{k},{\bm{x}}^{(2)}_{k}).
+
+Without loss of generality, assume for simplicity that k¯=1\bar{k}=1 and that 𝒙^2​k(2)=𝒂\hat{\bm
+{x}}^{(2)}_{2k}={\bm{a}} and 𝒙^2​k+1(2)=𝒃\hat{\bm{x}}^{(2)}_{2k+1}={\bm{b}} for all kk. If we set
+
+ 𝑨1\displaystyle :=𝑨(2)(𝒂),\displaystyle:={\bm   𝑨2:=𝑨(2)​(𝒃),\displaystyle{\displaystyle\bm{A}}_
+ {\bm{A}}_{1}    {A}}^{(2)}({\bm{a}}),\quad      {2}:={\bm{A}}^{(2)}({\bm{b}}),
+ 𝑩1\displaystyle :=𝑩(2)​(𝒂),\displaystyle:={\bm  𝑩2:=𝑩(2)​(𝒃),\displaystyle{\displaystyle\bm{B}}_
+ {\bm{B}}_{1}    {B}}^{(2)}({\bm{a}}),           {2}:={\bm{B}}^{(2)}({\bm{b}}),
+ 𝑪1\displaystyle :=𝑨1​𝑨2,\displaystyle:={\bm     𝑪2:=𝑨1​𝑩2+𝑩1,\displaystyle{\displaystyle\bm{C}}_
+ {\bm{C}}_{1}    {A}}_{1}{\bm{A}}_{2},           {2}:={\bm{A}}_{1}{\bm{B}}_{2}+{\bm{B}}_{1},
+
+then we can write the states of the second layer at even indices as
+
+ 𝑯2​k(2)\            =𝑨1​𝑯2​k−1(2)+𝑩1=𝑨1​𝑨2​𝑯2​k−2(2)+𝑨1​𝑩2+𝑩1\displaystyle={\bm{A}}_{1}{\bm{H}}^
+ displaystyle{\bm    {(2)}_{2k-1}+{\bm{B}}_{1}={\bm{A}}_{1}{\bm{A}}_{2}{\bm{H}}^{(2)}_{2k-2}+{\bm
+ {H}}_{2k}^{(2)}     {A}}_{1}{\bm{B}}_{2}+{\bm{B}}_{1}
+                     =𝑪1​𝑯2​(k−1)(2)+𝑪2=∑i=0k−1𝑪1i​𝑪2+𝑪1k​𝑯0\displaystyle={\bm{C}}_{1}{\bm{H}}^
+                     {(2)}_{2(k-1)}+{\bm{C}}_{2}=\sum^{k-1}_{i=0}{\bm{C}}_{1}^{i}{\bm{C}}_{2}+{\bm
+                     {C}}_{1}^{k}{\bm{H}}_{0}
+
+Furthermore, for the states at odd indices, we have
+
+ 𝑯2​k+1(2)\          =𝑨2​𝑯2​k(2)+𝑩2=∑i=0k−1𝑨2​𝑪1i​𝑪2+𝑨2​𝑪1k​𝑯0+𝑩2.\displaystyle={\bm{A}}_{2}{\bm
+ displaystyle{\bm    {H}}^{(2)}_{2k}+{\bm{B}}_{2}=\sum^{k-1}_{i=0}{\bm{A}}_{2}{\bm{C}}_{1}^{i}{\bm
+ {H}}_{2k+1}^{(2)}   {C}}_{2}+{\bm{A}}_{2}{\bm{C}}_{1}^{k}{\bm{H}}_{0}+{\bm{B}}_{2}.
+
+We notice that the sequences 𝑯2​k(2){\bm{H}}_{2k}^{(2)} and 𝑯2​k+1(2){\bm{H}}_{2k+1}^{(2)} are in a
+form similar to 𝑯k{\bm{H}}_{k} of the first layer. If the assumption on the eigenvalues of the
+state-transition matrices of the second layer does not hold, this means that for all 𝒙,𝒚{\bm{x}},{\
+bm{y}} each eigenvalue of 𝑨(2)​(𝒙)​𝑨(2)​(𝒚){\bm{A}}^{(2)}({\bm{x}}){\bm{A}}^{(2)}({\bm{y}}),
+including 𝑪1{\bm{C}}_{1}, is real (but possibly negative). Therefore, we can proceed similarly to
+the case of one layer, i.e. using the powers of the Jordan canonical form of 𝑪1{\bm{C}}_{1}, to
+show that if we let 𝑯^2​k(2)\widehat{\bm{H}}_{2k}^{(2)} and 𝑯^2​k+1(2)\widehat{\bm{H}}_{2k+1}^{(2)}
+being the finite precision counterparts of 𝑯2​k(2){\bm{H}}_{2k}^{(2)} and 𝑯2​k+1(2){\bm{H}}_{2k+1}^
+{(2)}, then there exist 𝑯¯1(2),𝑯¯2(2),𝑯¯3(2),𝑯¯4(2)∈ℂn×d\overline{{\bm{H}}}^{(2)}_{1},\overline{{\
+bm{H}}}^{(2)}_{2},\overline{{\bm{H}}}^{(2)}_{3},\overline{{\bm{H}}}^{(2)}_{4}\in\mathbb{C}^{n\times
+d}, k¯2≥0\bar{k}_{2}\geq 0 such that for every k≥k¯k\geq\bar{k}
+
+ 𝑯^2​k(2)={𝑯¯1(2)​ if ​kmod2=0𝑯¯2(2)​ if ​kmod2=1,𝑯^2​k+1(2)={𝑯¯3(2)​ if ​kmod2=0𝑯¯4(2)​ if ​kmod2
+ =1.\widehat{\bm{H}}_{2k}^{(2)}=\begin{cases}\overline{{\bm{H}}}^{(2)}_{1}\text{ if }k\bmod 2=0\\
+ \overline{{\bm{H}}}^{(2)}_{2}\text{ if }k\bmod 2=1\end{cases},\quad\widehat{\bm{H}}_{2k+1}^{(2)}=
+ \begin{cases}\overline{{\bm{H}}}^{(2)}_{3}\text{ if }k\bmod 2=0\\ \overline{{\bm{H}}}^{(2)}_{4}\
+ text{ if }k\bmod 2=1\end{cases}.
+
+Therefore, for k≥k¯2k\geq\bar{k}_{2}, the function k↦𝑯¯k(2)k\mapsto\overline{{\bm{H}}}^{(2)}_{k}
+will be periodic with period a divisor of four and hence no matter the choice of dec(2)\mathrm{dec}
+^{(2)}, also the function k↦𝒚^k(2)k\mapsto\hat{\bm{y}}^{(2)}_{k} will be periodic with period a
+divisor of 44. Consequently, with two layers one can recognize the language (1m)∗(1^{m})^{*} only
+when m=1m=1, m=2m=2, or m=4m=4, since those are the only cases where k↦ykk\mapsto y_{k} has a
+period which is a divisor of 44. Thanks to the assumption on the eigenvalues of the products of
+state-transition matrices, we can extend this argument inductively to the case of an LRNN with LL
+layers. In particular, for the ii-th layer, the induction hypothesis is that we assume k↦𝒙k(i)k\
+mapsto{\bm{x}}_{k}^{(i)}, mapping kk to the kk-th input to the layer, to be periodic with period a
+divisor of 2i−12^{i-1} for kk large enough. Hence, there will be 2i−12^{i-1} subsequences of
+states, each containing powers of the product of 2i−12^{i-1} state-transition matrices. From our
+hypothesis on the eigenvalues of products of state-transition matrices, such product will have only
+real eigenvalues and hence each subsequence will have 2 converging subsequences resulting in k↦𝑯k
+(i)k\mapsto{\bm{H}}_{k}^{(i)} and consequently k↦𝒚^k(i)k\mapsto\hat{\bm{y}}_{k}^{(i)} and hence
+k↦𝒙k(i+1)k\mapsto{\bm{x}}_{k}^{(i+1)}, for kk large enough, being periodic with period a divisor of
+2i2^{i}. Therefore, for the LL-th layer, there exists k¯L≥0\bar{k}_{L}\geq 0 such that for every
+k≥k¯Lk\geq\bar{k}_{L}, the function k↦𝒚^k(L)k\mapsto\hat{\bm{y}}^{(L)}_{k} is periodic with a
+period which is a divisor of 2L2^{L} and thus it can recognize the language (1m)∗(1^{m})^{*} only
+when 2Lmodm=02^{L}\mod m=0, which happens only when there exists p≤Lp\leq L such that m=2pm=2^{p}
+and hence mm is a power of two, ending the proof. ∎
+
+Appendix C Products of Generalized Householder Matrices – Proofs
+
+We provide proofs for the results stated in Section 4.3. Before that, we illustrate how a linear
+RNN with one layer and state transition matrices that are products of 2 Householder matrices can
+count modulo mm.
+
+C.1 Products of Two Householders and Modular Counting
+
+Counting modulo mm can be achieved by rotating a vector in ℝ2\mathbb{R}^{2} by an angle of 2​π/m2\
+pi/m radians, and we can express a rotation matrix as a product of two reflection matrices, which
+are GH matrices with eigenvalues in {−1,1}\{-1,1\} (see Section C.1). Inded, for any m∈ℕm\in\mathbb
+{N} there exist unit norm vectors 𝒗1,𝒗2∈ℝ2{\bm{v}}_{1},{\bm{v}}_{2}\in\mathbb{R}^{2} such that
+
+ 𝑹⁡(θ):=[cos⁡θ−sin⁡θsin⁡θcos⁡θ]=(𝑰−2​𝒗1​𝒗1⊤)​(𝑰−2​𝒗2​𝒗2⊤),θ=2​πm.{\bm{R}}(\theta):=\Big[\begin
+ {array}[]{cc}\cos\theta&-\sin\theta\\ \sin\theta&\cos\theta\end{array}\Big]=\left({\bm{I}}-2{\bm
+ {v}}_{1}{\bm{v}}_{1}^{\top}\right)\left({\bm{I}}-2{\bm{v}}_{2}{\bm{v}}_{2}^{\top}\right),\quad\
+ theta=\frac{2\pi}{m}.
+
+If we set the state-transition matrix in (1) to 𝑨⁡(1)=𝑹⁡(θ){\bm{A}}(1)={\bm{R}}(\theta), an LRNN
+with one layer can count modulo mm, since if we also set 𝑯0=(1,0)⊤{\bm{H}}_{0}=(1,0)^{\top} and
+dec⁡(𝑯,x)=arg⁡maxi​𝑫i⊤​𝑯\mathrm{dec}({\bm{H}},x)=\arg\max_{i}{\bm{D}}_{i}^{\top}{\bm{H}}, with 𝑫i=
+𝑹⁡(i​θ)​𝑯0{\bm{D}}_{i}={\bm{R}}(i\theta){\bm{H}}_{0} for all i∈{0,…,m−1}i\in\{0,\dots,m-1\}, then
+for the input 𝒙=1t{\bm{x}}=1^{t} and since 𝑹{\bm{R}} has period 2​π2\pi, we get
+
+ y^t=dec⁡(𝑯t,1)=dec⁡(𝑨​(1)t​𝑯0,1)=dec⁡(𝑹⁡(t​θ)​𝑯0,1)=tmodm.\hat{y}_{t}=\mathrm{dec}({\bm{H}}_
+ {t},1)=\mathrm{dec}({\bm{A}}(1)^{t}{\bm{H}}_{0},1)=\mathrm{dec}({\bm{R}}(t\theta){\bm{H}}_{0},1)=
+ t\bmod m.
+
+C.2 Proof of Proposition 1
+
+First item It can be shown by noting that if 𝑪∈ℳ1n​([−1,1]){\bm{C}}\in\mathcal{M}_{1}^{n}([-1,1]),
+then ∥𝑪∥≤1\lVert{\bm{C}}\rVert\leq 1 and using the sub-multiplicative property of the Euclidean
+norm, i.e the fact that ∥𝑨​𝑩∥≤∥𝑨∥​∥𝑩∥\lVert{\bm{A}}{\bm{B}}\rVert\leq\lVert{\bm{A}}\rVert\lVert{\bm
+{B}}\rVert.
+
+Second item Note that any real matrix has a singular value decomposition. Hence we can write
+
+ 𝑴=𝑼​𝑺​𝑽⊤{\bm{M}}={\bm{U}}{\bm{S}}{\bm{V}}^{\top}
+
+with 𝑼,𝑽∈ℝn×n{\bm{U}},{\bm{V}}\in\mathbb{R}^{n\times n} orthogonal and 𝑺=Diag​(σ1,…,σn){\bm{S}}=\
+text{Diag}(\sigma_{1},\dots,\sigma_{n}) with σi∈[0,1]\sigma_{i}\in[0,1], since ∥𝑴∥≤1\lVert{\bm{M}}\
+rVert\leq 1. It follows from the nn-reflections theorem^4^4 4 This is a specialization of the
+Cartan–Dieudonné Theorem to ℝn\mathbb{R}^{n}, see Theorem 3 in https://faculty.uml.edu/dklain/
+orthogonal.pdf for a proof. that we can write 𝑼{\bm{U}} and 𝑽{\bm{V}} as either the identity I∈ℳ1n​
+({1})I\in\mathcal{M}_{1}^{n}(\{1\}) or the product of at most nn reflections, each of which is in
+ℳ1n​({−1})\mathcal{M}_{1}^{n}(\{-1\}). Hence 𝑼,𝑽∈ℳnn​({−1,1}){\bm{U}},{\bm{V}}\in\mathcal{M}_{n}^
+{n}(\{-1,1\}). We can also write the matrix 𝑺{\bm{S}} as the product of nn GH matrices as
+
+ 𝑺=𝑺1​𝑺2​…​𝑺n,𝑺i=𝑰−(1−σi)​𝒆i​𝒆i⊤{\bm{S}}={\bm{S}}_{1}{\bm{S}}_{2}\dots{\bm{S}}_{n},\quad{\bm{S}}_
+ {i}={\bm{I}}-(1-\sigma_{i}){\bm{e}}_{i}{\bm{e}}_{i}^{\top}
+
+where 𝒆i{\bm{e}}_{i} is the ii-th element of the canonical basis of ℝn\mathbb{R}^{n}. Hence, 𝑺∈ℳnn​
+([0,1]){\bm{S}}\in\mathcal{M}_{n}^{n}([0,1]). The proof of the first part is concluded since we
+wrote each of 𝑼,𝑺,𝑽{\bm{U}},{\bm{S}},{\bm{V}} as a product of at most nn GH matrices. If 𝑴{\bm{M}}
+is orthogonal, we apply the nn-reflections theorem directly. We also note that if 𝑴=𝑷∈{0,1}n×n{\bm
+{M}}={\bm{P}}\in\{0,1\}^{n\times n} with 𝑷{\bm{P}} being a permutation matrix different from the
+identity, it can be written as products of at most n−1n-1 swaps, i.e. permutation matrices
+permuting only two elements. Therefore we have that there exists an integer k≤n−1k\leq n-1 and
+indices i1,…,iki_{1},\dots,i_{k} and j1,…,jkj_{1},\dots,j_{k} such that il≠jli_{l}\neq j_{l} and
+
+ 𝑷=∏l=1k−1𝑷il​jl,,𝑷i​j=(I−2𝒗i​j𝒗i​j⊤)vi​j​l={1/2 if ​l=i−1/2 if l=j0 otherwise,{\bm{P}}=\prod_{l=
+ 1}^{k-1}{\bm{P}}_{i_{l}j_{l}},\quad,{\bm{P}}_{ij}=(I-2{\bm{v}}_{ij}{\bm{v}}_{ij}^{\top})\qquad v_
+ {ijl}=\begin{cases}1/\sqrt{2}\quad\text{ if }l=i\\ -1/\sqrt{2}\quad\text{ if }l=j\\ 0\quad\text{
+ otherwise}\end{cases},
+
+where we set 𝒗i​j=(vi​j​1,…,vi​j​n){\bm{v}}_{ij}=(v_{ij1},\dots,v_{ijn}). Note that since ‖𝒗i​j‖=1\
+left\lVert{\bm{v}}_{ij}\right\rVert=1, 𝑷i​j∈ℳkn​({−1}){\bm{P}}_{ij}\in\mathcal{M}_{k}^{n}(\{-1\})
+with k≤nk\leq n. For the the case where 𝑴=𝑰{\bm{M}}={\bm{I}} we can use the fact that 𝑰∈ℳ1n​({1}){\
+bm{I}}\in\mathcal{M}_{1}^{n}(\{1\}).
+
+Third item Let 𝑵=𝑪1𝑪2⋯𝑪k∈ℳkn((−1,1]){\bm{N}}={\bm{C}}_{1}{\bm{C}}_{2}\cdots{\bm{C}}_{k}\in\mathcal
+{M}_{k}^{n}((-1,1]), with 𝑪i=𝑰−βi​𝒛i​𝒛i⊤{\bm{C}}_{i}={\bm{I}}-\beta_{i}{\bm{z}}_{i}{\bm{z}}_{i}^{\
+top} with ‖𝒛i‖=1\left\lVert{\bm{z}}_{i}\right\rVert=1 and βi∈[0,2)\beta_{i}\in[0,2). If 𝑵=𝑰{\bm{N}}
+={\bm{I}} the statement is satisfied, otherwise, let 𝒱=span{𝒛i:i∈{1,…,k},βi>0}\mathcal{V}=\mathrm
+{span}\{{\bm{z}}_{i}\,:\,i\in\{1,\dots,k\},\beta_{i}>0\}. Any unit vector 𝒗∈ℝn{\bm{v}}\in\mathbb{R}
+^{n} can then be written as 𝒗=𝒗1+𝒗2{\bm{v}}={\bm{v}}_{1}+{\bm{v}}_{2} with 𝒗1∈𝒱{\bm{v}}_{1}\in\
+mathcal{V}, 𝒗2∈𝒱⊤{\bm{v}}_{2}\in\mathcal{V}^{\top} and ‖𝒗1‖,‖𝒗2‖≤1\left\lVert{\bm{v}}_{1}\right\
+rVert,\left\lVert{\bm{v}}_{2}\right\rVert\leq 1. Now, if 𝒗1=0{\bm{v}}_{1}=0, then 𝑵​𝒗=𝒗{\bm{N}}{\bm
+{v}}={\bm{v}}, and hence 𝒗{\bm{v}} is an eigenvector with eigenvalue 11. Instead, if 𝒗1≠0{\bm{v}}_
+{1}\neq 0, then there exists i′∈{1,…,k}i^{\prime}\in\{1,\dots,k\} (we take the largest one) such
+that βi′∈(0,2)\beta_{i^{\prime}}\in(0,2) and (𝒗⊤​𝒛i′)2=(𝒗1⊤​𝒛i′)2∈(0,1]({\bm{v}}^{\top}{\bm{z}}_{i^
+{\prime}})^{2}=({\bm{v}}_{1}^{\top}{\bm{z}}_{i^{\prime}})^{2}\in(0,1]. Therefore, if i′<ki^{\prime}
+<k, then either βj=0\beta_{j}=0 or 𝒛j⊤​𝒗=0{\bm{z}}_{j}^{\top}{\bm{v}}=0 so that 𝑪j​𝒗=𝒗{\bm{C}}_{j}
+{\bm{v}}={\bm{v}} for all j∈{i′+1,…,k}j\in\{i^{\prime}+1,\dots,k\}. Moreover, we have that
+
+ ∥𝑪i′​𝒗∥2=∥𝒗−βi′​𝒛i′​𝒛i′⊤​𝒗∥2=1−βi′​(2−βi′)​(𝒗⊤​𝒛i′)2<1,\lVert{\bm{C}}_{i^{\prime}}{\bm{v}}\rVert^
+ {2}=\lVert{\bm{v}}-\beta_{i^{\prime}}{\bm{z}}_{i^{\prime}}{\bm{z}}_{i^{\prime}}^{\top}{\bm{v}}\
+ rVert^{2}=1-\beta_{i^{\prime}}(2-\beta_{i^{\prime}})({\bm{v}}^{\top}{\bm{z}}_{i^{\prime}})^{2}<1,
+
+where the last line comes from the fact that minx∈[0,2]⁡x⁡(2−x)=0\min_{x\in[0,2]}x(2-x)=0 and is
+only reached at x=0x=0 and x=2x=2, while βi′∈(0,2)\beta_{i^{\prime}}\in(0,2). Therefore, since for
+every ii, ‖𝑪i‖≤1\left\lVert{\bm{C}}_{i}\right\rVert\leq 1 and the Euclidean norm is
+sub-multiplicative we have
+
+ ‖𝑵𝒗‖=‖𝑪1𝑪2…𝑪k𝒗‖=‖𝑪1𝑪2…𝑪i′𝒗‖≤‖𝑪1‖⋯‖𝑪i′𝒗‖<1.\left\lVert{\bm{N}}{\bm{v}}\right\rVert=\left\lVert{\bm
+ {C}}_{1}{\bm{C}}_{2}\dots{\bm{C}}_{k}{\bm{v}}\right\rVert=\left\lVert{\bm{C}}_{1}{\bm{C}}_{2}\
+ dots{\bm{C}}_{i^{\prime}}{\bm{v}}\right\rVert\leq\left\lVert{\bm{C}}_{1}\right\rVert\cdots\left\
+ lVert{\bm{C}}_{i^{\prime}}{\bm{v}}\right\rVert<1.
+
+Therefore, if 𝒗{\bm{v}} is also an eigenvector with eigenvalue λ∈ℂ\lambda\in\mathbb{C}, then ‖𝑵​𝒗‖=
+|λ|<1\left\lVert{\bm{N}}{\bm{v}}\right\rVert=|\lambda|<1. Hence, we proved that for every
+eigenvector with eigenvalue λ\lambda either λ=1\lambda=1 or |λ|<1|\lambda|<1.
+
+It remains to show that all eigenvalues of 𝑵∈ℳ2n​([0,1]){\bm{N}}\in\mathcal{M}_{2}^{n}([0,1]) are
+in [0,1][0,1]. From the assumptions 𝑵=𝑪1​𝑪2{\bm{N}}={\bm{C}}_{1}{\bm{C}}_{2} with 𝑪1,𝑪2{\bm{C}}_
+{1},{\bm{C}}_{2} symmetric and positive semi-definite, therefore 𝑪1{\bm{C}}_{1} has a unique
+symmetric and positive semi-definite square root 𝑪11/2{\bm{C}}_{1}^{1/2} such that 𝑪11/2​𝑪11/2=𝑪1{\
+bm{C}}_{1}^{1/2}{\bm{C}}_{1}^{1/2}={\bm{C}}_{1}. If 𝑪1{\bm{C}}_{1} is non-singular (invertible)
+then
+
+ 𝑪1𝑪2=𝑪11/2𝑪11/2𝑪2𝑪11/2𝑪1−1/2.{\bm{C}}_{1}{\bm{C}}_{2}={\bm{C}}_{1}^{1/2}{\bm{C}}_{1}^{1/2}{\bm
+ {C}}_{2}{\bm{C}}_{1}^{1/2}{\bm{C}}_{1}^{-1/2}.
+
+Thus, 𝑪1​𝑪2{\bm{C}}_{1}{\bm{C}}_{2} is similar to 𝑪11/2​𝑪2​𝑪11/2{\bm{C}}_{1}^{1/2}{\bm{C}}_{2}{\bm
+{C}}_{1}^{1/2} and shares its eigenvalues. Moreover 𝑪11/2​𝑪2​𝑪11/2{\bm{C}}_{1}^{1/2}{\bm{C}}_{2}{\
+bm{C}}_{1}^{1/2} is symmetric positive semi-definite (having real nonnegative eigenvalues) because
+𝑪11/2{\bm{C}}_{1}^{1/2} and 𝑪2{\bm{C}}_{2} are symmetric and 𝒗⊤​𝑪11/2​𝑪2​𝑪11/2​𝒗=𝒛⊤​𝑪2​𝒛≥0{\bm{v}}^
+{\top}{\bm{C}}_{1}^{1/2}{\bm{C}}_{2}{\bm{C}}_{1}^{1/2}{\bm{v}}={\bm{z}}^{\top}{\bm{C}}_{2}{\bm{z}}\
+geq 0 with 𝒛=𝑪11/2​𝒗{\bm{z}}={\bm{C}}_{1}^{1/2}{\bm{v}} since 𝑪2{\bm{C}}_{2} is positive
+semi-definite. Instead, if 𝑪1{\bm{C}}_{1} is singular, for t>0t>0 the matrix 𝑪1+t​𝑰{\bm{C}}_{1}+t{\
+bm{I}} is positive definite and non-singular. Hence (𝑪1+t​𝑰)​𝑪2({\bm{C}}_{1}+t{\bm{I}}){\bm{C}}_{2}
+has real and nonnegative eigenvalues. Since 𝑪1​𝑪2=limt→0(𝑪1+t​𝑰)​(𝑪2){\bm{C}}_{1}{\bm{C}}_{2}=\lim_
+{t\to 0}({\bm{C}}_{1}+t{\bm{I}})({\bm{C}}_{2}) and the eigenvalues are a continuous function of the
+entry of the matrix, 𝑪1​𝑪2{\bm{C}}_{1}{\bm{C}}_{2} has positive real eigenvalues. Since the modulus
+of any eigenvalue is smaller or equal than the euclidean norm of the matrix, which is smaller than
+one from the first point of the theorem, the statement follows. ∎
+
+C.3 Proof of Theorem 3
+
+We first recall the notion of group isomorphism. Two groups (G,∗)(G,*) and (H,⋅)(H,\cdot) where
+G,HG,H are the sets and ⋆\star and ⋅\cdot are the associative operations, are isomorphic, if there
+exists a bijective map f:G→Hf:G\to H such that for every g∈Gg\in G, h∈Hh\in H
+
+ f⁡(g∗h)=f⁡(g)⋅f⁡(h).f(g*h)=f(g)\cdot f(h).
+
+We view the LRNN layer in (1) as the automaton 𝒜lin=(Σ,ℋ,𝑯0,δlin)\mathcal{A}_{\mathrm{lin}}=(\
+Sigma,\mathcal{H},{\bm{H}}_{0},\delta_{\mathrm{lin}}), where δlin​(𝑯,w)=𝑨⁡(w)​𝑯+𝑩⁡(w)\delta_{\
+mathrm{lin}}({\bm{H}},w)={\bm{A}}(w){\bm{H}}+{\bm{B}}(w), which is extended in the usual way, and ℋ
+={δlin​(𝑯0,𝒘):𝒘∈Σ∗}\mathcal{H}=\{\delta_{\mathrm{lin}}({\bm{H}}_{0},{\bm{w}})\,:\,{\bm{w}}\in\Sigma
+^{*}\}. Since we assumed that 𝒯⁡(𝒜)\mathcal{T}(\mathcal{A}) is a group, from Cayley’s theorem we
+have that it is isomorphic to a subgroup of SnS_{n}, which is the set of permutations on a set of
+nn elements. Furthermore, each element in SnS_{n} can be represented as an n×nn\times n permutation
+matrix. Since in general n≠|Q|n\neq|Q|, we cannot let ℋ\mathcal{H} to be a set of one hot vectors
+each corresponding to states in QQ. Instead, we let 𝑯0=(1,…,n)⊤{\bm{H}}_{0}=(1,\dots,n)^{\top}, 𝒫⊂
+{0,1}n×n\mathcal{P}\subset\{0,1\}^{n\times n} be the set of permutation matrices and set 𝑩≡0{\bm
+{B}}\equiv 0 and 𝑨:Σ→𝒫{\bm{A}}:\Sigma\to\mathcal{P} to be the function mapping each letter w∈Σw\in\
+Sigma to the permutation matrix corresponding to δ⁡(⋅,w)\delta(\cdot,w). With this choice we can
+see that the function f:𝒯⁡(𝒜lin)→𝒯⁡(𝒜)f:\mathcal{T}(\mathcal{A}_{\mathrm{lin}})\to\mathcal{T}(\
+mathcal{A}) such that f⁡(δlin​(⋅,𝒘))=δ⁡(⋅,𝒘)f(\delta_{\mathrm{lin}}(\cdot,{\bm{w}}))=\delta(\cdot,
+{\bm{w}}) for every 𝒘∈Σ∗{\bm{w}}\in\Sigma^{*} is one-to-one (bijective), and from our choice of 𝑯0
+{\bm{H}}_{0}, the map h:𝒯⁡(𝒜lin)→ℋh:\mathcal{T}(\mathcal{A}_{\mathrm{lin}})\to\mathcal{H} such that
+for every 𝒘∈Σ∗{\bm{w}}\in\Sigma^{*}, h⁡(δlin​(⋅,𝒘))=δlin​(𝑯0,𝒘)h(\delta_{\mathrm{lin}}(\cdot,{\bm
+{w}}))=\delta_{\mathrm{lin}}({\bm{H}}_{0},{\bm{w}}) is also bijective. Moreover, the map ϕ:𝒯⁡(𝒜)→Q\
+phi:\mathcal{T}(\mathcal{A})\to Q such that ϕ⁡(δ⁡(⋅,𝒘))=δ⁡(q0,𝒘)\phi(\delta(\cdot,{\bm{w}}))=\delta
+(q_{0},{\bm{w}}) is surjective because without loss of generality we can consider states that are
+only reachable from the initial state q0q_{0}, i.e. Q={δ⁡(q0,𝒘):𝒘∈Σ∗}Q=\{\delta(q_{0},{\bm{w}})\,:
+\,{\bm{w}}\in\Sigma^{*}\}. Hence if we set g=ϕ∘f∘h−1g=\phi\circ f\circ h^{-1}, then g:ℋ→Qg:\mathcal
+{H}\to Q is surjective and for every w∈Σw\in\Sigma and 𝑯∈ℋ{\bm{H}}\in\mathcal{H} we have that
+
+ g⁡(δlin​(𝑯,w))=δ⁡(g⁡(𝑯),w)g(\delta_{\mathrm{lin}}({\bm{H}},w))=\delta(g({\bm{H}}),w)
+
+Thus, we have shown that such an LRNN implements 𝒜\mathcal{A} and it does so with finite precision
+because the entries of all vectors and matrices are bounded integers. Moreover, Let k=maxw∈Σ∑q∈Q𝟏{δ
+(q,w)≠q}=maxw∈Σ∑i=1n𝟏{(𝑨(w)𝑯0)i=𝑯0,i}k=\max_{w\in\Sigma}\sum_{q\in Q}\mathbf{1}\{\delta(q,w)\neq q
+\}=\max_{w\in\Sigma}\sum_{i=1}^{n}\mathbf{1}\{({\bm{A}}(w){\bm{H}}_{0})_{i}={\bm{H}}_{0,i}\} be the
+maximum number of displaced element of the permutation associated with the alphabet Σ\Sigma. Then,
+this means that each permutation can be written as a product of at most k−1k-1 permutations of two
+elements. Hence, for every w∈Σw\in\Sigma, 𝑨⁡(w)∈ℳk−1n​({−1,1}){\bm{A}}(w)\in\mathcal{M}_{k-1}^{n}(\
+{-1,1\}).
+
+If in addition there exists m∈ℕm\in\mathbb{N} such that 𝒯⁡(𝒜)\mathcal{T}(\mathcal{A}) is isomorphic
+to a subgroup of the cyclic group ℤm\mathbb{Z}_{m} with elements {0,…,m−1}\{0,\dots,m-1\}, we can
+modify the construction above to use a smaller dimension. If m=2m=2, then ℤ2\mathbb{Z}_{2} has
+elements {0,1}\{0,1\}, and 𝒜\mathcal{A} implements the parity automaton. Thus, we can set 𝑯0=−1{\bm
+{H}}_{0}=-1, 𝑨⁡(0)=1{\bm{A}}(0)=1, 𝑨⁡(1)=−1{\bm{A}}(1)=-1 and g⁡(1)=1g(1)=1 while g⁡(−1)=0g(-1)=0,
+which means that we can use a scalar recursion. Otherwise, if m≥3m\geq 3, we can modify the
+construction above by setting 𝑯0=(1,0)⊤{\bm{H}}_{0}=(1,0)^{\top} and, if for simplicity we assume
+Σ∈{0,…,m−1}\Sigma\in\{0,\dots,m-1\}, for every w∈Σw\in\Sigma we let 𝑨⁡(w){\bm{A}}(w) be the 2×22\
+times 2 rotation matrix corresponding to δ⁡(⋅,w)\delta(\cdot,w):
+
+ 𝑨⁡(w)=𝑹⁡(θw)=[cos⁡θw−sin⁡θwsin⁡θwcos⁡θw],θw=2​π​wm,{\bm{A}}(w)={\bm{R}}(\theta_{w})=\left[\begin
+ {array}[]{cc}\cos\theta_{w}&-\sin\theta_{w}\\ \sin\theta_{w}&\cos\theta_{w}\end{array}\right],\
+ quad\theta_{w}=\frac{2\pi w}{m},
+
+such that 𝑹⁡(θw)∈ℳ22​({−1}){\bm{R}}(\theta_{w})\in\mathcal{M}_{2}^{2}(\{-1\}) (from Proposition 1).
+This concludes the proof. ∎
+
+C.4 Krohn-Rhodes Theorem
+
+Before presenting the proof for Theorem 4, we provide the statement for the landmark result of
+Krohn-Rhodes (Krohn & Rhodes, 1965), after giving the definition of the cascade product of two FSA.
+
+Definition 1 (Cascade product).
+
+Given two FSA 𝒜=(Σ,Q,q0,δ)\mathcal{A}=(\Sigma,Q,q_{0},\delta) and ℬ=(Q×Σ,Q′,q0′,δ′)\mathcal{B}=(Q\
+times\Sigma,Q^{\prime},q^{\prime}_{0},\delta^{\prime}), we define the cascade product FSA as 𝒞=ℬ∘𝒜=
+(Σ,Q×Q′,(q0,q0′),δ′′)\mathcal{C}=\mathcal{B}\circ\mathcal{A}=(\Sigma,Q\times Q^{\prime},(q_{0},q_
+{0}^{\prime}),\delta^{\prime\prime}) where for any w∈Σw\in\Sigma
+
+ δ′′​((q,q′),w):=(δ⁡(q,w),δ⁡(q′,(q,w)))\delta^{\prime\prime}((q,q^{\prime}),w):=(\delta(q,w),\
+ delta(q^{\prime},(q,w)))
+
+Theorem 5 (Krohn-Rhodes, Theorem 4 in Maler & Pnueli (1994)).
+
+For every FSA 𝒜=(Σ,Q,q0,δ)\mathcal{A}=(\Sigma,Q,q_{0},\delta) there exists s≤2|Q|s\leq 2^{|Q|} and
+a cascade product FSA 𝒞=𝒜(s)∘⋯∘𝒜(1)=(Σ,Q×,q0×,δ×)\mathcal{C}=\mathcal{A}^{(s)}\circ\cdots\circ\
+mathcal{A}^{(1)}=(\Sigma,Q^{\times},q_{0}^{\times},\delta^{\times}), with 𝒜(i)=(Σ(i),Q(i),q0(i),δ
+(i))\mathcal{A}^{(i)}=\big(\Sigma^{(i)},Q^{(i)},q_{0}^{(i)},\delta^{(i)}\big), with |Q(i)|≤|Q||Q^
+{(i)}|\leq|Q|, and a function 𝒲:Q×→Q\mathcal{W}:Q^{\times}\rightarrow Q such that for any 𝐰∈Σ∗{\bm
+{w}}\in\Sigma^{*}, δ⁡(q0,𝐰)=𝒲⁡(δ×​(q0×,𝐰))\delta(q_{0},{\bm{w}})=\mathcal{W}(\delta^{\times}(q_{0}^
+{\times},{\bm{w}})) and each 𝒜(i)\mathcal{A}^{(i)} is permutation-reset automaton, which means that
+for every w(i)∈Σ(i)w^{(i)}\in\Sigma^{(i)}, δ(i)​(⋅,w(i))\delta^{(i)}(\cdot,w^{(i)}) is either a
+bijection (i.e. a permutation over QQ) or constant, ie. δ⁡(⋅,w(i))=q⁡(w(i))∈Q(i)\delta(\cdot,w^
+{(i)})=q(w^{(i)})\in Q^{(i)}.
+
+C.5 Proof of Theorem 4
+
+We apply the Krohn-Rhodes theorem (Theorem 5) to write 𝒜\mathcal{A} as the cascade product FSA 𝒞=𝒜
+(s)∘⋯∘𝒜(1)\mathcal{C}=\mathcal{A}^{(s)}\circ\cdots\circ\mathcal{A}^{(1)} with each FSA 𝒜(i)=(Σ(i),Q
+(i),q0(i),δ(i))\mathcal{A}^{(i)}=\big(\Sigma^{(i)},Q^{(i)},q_{0}^{(i)},\delta^{(i)}\big) being
+permutation-reset and we show how the LRNN can implement 𝒞\mathcal{C} by first showing how its
+ii-th layer, with the structure in (1), can implement 𝒜(i)\mathcal{A}^{(i)}.
+
+Let n=|Q(i)|n=|Q^{(i)}| and without loss of generality assume that Σ={1,2,…,|Σ|}\Sigma=\{1,2,\dots,
+|\Sigma|\} and Q(i)={1,2,…,n}Q^{(i)}=\{1,2,\dots,n\} with q0(i)=1q_{0}^{(i)}=1. For every w∈Σ(i)w\
+in\Sigma^{(i)} we set 𝑨(i)​(w)∈{0,1}n×n{\bm{A}}^{(i)}(w)\in\{0,1\}^{n\times n}, 𝑩(i)​(w)∈{0,1}n{\bm
+{B}}^{(i)}(w)\in\{0,1\}^{n} such that for every q,q′∈Q(i)q,q^{\prime}\in Q^{(i)}
+
+ 𝑨(i)​(w)q′,q\    =𝟏{δ(q,w)=q′},\                                     if ​δ(i)​(⋅,w)​ is
+ displaystyle{\bm displaystyle=\      𝑩(i)(w)q′=0,\displaystyle{\     bijective, or\displaystyle\
+ {A}}^{(i)}(w)_{q mathbf{1}\{\delta   displaystyle\bm{B}}^{(i)}(w)_   text{ if }\delta^{(i)}(\
+ ^{\prime},q}     (q,w)=q^{\prime}    {q^{\prime}}=0,\quad            cdot,w)\text{ is bijective,
+                  \},                                                 or}
+ 𝑨(i)​(w)q′,q\                        𝑩(i)(w)q′=𝟏{q′=q(w)},\          if ​δ(i)​(⋅,w)≡q⁡(w).\
+ displaystyle{\bm =0,\displaystyle=   displaystyle{\displaystyle\bm   displaystyle\text{ if }\
+ {A}}^{(i)}(w)_{q 0,                  {B}}^{(i)}(w)_{q^{\prime}}=\    delta^{(i)}(\cdot,w)\equiv q
+ ^{\prime},q}                         mathbf{1}\{q^{\prime}=q(w)\},   (w).
+
+Then, for every word 𝒘(i)=w1(i)…wt(i)∈Σ(i)∗{\bm{w}}^{(i)}=w_{1}^{(i)}\dots w_{t}^{(i)}\in\Sigma^
+{(i)*}, we set g:ℝn→ℝg:\mathbb{R}^{n}\to\mathbb{R}, such that g⁡(x)=(1,…,n)⊤​xg(x)=(1,\dots,n)^{\
+top}x and
+
+ 𝑯t(i)\           =𝑨(i)​(wt(i))​𝑯t−1(i)+𝑩(i)​(wt(i)),𝑯0(i)=(1,0​…,0)⊤∈ℝn\displaystyle={\bm{A}}^
+ displaystyle{\bm {(i)}(w^{(i)}_{t}){\bm{H}}^{(i)}_{t-1}+{\bm{B}}^{(i)}(w^{(i)}_{t}),\qquad{\bm
+ {H}}^{(i)}_{t}   {H}}^{(i)}_{0}=(1,0\dots,0)^{\top}\in\mathbb{R}^{n}
+ y(i)\            =dec(i)​(𝑯t(i),wt(i))=(g⁡(𝑯t(i)),wt(i))=(δ(i)​(q0(i),𝒘(i)),w(i))\displaystyle=\
+ displaystyle y^  mathrm{dec}^{(i)}({\bm{H}}_{t}^{(i)},w_{t}^{(i)})=(g({\bm{H}}_{t}^{(i)}),w_{t}^
+ {(i)}            {(i)})=(\delta^{(i)}(q_{0}^{(i)},{\bm{w}}^{(i)}),w^{(i)})
+
+So that such construction implements 𝒜(i)\mathcal{A}^{(i)}. In addition, by letting 𝒘=w1​…​wt∈Σ∗{\
+bm{w}}=w_{1}\dots w_{t}\in\Sigma^{*} be the input to the LRNN, i.e. wj(1)=wjw^{(1)}_{j}=w_{j}, and
+setting the output of each layer as the input to the next, i.e. wj(i)=yj(i−1)w_{j}^{(i)}=y_{j}^
+{(i-1)} for i≥2i\geq 2, for the output of the last layer we get
+
+ yt(s)\
+ displaystyle y^  =dec(s)​(𝑯t,wt(s))\displaystyle=\mathrm{dec}^{(s)}({\bm{H}}_{t},w_{t}^{(s)})
+ {(s)}_{t}
+                  =(δ(s)​(q0(s),𝒘(s)),yt(s−1))\displaystyle=(\delta^{(s)}(q_{0}^{(s)},{\bm{w}}^
+                  {(s)}),y_{t}^{(s-1)})
+                  =(δ(s)​(q0(s),𝒘(s)),δ(s−1)​(q0(s−1),𝒘(s−1)),yt(s−2))\displaystyle=(\delta^{(s)}
+                  (q_{0}^{(s)},{\bm{w}}^{(s)}),\delta^{(s-1)}(q_{0}^{(s-1)},{\bm{w}}^{(s-1)}),y_
+                  {t}^{(s-2)})
+                  =(δ(s)​(q0(s),𝒘(s)),…,δ(1)​(q0(1),𝒘),wt)∈ℕs+1,\displaystyle=(\delta^{(s)}(q_{0}^
+                  {(s)},{\bm{w}}^{(s)}),\dots,\delta^{(1)}(q_{0}^{(1)},{\bm{w}}),w_{t})\in\mathbb
+                  {N}^{s+1},
+
+where we removed the nested parenthesis for simplicity. Hence, the first ss elements of yt(s)y_{t}^
+{(s)} are exactly the output of the cascade FSA 𝒞\mathcal{C}. Note that our construction can be
+implemented in finite precision since we only used matrices/vectors with entries either in {0,1}\
+{0,1\}, requiring only one bit, or in Q(i)⊂ℕQ^{(i)}\subset\mathbb{N}, that can also be implemented
+using finite precision with |Q(i)||Q^{(i)}| integers, requiring log2⁡(|Q(i)|)\log_{2}(|Q^{(i)}|)
+bits. Also note that we can exclude wtw_{t} from the output yt(s)y_{t}^{(s)} by changing dec(s)\
+mathrm{dec}^{(s)}, to bring the dimension of the output, end hence the width of the LRNN, to ℕs\
+mathbb{N}^{s}.
+
+It is also the case that ‖𝑨(i)​(w)‖≤1\left\lVert{\bm{A}}^{(i)}(w)\right\rVert\leq 1 for every w∈Σ
+(i)w\in\Sigma^{(i)} since 𝑨(i)​(w){\bm{A}}^{(i)}(w) is either a permutation matrix (‖𝑨(i)​(w)‖=1\
+left\lVert{\bm{A}}^{(i)}(w)\right\rVert=1 ) or the zero matrix (‖𝑨(i)​(w)‖=0\left\lVert{\bm{A}}^
+{(i)}(w)\right\rVert=0). Also, for every permutation matrix 𝑷∈{0,1}n×n{\bm{P}}\in\{0,1\}^{n\times
+n} which permutes only k≤nk\leq n elements we have that 𝑷∈ℳk−1n​({−1,1}){\bm{P}}\in\mathcal{M}_
+{k-1}^{n}(\{-1,1\}).
+
+Furthermore, for the zero matrix, we have
+
+ 0=∏i=1n(I−𝒆i​𝒆i⊤)∈ℳnn​({0})0=\prod_{i=1}^{n}(I-{\bm{e}}_{i}{\bm{e}}_{i}^{\top})\in\mathcal{M}_{n}
+ ^{n}(\{0\})
+
+It follows that 𝒜(i)​(w)∈ℳnn​([−1,1])\mathcal{A}^{(i)}(w)\in\mathcal{M}_{n}^{n}([-1,1]) for every
+i∈{1,…,s}i\in\{1,\dots,s\} and w∈Σ(i)w\in\Sigma^{(i)}. ∎
+
+Appendix D LRNNs Can Do Modular Addition Using Only Reflections
+
+In this section, we explain how an LRNN with two layers and using only Householder state transition
+matrices (reflections) can compute addition modulo m∈ℕm\in\mathbb{N}, i.e it can map words
+x1,…,xtx_{1},\dots,x_{t} with xi∈{0,…,m−1}x_{i}\in\{0,\dots,m-1\} into yt=(∑i=1mxi)modmy_{t}=(\sum_
+{i=1}^{m}x_{i})\bmod m for arbitrary t∈ℕt\in\mathbb{N}. This corresponds to solving the group word
+problem associated with the cyclic group ℤm\mathbb{Z}_{m}. We note that our modification of
+DeltaNet, namely DeltaNet [−1,1][-1,1] can therefore solve addition modulo mm with 2 layers.
+
+If the state transition matrices can be generic rotation matrices, then an LRNN can perform
+addition modulo mm using just one layer by mapping each element of ℤm\mathbb{Z}_{m} to the
+corresponding 2×22\times 2 rotation matrix as shown in Section C.3. Such construction requires a
+number of states for the LRNN equal to mm, i.e. the number of elements of the group ℤm\mathbb{Z}_
+{m}. However, since here we assume that state transition matrices are reflections, we cannot map
+each element of the group to a rotation (since those are a product of 2 reflections) and our
+construction for the LRNN will require two layers. Specifically, the first layer will count modulo
+22, i.e. it will output the sequence 𝒚1(1),…,𝒚t(1){\bm{y}}^{(1)}_{1},\dots,{\bm{y}}^{(1)}_{t} where
+𝒚i(1)=(xi,imod2){\bm{y}}^{(1)}_{i}=(x_{i},i\bmod 2), while the second layer will have 2​m2m states
+and will use two different reflection matrices for each group element, depending on the value of
+yi,2(1)=imod2y^{(1)}_{i,2}=i\bmod 2. Formally, we have the following result.
+
+Theorem 6 (Modular addition with reflections).
+
+An LRNN with two layers in the form (1), where 𝐀:ℕ→{−1}{\bm{A}}:\mathbb{N}\to\{-1\} for the first
+layer and 𝐀:ℝ2→ℳ12​({−1}){\bm{A}}:\mathbb{R}^{2}\to\mathcal{M}_{1}^{2}(\{-1\}) for the second
+layer, with ℳ12\mathcal{M}_{1}^{2} defined in (3), can perform addition modulo mm for any m∈ℕm\in\
+mathbb{N}. In particular, the LRNN will have 2 scalar states in the first layer and 2​m2m states,
+each being a vector in ℝ2\mathbb{R}^{2}, in the second layer.
+
+Proof.
+
+The first layer of the LRNN will implement counting modulo 22 as follows.
+
+ h0(1)=0,ht(1)=−ht−1(1)+1,𝒚t(1)=dec(1)​(ht,xt)=(xt,ht).\displaystyle h^{(1)}_{0}=0,\quad h_{t}^
+ {(1)}=-h^{(1)}_{t-1}+1,\quad{\bm{y}}^{(1)}_{t}=\mathrm{dec}^{(1)}(h_{t},x_{t})=(x_{t},h_{t}).
+
+We note that the state-transition matrix (the scalar −1-1) is a reflection since {−1}=ℳ11​({−1})\
+{-1\}=\mathcal{M}^{1}_{1}(\{-1\}). For the second layer, we have instead
+
+ 𝒉0(2)=(1,0)⊤,𝒉t(2)=𝑨(2)​(𝒚t(1))​𝒉t−1(2),𝒚t(2)=dec(2)​(𝒉t(2),𝒚t(1))\displaystyle{\bm{h}}^{(2)}_{0}
+ =(1,0)^{\top},\quad{\bm{h}}^{(2)}_{t}={\bm{A}}^{(2)}({\bm{y}}^{(1)}_{t}){\bm{h}}^{(2)}_{t-1},\
+ quad{\bm{y}}^{(2)}_{t}=\mathrm{dec}^{(2)}({\bm{h}}_{t}^{(2)},{\bm{y}}^{(1)}_{t})
+ 𝑨(2)​(𝒚)=𝑯⁡(θ⁡(y1,y2))=[cos⁡θ⁡(y1,y2)sin⁡θ⁡(y1,y2)sin⁡θ⁡(y1,y2)−cos⁡θ⁡(y1,y2)]\displaystyle{\bm
+ {A}}^{(2)}({\bm{y}})={\bm{H}}(\theta(y_{1},y_{2}))=\left[\begin{array}[]{cc}\cos\theta(y_{1},y_
+ {2})&\sin\theta(y_{1},y_{2})\\ \sin\theta(y_{1},y_{2})&-\cos\theta(y_{1},y_{2})\end{array}\right]
+ dec(2)​(𝒉,𝒚)=arg​maxi∈{0,…,m−1}​max​(𝐜i⊤​𝐡,𝐝i⊤​𝐡)\displaystyle\mathrm{dec}^{(2)}({\bm{h}},{\bm
+ {y}})=\argmax_{i\in\{0,\dots,m-1\}}\max({\bm{c}}_{i}^{\top}{\bm{h}},{\bm{d}}_{i}^{\top}{\bm{h}})\
+ quad
+
+where 𝒚=(y1,y2)⊤∈{0,…,m−1}×{0,1}{\bm{y}}=(y_{1},y_{2})^{\top}\in\{0,\dots,m-1\}\times\{0,1\}, 𝑯⁡(α)
+{\bm{H}}(\alpha) is the 2×22\times 2 reflection matrix that reflects all vectors by a line having
+an angle of α/2\alpha/2 with the line passing from the origin and the vector (1,0)⊤(1,0)^{\top} and
+θ:{0,…,m−1}×{0,1}→ℝ\theta:\{0,\dots,m-1\}\times\{0,1\}\to\mathbb{R} determines the angle of the
+reflection and is defined as
+
+ θ⁡(i,1)=(1−2​i)​πm,θ⁡(i,0)=(1+2​i)​πm, for all ​i∈{0,…,m−1}.\displaystyle\theta(i,1)=\frac{(1-2i)
+ \pi}{m},\quad\theta(i,0)=\frac{(1+2i)\pi}{m},\quad\text{ for all }i\in\{0,\dots,m-1\}.
+
+Moreover 𝒞={𝒄0,…,𝒄m−1}\mathcal{C}=\{{\bm{c}}_{0},\dots,{\bm{c}}_{m-1}\} and 𝒟={𝒅0,…,𝒅m−1}\mathcal
+{D}=\{{\bm{d}}_{0},\dots,{\bm{d}}_{m-1}\} are the two sets of states corresponding to reflections
+and rotations respectively and are defined as
+
+ 𝒅0=𝒉0(2)=(1,0)⊤,𝒄0=𝑯⁡(π/m)​𝒅0,\displaystyle{\bm{d}}_{0}={\bm{h}}_{0}^{(2)}=(1,0)^{\top},\quad{\bm
+ {c}}_{0}={\bm{H}}(\pi/m){\bm{d}}_{0},
+ 𝒅i=𝑹(2iπ/m)𝒅0,𝒄i=𝑹(−2iπ/m)𝒄0for all i∈{0,…,m−1},\displaystyle{\bm{d}}_{i}={\bm{R}}(2i\pi/m){\bm
+ {d}}_{0},\quad{\bm{c}}_{i}={\bm{R}}(-2i\pi/m){\bm{c}}_{0}\quad\text{for all }i\in\{0,\dots,m-1\},
+
+where 𝑹⁡(β){\bm{R}}(\beta) is a rotation matrix with angle β∈ℝ\beta\in\mathbb{R}.
+
+Let α,γ∈ℝ\alpha,\gamma\in\mathbb{R}, the following are standard identities of products of 2D
+rotations and reflections.
+
+ 𝑹⁡(α)​𝑹​(γ)=𝑹(α+γ),𝑯⁡(α)​𝑯​(γ)=𝑹⁡(α−γ),𝑹⁡(α)​𝑯​(γ)=𝑯⁡(α+γ)𝑯⁡(γ)​𝑹​(α)=𝑯⁡(γ−α).\displaystyle\begin
+ {aligned} {\bm{R}}(\alpha){\bm{R}}(\gamma)&={\bm{R}}(\alpha+\gamma),\quad&&{\bm{H}}(\alpha){\bm
+ {H}}(\gamma)={\bm{R}}(\alpha-\gamma),\\ {\bm{R}}(\alpha){\bm{H}}(\gamma)&={\bm{H}}\left(\alpha+\
+ gamma\right)&&{\bm{H}}(\gamma){\bm{R}}(\alpha)={\bm{H}}\left(\gamma-\alpha\right).\end{aligned}
+
+From our choice of θ\theta, 𝒅i{\bm{d}}_{i} and 𝒄i{\bm{c}}_{i}, using the identities above and the
+the fact that 𝑹{\bm{R}} is a periodic function with period 2​π2\pi we have that
+
+ 𝑯⁡(θ⁡(j,1))​𝒅i\displaystyle{\bm  =𝑯⁡(θ⁡(j,1))​𝑹​(2​i​π/m)​𝒅0\displaystyle={\bm{H}}(\theta
+ {H}}(\theta(j,1)){\bm{d}}_{i}    (j,1)){\bm{R}}(2i\pi/m){\bm{d}}_{0}
+                                  =𝑯⁡(θ⁡(j,1))​𝑹​(2​i​π/m)​𝑯​(π/m)​𝒄0\displaystyle={\bm{H}}(\
+                                  theta(j,1)){\bm{R}}(2i\pi/m){\bm{H}}(\pi/m){\bm{c}}_{0}
+                                  =𝑯⁡(θ⁡(j,1))​𝑯​(θ⁡(i,0))​𝒄0\displaystyle={\bm{H}}(\theta      (6)
+                                  (j,1)){\bm{H}}(\theta(i,0)){\bm{c}}_{0}
+                                  =𝑹⁡(θ⁡(j,1)−θ⁡(i,0))​𝒄0\displaystyle={\bm{R}}(\theta(j,1)-\
+                                  theta(i,0)){\bm{c}}_{0}
+                                  =𝑹(−2(i+j)π/m)𝒄0=𝒄i+jmodm,\displaystyle={\bm{R}}(-2(i+j)\pi/
+                                  m){\bm{c}}_{0}={\bm{c}}_{i+j\bmod m},
+
+and similarly
+
+ 𝑯⁡(θ⁡(j,0))​𝒄i\displaystyle{\bm   =𝑯(θ(j,1))𝑹(−2iπ/m)𝒄0\displaystyle={\bm{H}}(\theta(j,1)){\
+ {H}}(\theta(j,0)){\bm{c}}_{i}     bm{R}}(-2i\pi/m){\bm{c}}_{0}
+                                   =𝑯(θ(j,0))𝑹(−2iπ/m)𝑯(π/m)𝒅0\displaystyle={\bm{H}}(\theta
+                                   (j,0)){\bm{R}}(-2i\pi/m){\bm{H}}(\pi/m){\bm{d}}_{0}
+                                   =𝑯⁡(θ⁡(j,0))​𝑯​(θ⁡(i,1))​𝒅0\displaystyle={\bm{H}}(\theta     (7)
+                                   (j,0)){\bm{H}}(\theta(i,1)){\bm{d}}_{0}
+                                   =𝑹⁡(θ⁡(j,0)−θ⁡(i,1))​𝒅0\displaystyle={\bm{R}}(\theta(j,0)-\
+                                   theta(i,1)){\bm{d}}_{0}
+                                   =𝑹⁡(2​(i+j)​π/m)​𝒅0=𝒅i+jmodm,\displaystyle={\bm{R}}(2(i+j)\
+                                   pi/m){\bm{d}}_{0}={\bm{d}}_{i+j\bmod m},
+
+for every i,j∈{0,…,m−1}i,j\in\{0,\dots,m-1\}. We will now prove by induction that
+
+ 𝒉t(2)\displaystyle  ={𝒄yt​ if ​tmod2=1𝒅yt​ if ​tmod2=0.\displaystyle=\begin{cases}{\bm{c}}_
+ {\bm{h}}_{t}^{(2)}  {y_{t}}\text{ if }t\bmod 2=1\\ {\bm{d}}_{y_{t}}\text{ if }t\bmod 2=0\end   (8)
+                     {cases}.
+
+where we recall that yi:=(∑j=1ixj)modmy_{i}:=(\sum_{j=1}^{i}x_{j})\bmod m and that, by definition,
+𝒉0(2)=𝒅0{\bm{h}}^{(2)}_{0}={\bm{d}}_{0} and 𝒉i(2)=𝑯⁡(θ⁡(xi,imod2))​𝒉i−1(2){\bm{h}}^{(2)}_{i}={\bm
+{H}}(\theta(x_{i},i\bmod 2)){\bm{h}}^{(2)}_{i-1}, since 𝒚i(1)=(xi,imod2){\bm{y}}^{(1)}_{i}=(x_{i},i
+\bmod 2). For the base case we have that
+
+ 𝒉1(2)\           =𝑯⁡(θ⁡(x1,1))​𝒉0(2)=𝑯⁡(θ⁡(x1,1))​𝒅0=𝒄x1modm=𝒄y1\displaystyle={\bm{H}}(\theta(x_
+ displaystyle{\bm {1},1)){\bm{h}}_{0}^{(2)}={\bm{H}}(\theta(x_{1},1)){\bm{d}}_{0}={\bm{c}}_{x_{1}\
+ {h}}_{1}^{(2)}   bmod m}={\bm{c}}_{y_{1}}
+ 𝒉2(2)\           =𝑯⁡(θ⁡(x2,0))​𝒉1(2)=𝑯⁡(θ⁡(x2,0))​𝒄x1modm=𝒅x1+x2modm=𝒅y2,\displaystyle={\bm{H}}(\
+ displaystyle{\bm theta(x_{2},0)){\bm{h}}_{1}^{(2)}={\bm{H}}(\theta(x_{2},0)){\bm{c}}_{x_{1}\bmod
+ {h}}_{2}^{(2)}   m}={\bm{d}}_{x_{1}+x_{2}\bmod m}={\bm{d}}_{y_{2}},
+
+where we have used (6) and (7). As induction hypothesis, suppose that for i≥2i\geq 2
+
+ 𝒉i(2)\displaystyle{\ ={𝒄yi​ if ​imod2=1𝒅yi​ if ​imod2=0\displaystyle=\begin{cases}{\bm{c}}_{y_
+ bm{h}}_{i}^{(2)}     {i}}\text{ if }i\bmod 2=1\\ {\bm{d}}_{y_{i}}\text{ if }i\bmod 2=0\end{cases}
+
+then, using again (6) and (7), we obtain
+
+ 𝒉i+1(2)={𝑯⁡(θ⁡(xi+1,1))​𝒉i(2)=𝑯⁡(θ⁡(xi+1,1))​𝒄yi=𝒄xi+1+yimodm=𝒄yi+1​ if ​imod2=1𝑯⁡(θ⁡(xi+1,0))​𝒉i
+ (2)=𝑯⁡(θ⁡(xi+1,0))​𝒅si=𝒅xi+1+yimodm=𝒅yi+1​ if ​imod2=0.{\bm{h}}_{i+1}^{(2)}=\begin{cases}{\bm{H}}
+ (\theta(x_{i+1},1)){\bm{h}}_{i}^{(2)}={\bm{H}}(\theta(x_{i+1},1)){\bm{c}}_{y_{i}}={\bm{c}}_{x_
+ {i+1}+y_{i}\bmod m}={\bm{c}}_{y_{i+1}}\text{ if }i\bmod 2=1\\ {\bm{H}}(\theta(x_{i+1},0)){\bm{h}}
+ _{i}^{(2)}={\bm{H}}(\theta(x_{i+1},0)){\bm{d}}_{s_{i}}={\bm{d}}_{x_{i+1}+y_{i}\bmod m}={\bm{d}}_
+ {y_{i+1}}\text{ if }i\bmod 2=0\end{cases}.
+
+which completes our proof by induction yielding (8). Finally, using the definition of dec(2)\mathrm
+{dec}^{(2)}, (8) and as long as 𝒅i≠𝒄j{\bm{d}}_{i}\neq{\bm{c}}_{j}, 𝒅i≠𝒅j{\bm{d}}_{i}\neq{\bm{d}}_
+{j} and 𝒄i≠𝒄j{\bm{c}}_{i}\neq{\bm{c}}_{j} for every i,ji,j with i≠ji\neq j, which is guaranteed by
+our choice of θ\theta, we have that dec(2)​(𝒉t(2),𝒚t(1))=(∑j=1ixj)modm=yt\mathrm{dec}^{(2)}({\bm
+{h}}_{t}^{(2)},{\bm{y}}^{(1)}_{t})=(\sum_{j=1}^{i}x_{j})\bmod m=y_{t}, ending the proof. ∎
+
+Appendix E Experiments
+
+E.1 Chomsky Hierarchy
+
+Here, we provide details on the formal language tasks and experimental protocol of Section 5.1.
+
+E.1.1 Details on the experimental setup
+
+Like Beck et al. (2024), we trained each model with sequence lengths ranging from 3 to 40 and
+evaluated on lengths from 40 to 256, to understand the length generalization capabilities. We
+compared mLSTM and sLSTM with two models: Mamba (Gu & Dao, 2024) and DeltaNet (Yang et al., 2024b).
+Moreover, we also include a Transformer (Vaswani et al., 2017) baseline. For parity, all models
+contain 2 blocks (layers), with 4 heads for the xLSTM and DeltaNet models. We set the embedding and
+heads’ dimensions to 128. For Mamba and DeltaNet, we also enable the 1-D depthwise-separable
+convolution layer with kernel size equal to 4 after the query/key/value projection. For modular
+arithmetic, we increase the number of layers to 3 and use a gradient clipping norm of 1.0 for
+Transformer, Mamba, and DeltaNet, while for mLSTM and sLSTM we decrease the embedding size and
+number of heads to 64 and 1, respectively, as well as use a standard initialization for the bias
+parameters. We train each model using AdamW (Loshchilov & Hutter, 2019) without gradient clipping,
+using 3 different learning rates (1e-2, 1e-3, 5e-4 1e-4), with 3 different seeds each. We pick the
+best based on the median of the 3 seeds for every learning rate value. We use a batch size of 1024
+(except for mLSTM, where we use 512 due to OOM error) and a cosine annealing learning rate
+schedule (Loshchilov & Hutter, 2017) (minimum learning rate: 1e-6) after 10% warm-up steps. The
+weight decay is set to 0.1 during training. We train on every task for 100k steps in total. At each
+training step, we make sure to generate a valid random sample from the task at hand (see below).
+
+E.1.2 Details on the evaluated tasks
+
+In Section 5.1 we conducted empirical evaluations on 3 tasks –parity, modular arithmetic without
+brackets and with brackets – from various levels of the Chomsky Hierarchy, as proposed by Deletang
+et al. (2023) and similarly used in xLSTM (Beck et al., 2024). Details for each task are given
+below, where |Σ||\Sigma| is the vocabulary size and A​c​cr​a​n​dAcc_{rand} is the accuracy of
+random guessing:
+
+  • •
+   
+    Parity (|Σ|=2|\Sigma|=2, A​c​cr​a​n​d=0.5Acc_{rand}=0.5). The parity yt∈{0,1}y_{t}\in\{0,1\} of
+    a sequence of ones and zeros 𝒙=x1​…​xt∈{0,1}t{\bm{x}}=x_{1}\dots x_{t}\in\{0,1\}^{t} is equal
+    to 11 (resp. 00) if the total number of ones in the sequence is odd (resp. even). It is
+    equivalent to addition modulo 2, it can be computed by summing all previous values and then
+    using the modulo 2 function as yt=(∑i=1txi)mod2y_{t}=(\sum_{i=1}^{t}x_{i})\bmod 2.
+
+  • •
+   
+    Modular Arithmetic w/o Brackets (|Σ|=10|\Sigma|=10, A​c​cr​a​n​d=1/5Acc_{rand}=1/5). Given a
+    set of special tokens Σs={+,−,∗,=,[𝙿𝙰𝙳]}\Sigma_{s}=\{\mathtt{+,-,*,=,[PAD]}\} and a modulus
+    m≥1m\geq 1, we set Σ=Σs∪{0,…,m−1}\Sigma=\Sigma_{s}\cup\{0,\dots,m-1\} and yty_{t} is equal to
+    the result of the operations modulo mm in the sequence 𝒙=𝒙1,…,𝒙t{\bm{x}}={\bm{x}}_{1},\dots,{\
+    bm{x}}_{t} with xi∈Σx_{i}\in\Sigma. In our experiments m=5m=5. An example sequence is as
+    follows:
+
+     𝟸−𝟹−𝟹∗𝟸=𝟹[𝙿𝙰𝙳]\displaystyle\mathtt{2-3-3*2=\mathbin{\color[rgb]{1,0,0}{3}}\ [PAD]}
+
+  • •
+   
+    Modular Arithmetic w/ Brackets, (|Σ|=12|\Sigma|=12, A​c​cr​a​n​d=1/5Acc_{rand}=1/5). Same
+    definition as the modular arithmetic without brackets with a set of special tokens Σs={+,−,∗,
+    =,),(,[𝙿𝙰𝙳]}\Sigma_{s}=\{\mathtt{+,-,*,=,),(,[PAD]}\}. In our experiments m=5m=5. An example
+    sequence is as follows:
+
+     ((((𝟹+𝟹)+−𝟷)+−𝟸)−((𝟹−(−𝟹))+((𝟷)+𝟺)))=𝟸[𝙿𝙰𝙳]\displaystyle\mathtt{((((3+3)+-1)+-2)-((3-(-3))+
+     ((1)+4)))=\mathbin{\color[rgb]{1,0,0}{2}}\ [PAD]}
+
+
+Table 5: Performance comparison of various recurrent models on regular and context-free language
+tasks. recurrent models on formal language tasks. We report the median ±\pm median absolute
+deviation (left table) and best score (right table) of 3 independent runs with different random
+seeds. Scores represent scaled accuracy, with 1.0 indicating perfect performance and 0.0 random
+guessing. The positive impact of allowing negative eigenvalues ([−1,1][-1,1] range) versus
+restricting to positive eigenvalues ([0,1][0,1] range) is evident across different model
+architectures.
+
+                                       Mod. Arithmetic  Mod. Arithmetic   Mod. Arithm.
+                           Parity      (w/o brackets)   (w/ brackets)     (w/ brackets,
+                                                                          no mult)
+
+     Transformer      0.003 ±\pm 0.013 0.018 ±\pm 0.009 0.064 ±\pm 0.003 0.025 ±\pm 0.000
+        mLSTM         0.018 ±\pm 0.035 0.027 ±\pm 0.013 0.114 ±\pm 0.000 0.034 ±\pm 0.001
+        sLSTM         1.000 ±\pm 0.000 0.124 ±\pm 0.000 0.163 ±\pm 0.015 0.153 ±\pm 0.020
+  Mamba [0,1][0,1]    0.000 ±\pm 0.000 0.066 ±\pm 0.029 0.116 ±\pm 0.007 0.072 ±\pm 0.008
+ Mamba [−1,1][-1,1]   1.000 ±\pm 0.000 0.214 ±\pm 0.027 0.098 ±\pm 0.009 0.126 ±\pm 0.010
+ DeltaNet [0,1][0,1]  0.010 ±\pm 0.005 0.214 ±\pm 0.056 0.162 ±\pm 0.018 0.113 ±\pm 0.009
+DeltaNet [−1,1][-1,1] 0.999 ±\pm 0.006 0.826 ±\pm 0.146 0.227 ±\pm 0.011 0.129 ±\pm 0.016
+
+
+(a) Transformer
+
+
+(b) mLSTM and xLSTM
+
+
+(c) Mamba
+
+
+(d) DeltaNet
+
+
+Figure 6: Performance (scaled accuracy) vs sequence length of Transformer, mLSTM, sLSTM, Mamba and 
+DeltaNet variants on different formal language tasks. Trained on sequences up to length 40 (dashed
+vertical red line). At test time, we sample uniformly at random 8192 sequences with lengths between
+40 and 256. The curves show the mean and 95% CI. Note, that the Transformer model fails to length
+extrapolate, but performs nearly perfectly within the training context length.
+
+E.2 State-Tracking
+
+E.2.1 Details of the Experiments
+
+For the experiments in Section 5.2, we map each element of the group S5S_{5} to an integer from 00
+to 119119, where 00 corresponds to the identity permutation, and then construct inputs and output
+sequences of integers x1,…​xtx_{1},\dots x_{t} and y1,…,yty_{1},\dots,y_{t} as follows
+
+  • •
+   
+    𝐒𝟓\mathbf{S_{5}} We sample xix_{i} uniformly at random from {0,…,119}\{0,\dots,119\}. yiy_{i}
+    is computed as the product of the permutations corresponding to x1,…,xix_{1},\dots,x_{i}
+    applied in order from 11 to ii.
+
+  • •
+   
+    𝐒𝟓\mathbf{S_{5}} only swaps As S5S_{5} but xix_{i} is sampled from the permutations that
+    permute up to two elements (swaps and identity).
+
+  • •
+   
+    𝐒𝟓\mathbf{S_{5}} swaps, 3-permutations As S5S_{5} but xix_{i} is sampled from the permutations
+    that permute up to three elements.
+
+  • •
+   
+    𝐒𝟓\mathbf{S_{5}} 4 tokens per transition If imod4=0i\mod 4=0, then xix_{i} is sampled uniformly
+    at random from {0,…,119}\{0,\dots,119\}, otherwise xi=120x_{i}=120 (special token). For i>3i>3,
+    yi+3y_{i+3} is the product of the permutations corresponding to x1,…,xix_{1},\dots,x_{i}, where
+    120120 is treated as the identity permutation. yi=0y_{i}=0 for i∈{1,2,3}i\in\{1,2,3\}.
+
+For each setup, we randomly sample 1.61.6M examples for and 40​K40K examples of length 500500 to
+construct the train and test dataset. We note that we are using a substantially larger training set
+compared to (Merrill & Sabharwal, 2023), to reduce the chances of overfitting. We run 3 seeds for
+each method, changing the network initialization and sampling of the minibatches. The train and
+validation datasets are kept the same across runs.
+
+We train all models using AdamW with weight decay 0.010.01, learning rate 0.00010.0001, gradient
+clipping to 1.01.0, and a batch size of 512512. Both DeltaNet and Mamba models use an embedding
+dimension of 128128 and 44 heads for DeltaNet. In the case of DeltaNet, we do not use 11-D
+convolutions for these experiments. Other parameters are kept as default.
+
+Full Matrix Baseline. For the full matrix baseline we use a single layer and map directly each
+token xix_{i} to a learnable full state-transition matrix 𝑨⁡(xi)∈ℝn×n{\bm{A}}(x_{i})\in\mathbb{R}^
+{n\times n} via one-hot encoding. We then compute, for i∈{1,…,t}i\in\{1,\dots,t\} the recursion
+
+ 𝑯i=𝑨⁡(xi)​𝑯i−1,𝑯0=𝑰∈ℝn×n{\bm{H}}_{i}={\bm{A}}(x_{i}){\bm{H}}_{i-1},\quad{\bm{H}}_{0}={\bm{I}}\in\
+ mathbb{R}^{n\times n}
+
+where nn is set to 3232 for efficiency reasons (memory and compute time grow quickly with nn).
+After that, we flatten each 𝑯i{\bm{H}}_{i} into a vector and apply first a projection on the unit
+ball and then a linear decoder to get the final outputs. The projection was added to increase
+stability since we do not bound the norm of 𝑨⁡(xi){\bm{A}}(x_{i}). Since this model uses a full
+matrix, with n≥5n\geq 5 it should be fully able to learn S5S_{5} without restricting the
+transitions in input or using more tokens per transition. However, in some situations, the
+performance degrades quickly after some input sequence length, probably because the norm of the
+learned 𝑨⁡(xi){\bm{A}}(x_{i}) is not close enough to one and hence part of the state either vanish
+or explode for long sequences.
+
+Plots with all runs. We report the plots with all 3 runs per method in Figure 7 (In Figure 4 we
+reported only the best one for each method). Despite our efforts to decrease the variance of the
+results by increasing training time and dataset size, we report that there is still some
+variability. For example, one of the runs of DeltaNet [−1,1][-1,1] (5L) on S5S_{5} with 4 tokens
+per transition did not achieve a good accuracy.
+
+
+Figure 7: Validation sequence accuracy across different lengths on S5S_{5} after 100 epochs of
+training (3 seeds). The dashed vertical line indicates the sequence length used during training.
+Each method is labeled with name, eigenvalue range, and number of layers. The dashed vertical line
+indicates the sequence length used during training.
+
+E.2.2 Cyclic Groups
+
+
+Figure 8: Validation sequence accuracy at different sequence lengths on the cyclic group ℤ60\mathbb
+{Z}_{60} (1 seed). Dashed vertical lines indicate the sequence length used for training (left 32,
+right 64). Using 2 tokens per transition seems to help only marginally in this case. Mamba [−1,1]
+[-1,1] is the best-performing model. The variants with eigenvalues in [0,1] performed worse.
+
+We report in Figure 8 some experiments on group word problems with the group ℤ60\mathbb{Z}_{60}.
+For this experiment, we also consider the simplified version where each transition is encoded using
+22 tokens. This is done as in the experiments of S5S_{5} with 44 tokens, but using 22 tokens
+instead of 44. Extending the eigenvalue range seems to help in both settings, although
+surprisingly, Mamba [−1,1][-1,1], even though it has a diagonal state-transition matrix, seems to
+perform best. We conjecture that in this case, the models might learn the shortcut solutions, also
+because they do not generalize very well to longer sequences.
+
+E.3 Language Modeling
+
+E.3.1 Details on the experimental setup
+
+We use the training pipeline which is part of the flash-linear-attention library (flame) (Yang &
+Zhang, 2024) and which in turn is based on HuggingFace accelerate (Gugger et al., 2022). We use
+stage-2 of the ZeRO optimizer (Rajbhandari et al., 2020) with gradient clipping set to auto. The
+1.3B parameter DeltaNet models are trained on 32 Nvidia A100s using a per-device batch size of 6
+and 5 gradient accumulation steps for 50,000 steps. The 340M parameter DeltaNet models and the 370M
+parameter Mamba models are trained using a training batch size of 16 and 200,000 steps on 16 Nvidia
+A100s. All models are trained using a context length of 2048, learning rate of 3e-4. For
+optimization, we use AdamW (Loshchilov & Hutter, 2019), the learning rate was adjusted using cosine
+annealing (Loshchilov & Hutter, 2017) following a linear warm-up period of 250/500 steps for the
+340/370M and 1.3B parameter models respectively. We applied a weight decay of 0.01 throughout the
+training process.
+
+
+Figure 9: Learning curves of DeltaNet 340M (top left), Mamba 370M (top right) and DeltaNet 1.3B
+(bottom), training on 100B tokens of Fine-Web 100B. 1.3B runs required only 50k optimizer steps
+versus the 200k of the 340M runs due to the 4x larger batch size. All models trained stably with
+the same hyperparameters. Training curves were smoothed with a rolling window of 500 steps.
+
+E.3.2 Details on the evaluated tasks
+
+To produce the results in Table 4, we use the lm-harness benchmark (Gao et al., 2024), focusing on
+the same tasks as Yang et al. (2024b): LAMBADA (LMB) (Paperno et al., 2016), PIQA (Bisk et al.,
+2020), HellaSwag (Hella.) (Zellers et al., 2019), Winogrande (Wino.) (Sakaguchi et al., 2021), and
+ARC-easy (ARC-e) and ARC-challenge (ARC-c) (Clark et al., 2018). Additionally, we evaluate the
+performance on recall-intensive tasks (like Yang et al. (2024b)), including FDA (Arora et al., 2023
+), SWDE (Lockard et al., 2019), and SQUAD (Rajpurkar et al., 2018), to provide a comprehensive
+evaluation of our models’ capabilities.
+
+
+Figure 10: Length extrapolation performance of Mamba variants on different datasets. Mamba with
+eigenvalue range [−1,1][-1,1] shows worse perplexity on coding and math tasks compared to the [0,1]
+[0,1] baseline. The dashed, vertical line indicates the training context length of 2048 tokens.
+
+E.4 Implementation
+
+We build on the original code for Mamba^5^5 5 https://github.com/state-spaces/mamba and DeltaNet^6^
+6 6 https://github.com/sustcsonglin/flash-linear-attention. For DeltaNet, implementing the extended
+eigenvalue range is straightforward, since there is no need to modify the Triton kernel. However,
+Mamba requires modifications to the CUDA code of the associative scan for both forward and backward
+passes which however had no impact on computational cost. We ensured the accuracy of the
+modifications by comparing the results with a naive implementation using a for-loop. For initial
+testing of the extended eigenvalue range, we used the pure PyTorch implementation of Mamba by 
+Torres (2024). We provide listings of the necessary code changes in Mamba and DeltaNet in Section 
+E.4.1. For DeltaNet, this changes also 𝑩⁡(xt){\bm{B}}(x_{t}) in Table 1, multiplying it by 22.
+
+Products in Log-space We note that some diagonal models such as Mamba2 (Dao & Gu, 2024), GLA (Yang
+et al., 2024a), and mLSTM (Beck et al., 2024) take advantage of the fact that all values of the
+state-transition matrices are positive to compute their repeated products in log-space. Our change
+would not allow us to do this directly, and early tests on the chunkwise parallel form of GLA
+showed degraded performance. Therefore, for this work, we decided to focus on Mamba and DeltaNet
+since they do not compute the products in log space. We mention however, that at the cost of
+increased computation time, it would be possible to do products in log space by converting each
+value in the diagonal state-transition matrix to the product of its absolute value and sign. This
+way, absolute values can be multiplied in log space, while products of signs are coincidentally
+equivalent to addition modulo 2, i.e. parity, and hence can be done stably. We leave the
+investigation of this approach to future work. Furthermore, we also believe that our change may be
+less suited for methods that use a normalized RNN state, such as mLSTM, since it might happen that
+the normalization term can be very close to zero due to the negative values.
+
+E.4.1 Implementation of Extended Eigenvalue Range
+
+⬇ 220 if constexpr (!kIsComplex) { 221 - thread_data[i] = make_float2(exp2f(delta_vals[r][i] *
+A_val[r]), 222 + thread_data[i] = make_float2(2.0f * exp2f(delta_vals[r][i] * A_val[r]) - 1.0f, 223
+!kIsVariableB ? delta_u_vals[r][i] : B_vals[i] * delta_u_vals[r][i]); 224 if constexpr (!Ktraits::
+kIsEvenLen) { 225 if (threadIdx.x * kNItems + i >= params.seqlen - chunk * kChunkSize) { 226 
+thread_data[i] = make_float2(1.f, 0.f); 227 } 228 } 229 }
+
+
+Figure 11: Modifications to the forward pass of the Mamba associative scan. These changes extend
+the eigenvalue range from [0,1][0,1] to [−1,1][-1,1], enhancing the model’s expressive capacity.
+Adapted from selective_scan_fwd_kernel.cuh. The original implementation (in red) is replaced with
+an adjusted version (in green).
+
+⬇
+253 - const float delta_a_exp = exp2f(delta_vals[i] * A_scaled)
+254 + const float delta_a_exp = 2.0f * exp2f(delta_vals[i] * A_scaled) - 1.0f
+⬇
+272 - typename Ktraits::BlockScanT(smem_scan).InclusiveScan(
+273 + typename Ktraits::BlockScanT(smem_scan).ExclusiveScan(
+274 thread_data, thread_data, SSMScanOp<weight_t>(), prefix_op
+275 );
+⬇
+288 - const float a = thread_data[i].y - (!kIsVariableB ? delta_vals[i] * float(u_vals[i]) :
+289 -       delta_vals[i] * float(u_vals[i]) * B_vals[i]);
+290 + float delta_a_exp = 2.0f * exp2f(delta_vals[i] * A_scaled) - 1.0f;
+291 + const float ddelta_a_exp = delta_a_exp + 1;
+292 + const float a = ddelta_a_exp * thread_data[i].y;
+293 + const float hi = delta_a_exp * thread_data[i].y + (!kIsVariableB ? delta_vals[i] *
+294 +       float(u_vals[i]) : delta_vals[i] * float(u_vals[i]) * B_vals[i]);
+⬇
+291 if constexpr (!kIsVariableB || !kIsVariableC) {
+292 if constexpr (!kIsVariableB) { // dBC\_val is dB\_val
+293 - dBC_val += dout_vals[i] * (!kIsVariableC ? thread_data[i].y : thread_data[i].y * C_vals[i]);
+294 + dBC_val += dout_vals[i] * (!kIsVariableC ? hi : hi * C_vals[i]);
+295 } else { // dBC\_val is dC\_val
+296 - dBC_val += dout_vals[i] * thread_data[i].y;
+297 + dBC_val += dout_vals[i] * thread_data[i].y;
+298 }
+299 }
+300 if constexpr (kIsVariableB) { dB_vals[i] = dx * delta_vals[i] * float(u_vals[i]); }
+301 if constexpr (kIsVariableC) {
+302 - dC_vals[i] = dout_vals[i] * (!kIsVariableB ? thread_data[i].y * B_val : thread_data[i].y);
+303 + dC_vals[i] = dout_vals[i] * (!kIsVariableB ? hi * B_val : hi);
+304 }
+
+Figure 12: Necessary changes to selective_scan_bwd_kernel.cuh. The original implementation (in red)
+is replaced with an adjusted version (in green).
+
+⬇
+196 if self.use_beta:
+197 - beta = rearrange(self.b_proj(hidden_states), ’b l h -> b h l’).sigmoid()
+198 + beta = 2 * rearrange(self.b_proj(hidden_states), ’b l h -> b h l’).sigmoid()
+199 else:
+200 beta = q.new_ones(q.shape[0], q.shape[1], q.shape[2])
+
+Figure 13: Simple modification to the beta calculation in DeltaNet (Source) allowing the extension
+of the eigenvalues to the range [−1,1][-1,1] . The original implementation (in red) is replaced
+with an adjusted version (in green).
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

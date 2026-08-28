@@ -1,0 +1,2098 @@
+source: https://arxiv.org/html/2209.14935
+arxiv: https://arxiv.org/abs/2209.14935
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Problem and Notation; Defining Zero-Shot RL
+     1. Zero-shot RL: problem statement.
+ 4. 3 Related work
+ 5. 4 Successor Representations and Zero-Shot RL
+     1. Successor features and successor measures.
+     2. Zero-shot RL from successor features and forward-backward representations.
+     3. Connections between SFs and FB.
+ 6. 5 Algorithms for Successor Features and FB Representations
+     1. 5.1 Learning the Successor Features ψ\psi
+     2. 5.2 Learning FB Representations: the FB Training Loss
+     3. 5.3 Learning Basic Features φ\varphi for Successor Features
+ 7. 6 Experimental Results on Benchmarks
+ 8. 7 Discussion and Limitations
+     1. Can a few features solve many reward functions? Why are some features better?
+     2. Are these finite-rank models reasonable?
+     3. Limitations.
+ 9. 8 Conclusions
+10. References
+11. A Sketch of Proof of Theorems and
+12. B Derivation of the Forward-Backward Loss
+     1. The orthonormalization loss.
+     2. The auxiliary loss ℒ′\mathcal{L}^{\prime} ().
+13. C Relationship Between Contrastive Loss and SVD of Successor Measures
+14. D Do Finite-Rank Models on the Transition Matrix and on Successor Measures Make Sense?
+15. E Which Features are Analogous Between Low-Rank PP and SFs?
+16. F Relationship between Laplacian Eigenfunctions and Low-Rank PP Learning
+17. G Experimental Setup
+     1. G.1 Environments
+     2. G.2 Architectures
+     3. G.3 Sampling of zz
+     4. G.4 Learning the Policies πz\pi_{z}: Policy Network
+     5. G.5 Hyperparameters
+         1. Hyperparameter tuning.
+18. H Detailed Experimental Results
+     1. H.1 Full Table of Results
+     2. H.2 Aggregate Plots of Results
+     3. H.3 Full Plots of Results per Task and Replay Buffer
+     4. H.4 Influence of the Replay Buffer
+19. I Analysis of The Learned Features
+     1. I.1 Feature Rank
+     2. I.2 Embedding Visualization via t-SNE
+20. J Hyperparameters Sensitivity
+21. K Goal-Oriented Baselines
+     1. Relationship with FB.
+22. L Pseudocode of Training Losses
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2209.14935v2 [cs.LG] 01 Mar 2023
+
+Does Zero-Shot Reinforcement Learning Exist?
+
+Ahmed Touati    Jérémy Rapin    Yann Ollivier Note: Meta AI Research, Paris
+August 24, 2026
+
+Abstract
+
+A zero-shot RL agent is an agent that can solve any RL task in a given environment, instantly with
+no additional planning or learning, after an initial reward-free learning phase. This marks a shift
+from the reward-centric RL paradigm towards “controllable” agents that can follow arbitrary
+instructions in an environment. Current RL agents can solve families of related tasks at best, or
+require planning anew for each task. Strategies for approximate zero-shot RL have been suggested
+using successor features (SFs) [BBQ+18] or forward-backward (FB) representations [TO21], but
+testing has been limited.
+
+After clarifying the relationships between these schemes, we introduce improved losses and new SF
+models, and test the viability of zero-shot RL schemes systematically on tasks from the
+Unsupervised RL benchmark [LYL+21]. To disentangle universal representation learning from
+exploration, we work in an offline setting and repeat the tests on several existing replay buffers.
+
+SFs appear to suffer from the choice of the elementary state features. SFs with Laplacian
+eigenfunctions do well, while SFs based on auto-encoders, inverse curiosity, transition models,
+low-rank transition matrix, contrastive learning, or diversity (APS), perform unconsistently. In
+contrast, FB representations jointly learn the elementary and successor features from a single,
+principled criterion. They perform best and consistently across the board, reaching 85%85\% of
+supervised RL performance with a good replay buffer, in a zero-shot manner.
+
+1 Introduction
+
+For breadth of applications, reinforcement learning (RL) lags behind other fields of machine
+learning, such as vision or natural language processing, which have effectively adapted to a wide
+range of tasks, often in almost zero-shot manner, using pretraining on large, unlabelled datasets [
+BMR+20]. The RL paradigm itself may be in part to blame: RL agents are usually trained for only one
+reward function or a small family of related rewards. Instead, we would like to train
+“controllable” agents that can be given a description of any task (reward function) in their
+environment, and then immediately know what to do, reacting instantly to such commands as “fetch
+this object while avoiding that area”.
+
+The promise of zero-shot RL is to train without rewards or tasks, yet immediately perform well on
+any reward function given at test time, with no extra training, planning, or finetuning, and only a
+minimal amount of extra computation to process a task description (Section 2 gives the precise
+definition we use for zero-shot RL). How far away are such zero-shot agents? In the RL paradigm, a
+new task (reward function) means re-training the agent from scratch, and providing many reward
+samples. Model-based RL trains a reward-free, task-independent world model, but still requires
+heavy planning when a new reward function is specified (e.g., [CCML18, MBJ20]). Model-free RL is
+reward-centric from start, and produces specialized agents. Multi-task agents generalize within a
+family of related tasks only. Reward-free, unsupervised skill pre-training (e.g., [EGIL18]) still
+requires substantial downstream task adaptation, such as training a hierarchical controller.
+
+Is zero-shot RL possible? If one ignores practicality, zero-shot RL is easy: make a list of all
+possible rewards up to precision ε\varepsilon, then pre-learn all the associated optimal policies.
+Scalable zero-shot RL must somehow exploit the relationships between policies for all tasks.
+Learning to go from aa to cc is not independent from going from aa to bb and bb to cc, and this
+produces rich, exploitable algebraic relationships [BTO21, SHGS15].
+
+Suggested strategies for generic zero-shot RL so far have used successor representations [Day93],
+under two forms: successor features (SFs) [BDM+17] as in [BBQ+18, HDB+19, LA21]; and
+forward-backward (FB) representations [TO21]. Both SFs and FB lie in between model-free and
+model-based RL, by predicting features of future states, or summarizing long-term state-state
+relationships. Like model-based approaches, they decouple the dynamics of the environment from the
+reward function. Contrary to world models, they require neither planning at test time nor a
+generative model of states or trajectories.
+
+Yet SFs heavily depend on a choice of basic state features. To get a full zero-shot RL algorithm, a
+representation learning method must provide those. While SFs have been successively applied to
+transfer between tasks, most of the time, the basic features were handcrafted or learned using
+prior task class knowledge. Meanwhile, FB is a standalone method with no task prior and good
+theoretical backing, but testing has been limited to goal-reaching in a few environments. Here:
+
+  • •
+   
+    We systematically assess SFs and FB for zero-shot RL, including many new models of SF basic
+    features, and improved FB loss functions. We use 13 tasks from the Unsupervised RL benchmark [
+    LYL+21], repeated on several ExORL training replay buffers [YFLP21] to assess robustness to the
+    exploration method.
+
+  • •
+   
+    We systematically study the influence of basic features for SFs, by testing SFs on features
+    from ten RL representation learning methods. such as latent next state prediction, inverse
+    curiosity module, contrastive learning, diversity, various spectral decompositions…
+
+  • •
+   
+    We expose new mathematical links between SFs, FB, and other representations in RL.
+
+  • •
+   
+    We discuss the implicit assumptions and limitations behind zero-shot RL approaches.
+
+Refer to caption
+Figure 1: Zero-shot scores of ten SF methods and FB, as a percentage of the supervised score of
+offline TD3 trained on the same replay buffer, averaged on some tasks, environments and replay
+buffers from the Unsupervised RL and ExORL benchmarks [LLP+22, YFLP21]. FB and SFs with Laplacian
+eigenfunctions achieve zero-shot scores approaching supervised RL.
+
+2 Problem and Notation; Defining Zero-Shot RL
+
+Let ℳ=(S,A,P,γ)\mathcal{M}=(S,A,P,\gamma) be a reward-free Markov decision process (MDP) with state
+space SS, action space AA, transition probabilities P⁡(s′|s,a)P(s^{\prime}|s,a) from state ss to
+s′s^{\prime} given action aa, and discount factor 0<γ<10<\gamma<1 [SB18]. If SS and AA are finite,
+P⁡(s′|s,a)P(s^{\prime}|s,a) can be viewed as a stochastic matrix Ps​a​s′∈ℝ(|S|×|A|)×|S|P_{sas^{\
+prime}}\in{\mathbb{R}}^{(\left\lvert S\right\rvert\times\left\lvert A\right\rvert)\times\left\lvert
+S\right\rvert}; in general, for each (s,a)∈S×A(s,a)\in S\times A, P⁡(d⁡s′|s,a)P(\operatorname{d}\!
+{}s^{\prime}|s,a) is a probability measure on s′∈Ss^{\prime}\in S. The notation P⁡(d⁡s′|s,a)P(\
+operatorname{d}\!{}s^{\prime}|s,a) covers all cases. Given (s0,a0)∈S×A(s_{0},a_{0})\in S\times A
+and a policy π:S→Prob⁡(A)\pi\colon S\to\mathrm{Prob}(A), we denote Pr(⋅|s0,a0,π)\Pr\nolimits(\cdot|
+s_{0},a_{0},\pi) and 𝔼[⋅|s0,a0,π]\E[\cdot|s_{0},a_{0},\pi] the probabilities and expectations under
+state-action sequences (st,at)t≥0(s_{t},a_{t})_{t\geq 0} starting at (s0,a0)(s_{0},a_{0}) and
+following policy π\pi in the environment, defined by sampling st∼P⁡(d⁡st|st−1,at−1)s_{t}\sim P(\
+operatorname{d}\!{}s_{t}|s_{t-1},a_{t-1}) and at∼π⁡(d⁡at|st)a_{t}\sim\pi(\operatorname{d}\!{}a_{t}|
+s_{t}). We define Pπ(ds′,da′|s,a):=P(ds′|s,a)π(da′|s′)P_{\pi}(\operatorname{d}\!{}s^{\prime},\
+operatorname{d}\!{}a^{\prime}|s,a)\mathrel{\mathop{:}}=P(\operatorname{d}\!{}s^{\prime}|s,a)\pi(\
+operatorname{d}\!{}a^{\prime}|s^{\prime}) and Pπ​(d⁡s′|s):=∫P⁡(d⁡s′|s,a)​π​(d⁡a|s)P_{\pi}(\
+operatorname{d}\!{}s^{\prime}|s)\mathrel{\mathop{:}}=\int P(\operatorname{d}\!{}s^{\prime}|s,a)\pi
+(\operatorname{d}\!{}a|s), the state-action transition probabilities and state transition
+probabilities induced by π\pi. Given a reward function r:S→ℝr\colon S\to{\mathbb{R}}, the
+QQ-function of π\pi for rr is Qrπ(s0,a0):=∑t≥0γt𝔼[r(st+1)|s0,a0,π]Q_{r}^{\pi}(s_{0},a_{0})\mathrel
+{\mathop{:}}=\sum_{t\geq 0}\gamma^{t}\E[r(s_{t+1})|s_{0},a_{0},\pi]. For simplicity, we assume the
+reward rr depends only on the next state st+1s_{t+1} instead on the full triplet (st,at,st+1)(s_
+{t},a_{t},s_{t+1}), but this is not essential.
+
+We focus on offline unsupervised RL, where the agent cannot interact with the environment. The
+agent only has access to a static dataset of logged reward-free transitions in the environment, 𝒟=
+{(si,ai,si′)}i∈ℐ{\mathcal{D}}=\{(s_{i},a_{i},s^{\prime}_{i})\}_{i\in\mathcal{I}} with si′∼P⁡(d⁡si′|
+si,ai)s^{\prime}_{i}\sim P(\operatorname{d}\!{}s^{\prime}_{i}|s_{i},a_{i}). These can come from any
+exploration method or methods.
+
+The offline setting disentangles the effects of the exploration method and representation and
+policy learning: we test each zero-shot method on several training datasets from several
+exploration methods.
+
+We denote by ρ⁡(d⁡s)\rho(\operatorname{d}\!{}s) and ρ⁡(d⁡s,d⁡a)\rho(\operatorname{d}\!{}s,\
+operatorname{d}\!{}a) the (unknown) marginal distribution of states and state-actions in the
+dataset 𝒟{\mathcal{D}}. We use both 𝔼s∼𝒟⁡[⋅]\E_{s\sim{\mathcal{D}}}[\cdot] and 𝔼s∼ρ⁡[⋅]\E_{s\sim\
+rho}[\cdot] for expectations under the training distribution.
+
+Zero-shot RL: problem statement.
+
+The goal of zero-shot RL is to compute a compact representation ℰ\mathcal{E} of the environment by
+observing samples of reward-free transitions (st,at,st+1)(s_{t},a_{t},s_{t+1}) in this environment.
+Once a reward function is specified later, the agent must use ℰ\mathcal{E} to immediately produce a
+good policy, via only elementary computations without any further planning or learning. Ideally,
+for any downstream task, the performance of the returned policy should be close to the performance
+of a supervised RL baseline trained on the same dataset labeled with the rewards for that task.
+
+Reward functions may be specified at test time either as a relatively small set of reward samples
+(si,ri)(s_{i},r_{i}), or as an explicit function s↦r⁡(s)s\mapsto r(s) (such as 11 at a known goal
+state and 00 elsewhere). The method will be few-shot, zero-planning in the first case, and truly
+zero-shot in the second case.
+
+3 Related work
+
+Zero-shot RL requires unsupervised learning and the absence of any planning or fine-tuning at test
+time. The proposed strategies for zero-shot RL discussed in Section 1 ultimately derive from
+successor representations [Day93] in finite spaces. In continuous spaces, starting with a finite
+number of features φ\varphi, successor features can be used to produce policies within a family of
+tasks directly related to φ\varphi [BDM+17, BBQ+18, ZSBB17, GHB+19], often using hand-crafted φ\
+varphi or learning φ\varphi that best linearize training rewards. VISR [HDB+19] and its successor
+APS [LA21] use SFs with φ\varphi automatically built online via diversity criteria [EGIL18, GRW16].
+We include APS among our baselines, as well as many new criteria to build φ\varphi automatically.
+
+Successor measures [BTO21] avoid the need for φ\varphi by directly learning models of the
+distribution of future states: doing this for various policies yields a candidate zero-shot RL
+method, forward-backward representations [TO21], which has been tested for goal-reaching in a few
+environments with discrete actions. FB uses a low-rank model of long-term state-state relationships
+reminiscent of the state-goal factorization from [SHGS15].
+
+Model-based RL (surveyed in [MBJ20]) misses the zero-planning requirement of zero-shot RL. Still,
+learned models of the transitions between states can be used jointly with SFs to provide zero-shot
+methods (Trans, Latent, and LRA-P methods below).
+
+Goal-oriented and multitask RL has a long history (e.g., [FD02, SMD+11, dSKB12, SHGS15, ACR+17]). A
+parametric family of tasks must be defined in advance (e.g., reaching arbitrary goal states). New
+rewards cannot be set a posteriori: for example, a goal-state-oriented method cannot handle dense
+rewards. Zero-shot task transfer methods learn on tasks and can transfer to related tasks only
+(e.g., [OSLK17, SOL18]); this can be used, e.g., for sim-to-real transfer [GMB+20] or slight
+environment changes, which is not covered here. Instead, we aim at not having any predefined family
+of tasks.
+
+Unsupervised skill and option discovery methods, based for instance on diversity [EGIL18, GRW16] or
+eigenoptions [MBB17] can learn a variety of behaviors without rewards. Downstream tasks require
+learning a hierarchical controller to combine the right skills or options for each task. Directly
+using unmodified skills has limited performance without heavy finetuning [EGIL18]. Still, these
+methods can speed up downstream learning.
+
+The unsupervised aspect of some of these methods (including DIAYN and APS) has been disputed,
+because training still used end-of-trajectory signals, which are directly correlated to the
+downstream task in some common environments: without this signal, results drop sharply [LLP+22].
+
+4 Successor Representations and Zero-Shot RL
+
+For a finite MDP, the successor representation (SR) [Day93] Mπ​(s0,a0)M^{\pi}(s_{0},a_{0}) of a
+state-action pair (s0,a0)(s_{0},a_{0}) under a policy π\pi, is defined as the discounted sum of
+future occurrences of each state:
+
+ Mπ(s0,a0,s):=𝔼[∑t≥0γt𝟙{st+1=s}∣(s0,a0),π]∀s∈S.M^{\pi}(s_{0},a_{0},s)\mathrel{\mathop{:}}=\E\
+ left[{\textstyle\sum}_{t\geq 0}\,\gamma^{t}\mathbbm{1}_{\{s_{t+1}=s\}}\mid(s_{0},\,a_{0}),\,\  (1)
+ pi\right]\quad\forall s\in S.
+
+In matrix form, SRs can be written as Mπ=P​∑t≥0γt​Pπt=P​(Id−γ​Pπ)−1M^{\pi}=P\sum_{t\geq 0}\gamma^
+{t}P_{\pi}^{t}=P(\Id-\gamma P_{\pi})^{-1}, where PπP_{\pi} is the state transition probability. MπM
+^{\pi} satisfies the matrix Bellman equation Mπ=P+γ​Pπ​MπM^{\pi}=P+\gamma P_{\pi}M^{\pi}.
+
+Importantly, SRs disentangle the dynamics of the MDP and the reward function: for any reward rr and
+policy π\pi, the QQ-function can be expressed linearly as Qrπ=Mπ​rQ^{\pi}_{r}=M^{\pi}r.
+
+Successor features and successor measures.
+
+Successor features (SFs) [BDM+17] extend SR to continous MDPs by first assuming we are given a
+basic feature map φ:S→ℝd\varphi\colon S\to{\mathbb{R}}^{d} that embeds states into dd-dimensional
+space, and defining the expected discounted sum of future state features:
+
+ ψπ(s0,a0):=𝔼[∑t≥0γtφ(st+1)∣s0,a0,π].\psi^{\pi}(s_{0},a_{0})\mathrel{\mathop{:}}=\E\left[{\     (2)
+ textstyle\sum}_{t\geq 0}\,\gamma^{t}\varphi(s_{t+1})\mid s_{0},\,a_{0},\,\pi\right].
+
+SFs have been introduced to make SRs compatible with function approximation. For a finite MDP, the
+original definition (1) is recovered by letting φ\varphi be a one-hot state encoding into ℝ|S|{\
+mathbb{R}}^{\left\lvert S\right\rvert}.
+
+Alternatively, successor measures (SMs) [BTO21] extend SRs to continuous spaces by treating the
+distribution of future visited states as a measure MπM^{\pi} over the state space SS,
+
+ Mπ​(s0,a0,X):=∑t≥0γt​Pr⁡(st+1∈X∣s0,a0,π)∀X⊂S.M^{\pi}(s_{0},a_{0},X)\mathrel{\mathop{:}}={\
+ textstyle\sum}_{t\geq 0}\,\gamma^{t}\Pr\nolimits\left(s_{t+1}\in X\mid s_{0},\,a_{0},\,\pi\    (3)
+ right)\quad\forall X\subset S.
+
+SFs and SMs are related: by construction, ψπ​(s0,a0)=∫s′Mπ​(s0,a0,d⁡s′)​φ​(s′)\psi^{\pi}(s_{0},a_
+{0})=\int_{s^{\prime}}M^{\pi}(s_{0},a_{0},\operatorname{d}\!{}s^{\prime})\,\varphi(s^{\prime}).
+
+Zero-shot RL from successor features and forward-backward representations.
+
+Successor representations provide a generic framework for zero-shot RL, by learning to represent
+the relationship between reward functions and QQ-functions, as encoded in MπM^{\pi}.
+
+Given a basic feature map φ:S→ℝd\varphi\colon S\to{\mathbb{R}}^{d} to be learned via another
+criterion, universal SFs [BBQ+18] learn the successor features of a particular family of policies
+πz\pi_{z} for z∈ℝdz\in{\mathbb{R}}^{d},
+
+ ψ(s0,a0,z)=𝔼[∑t≥0γtφ(st+1)∣(s0,a0),πz],πz(s):=arg​maxaψ(s,a,z)⊤z.\psi(s_{0},a_{0},z)=\E\left
+ [{\textstyle\sum}_{t\geq 0}\,\gamma^{t}\varphi(s_{t+1})\mid(s_{0},a_{0}),\pi_{z}\right],\quad  (4)
+ \pi_{z}(s)\mathrel{\mathop{:}}=\argmax\nolimits_{a}\psi(s,a,z)^{\!\top}z.
+
+Once a reward function rr is revealed, we use a few reward samples or explicit knowledge of the
+function rr to perform a linear regression of rr onto the features φ\varphi. Namely, we estimate
+zr:=arg​minz⁡𝔼s∼ρ​[(r⁡(s)−φ​(s)⊤​z)2]=𝔼ρ⁡[φ​φ⊤]−1​𝔼ρ​[φ​r]z_{r}\mathrel{\mathop{:}}=\argmin_{z}\E_
+{s\sim\rho}[(r(s)-\varphi(s)^{\top}z)^{2}]=\E_{\rho}[\varphi\varphi^{\top}]^{-1}\E_{\rho}[\varphi
+r]. Then we return the policy πzr\pi_{z_{r}}. This policy is guaranteed to be optimal for all
+rewards in the linear span of the features φ\varphi:
+
+Theorem 1 ([BBQ+18]).
+
+Assume that (4) holds. Assume there exists a weight w∈ℝdw\in{\mathbb{R}}^{d} such that r⁡(s)=φ​(s)
+⊤​w,∀s∈Sr(s)=\varphi(s)^{\!\top}w,\forall s\in S. Then zr=wz_{r}=w, and πzr\pi_{z_{r}} is the
+optimal policy for reward rr.
+
+Forward-backward (FB) representations [TO21] apply a similar idea to a finite-rank model of
+successor measures. They look for representations F:S×A×ℝd→ℝdF\colon S\times A\times{\mathbb{R}}^
+{d}\to{\mathbb{R}}^{d} and B:S→ℝdB\colon S\to{\mathbb{R}}^{d} such that the long-term transition
+probabilities MπzM^{\pi_{z}} in (3) decompose as
+
+ Mπz​(s0,a0,d⁡s′)≈F​(s0,a0,z)⊤​B​(s′)​ρ​(d⁡s′),πz​(s):=arg​maxa⁡F​(s,a,z)⊤​zM^{\pi_{z}}(s_
+ {0},a_{0},\operatorname{d}\!{}s^{\prime})\approx F(s_{0},a_{0},z)^{\!\top}B(s^{\prime})\,\rho  (5)
+ (\operatorname{d}\!{}s^{\prime}),\quad\pi_{z}(s)\mathrel{\mathop{:}}=\argmax\nolimits_{a}F
+ (s,a,z)^{\!\top}z
+
+In a finite space, the first equation rewrites as the matrix decomposition Mπz=Fz⊤​B​diag⁡(ρ)M^{\
+pi_{z}}=F_{z}^{\!\top}B\diag(\rho).
+
+Once a reward function rr is revealed, we estimate zr:=𝔼s∼ρ⁡[r⁡(s)​B​(s)]z_{r}\mathrel{\mathop{:}}=
+\E_{s\sim\rho}[r(s)B(s)] from a few reward samples or from explicit knowledge of the function rr
+(e.g. zr=B⁡(s)z_{r}=B(s) to reach ss). Then we return the policy πzr\pi_{z_{r}}. If the
+approximation (5) holds, this policy is guaranteed to be optimal for any reward function:
+
+Theorem 2 ([TO21]).
+
+Assume that (5) holds. Then for any reward function rr, the policy πzr\pi_{z_{r}} is optimal for
+rr, with optimal QQ-function Qr⋆=F​(s,a,zr)⊤​zrQ^{\star}_{r}=F(s,a,z_{r})^{\!\top}z_{r}.
+
+For completeness, we sketch the proofs of Theorems 1–2 in Appendix A. Importantly, both theorems
+are compatible with approximation: approximate solutions provide approximately optimal policies.
+
+Connections between SFs and FB.
+
+A first difference between SFs and FB is that SFs must be provided with basic features φ\varphi.
+The best φ\varphi is such that the reward functions of the downstream tasks are linear in φ\varphi.
+But for unsupervised training without prior task knowledge, an external criterion is needed to
+learn φ\varphi. We test a series of such criteria below. In contrast, FB uses a single criterion,
+avoiding the need for state featurization by learning a model of state occupancy.
+
+Second, SFs only cover rewards in the linear span of φ\varphi, while FB apparently covers any
+reward. But this difference is not as stark as it looks: exactly solving the FB equation (5) in
+continuous spaces requires d=∞d=\infty, and for finite dd, the policies will only be optimal for
+rewards in the linear span of BB [TO21]. Thus, in both cases, policies are exactly optimal only for
+a dd-dimensional family of rewards. Still, FB can use an arbitrary large dd without any additional
+input or criterion.
+
+FB representations are related to successor features: the FB definition (5) implies that ψ⁡(s,a,z):
+=F⁡(s,a,z)\psi(s,a,z)\mathrel{\mathop{:}}=F(s,a,z) are the successor features of φ⁡(s):=(𝔼ρ⁡BB⊤)
+−1​B​(s)\varphi(s)\mathrel{\mathop{:}}=(\E_{\rho}BB^{\!\top})^{-1}B(s). This follows from
+multiplying (3) and (5) by B⊤​(𝔼ρ⁡BB⊤)−1B^{\!\top}(\E_{\rho}BB^{\!\top})^{-1} on the right, and
+integrating over s′∼ρs^{\prime}\sim\rho. Thus, a posteriori, FB can be used to produce both φ\
+varphi and ψ\psi in SF, although training is different.
+
+This connection between FB and SF is one-directional: (5) is a stronger condition. In particular F=
+B=0F=B=0 is not a solution: contrary to ψ=φ=0\psi=\varphi=0 in (4), there is no collapse. No
+additional criterion to train φ\varphi is required: FF and BB are trained jointly to provide the
+best rank-dd approximation of the successor measures MπM^{\pi}. This summarizes an environment by
+selecting the features that best describe the relationship Qrπ=Mπ​rQ^{\pi}_{r}=M^{\pi}r between
+rewards and QQ-functions.
+
+5 Algorithms for Successor Features and FB Representations
+
+We now describe more precisely the algorithms used in our experiments. The losses used to train ψ\
+psi in SFs, and F,BF,B in FB, are described in Sections 5.1 and 5.2 respectively.
+
+To obtain a full zero-shot RL algorithm, SFs must specify the basic features φ\varphi. Any
+representation learning method can be used for φ\varphi. We use ten possible choices (Section 5.3)
+based on existing or new representations for RL: random features as a baseline, autoencoders, next
+state and latent next state transition models, inverse curiosity module, the diversity criterion of
+APS, contrastive learning, and finally, several spectral decompositions of the transition matrix or
+its associated Laplacian.
+
+Both SFs and FB define policies as an argmax of ψ​(s,a,z)⊤​z\psi(s,a,z)^{\!\top}z or F​(s,a,z)⊤​zF
+(s,a,z)^{\!\top}z over actions aa. With continuous actions, the argmax cannot be computed exactly.
+We train an auxiliary policy network π⁡(s,z)\pi(s,z) to approximate this argmax, using the same
+standard method for SFs and FB (Appendix G.4).
+
+5.1 Learning the Successor Features ψ\psi
+
+The successor features ψ\psi satisfy the ℝd{\mathbb{R}}^{d}-valued Bellman equation ψπ=P​φ+γ​Pπ​ψπ\
+psi^{\pi}=P\varphi+\gamma P_{\pi}\psi^{\pi}, the collection of ordinary Bellman equations for each
+component of φ\varphi. The PP in front of φ\varphi comes from using φ⁡(st+1)\varphi(s_{t+1}) not φ⁡
+(st)\varphi(s_{t}) in (2). Therefore, we can train ψ⁡(s,a,z)\psi(s,a,z) for each zz by minimizing
+the Bellman residuals ‖ψ⁡(st,at,z)−φ⁡(st+1)−γ​ψ¯​(st+1,πz​(st+1),z)‖2\left\lVert\psi(s_{t},a_{t},z)
+-\varphi(s_{t+1})-\gamma\bar{\psi}(s_{t+1},\pi_{z}(s_{t+1}),z)\right\rVert^{2} where ψ¯\bar{\psi}
+is a non-trainable target version of ψ\psi as in parametric QQ-learning. This requires sampling a
+transition (st,at,st+1)(s_{t},a_{t},s_{t+1}) from the dataset and choosing zz. We sample random
+values of zz as described in Appendix G.3.
+
+This is the loss used in [BBQ+18]. But this can be improved, since we do not use the full vector ψ⁡
+(s,a,z)\psi(s,a,z): only ψ​(s,a,z)⊤​z\psi(s,a,z)^{\!\top}z is needed for the policies. Therefore,
+as in [LA21], instead of the vector-valued Bellman residual above, we just use
+
+ ℒ⁡(ψ):=𝔼(st,at,st+1)∼ρ⁡(ψ​(st,at,z)⊤​z−φ​(st+1)⊤​z−γ​ψ¯​(st+1,πz​(st+1),z)⊤​z)2\mathcal{L}(\
+ psi)\mathrel{\mathop{:}}=\E_{(s_{t},a_{t},s_{t+1})\sim\rho}\left(\psi(s_{t},a_{t},z)^{\!\top}  (6)
+ z-\varphi(s_{t+1})^{\!\top}z-\gamma\bar{\psi}(s_{t+1},\pi_{z}(s_{t+1}),z)^{\!\top}z\right)^
+ {2}
+
+for each zz. This trains ψ​(⋅,z)⊤​z\psi(\cdot,z)^{\!\top}z as the QQ-function of reward φ⊤​z\varphi
+^{\!\top}z, the only case needed, while training the full vector ψ⁡(⋅,z)\psi(\cdot,z) amounts to
+training the QQ-functions of each policy πz\pi_{z} for all rewards φ⊤​z′\varphi^{\!\top}z^{\prime}
+for all z′∈ℝdz^{\prime}\in{\mathbb{R}}^{d} including z′≠zz^{\prime}\neq z. We have found this
+improves performance.
+
+5.2 Learning FB Representations: the FB Training Loss
+
+The successor measure MπM^{\pi} satisfies a Bellman-like equation Mπ=P+γ​Pπ​MπM^{\pi}=P+\gamma P_{\
+pi}M^{\pi}, as matrices in the finite case and as measures in the general case [BTO21]. We can
+learn FB by iteratively minimizing the Bellman residual on the parametric model M=F⊤​B​ρM=F^{\!\
+top}B\rho. Using a suitable norm ‖⋅‖ρ\left\lVert\cdot\right\rVert_{\rho} for the Bellman residual
+(Appendix B) leads to a loss expressed as expectations from the dataset:
+
+ ℒ⁡(F,B)\      :=‖Fz⊤Bρ−(P+γPπzF¯z⊤B¯ρ)‖ρ2\displaystyle\mathrel{\mathop{:}}=\left\|F_{z}^{\!\
+ displaystyle\ top}B\rho-\left(P+\gamma P_{\pi_{z}}\bar{F}_{z}^{\!\top}\bar{B}\rho\right)\      (7)
+ mathcal{L}    right\|^{2}_{\rho}
+ (F,B)
+               =𝔼(st,at,st+1)∼ρs′∼ρ⁡[(F​(st,at,z)⊤​B​(s′)−γ​F¯​(st+1,πz​(st+1),z)⊤​B¯​(s′))2]\
+               displaystyle=\E_{\begin{subarray}{c}(s_{t},a_{t},s_{t+1})\sim\rho\\ s^{\prime}\
+               sim\rho\end{subarray}}\left[\Big(F(s_{t},a_{t},z)^{\top}B(s^{\prime})-\gamma\
+               bar{F}(s_{t+1},\pi_{z}(s_{t+1}),z)^{\top}\bar{B}(s^{\prime})\Big)^{2}\right]
+               −2​𝔼(st,at,st+1)∼ρ​[F​(st,at,z)⊤​B​(st+1)]+Const\displaystyle\phantom{=}-2\E_
+               {(s_{t},a_{t},s_{t+1})\sim\rho}\left[F(s_{t},a_{t},z)^{\top}B(s_{t+1})\right]+\  (8)
+               texttt{Const}
+
+where the constant term does not depend on FF and BB, and where as usual Fz¯\bar{F_{z}} and B¯\bar
+{B} are non-trainable target versions of FF and BB whose parameters are updated with a slow-moving
+average of those of FF and BB. Appendix B quickly derives this loss, with pseudocode in Appendix L.
+Contrary to [TO21], the last term involves B⁡(st+1)B(s_{t+1}) instead of B⁡(st)B(s_{t}), because we
+use st+1s_{t+1} instead of sts_{t} for the successor measures (3). We sample random values of zz as
+described in Appendix G.3.
+
+We include an auxiliary loss (Appendix B) to normalize the covariance of BB, 𝔼ρ⁡BB⊤≈Id\E_{\rho}BB^
+{\!\top}\approx\Id, as in [TO21] (otherwise one can, e.g., scale FF up and BB down since only F⊤​BF
+^{\!\top}B is fixed).
+
+As with SFs above, only F​(⋅,z)⊤​zF(\cdot,z)^{\!\top}z is needed for the policies, while the loss
+above on the vector FF amounts to training F​(⋅,z)⊤​z′F(\cdot,z)^{\!\top}z^{\prime} for all pairs
+(z,z′)(z,z^{\prime}). The full loss is needed for joint training of FF and BB. But we include an
+auxiliary loss ℒ′​(F)\mathcal{L}^{\prime}(F) to focus training on the diagonal z′=zz^{\prime}=z.
+This is obtained by multiplying the Bellman gap in ℒ\mathcal{L} by B⊤​(B​ρ​B⊤)−1​zB^{\!\top}(B\rho
+B^{\!\top})^{-1}z on the right, to make F​(⋅,z)⊤​zF(\cdot,z)^{\!\top}z appear:
+
+ ℒ′​(F):=𝔼(st,at,st+1)∼ρ⁡[(F​(st,at,z)⊤​z−B​(st+1)⊤​(𝔼ρ⁡BB⊤)−1​z−γ​F¯​(st+1,πz​(st+1),z)⊤​z)
+ 2].\mathcal{L}^{\prime}(F)\mathrel{\mathop{:}}=\E_{(s_{t},a_{t},s_{t+1})\sim\rho}\left[\left   (9)
+ (F(s_{t},a_{t},z)^{\!\top}z-B(s_{t+1})^{\!\top}(\E_{\rho}BB^{\!\top})^{-1}z-\gamma\bar{F}(s_
+ {t+1},\pi_{z}(s_{t+1}),z)^{\!\top}z\right)^{2}\right].
+
+This trains F​(⋅,z)⊤​zF(\cdot,z)^{\!\top}z as the QQ-function for reward B⊤​(𝔼ρ⁡BB⊤)−1​zB^{\!\top}
+(\E_{\rho}BB^{\!\top})^{-1}z. Though ℒ=0\mathcal{L}=0 implies ℒ′=0\mathcal{L}^{\prime}=0, adding ℒ′
+\mathcal{L}^{\prime} reduces the error on the part used for policies. This departs from [TO21].
+
+5.3 Learning Basic Features φ\varphi for Successor Features
+
+SFs must be provided with basic state features φ\varphi. Any representation learning method can be
+used to supply φ\varphi. We focus on prominent RL representation learning baselines, and on those
+used in previous zero-shot RL candidates such as APS. We now describe the precise learning
+objective for each.
+
+Random Features (Rand). We use a non-trainable randomly initialized network as features.
+
+Autoencoder (AEnc). We learn a decoder f:ℝd→Sf\colon{\mathbb{R}}^{d}\to S to recover the state from
+its representation φ\varphi:
+
+ minf,φ⁡𝔼s∼𝒟⁡[(f⁡(φ⁡(s))−s)2].\min_{f,\varphi}\E_{s\sim{\mathcal{D}}}[(f(\varphi(s))-s)^{2}].  (10)
+
+Inverse Curiosity Module (ICM) aims at extracting the controllable aspects of the environment [
+PAED17]. The idea is to train an inverse dynamics model g:ℝd×ℝd→Ag\colon{\mathbb{R}}^{d}\times{\
+mathbb{R}}^{d}\to A to predict the action used for a transition between two consecutive states. We
+use the loss
+
+ ming,φ⁡𝔼(st,at,st+1)∼𝒟⁡[‖g⁡(φ⁡(st),φ⁡(st+1))−at‖2].\min_{g,\varphi}\E_{(s_{t},a_{t},s_{t+1})  (11)
+ \sim{\mathcal{D}}}[\left\lVert g(\varphi(s_{t}),\varphi(s_{t+1}))-a_{t}\right\rVert^{2}].
+
+Transition model (Trans). This is a one-step forward dynamic model f:ℝd×A→Sf\colon{\mathbb{R}}^{d}\
+times A\to S that predicts the next state from the current state representation:
+
+ minf,φ⁡𝔼(st,at,st+1)∼𝒟⁡[(f⁡(φ⁡(st),at)−st+1)2].\min_{f,\varphi}\E_{(s_{t},a_{t},s_{t+1})\sim  (12)
+ \mathcal{D}}[(f(\varphi(s_{t}),a_{t})-s_{t+1})^{2}].
+
+Latent transition model (Latent). This is similar to the transition model but instead of predicting
+the next state, it predicts its representation:
+
+ minf,φ⁡𝔼(st,at,st+1)∼𝒟⁡[(f⁡(φ⁡(st),at)−φ⁡(st+1))2].\min_{f,\varphi}\E_{(s_{t},a_{t},s_{t+1})  (13)
+ \sim{\mathcal{D}}}[(f(\varphi(s_{t}),a_{t})-\varphi(s_{t+1}))^{2}].
+
+A clear failure case of this loss is when all states are mapped to the same representation. To
+avoid this collapse, we compute φ⁡(st+1)\varphi(s_{t+1}) using a non-trainable version of φ\varphi,
+with parameters corresponding to a slowly moving average of the parameters of φ\varphi, similarly
+to BYOL [GSA+20].
+
+Diversity methods (APS). VISR [HDB+19] and its successor APS [LA21] tackle zero-shot RL using SFs
+with features φ\varphi built online from a diversity criterion. This criterion maximizes the mutual
+information between a policy parameter and the features of the states visited by a policy using
+that parameter [EGIL18, GRW16]. VISR and APS use, respectively, a variational or nearest-neighbor
+estimator for the mutual information. We directly use the code provided for APS, and refer to [LA21
+] for the details. Contrary to other methods, APS is not offline: it needs to be trained on its own
+replay buffer.
+
+Laplacian Eigenfunctions (Lap). [WTN18] consider the symmetrized MDP graph Laplacian induced by an
+exploratory policy π\pi, defined as ℒ=Id−12​(Pπ​diag⁡(ρ)−1+diag⁡(ρ)−1​(Pπ)⊤)\mathcal{L}=\Id-\frac
+{1}{2}(P_{\pi}\diag(\rho)^{-1}+\diag(\rho)^{-1}(P_{\pi})^{\top}). They propose to learn the
+eigenfunctions of ℒ\mathcal{L} via the spectral graph drawing objective [Kor03]:
+
+ minφ⁡𝔼(st,st+1)∼𝒟⁡[‖φ⁡(st)−φ⁡(st+1)‖2]+λ​𝔼s∼𝒟s′∼𝒟​[(φ​(s)⊤​φ​(s′))2−‖φ⁡(s)‖22−‖φ⁡(s′)‖22]\
+ min_{\varphi}\E_{(s_{t},s_{t+1})\sim{\mathcal{D}}}\left[\left\lVert\varphi(s_{t})-\varphi(s_
+ {t+1})\right\rVert^{2}\right]+\lambda\E_{\begin{subarray}{c}s\sim{\mathcal{D}}\\ s^{\prime}\  (14)
+ sim{\mathcal{D}}\end{subarray}}\left[(\varphi(s)^{\!\top}\varphi(s^{\prime}))^{2}-\|\varphi
+ (s)\|^{2}_{2}-\|\varphi(s^{\prime})\|^{2}_{2}\right]
+
+where the second term is an orthonormality regularization to ensure that 𝔼s∼ρ⁡[φ⁡(s)​φ​(s)⊤]≈Id\E_
+{s\sim\rho}[\varphi(s)\varphi(s)^{\!\top}]\approx\Id, and λ>0\lambda>0 is the regularization
+weight. This is implicitly contrastive, pushing features of sts_{t} and st+1s_{t+1} closer while
+keeping features apart overall. Such eigenfunctions have long been argued to play a key role in RL
+[MM07, MBB17].
+
+Low-Rank Approximation of PP (LRA-P): we learn features by estimating a low-rank model of the
+transition probability densities: P⁡(d⁡s′|s,a)≈χ​(s,a)⊤​μ​(s′)​ρ​(d⁡s′)P(\operatorname{d}\!{}s^{\
+prime}|s,a)\approx\chi(s,a)^{\top}\mu(s^{\prime})\,\rho(\operatorname{d}\!{}s^{\prime}). Knowing ρ\
+rho is not needed: the corresponding loss on χ⊤​μ−P/ρ\chi^{\!\top}\mu-P/\rho is readily expressed
+as expectations over the dataset,
+
+ minχ,μ\      𝔼(st,at)∼ρs′∼ρ⁡[(χ​(st,at)⊤​μ​(s′)−P⁡(d⁡s′|st,at)ρ⁡(d⁡s′))2]\displaystyle\E_{\
+ displaystyle begin{subarray}{c}(s_{t},a_{t})\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}\
+ \min_{\chi,\ left[\left(\chi(s_{t},a_{t})^{\top}\mu(s^{\prime})-\frac{P(\operatorname{d}\!{}  (15)
+ mu}          s^{\prime}|s_{t},a_{t})}{\rho(\operatorname{d}\!{}s^{\prime})}\right)^{2}\
+              right]
+              =𝔼(st,at)∼ρs′∼ρ⁡[(χ​(st,at)⊤​μ​(s′))2]−2​𝔼(st,at,st+1)∼ρ​[χ​(st,at)⊤​μ​(st+1)]
+              +Const\displaystyle=\E_{\begin{subarray}{c}(s_{t},a_{t})\sim\rho\\ s^{\prime}\
+              sim\rho\end{subarray}}[(\chi(s_{t},a_{t})^{\top}\mu(s^{\prime}))^{2}]-2\E_{(s_   (16)
+              {t},a_{t},s_{t+1})\sim\rho}[\chi(s_{t},a_{t})^{\top}\mu(s_{t+1})]+\texttt
+              {Const}
+
+We normalize 𝔼ρ⁡[μ​μ⊤]≈Id\E_{\rho}[\mu\mu^{\!\top}]\approx\Id with the same loss used for BB. Then
+we use SFs with φ:=μ\varphi\mathrel{\mathop{:}}=\mu. If the model P=χ⊤​μ​ρP=\chi^{\!\top}\mu\,\rho
+is exact, this provides exact optimal policies for any reward (Appendix E, Thm. 3).
+
+This loss is implicitly contrastive: it compares samples st+1s_{t+1} to independent samples s′s^{\
+prime} from ρ\rho. It is an asymmetric extension of the Laplacian loss (14) (Appendix F). The loss
+(16) is also a special case of the FB loss (8) by setting γ=0\gamma=0, omitting zz, and
+substituting (χ,μ)(\chi,\mu) for (F,B)(F,B). Indeed, FB learns a finite-rank model of P​(Id−γ​Pπ)
+−1P(\Id-\gamma P_{\pi})^{-1}, which equals PP when γ=0\gamma=0.
+
+A related loss is introduced in [RZL+22], but involves a second unspecified, arbitrary probability
+distribution pp, which must cover the whole state space and whose analytic expression must be
+known. It is unclear how to set a suitable pp in general.
+
+Contrastive Learning (CL) methods learn representations by pushing positive pairs (similar states)
+closer together while keeping negative pairs apart. Here, two states are considered similar if they
+lie close on the same trajectory. We use a SimCLR-like objective [CKNH20]:
+
+ minχ,φ−𝔼k∼Geom​(1−γCL)(st,st+k)∼𝒟⁡[log⁡exp⁡(cosine​(χ⁡(st),φ⁡(st+k)))𝔼s′∼𝒟⁡exp⁡(cosine​(χ⁡
+ (st),φ⁡(s′)))]\min_{\chi,\varphi}-\E_{\begin{subarray}{c}k\sim\texttt{Geom}(1-\gamma_{\
+ textbf{{CL}}})\\ (s_{t},s_{t+k})\sim{\mathcal{D}}\end{subarray}}\left[\log\frac{\exp(\texttt  (17)
+ {cosine}(\chi(s_{t}),\varphi(s_{t+k})))}{\E_{s^{\prime}\sim{\mathcal{D}}}\exp(\texttt
+ {cosine}(\chi(s_{t}),\varphi(s^{\prime})))}\right]
+
+where st+ks_{t+k} is the state encountered at step t+kt+k along the subtrajectory that starts at
+sts_{t}, where kk is sampled from a geometric distribution of parameter (1−γCL)(1-\gamma_{\textbf
+{{CL}}}), and cosine​(u,v)=u⊤​v‖u‖2​‖v‖2,∀u,v∈ℝd\texttt{cosine}(u,v)=\frac{u^{\top}v}{\|u\|_{2}\|v\
+|_{2}},\forall u,v\in{\mathbb{R}}^{d} is the cosine similarity function. Here γCL∈[0;1)\gamma_{\
+textbf{{CL}}}\in[0;1) is a parameter not necessarily set to the MDP’s discount factor γ\gamma. CL
+requires a dataset made of full trajectories instead of isolated transitions.
+
+CL is tightly related to the spectral decomposition of the successor measure ∑tγCLt​Pπt+1\sum_{t}\
+gamma_{\textbf{{CL}}}^{t}P_{\pi}^{t+1}, where π\pi is the behavior policy generating the dataset
+trajectories. Precisely, assuming that χ\chi and φ\varphi are centered with unit norm, and
+expanding the log\log and exp\exp at second order, the loss (17) becomes
+
+               12​𝔼s∼𝒟s′∼𝒟​[(χ​(s)⊤​φ​(s′))2]−𝔼k∼Geom​(1−γCL)(st,st+k)∼𝒟⁡[χ​(st)⊤​φ​(st+k)]\
+ (17)≈\        displaystyle\,\tfrac{1}{2}\E_{\begin{subarray}{c}s\sim{\mathcal{D}}\\ s^{\
+ displaystyle\ prime}\sim{\mathcal{D}}\end{subarray}}[(\chi(s)^{\top}\varphi(s^{\prime}))^     (18)
+ eqref{eq:CL}\ {2}]-\E_{\begin{subarray}{c}k\sim\texttt{Geom}(1-\gamma_{\textbf{{CL}}})\\ (s_
+ approx        {t},s_{t+k})\sim{\mathcal{D}}\end{subarray}}\left[\chi(s_{t})^{\top}\varphi(s_
+               {t+k})\right]
+
+(compare (16)). Now, the law of st+ks_{t+k} given sts_{t} is given by the stochastic matrix (1−γCL)
+​∑tγCLt​Pπt+1(1-\gamma_{\textbf{{CL}}})\sum_{t}\gamma_{\textbf{{CL}}}^{t}P_{\pi}^{t+1}, the
+rescaled successor measure of π\pi. Then one finds that (18) is minimized when χ\chi and φ\varphi
+provide the singular value decomposition of this matrix in L2​(ρ)L^{2}(\rho) norm (Appendix C).
+Formal links between contrastive learning and spectral methods can be found in [Tia22, BL22].
+
+Low-Rank Approximation of SR (LRA-SR). The CL method implicitly factorizes the successor measure of
+the exploration policy in Monte Carlo fashion by sampling pairs (st,st+k)(s_{t},s_{t+k}) on the
+same trajectory. This may suffer from high variance. To mitigate this, we propose to factorize this
+successor measure by temporal difference learning instead of Monte Carlo. This is achieved with an
+FB-like loss (8) except we drop the policies πz\pi_{z} and learn successor measures for the
+exploration policy only:
+
+ minχ,φ𝔼(st,st+1)∼𝒟s′∼𝒟[(χ(st)⊤φ(s′)−γχ¯(st+1)⊤φ¯(s′))2]−2𝔼(st,st+1)∼𝒟[χ(st)⊤φ(st+1)))]\min_
+ {\chi,\varphi}\E_{\begin{subarray}{c}(s_{t},s_{t+1})\sim{\mathcal{D}}\\ s^{\prime}\sim{\
+ mathcal{D}}\end{subarray}}\left[\left(\chi(s_{t})^{\!\top}\varphi(s^{\prime})-\gamma\bar{\    (19)
+ chi}(s_{t+1})^{\!\top}\bar{\varphi}(s^{\prime})\right)^{2}\right]-2\E_{\begin{subarray}{c}
+ (s_{t},s_{t+1})\sim{\mathcal{D}}\end{subarray}}\left[\chi(s_{t})^{\!\top}\varphi(s_{t+1})))\
+ right]
+
+with χ¯\bar{\chi} and φ¯\bar{\varphi} target versions of χ\chi and φ\varphi. We normalize φ\varphi
+to 𝔼ρ⁡[φ​φ⊤]≈Id\E_{\rho}[\varphi\varphi^{\!\top}]\approx\Id with the same loss as for BB. Of all SF
+variants tested, this is the closest to FB.
+
+6 Experimental Results on Benchmarks
+
+Each of the 11 methods (FB and 10 SF-based models) has been tested on 13 tasks in 4 environments
+from the Unsupervised RL and ExORL benchmarks [LYL+21, YFLP21]: Maze (reach 20 goals), Walker
+(stand, walk, run, flip), Cheetah (walk, run, walk backwards, run backwards), and Quadruped (stand,
+walk, run, jump); see Appendix G.1. Each task and method was repeated for 3 choices of replay
+buffer from ExORL: RND, APS, and Proto (except for the APS method, which can only train on the APS
+buffer). Each of these 403 settings was repeated with 10 random seeds.
+
+The full setup is described in Appendix G. Representation dimension is d=50d=50, except for Maze (d
+=100d=100). After model training, tasks are revealed by 10,000 reward samples as in [LA21], except
+for Maze, where a known goal is presented and used to set zrz_{r} directly. The code can be found
+at https://github.com/facebookresearch/controllable_agent .
+
+As toplines, we use online TD3 (with task rewards, and free environment interactions not restricted
+to a replay buffer), and offline TD3 (restricted to each replay buffer labelled with task rewards).
+Offline TD3 gives an idea of the best achievable performance given the training data in a buffer.
+
+In Fig. 2 we plot the performance of each method for each task in each environment, averaged over
+the three replay buffers and ten random seeds. Appendix H contains the full results and more plots.
+
+Compared to offline TD3 as a reference, on the Maze tasks, Lap, LRA-P, and FB perform well. On the
+Walker tasks, ICM, Trans, Lap, LRA-SR, and FB perform well. On the Cheetah tasks, ICM, Trans, Lap, 
+LRA-SR, and FB perform well. On the Quadruped tasks, many methods perform well, including,
+surprisingly, random features. Appendix I plots some of the learned features on Maze.
+
+
+Figure 2: Zero-shot scores for each task, with supervised online and offline TD3 as toplines.
+Average over 3 replay buffers and 10 random seeds.
+
+On Maze, none of the encoder-based losses learn good policies, contrary to FB and spectral SF
+methods. We believe this is because (x,y)(x,y) is already a good representation of the 2D state ss,
+so the encoders do nothing. Yet SFs on (x,y)(x,y) cannot solve the task (SFs on rewards of the form
+a​x+b​yax+by don’t recover goal-oriented tasks): planning with SFs requires specific
+representations.
+
+Fig. 1 reports aggregated scores over all tasks. To average across tasks, we normalize scores: for
+each task and replay buffer, performance is expressed as a percentage of the performance of offline
+TD3 on the same replay buffer, a natural supervised topline given the data. These normalized scores
+are averaged over all tasks in each environment, then over environments to yield the scores in Fig.
+1. The variations over environments, replay buffers and random seeds are reported in Appendix H.
+
+These results are broadly consistent over replay buffers. Buffer-specific results are reported in
+Appendices H.3–H.4. Sometimes a replay buffer is restrictive, as attested by poor offline TD3
+performance, starkly so for the Proto buffer on all Quadruped tasks. APS does not work well as a
+zero-shot RL method, but it does work well as an exploration method: on average, the APS and RND
+replay buffers have close results.
+
+FB and Lap are the only methods that perform consistently well, both over tasks and over replay
+buffers. Averaged on all tasks and buffers, FB reaches 81% of supervised offline TD3 performance,
+and 85% on the RND buffer. The second-best method is Lap with 74% (78% on the Proto buffer).
+
+7 Discussion and Limitations
+
+Can a few features solve many reward functions? Why are some features better?
+
+The choice of features is critical. Consider goal-reaching tasks: the obvious way to learn to reach
+arbitrary goal states via SFs is to define one feature per possible goal state (one-hot encoding).
+This requires |S|\left\lvert S\right\rvert features, and does not scale to continuous spaces. But
+much better features exist. For instance, with an size-nn cycle S={0,…,n−1}S=\{0,\ldots,n-1\} with
+actions that move left and right modulo nn, then two features suffice instead of nn: SFs with φ⁡(s)
+=(cos⁡(2​π​s/n),sin⁡(2​π​s/n))\varphi(s)=(\cos(2\pi s/n),\sin(2\pi s/n)) provides exact optimal
+policies to reach any arbitrary state. On a dd-dimensional grid S={0,…,n−1}dS=\{0,\ldots,n-1\}^{d},
+just 2​d2d features (a sine and cosine in each direction) are sufficient to reach any of the ndn^
+{d} goal states via SFs.
+
+Goal-reaching is only a subset of possible RL tasks, but this clearly shows that some features are
+better than others. The sine and cosine are the main eigenfunctions of the graph Laplacian on the
+grid: such features have long been argued to play a special role in RL [MM07, MBB17]. FB-based
+methods are theoretically known to learn such eigenfunctions [BTO21]. Yet a precise theoretical
+link to downstream performance is still lacking.
+
+Are these finite-rank models reasonable?
+
+FB crucially relies on a finite-rank model of ∑γt​Pπt\sum\gamma^{t}P_{\pi}^{t}, while some SF
+variants above rely on finite-rank models of PP or the corresponding Laplacian. It turns out such
+approximations are very different for PP or for ∑γt​Pπt\sum\gamma^{t}P_{\pi}^{t}.
+
+Unfortunately, despite the popularity of low-rank PP assumptions in the theoretical literature,
+PπP_{\pi} is always close to Id\Id in situations where st+1s_{t+1} is close to sts_{t}, such as any
+continuous-time physical system (Appendix D). Any low-rank model of PπP_{\pi} will be poor;
+actually PπP_{\pi} is better modeled as Id−low-rank\Id-\,\text{low-rank}, thus approximating the
+Laplacian. On the other hand, PπtP_{\pi}^{t} with large tt gets close to rank one under weak
+assumptions (ergodicity), as PπtP_{\pi}^{t} converges to an equilibrium distribution when t→∞t\to\
+infty. Thus the spectrum of the successor measures ∑γt​Pπt\sum\gamma^{t}P_{\pi}^{t} is usually more
+spread out (details and examples in Appendix D), and a low-rank model makes sense. The eigenvalues
+of PπP_{\pi} are close to 11 and there is little signal to differentiate between eigenvectors, but
+differences become clearer over time on PπtP_{\pi}^{t}. This may explain the better performance of 
+FB and LRA-SR compared to LRA-P.
+
+Limitations.
+
+First, these experiments are still small-scale and performance is not perfect, so there is space
+for improvement. Also, all the environments tested here were deterministic: all algorithms still
+make sense in stochastic environments, but experimental conclusions may differ.
+
+Second, even though these methods can be coupled with any exploration technique, this will
+obviously not cover tasks too different from the actions in the replay buffer, as with any offline
+RL method.
+
+These zero-shot RL algorithms learn to summarize the long-term future for a wide range of policies
+(though without synthesizing trajectories). This is a lot: in contrast, world models only learn
+policy-independent one-step transitions. So the question remains of how far this can scale. A
+priori, there is no restriction on the inputs (e.g., images, state history…). Still, for large
+problems, some form of prior seems unavoidable. For SFs, priors can be integrated in φ\varphi, but
+rewards must be linear in φ\varphi. For FB, priors can be integrated in BB’s input. [TO21] use FB
+with pixel-based inputs for FF, but only the agent’s (x,y)(x,y) position for BB’s input: this
+recovers all rewards that are functions of (x,y)(x,y) (linear or not). Breaking the symmetry of FF
+and BB reduces the strain on the model by restricting predictions to fewer variables, such as an
+agent’s future state instead of the full environment.
+
+8 Conclusions
+
+Zero-shot RL methods avoid test-time planning by summarizing long-term state-state relationships
+for particular policies. We systematically tested forward-backward representations and many new
+models of successor features on zero-shot tasks. We also uncovered algebraic links between SFs, FB,
+contrastive learning, and spectral methods. Overall, SFs suffer from their dependency to basic
+feature construction, with only Laplacian eigenfunctions working reliably. Notably, planning with
+SFs requires specific features: SFs can fail with generic encoder-type feature learning, even if
+the learned representation of states is reasonable (such as (x,y)(x,y)). Forward-backward
+representations were best across the board, and provide reasonable zero-shot RL performance.
+
+Acknowledgements
+
+The authors would like to thank Olivier Delalleau, Armand Joulin, Alessandro Lazaric, Sergey
+Levine, Matteo Pirotta, Andrea Tirinzoni, and the anonymous reviewers for helpful comments and
+questions on the research and manuscript.
+
+References
+
+  • [ACR^+17] Marcin Andrychowicz, Dwight Crow, Alex Ray, Jonas Schneider, Rachel Fong, Peter
+    Welinder, Bob McGrew, Josh Tobin, Pieter Abbeel, and Wojciech Zaremba. Hindsight experience
+    replay. In NIPS, 2017.
+  • [BBQ^+18] Diana Borsa, André Barreto, John Quan, Daniel Mankowitz, Rémi Munos, Hado van
+    Hasselt, David Silver, and Tom Schaul. Universal successor features approximators. arXiv
+    preprint arXiv:1812.07626, 2018.
+  • [BDM^+17] André Barreto, Will Dabney, Rémi Munos, Jonathan J Hunt, Tom Schaul, David Silver,
+    and Hado P van Hasselt. Successor features for transfer in reinforcement learning. In NIPS,
+    2017.
+  • [BKH16] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv
+    preprint arXiv:1607.06450, 2016.
+  • [BL22] Randall Balestriero and Yann LeCun. Contrastive and non-contrastive self-supervised
+    learning recover global and local spectral embedding methods. arXiv preprint arXiv:2205.11508,
+    2022.
+  • [BMR^+20] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla
+    Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language
+    models are few-shot learners. Advances in neural information processing systems, 33:1877–1901,
+    2020.
+  • [BTO21] Léonard Blier, Corentin Tallec, and Yann Ollivier. Learning successor states and
+    goal-dependent values: A mathematical viewpoint. arXiv preprint arXiv:2101.07123, 2021.
+  • [CCML18] Kurtland Chua, Roberto Calandra, Rowan McAllister, and Sergey Levine. Deep
+    reinforcement learning in a handful of trials using probabilistic dynamics models. Advances in
+    neural information processing systems, 31, 2018.
+  • [CKNH20] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple framework
+    for contrastive learning of visual representations. In International conference on machine
+    learning, pages 1597–1607. PMLR, 2020.
+  • [Day93] Peter Dayan. Improving generalization for temporal difference learning: The successor
+    representation. Neural Computation, 5(4):613–624, 1993.
+  • [dSKB12] Bruno Castro da Silva, George Konidaris, and Andrew G Barto. Learning parameterized
+    skills. In ICML, 2012.
+  • [EGIL18] Benjamin Eysenbach, Abhishek Gupta, Julian Ibarz, and Sergey Levine. Diversity is all
+    you need: Learning skills without a reward function. In International Conference on Learning
+    Representations, 2018.
+  • [FD02] David Foster and Peter Dayan. Structure in the space of value functions. Machine
+    Learning, 49(2):325–346, 2002.
+  • [FHM18] Scott Fujimoto, Herke Hoof, and David Meger. Addressing function approximation error in
+    actor-critic methods. In International conference on machine learning, pages 1587–1596. PMLR,
+    2018.
+  • [GHB^+19] Christopher Grimm, Irina Higgins, Andre Barreto, Denis Teplyashin, Markus Wulfmeier,
+    Tim Hertweck, Raia Hadsell, and Satinder Singh. Disentangled cumulants help successor
+    representations transfer to new tasks. arXiv preprint arXiv:1911.10866, 2019.
+  • [GMB^+20] Sahika Genc, Sunil Mallya, Sravan Bodapati, Tao Sun, and Yunzhe Tao. Zero-shot
+    reinforcement learning with deep attention convolutional neural networks. arXiv preprint
+    arXiv:2001.00605, 2020.
+  • [GRW16] Karol Gregor, Danilo Jimenez Rezende, and Daan Wierstra. Variational intrinsic control.
+    arXiv preprint arXiv:1611.07507, 2016.
+  • [GSA^+20] Jean-Bastien Grill, Florian Strub, Florent Altché, Corentin Tallec, Pierre Richemond,
+    Elena Buchatskaya, Carl Doersch, Bernardo Avila Pires, Zhaohan Guo, Mohammad Gheshlaghi Azar,
+    et al. Bootstrap your own latent-a new approach to self-supervised learning. Advances in neural
+    information processing systems, 33:21271–21284, 2020.
+  • [HDB^+19] Steven Hansen, Will Dabney, Andre Barreto, Tom Van de Wiele, David Warde-Farley, and
+    Volodymyr Mnih. Fast task inference with variational intrinsic successor features. arXiv
+    preprint arXiv:1906.05030, 2019.
+  • [Kor03] Yehuda Koren. On spectral graph drawing. In International Computing and Combinatorics
+    Conference, pages 496–508. Springer, 2003.
+  • [LA21] Hao Liu and Pieter Abbeel. APS: Active pretraining with successor features. In 
+    International Conference on Machine Learning, pages 6736–6747. PMLR, 2021.
+  • [LLP^+22] Michael Laskin, Hao Liu, Xue Bin Peng, Denis Yarats, Aravind Rajeswaran, and Pieter
+    Abbeel. Cic: Contrastive intrinsic control for unsupervised skill discovery. arXiv preprint
+    arXiv:2202.00161, 2022.
+  • [LPW09] David A Levin, Yuval Peres, and Elisabeth L Wilmer. Markov chains and mixing times. 
+    American Mathematical Soc., Providence, 2009.
+  • [LRD22] Clare Lyle, Mark Rowland, and Will Dabney. Understanding and preventing capacity loss
+    in reinforcement learning. arXiv preprint arXiv:2204.09560, 2022.
+  • [LYL^+21] Michael Laskin, Denis Yarats, Hao Liu, Kimin Lee, Albert Zhan, Kevin Lu, Catherine
+    Cang, Lerrel Pinto, and Pieter Abbeel. Urlb: Unsupervised reinforcement learning benchmark. In 
+    Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track
+    (Round 2), 2021.
+  • [MAWB20] Chen Ma, Dylan R Ashley, Junfeng Wen, and Yoshua Bengio. Universal successor features
+    for transfer reinforcement learning. arXiv preprint arXiv:2001.04025, 2020.
+  • [MBB17] Marlos C Machado, Marc G Bellemare, and Michael Bowling. A Laplacian framework for
+    option discovery in reinforcement learning. In International Conference on Machine Learning,
+    pages 2295–2304. PMLR, 2017.
+  • [MBJ20] Thomas M Moerland, Joost Broekens, and Catholijn M Jonker. Model-based reinforcement
+    learning: A survey. arXiv preprint arXiv:2006.16712, 2020.
+  • [MM07] Sridhar Mahadevan and Mauro Maggioni. Proto-value functions: A Laplacian framework for
+    learning representation and control in Markov decision processes. Journal of Machine Learning
+    Research, 8(10), 2007.
+  • [Øks98] Bernt Øksendal. Stochastic differential equations. Springer, 1998.
+  • [OSLK17] Junhyuk Oh, Satinder Singh, Honglak Lee, and Pushmeet Kohli. Zero-shot task
+    generalization with multi-task deep reinforcement learning. In International Conference on
+    Machine Learning, pages 2661–2670. PMLR, 2017.
+  • [PAED17] Deepak Pathak, Pulkit Agrawal, Alexei A Efros, and Trevor Darrell. Curiosity-driven
+    exploration by self-supervised prediction. In International conference on machine learning,
+    pages 2778–2787. PMLR, 2017.
+  • [RZL^+22] Tongzheng Ren, Tianjun Zhang, Lisa Lee, Joseph E Gonzalez, Dale Schuurmans, and Bo
+    Dai. Spectral decomposition representation for reinforcement learning. arXiv preprint
+    arXiv:2208.09515, 2022.
+  • [SB18] Richard S Sutton and Andrew G Barto. Reinforcement learning: An introduction. MIT press,
+    2018. 2nd edition.
+  • [SHGS15] Tom Schaul, Daniel Horgan, Karol Gregor, and David Silver. Universal value function
+    approximators. In Francis Bach and David Blei, editors, Proceedings of the 32nd International
+    Conference on Machine Learning, volume 37 of Proceedings of Machine Learning Research, pages
+    1312–1320, Lille, France, 07–09 Jul 2015. PMLR.
+  • [SMD^+11] Richard S Sutton, Joseph Modayil, Michael Delp, Thomas Degris, Patrick M Pilarski,
+    Adam White, and Doina Precup. Horde: A scalable real-time architecture for learning knowledge
+    from unsupervised sensorimotor interaction. In The 10th International Conference on Autonomous
+    Agents and Multiagent Systems-Volume 2, pages 761–768, 2011.
+  • [SOL18] Sungryull Sohn, Junhyuk Oh, and Honglak Lee. Hierarchical reinforcement learning for
+    zero-shot generalization with subtask dependencies. Advances in Neural Information Processing
+    Systems, 31, 2018.
+  • [TDM^+18] Yuval Tassa, Yotam Doron, Alistair Muldal, Tom Erez, Yazhe Li, Diego de Las Casas,
+    David Budden, Abbas Abdolmaleki, Josh Merel, Andrew Lefrancq, et al. Deepmind control suite. 
+    arXiv preprint arXiv:1801.00690, 2018.
+  • [Tia22] Yuandong Tian. Deep contrastive learning is provably (almost) principal component
+    analysis. arXiv preprint arXiv:2201.12680, 2022.
+  • [TO21] Ahmed Touati and Yann Ollivier. Learning one representation to optimize all rewards. 
+    Advances in Neural Information Processing Systems, 34, 2021.
+  • [VdMH08] Laurens Van der Maaten and Geoffrey Hinton. Visualizing data using t-sne. Journal of
+    machine learning research, 9(11), 2008.
+  • [WTN18] Yifan Wu, George Tucker, and Ofir Nachum. The Laplacian in RL: Learning representations
+    with efficient approximations. In International Conference on Learning Representations, 2018.
+  • [YFLP21] Denis Yarats, Rob Fergus, Alessandro Lazaric, and Lerrel Pinto. Reinforcement learning
+    with prototypical representations. In International Conference on Machine Learning, pages
+    11920–11931. PMLR, 2021.
+  • [ZSBB17] Jingwei Zhang, Jost Tobias Springenberg, Joschka Boedecker, and Wolfram Burgard. Deep
+    reinforcement learning with successor features for navigation across similar environments. In 
+    2017 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), pages
+    2371–2378. IEEE, 2017.
+
+List of Appendices
+
+Appendix A sketches a proof of the basic properties of SFs and the FB representation, Theorems 1
+and 2, respectively from [BBQ+18] and [TO21].
+
+Appendix B derives the loss (8) we use to learn FF and BB, and the auxiliary orthonormalization
+loss.
+
+Appendix C describes the precise mathematical relationship between the contrastive loss (17) and
+successor measures of the exploration policy.
+
+Appendix D further discusses why low-rank models make more sense on successor measures than on the
+transition matrix PP.
+
+Appendix E proves that if PP is low-rank given by χ⊤​μ\chi^{\!\top}\mu, then successor features
+using φ=μ\varphi=\mu (but not χ\chi) provide optimal policies.
+
+Appendix F proves that the loss (16) used to learn low-rank PP is an asymmetric version of the
+Laplacian eigenfunction loss (14).
+
+Appendix G describes the detailed experimental setup: environments, architectures, policy training,
+methods for sampling of zz, and hyperparameters. The full code can be found at
+https://github.com/facebookresearch/controllable_agent
+
+Appendix H contains the full table of experimental results, as well as aggregate plots over several
+variables (per task, per replay buffer, etc.).
+
+Appendix I analyzes the learned features. We use feature rank analysis to study the degree of
+feature collapse for some methods. We also provide t-SNE visualizations of the learned embeddings
+for all methods (for the Maze environment).
+
+Appendix J provides hyperparameter sensitivity plots (latent dimension dd, learning rate, batch
+size, mixing ratio for zz sampling).
+
+Appendix K describes a further baseline where we take a goal-oriented method inspired from [MAWB20
+], and extend it to dense rewards by linearity. Since results were very poor except for Maze (which
+is goal-oriented), we did not discuss it in the main text.
+
+Appendix L provides PyTorch snippets for the key losses, notably the FB loss, the SF loss as well
+as the various feature learning methods for SF.
+
+Appendix A Sketch of Proof of Theorems 1 and 2
+
+To provide an intuition behind Theorems 1 and 2 on SFs and FB, we include here a sketch of proof in
+the finite state case. Full proofs in the general case can be found in the Appendix of [TO21].
+
+For Theorem 1 (SFs), let us assume that the reward is linear in the features φ\varphi, namely, r⁡
+(s)=φ​(s)⊤​wr(s)=\varphi(s)^{\!\top}w for some w∈ℝdw\in{\mathbb{R}}^{d}. Then by definition, zr=wz_
+{r}=w since zrz_{r} is the linear regression of the reward on the features (assuming features are
+linearly independent). Using the definition (4) of the successor features ψ\psi, and taking the dot
+product with zrz_{r}, we obtain
+
+ ψ(s0,a0,zr)⊤zr=𝔼[∑tγtφ(st+1)⊤zr∣s0,a0,πzr]=𝔼[∑tγtr(st+1)∣s0,a0,πzr]\displaystyle\psi(s_
+ {0},a_{0},z_{r})^{\!\top}z_{r}=\E\left[\sum_{t}\gamma^{t}\varphi(s_{t+1})^{\!\top}z_{r}\mid   (20)
+ s_{0},a_{0},\pi_{z_{r}}\right]=\E\left[\sum_{t}\gamma^{t}r(s_{t+1})\mid s_{0},a_{0},\pi_{z_
+ {r}}\right]
+
+since r=φ⊤​wr=\varphi^{\!\top}w. This means that ψ​(s0,a0,zr)⊤​zr\psi(s_{0},a_{0},z_{r})^{\!\top}z_
+{r} is the QQ-function of reward rr for policy πzr\pi_{z_{r}}. At the same time, by the definition
+(4), πzr\pi_{z_{r}} is defined as the argmax of ψ​(s0,a0,zr)⊤​zr\psi(s_{0},a_{0},z_{r})^{\!\top}z_
+{r}. Therefore, the policy πzr\pi_{z_{r}} is the argmax of its own QQ-function, meaning it is the
+optimal policy for reward rr.
+
+For Theorem 2 (FB), let us assume that FB perfectly satisfies the training criterion (5), namely,
+Mπz=Fz⊤​B​diag⁡(ρ)M^{\pi_{z}}=F_{z}^{\!\top}B\diag(\rho) in matrix form. Thanks to the definition (
+1) of successor representations MπM^{\pi}, for any policy πz\pi_{z}, the QQ-function for the reward
+rr can be written as Qrπz=Mπz​rQ^{\pi_{z}}_{r}=M^{\pi_{z}}r in matrix form. This is equal to
+Fz⊤​B​diag⁡(ρ)​rF_{z}^{\top}B\diag(\rho)r. Thus, if we define zr:=B​diag⁡(ρ)​r=𝔼s∼ρ⁡[B⁡(s)​r​(s)]z_
+{r}\mathrel{\mathop{:}}=B\diag(\rho)r=\E_{s\sim\rho}[B(s)r(s)], we obtain Qrπz=Fz⊤​zrQ^{\pi_{z}}_
+{r}=F_{z}^{\top}z_{r} for any z∈ℝdz\in{\mathbb{R}}^{d}. In particular, the latter holds for z=zrz=
+z_{r} as well: Fzr⊤​zrF_{z_{r}}^{\top}z_{r} is the QQ-function of πzr\pi_{z_{r}}. Again, the
+policies πz\pi_{z} are defined in (5) as the greedy policies of Fz⊤​zF_{z}^{\top}z, for any zz.
+Therefore, πzr\pi_{z_{r}} is the argmax of its own QQ-function. Hence, πzr\pi_{z_{r}} is the
+optimal policy for the reward rr.
+
+Appendix B Derivation of the Forward-Backward Loss
+
+Here we quickly derive the loss (8) used to train FF and BB such that Mπ​(s,a,d⁡s′)≈F​(s,a)⊤​B​(s′)
+​ρ​(d⁡s′)M^{\pi}(s,a,\operatorname{d}\!{}s^{\prime})\approx F(s,a)^{\!\top}B(s^{\prime})\,\rho(\
+operatorname{d}\!{}s^{\prime}). Training is based on the Bellman equation satisfied by MπM^{\pi}.
+This holds separately for each policy parameter zz, so in this section we omit zz for simplicity.
+
+Here ρ⁡(d⁡s′)\rho(\operatorname{d}\!{}s^{\prime}) is the distribution of states in the dataset.
+Importantly, the resulting loss does not require to know this measure ρ⁡(d⁡s′)\rho(\operatorname{d}
+\!{}s^{\prime}), only to be able to sample states s∼ρs\sim\rho from the dataset.
+
+The successor measure MπM^{\pi} satisfies a Bellman-like equation Mπ=P+γ​Pπ​MπM^{\pi}=P+\gamma P_{\
+pi}M^{\pi}, as matrices in the finite case and as measures in the general case [BTO21]. We can
+learn FB by iteratively minimizing the Bellman residual Mπ−(P+γ​Pπ​Mπ)M^{\pi}-(P+\gamma P_{\pi}M^{\
+pi}) on the parametric model M=F⊤​B​ρM=F^{\!\top}B\rho.
+
+Mπ​(s,a,d⁡s′)M^{\pi}(s,a,\operatorname{d}\!{}s^{\prime}) is a measure on s′s^{\prime} for each
+(s,a)(s,a), so it is not obvious how to measure the size of the Bellman residual. In general, we
+can define a norm on such objects MM by taking the density with respect to the reference measure ρ\
+rho,
+
+ ‖M‖ρ2:=𝔼(s,a)∼ρs′∼ρ⁡[(M⁡(s,a,d⁡s′)ρ⁡(d⁡s′))2]\left\lVert M\right\rVert_{\rho}^{2}\mathrel{\
+ mathop{:}}=\E_{\begin{subarray}{c}(s,a)\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}\left[\    (21)
+ left(\frac{M(s,a,\operatorname{d}\!{}s^{\prime})}{\rho(\operatorname{d}\!{}s^{\prime})}\
+ right)^{2}\right]
+
+where M⁡(s,a,d⁡s′)ρ⁡(d⁡s′)\frac{M(s,a,\operatorname{d}\!{}s^{\prime})}{\rho(\operatorname{d}\!{}s^
+{\prime})} is the density of MM with respect to ρ\rho. ^1^1 1 This is the dual norm on measures of
+the L2​(ρ)L^{2}(\rho) norm on functions. It amounts to learning a model of M⁡(s,a,d⁡s′)M(s,a,\
+operatorname{d}\!{}s^{\prime}) by learning relative densities to reach s′s^{\prime} knowing we
+start at (s,a)(s,a), relative to the average density ρ⁡(d⁡s′)\rho(\operatorname{d}\!{}s^{\prime})
+in the dataset. For finite states, MM is a matrix Ms​a​s′M_{sas^{\prime}} and this is just a ρ\
+rho-weighted Frobenius matrix norm, ‖M‖ρ2=∑s​a​s′Ms​a​s′2​ρ​(s,a)/ρ⁡(s′)\left\lVert M\right\rVert^
+{2}_{\rho}=\sum_{sas^{\prime}}M_{sas^{\prime}}^{2}\,\rho(s,a)/\rho(s^{\prime}). (This is also how
+we proceed to learn a low-rank approximation of PP in (16).)
+
+We define the loss on FF and BB as the norm of the Bellman residual on MM for the model M=F⊤​B​ρM=F
+^{\!\top}B\rho. As usual in temporal difference learning, we use fixed, non-trainable target
+networks F¯\bar{F} and B¯\bar{B} for the right-hand-side of the Bellman equation. Thus, the Bellman
+residual is F⊤​B​ρ−(P+γ​Pπ​F¯⊤​B¯​ρ)F^{\!\top}B\rho-\left(P+\gamma P_{\pi}\bar{F}^{\!\top}\bar{B}\
+rho\right), and the loss is
+
+ ℒ⁡(F,B)\           :=‖F⊤Bρ−(P+γPπF¯⊤B¯ρ)‖ρ2\displaystyle\mathrel{\mathop{:}}=\left\|F^{\!\
+ displaystyle\      top}B\rho-\left(P+\gamma P_{\pi}\bar{F}^{\!\top}\bar{B}\rho\right)\right\  (22)
+ mathcal{L}(F,B)    |^{2}_{\rho}
+
+When computing the norm ‖⋅‖ρ\left\lVert\cdot\right\rVert_{\rho}, the denominator ρ\rho cancels out
+with the F⊤​B​ρF^{\!\top}B\rho terms, but we are left with a P/ρP/\rho term. This term can still be
+integrated, because integrating P⁡(d⁡s′|s,a)/ρ⁡(d⁡s′)P(\operatorname{d}\!{}s^{\prime}|s,a)/\rho(\
+operatorname{d}\!{}s^{\prime}) under s′∼ρs^{\prime}\sim\rho is equivalent to directly integrating
+under s′∼P⁡(d⁡s′|s,a)s^{\prime}\sim P(\operatorname{d}\!{}s^{\prime}|s,a), namely, integrating
+under transitions (st,at,st+1)(s_{t},a_{t},s_{t+1}) in the environment. This plays out as follows:
+
+              =𝔼(st.at)∼ρs′∼ρ⁡[(F​(st,at)⊤​B​(s′)−P⁡(d⁡s′|st,at)ρ⁡(d⁡s′)−γ​𝔼st+1∼P⁡(d⁡st+1|
+ ℒ⁡(F,B)\     st,at)​[F¯​(st+1,π⁡(st+1))⊤​B¯​(s′)])2]\displaystyle=\E_{\begin{subarray}{c}(s_
+ displaystyle {t}.a_{t})\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}\left[\left(F(s_{t},a_
+ \mathcal{L}  {t})^{\top}B(s^{\prime})-\frac{P(\operatorname{d}\!{}s^{\prime}|s_{t},a_{t})}{\  (23)
+ (F,B)        rho(\operatorname{d}\!{}s^{\prime})}-\gamma\E_{s_{t+1}\sim P(\operatorname{d}\!
+              {}s_{t+1}|s_{t},a_{t})}[\bar{F}(s_{t+1},\pi(s_{t+1}))^{\top}\bar{B}(s^{\
+              prime})]\right)^{2}\right]
+              =𝔼(st,at,st+1)∼ρs′∼ρ⁡[(F​(st,at)⊤​B​(s′)−γ​F¯​(st+1,π⁡(st+1))⊤​B¯​(s′))2]\
+              displaystyle=\E_{\begin{subarray}{c}(s_{t},a_{t},s_{t+1})\sim\rho\\ s^{\prime}\
+              sim\rho\end{subarray}}\left[\Big(F(s_{t},a_{t})^{\top}B(s^{\prime})-\gamma\bar
+              {F}(s_{t+1},\pi(s_{t+1}))^{\top}\bar{B}(s^{\prime})\Big)^{2}\right]
+              −2​𝔼(st,at,st+1)∼ρ​[F​(st,at)⊤​B​(st+1)]+Const\displaystyle\phantom{=}-2\E_{(s_
+              {t},a_{t},s_{t+1})\sim\rho}\left[F(s_{t},a_{t})^{\top}B(s_{t+1})\right]+\texttt  (24)
+              {Const}
+
+where Const is a constant term that we can discard since it does not depend on FF and BB.
+
+Apart from the discarded constant term, all terms in this final expression can be sampled from the
+dataset. Note that we have a −2​F​(st,at)⊤​B​(st+1)-2F(s_{t},a_{t})^{\!\top}B(s_{t+1}) term where [
+TO21] have a −2​F​(st,at)⊤​B​(st)-2F(s_{t},a_{t})^{\!\top}B(s_{t}) term: this is because we define
+successor representations (1) using st+1s_{t+1} while [TO21] use sts_{t}.
+
+See also Appendix L for pseudocode (including the orthonormalization loss, and double networks for
+QQ-learning as described in Appendix G).
+
+The orthonormalization loss.
+
+An auxiliary loss is used to normalize BB so that 𝔼s∼ρ⁡[B⁡(s)​B​(s)⊤]≈Id\E_{s\sim\rho}[B(s)B(s)^{\!
+\top}]\approx\Id. This loss is
+
+ ℒnorm​(B)\
+ displaystyle\       :=‖𝔼ρ[BB⊤]−Id‖Frobenius2\displaystyle\mathrel{\mathop{:}}=\left\lVert\E_  (25)
+ mathcal{L}_{\mathrm {\rho}[BB^{\!\top}]-\Id\right\rVert^{2}_{\mathrm{Frobenius}}
+ {norm}}(B)
+                     =𝔼s∼ρ,s′∼ρ⁡[(B​(s)⊤​B​(s′))2−‖B⁡(s)‖22−‖B⁡(s′)‖22]+Const.\displaystyle=\
+                     E_{s\sim\rho,\,s^{\prime}\sim\rho}\left[(B(s)^{\!\top}B(s^{\prime}))^{2}  (26)
+                     -\left\lVert B(s)\right\rVert^{2}_{2}-\left\lVert B(s^{\prime})\right\
+                     rVert^{2}_{2}\right]+\texttt{Const}.
+
+(The more complex expression in [TO21] has the same gradients up to a factor 44.)
+
+The auxiliary loss ℒ′\mathcal{L}^{\prime} (9).
+
+Learning F⁡(s,a,z)F(s,a,z) is equivalent to learning F​(s,a,z)⊤​z′F(s,a,z)^{\!\top}z^{\prime} for
+all vectors z′z^{\prime}. Yet the definition of the policies πz\pi_{z} in FB only uses F​(s,a,z)
+⊤​zF(s,a,z)^{\!\top}z. Thus, as was done for SFs in Section 5.1, one may wonder if there is a
+scalar rather than vector loss to train FF, that would reduce the error in the directions of FF
+used to define πz\pi_{z}.
+
+In the case of FB, the full vector loss is needed to train FF and BB. However, one can add the
+following auxiliary loss on FF to reduce the errors in the specific direction F​(s,a,z)⊤​zF(s,a,z)^
+{\!\top}z. This is obtained as follows.
+
+Take the Bellman gap in the main FB loss (22): this Bellman gap is F⊤​B​ρ−(P+γ​Pπ​F¯⊤​B¯​ρ)F^{\!\
+top}B\rho-\left(P+\gamma P_{\pi}\bar{F}^{\!\top}\bar{B}\rho\right). To specialize this Bellman gap
+in the direction of F​(s,a,z)⊤​zF(s,a,z)^{\!\top}z, multiply by B⊤​(B​ρ​B⊤)−1​zB^{\!\top}(B\rho B^
+{\!\top})^{-1}z on the right: this yields F⊤​z−(P​B⊤​(B​ρ​B⊤)−1​z+γ​Pπ​F¯⊤​z)F^{\!\top}z-\left(PB^
+{\!\top}(B\rho B^{\!\top})^{-1}z+\gamma P_{\pi}\bar{F}^{\!\top}z\right) (using that we compute the
+loss at B¯=B\bar{B}=B).
+
+This new loss is the Bellman gap on F⊤​zF^{\!\top}z, with reward P​B⊤​(B​ρ​B⊤)−1​zPB^{\!\top}(B\rho
+B^{\!\top})^{-1}z.
+
+This is the loss ℒ′\mathcal{L}^{\prime} described in (9). It is a particular case of the main FB
+loss: ℒ=0\mathcal{L}=0 implies ℒ′=0\mathcal{L}^{\prime}=0, since we obtained ℒ′\mathcal{L}^{\prime}
+by multiplying the Bellman gap of ℒ\mathcal{L}.
+
+We use ℒ′\mathcal{L}^{\prime} on top of the main FB loss to reduce errors in the direction F​
+(s,a,z)⊤​zF(s,a,z)^{\!\top}z. However, in the end, the differences are modest.
+
+Appendix C Relationship Between Contrastive Loss and SVD of Successor Measures
+
+Here we prove the precise relationship between the contrastive loss (17) and SVDs of the successor
+measure of the exploration policy.
+
+Intuitively, both methods push states together if they lie on the same trajectory, by increasing
+the dot product between the representations of sts_{t} and st+ks_{t+k}. This is formalized as
+follows.
+
+Let π\pi be the policy used to produce the trajectories in the dataset. Define
+
+ M~:=(1−γCL)​∑t≥0γCLt​Pπt+1\tilde{M}\mathrel{\mathop{:}}=(1-\gamma_{\textbf{{CL}}})\sum_{t\    (27)
+ geq 0}\gamma_{\textbf{{CL}}}^{t}P_{\pi}^{t+1}
+
+where γCL\gamma_{\textbf{{CL}}} is the parameter of the geometric distribution used to choose kk
+when sampling sts_{t} and st+ks_{t+k}.
+
+M~\tilde{M} is a stochastic matrix in the discrete case, and a probability measure over SS in the
+general case: it is the normalized version of the successor measure (3) with π\pi the exploration
+policy.
+
+By construction, the distribution of st+ks_{t+k} knowing sts_{t} with k∼Geom​(1−γCL)k\sim\texttt
+{Geom}(1-\gamma_{\textbf{{CL}}}) is described by M~\tilde{M}. Therefore, we can rewrite the loss as
+
+  −𝔼k∼Geom​(1−γCL)(st,st+k)∼𝒟⁡[log⁡exp⁡(cosine​(φ⁡(st),μ⁡(st+k)))𝔼s′∼𝒟⁡exp⁡(cosine​(φ⁡(st),μ⁡
+  (s′)))]\displaystyle\phantom{=}-\E_{\begin{subarray}{c}k\sim\texttt{Geom}(1-\gamma_{\textbf
+  {{CL}}})\\ (s_{t},s_{t+k})\sim{\mathcal{D}}\end{subarray}}\left[\log\frac{\exp(\texttt       (28)
+  {cosine}(\varphi(s_{t}),\mu(s_{t+k})))}{\E_{s^{\prime}\sim{\mathcal{D}}}\exp(\texttt
+  {cosine}(\varphi(s_{t}),\mu(s^{\prime})))}\right]
+  =−𝔼s∼ρ,s′∼ρ⁡[M~​(s,d⁡s′)ρ⁡(d⁡s′)​log⁡exp⁡(cosine​(φ⁡(s),μ⁡(s′)))]\displaystyle=-\E_{s\sim\
+  rho,\,s^{\prime}\sim\rho}\left[\frac{\tilde{M}(s,\operatorname{d}\!{}s^{\prime})}{\rho(\
+  operatorname{d}\!{}s^{\prime})}\log{\exp(\texttt{cosine}(\varphi(s),\mu(s^{\prime})))}\
+  right]
+  +𝔼s∼ρ⁡[log⁡𝔼s′∼𝒟​exp⁡(cosine​(φ⁡(s),μ⁡(s′)))]\displaystyle\phantom{=}+\E_{s\sim\rho}\left[\  (29)
+  log\E_{s^{\prime}\sim{\mathcal{D}}}\exp(\texttt{cosine}(\varphi(s),\mu(s^{\prime})))\right]
+
+Assume that φ\varphi and μ\mu are centered with unit norm, namely, ‖φ⁡(s)‖2=1\left\lVert\varphi(s)\
+right\rVert_{2}=1 and 𝔼s∼ρ⁡φ⁡(s)=0\E_{s\sim\rho}\varphi(s)=0 and likewise for μ\mu. With unit norm,
+the cosine becomes just a dot product, and the loss is
+
+ ⋯=−𝔼s∼ρ,s′∼ρ⁡[M~​(s,d⁡s′)ρ⁡(d⁡s′)​φ​(s)⊤​μ​(s′)]+𝔼s∼ρ⁡[log⁡𝔼s′∼𝒟​exp⁡(φ​(s)⊤​μ​(s′))].\cdots
+ =-\E_{s\sim\rho,\,s^{\prime}\sim\rho}\left[\frac{\tilde{M}(s,\operatorname{d}\!{}s^{\
+ prime})}{\rho(\operatorname{d}\!{}s^{\prime})}\varphi(s)^{\!\top}\mu(s^{\prime})\right]+\E_   (30)
+ {s\sim\rho}\left[\log\E_{s^{\prime}\sim{\mathcal{D}}}\exp(\varphi(s)^{\!\top}\mu(s^{\
+ prime}))\right].
+
+A second-order Taylor expansion provides
+
+ log⁡𝔼⁡exp⁡X=𝔼⁡X+12​𝔼​[X2]−12​(𝔼⁡X)2+O⁡(|X|3)\log\E\exp X=\E X+\tfrac{1}{2}\E[X^{2}]-\tfrac    (31)
+ {1}{2}(\E X)^{2}+O(\left\lvert X\right\rvert^{3})
+
+and therefore, with 𝔼⁡φ=𝔼⁡μ=0\E\varphi=\E\mu=0, the loss is approximately
+
+              ≈−𝔼s∼ρ,s′∼ρ⁡[M~​(s,d⁡s′)ρ⁡(d⁡s′)​φ​(s)⊤​μ​(s′)]+12​𝔼s∼ρ,s′∼ρ​[(φ​(s)⊤​μ​(s′))2]
+ ⋯\           \displaystyle\approx-\E_{s\sim\rho,\,s^{\prime}\sim\rho}\left[\frac{\tilde{M}
+ displaystyle (s,\operatorname{d}\!{}s^{\prime})}{\rho(\operatorname{d}\!{}s^{\prime})}\       (32)
+ \cdots       varphi(s)^{\!\top}\mu(s^{\prime})\right]+\tfrac{1}{2}\E_{s\sim\rho,\,s^{\prime}
+              \sim\rho}\left[\left(\varphi(s)^{\!\top}\mu(s^{\prime})\right)^{2}\right]
+              =12​𝔼s∼ρ,s′∼ρ​[(φ​(s)⊤​μ​(s′)−M~​(s,d⁡s′)ρ⁡(d⁡s′))2]+Const\displaystyle=\tfrac
+              {1}{2}\E_{s\sim\rho,\,s^{\prime}\sim\rho}\left[\left(\varphi(s)^{\!\top}\mu(s^   (33)
+              {\prime})-\frac{\tilde{M}(s,\operatorname{d}\!{}s^{\prime})}{\rho(\operatorname
+              {d}\!{}s^{\prime})}\right)^{2}\right]+\texttt{Const}
+
+where the constant term does not depend on φ\varphi and μ\mu.
+
+This is minimized when φ⊤​μ\varphi^{\!\top}\mu is the SVD of M~/ρ\tilde{M}/\rho in the L2​(ρ)L^{2}
+(\rho) norm.
+
+Appendix D Do Finite-Rank Models on the Transition Matrix and on Successor Measures Make Sense?
+
+It turns out finite-rank models are very different for PP or for ∑γt​Pπt\sum\gamma^{t}P_{\pi}^{t}.
+In typical situations, the spectrum of PP is concentrated around 11 while that of ∑γt​Pπt\sum\gamma
+^{t}P_{\pi}^{t} is much more spread-out.
+
+Despite the popularity of low-rank PP in theoretical RL works, PP is never close to low-rank in
+continuous-time systems: then PP is actually always close to the identity. Generally speaking, PP
+cannot be low-rank if most actions have a small effect. By definition, for any feature function φ\
+varphi, (Pπ​φ)​(s)=𝔼⁡[φ⁡(st+1)|st=s](P_{\pi}\varphi)(s)=\E[\varphi(s_{t+1})|s_{t}=s]. Intuitively,
+if actions have a small effect, then st+1s_{t+1} is close to sts_{t}, and φ⁡(st+1)≈φ⁡(st)\varphi(s_
+{t+1})\approx\varphi(s_{t}) for continuous φ\varphi. This means that Pπ​φP_{\pi}\varphi is close to
+φ\varphi, so that PπP_{\pi} is close to the identity on a large subspace of feature functions φ\
+varphi. In the theory of continuous-time Markov processes, the time-tt transition kernel is given
+by Pt=et​AP_{t}=e^{tA} with AA the infinitesimal generator of the process [LPW09, §20.1] [Øks98,
+§8.1], hence PtP_{t} is Id+O⁡(t)\Id+O(t) for small timesteps tt. In general, the transition matrix
+PP is better modeled as Id+\Id+\,low-rank, which corresponds to a low-rank model of the Markov
+chain Laplacian Id−P\Id-P.
+
+On the other hand, though ∑γt​Pπt\sum\gamma^{t}P^{t}_{\pi} is never exactly low-rank (it is
+invertible), it has meaningful low-rank approximations under weak assumptions. For large tt, PπtP_
+{\pi}^{t} becomes rank-one under weak assumptions (ergodicity), as it converges to the equilibrium
+distribution of the transition kernel. For large γ\gamma, the sum ∑γt​Pπt\sum\gamma^{t}P^{t}_{\pi}
+is dominated by large tt. Most eigenvalues of PπP_{\pi} are close to 11, but taking powers PπtP^{t}
+_{\pi} sharpens the differences between eigenvalues: with γ\gamma close to 11, going from PπP_{\pi}
+to ∑γt​Pπt=(Id−γ​Pπ)−1\sum\gamma^{t}P^{t}_{\pi}=(\Id-\gamma P_{\pi})^{-1} changes an eigenvalue
+1−ε1-\varepsilon into 1/ε1/\varepsilon.
+
+In short, on PP itself, there is little learning signal to differentiate between eigenvectors, but
+differences become visible over time. This may explain why FB works better than low-rank
+decompositions directly based on PP or the Laplacian.
+
+For instance, consider the nearest-neighbor random walk on a length-nn cycle {0,1,…,n−1modn}\{0,1,\
+ldots,n-1\mod n\}, namely, moving in dimension 11. (This extends to any-dimensional grids.) The
+associated PπP_{\pi} is not low-rank in any reasonable sense: the corresponding stochastic matrix
+is concentrated around the diagonal, and many eigenvalues are close to 11. Precisely, the
+eigenvalues are cos⁡(2​k​π/n)\cos(2k\pi/n) with integer k={0,…,n/2}k=\{0,\ldots,n/2\}. This is
+≈1−2​π2​(k/n)2\approx 1-2\pi^{2}(k/n)^{2} when k≪nk\ll n. Half of the eigenvalues are between 2/2\
+sqrt{2}/2 and 11.
+
+However, when γ→1\gamma\to 1, ∑γt​Pπt\sum\gamma^{t}P_{\pi}^{t} has one eigenvalue 1/(1−γ)1/(1-\
+gamma) and the other eigenvalues are 11−cos⁡(2​k​π/n)≈n2/2​π2​k2\frac{1}{1-\cos(2k\pi/n)}\approx n^
+{2}/2\pi^{2}k^{2} with positive integer kk: there is one large eigenvalue, then the others decrease
+like cst/k2\mathrm{cst}/k^{2}. With such a spread-out spectrum, a finite-rank model makes sense.
+
+Appendix E Which Features are Analogous Between Low-Rank PP and SFs?
+
+Here we explain the relationship between a low-rank model of PP and successor features. More
+precisely, if transition probabilities from (s,a)(s,a) to s′s^{\prime} can be written exactly as χ​
+(s,a)⊤​μ​(s′)\chi(s,a)^{\!\top}\mu(s^{\prime}), then SFs with basic features φ:=μ\varphi\mathrel{\
+mathop{:}}=\mu will provide optimal policies for any reward function (Theorem 3).
+
+Indeed, under the finite-rank model P⁡(d⁡s′|s,a)=χ​(s,a)⊤​μ​(s′)​ρ​(d⁡s′)P(\operatorname{d}\!{}s^{\
+prime}|s,a)=\chi(s,a)^{\!\top}\mu(s^{\prime})\rho(\operatorname{d}\!{}s^{\prime}), rewards only
+matter via the reward features 𝔼s′∼ρ⁡μ⁡(s′)​r​(s′)\E_{s^{\prime}\sim\rho}\mu(s^{\prime})r(s^{\
+prime}): namely, two rewards with the same reward features have the same QQ-function, as the
+dynamics produces the same expected rewards. Then QQ-functions are linear in these reward features,
+and using successor features with φ:=μ\varphi\mathrel{\mathop{:}}=\mu provides the correct
+QQ-functions, as follows.
+
+Theorem 3.
+
+Assume that P⁡(d⁡s′|s,a)=χ​(s,a)⊤​μ​(s′)​ρ​(d⁡s′)P(\operatorname{d}\!{}s^{\prime}|s,a)=\chi(s,a)^
+{\!\top}\mu(s^{\prime})\rho(\operatorname{d}\!{}s^{\prime}). Then successor features using the
+basic features φ:=μ\varphi\mathrel{\mathop{:}}=\mu provide optimal policies for any reward
+function.
+
+This is why we use μ\mu rather than χ\chi for the SF basic features. This is also why we avoided
+the traditional notation P⁡(s′|s,a)=φ​(s,a)⊤​μ​(s′)P(s^{\prime}|s,a)=\varphi(s,a)^{\!\top}\mu(s^{\
+prime}) often used for low-rank PP, which induces a conflict of notation with the φ\varphi in SFs,
+and suggests the wrong analogy.
+
+Meanwhile, χ\chi plays a role more analogous to SFs’ ψ\psi, although for one-step transitions
+instead of multistep transitions as in SFs: QQ-functions are linear combinations of the features χ\
+chi. In particular, the optimal QQ-function for reward rr is Qr⋆=χ⊤​wrQ^{\star}_{r}=\chi^{\!\top}w_
+{r} for some wrw_{r}. But contrary to successor features, there is no simple correspondence to
+compute wrw_{r} from rr.
+
+Proof.
+
+Let π\pi be any policy. On a finite space in matrix notation, and omitting ρ\rho for simplicity,
+the assumption P=χ⊤​μP=\chi^{\!\top}\mu implies Pπ=χπ⊤​μP_{\pi}=\chi_{\pi}^{\!\top}\mu where χπ​
+(s):=𝔼a∼π⁡(s)⁡χ⁡(s,a)\chi_{\pi}(s)\mathrel{\mathop{:}}=\E_{a\sim\pi(s)}\chi(s,a) are the π\
+pi-averaged features. Then,
+
+ Qrπ\
+ displaystyle Q^ =P​∑t≥0γt​Pπt​r\displaystyle=P\sum_{t\geq 0}\gamma^{t}P_{\pi}^{t}r            (34)
+ {\pi}_{r}
+                 =χ⊤​μ​∑t≥0γt​(χπ⊤​μ)t​r\displaystyle=\chi^{\!\top}\mu\sum_{t\geq 0}\gamma^    (35)
+                 {t}\left(\chi_{\pi}^{\!\top}\mu\right)^{t}r
+                 =χ⊤​(∑t≥0γt​(μ​χπ⊤)t)​μ​r.\displaystyle=\chi^{\!\top}\left({\textstyle\sum}_  (36)
+                 {t\geq 0}\,\gamma^{t}\left(\mu\chi_{\pi}^{\!\top}\right)^{t}\right)\mu r.
+
+Thus, QQ-functions are expressed as Qrπ​(s,a)=χ​(s,a)⊤​w​(π,r)Q^{\pi}_{r}(s,a)=\chi(s,a)^{\!\top}w
+(\pi,r) with w⁡(π,r)=(∑t≥0γt​(μ​χπ⊤)t)​μ​rw(\pi,r)=\left({\textstyle\sum}_{t\geq 0}\,\gamma^{t}(\mu
+\chi_{\pi}^{\!\top})^{t}\right)\mu r.
+
+Moreover, rewards only matter via μ​r\mu r. Namely, two rewards with the same μ​r\mu r have the
+same QQ-function for every policy.
+
+In full generality on continuous spaces with ρ\rho again, the same holds with μ⁡(s)​ρ​(d⁡s)\mu(s)\
+rho(\operatorname{d}\!{}s) instead of μ⁡(s)\mu(s), and 𝔼s∼ρ⁡μ⁡(s)​r​(s)\E_{s\sim\rho}\mu(s)r(s)
+instead of μ​r\mu r.
+
+Now, let rr be any reward function, and let r′r^{\prime} be its L2​(ρ)L^{2}(\rho)-orthogonal
+projection onto the space generated by the features μ\mu. By construction, r−r′r-r^{\prime} is L2​
+(ρ)L^{2}(\rho)-orthogonal to μ\mu, namely, 𝔼ρ⁡μ⁡(r−r′)=0\E_{\rho}\mu(r-r^{\prime})=0. So 𝔼ρ⁡μ​r=
+𝔼ρ⁡μ​r′\E_{\rho}\mu r=\E_{\rho}\mu r^{\prime}. Therefore, by the above, rr and r′r^{\prime} have
+the same QQ-function for every policy.
+
+By definition, r′r^{\prime} lies in the linear span of the features μ\mu. By Theorem 1, SFs with
+features φ=μ\varphi=\mu will provide optimal policies for r′r^{\prime}. Since rr and r′r^{\prime}
+have the same QQ-function for every policy, an optimal policy for r′r^{\prime} is also optimal for
+rr. ∎
+
+Appendix F Relationship between Laplacian Eigenfunctions and Low-Rank PP Learning
+
+The loss (16) used to learn a low-rank model of the transition probabilities PP is an asymmetric
+version of the Laplacian eigenfunction loss (14) with λ=1\lambda=1.
+
+Said equivalently, if we use the low-rank PP loss (16) constrained with χ=μ\chi=\mu to learn a
+low-rank model of PπP_{\pi} instead of PP (with π\pi the exploration policy), then we get the
+Laplacian eigenfunction loss (14) with λ=1\lambda=1.
+
+Indeed, set λ=1\lambda=1 in (14). Assume that the distributions of sts_{t} and st+1s_{t+1} in the
+dataset are identical on average (this happens, e.g., if the dataset is made of long trajectories
+or if ρ\rho is close enough to the invariant distribution of the exploration policy). Then, in the
+Laplacian loss (14), the norms from the first term cancel those from the second, and the Laplacian
+loss simplifies to
+
+      =𝔼(st,st+1)∼𝒟⁡[‖φ⁡(st)−φ⁡(st+1)‖2]+𝔼s∼𝒟s′∼𝒟⁡[(φ​(s)⊤​φ​(s′))2−‖φ⁡(s)‖22−‖φ⁡(s′)‖22]\
+      displaystyle=\E_{(s_{t},s_{t+1})\sim{\mathcal{D}}}\left[\left\lVert\varphi(s_{t})-\
+ (14) varphi(s_{t+1})\right\rVert^{2}\right]+\E_{\begin{subarray}{c}s\sim{\mathcal{D}}\\ s^{\  (37)
+      prime}\sim{\mathcal{D}}\end{subarray}}\left[(\varphi(s)^{\!\top}\varphi(s^{\prime}))^
+      {2}-\|\varphi(s)\|^{2}_{2}-\|\varphi(s^{\prime})\|^{2}_{2}\right]
+      =𝔼st∼𝒟⁡‖φ⁡(st)‖2+𝔼st+1∼𝒟⁡‖φ⁡(st)‖2−2​𝔼(st,st+1)∼𝒟​[φ​(st)⊤​φ​(st+1)]\displaystyle=\E_
+      {s_{t}\sim{\mathcal{D}}}\left\lVert\varphi(s_{t})\right\rVert^{2}+\E_{s_{t+1}\sim{\      (38)
+      mathcal{D}}}\left\lVert\varphi(s_{t})\right\rVert^{2}-2\E_{(s_{t},s_{t+1})\sim{\mathcal
+      {D}}}\left[\varphi(s_{t})^{\!\top}\varphi(s_{t+1})\right]
+      +𝔼s∼𝒟s′∼𝒟⁡[(φ​(s)⊤​φ​(s′))2−‖φ⁡(s)‖22−‖φ⁡(s′)‖22]\displaystyle\phantom{=}+\E_{\begin
+      {subarray}{c}s\sim{\mathcal{D}}\\ s^{\prime}\sim{\mathcal{D}}\end{subarray}}\left[(\     (39)
+      varphi(s)^{\!\top}\varphi(s^{\prime}))^{2}-\|\varphi(s)\|^{2}_{2}-\|\varphi(s^{\prime})
+      \|^{2}_{2}\right]
+      =−2​𝔼(st,st+1)∼𝒟​[φ​(st)⊤​φ​(st+1)]+𝔼s∼𝒟s′∼𝒟⁡[(φ​(s)⊤​φ​(s′))2].\displaystyle=-2\E_{(s_
+      {t},s_{t+1})\sim{\mathcal{D}}}\left[\varphi(s_{t})^{\!\top}\varphi(s_{t+1})\right]+\E_   (40)
+      {\begin{subarray}{c}s\sim{\mathcal{D}}\\ s^{\prime}\sim{\mathcal{D}}\end{subarray}}\
+      left[(\varphi(s)^{\!\top}\varphi(s^{\prime}))^{2}\right].
+
+This is the same as the low-rank loss (16) if we omit actions aa and constrain χ=μ\chi=\mu.
+
+Appendix G Experimental Setup
+
+In this section we provide additional information about our experiments.
+
+Code snippets for the main losses are given in Appendix L. The full code can be found at
+https://github.com/facebookresearch/controllable_agent
+
+G.1 Environments
+
+Refer to caption
+Refer to caption
+Refer to caption
+Refer to caption
+
+Figure 3: Maze, Walker, Cheetah and Quadruped environments used in our experiments. In the Mmaze
+domain (left), we show an example of an initial state (yellow point) and the 20 test goals (red
+circles).
+
+All the environments considered in this paper are based on the DeepMind Control Suite [TDM+18].
+
+  • •
+   
+    Point-mass Maze: a 2-dimensional continuous maze with four rooms. The states are 4-dimensional
+    vectors consisting of positions and velocities of the point mass (x,y,vx,xy)(x,y,v_{x},x_{y}),
+    and the actions are 2-dimensional vectors. At test, we assess the performance of the agents on
+    20 goal-reaching tasks (5 goals in each room described by their (x,y)(x,y) coordinates).
+
+  • •
+   
+    Walker: a planar walker. States are 24-dimensional vectors consisting of positions and
+    velocities of robot joints, and actions are 6-dimensional vectors. We consider 4 different
+    tasks at test time: walker_stand reward is a combination of terms encouraging an upright torso
+    and some minimal torso height, while walker_walk and walker_run rewards include a component
+    encouraging some minimal forward velocity. walker_flip reward includes a component encouraging
+    some mininal angular momentum.
+
+  • •
+   
+    Cheetah: a running planar biped. States are 17-dimensional vectors consisting of positions and
+    velocities of robot joints, and actions are 6-dimensional vectors. We consider 4 different
+    tasks at test time: cheetah_walk and cheetah_run rewards are linearly proportional to the
+    forward velecity up to some desired values: 2 m/s for walk and 10 m/s for run. Similarly, 
+    walker_walk_backward and walker_run_backward rewards encourage reaching some minimal backward
+    velocities.
+
+  • •
+   
+    Quadruped: a four-leg ant navigating in 3D space. States and actions are 78-dimensional and
+    12-dimensional vectors, respectively. We consider 4 tasks at test time: quadruped_stand reward
+    encourages an upright torso. quadruped_walk and quadruped_run include a term encouraging some
+    minimal torso velecities. quadruped_walk includes a term encouraging some minimal height of the
+    center of mass.
+
+G.2 Architectures
+
+We use the same architectures for all methods.
+
+  • •
+   
+    The backward representation network B⁡(s)B(s) and the feature network φ⁡(s)\varphi(s) are
+    represented by a feedforward neural network with three hidden layers, each with 256 units, that
+    takes as input a state and outputs a L​2L2-normalized embedding of radius d\sqrt{d}.
+
+  • •
+   
+    For both successor features ψ⁡(s,a,z)\psi(s,a,z) and forward network F⁡(s,a,z)F(s,a,z), we
+    first preprocess separately (s,a)(s,a) and (s,z)(s,z) by two feedforward networks with two
+    hidden layers (each with 1024 units) to 512-dimentional space. Then we concatenate their two
+    outputs and pass it into another 2-layer feedforward network (each with 1024 units) to output a
+    dd-dimensional vector.
+
+  • •
+   
+    For the policy network π⁡(s,z)\pi(s,z), we first preprocess separately ss and (s,z)(s,z) by two
+    feedforward networks with two hidden layers (each with 1024 units) to 512-dimentional space.
+    Then we concatenate their two outputs and pass it into another 2-layer feedforward network
+    (each with 1024 units) to output to output a dAd_{A}-dimensional vector, then we apply a Tanh
+    activation as the action space is [−1,1]dA[-1,1]^{d_{A}}.
+
+For all the architectures, we apply a layer normalization [BKH16] and Tanh activation in the first
+layer in order to standardize the states and actions. We use Relu for the rest of layers. We also
+pre-normalized zz: z←d​z‖z‖2z\leftarrow\sqrt{d}\frac{z}{\|z\|_{2}} in the input of FF, π\pi and ψ\
+psi. Empirically, we observed that removing preprocessing and pass directly a concatenation of
+(s,a,z)(s,a,z) directly to the network leads to unstable training. The same holds when we
+preprocess (s,a)(s,a) and zz instead of (s,a)(s,a) and (s,z)(s,z), which means that the
+preprocessing of zz should be influenced by the current state.
+
+For maze environments, we added an additional hidden layer after the preprocessing (for both policy
+and forward / successor features) as it helped to improve the results.
+
+G.3 Sampling of zz
+
+We mix two methods for sampling zz:
+
+ 1. 1.
+   
+    We sample zz uniformly in the sphere of radius d\sqrt{d} in ℝd{\mathbb{R}}^{d} (so each
+    component of zz is of size ≈1\approx 1).
+
+ 2. 2.
+   
+    We sample zz using the formula for zrz_{r} corresponding to the reward for reaching a random
+    goal state ss in Theorems 1–2. Namely, we set z=B⁡(s)z=B(s) for FB and z=(∑i=1mφ⁡(si)​φ​(si)⊤)
+    +​φ​(s)z=\left(\sum_{i=1}^{m}\varphi(s_{i})\varphi(s_{i})^{\top}\right)^{+}\varphi(s) for SFs,
+    where s∼ρs\sim\rho is a random state sampled from the replay buffer and sis_{i} are states in a
+    minibatch.
+
+For the main series of results, we used a 50%50\% mix ratio for those two methods. Different
+algorithms can benefit from different ratios: this is explored in Appendix
+
+G.4 Learning the Policies πz\pi_{z}: Policy Network
+
+As the action space is continuous, we could not compute the arg​max\argmax over action in closed
+form. Instead, we consider a latent-conditioned policy network πη:S×Z→A\pi_{\eta}:S\times Z\to A,
+and we learn the policy parameters η\eta by performing stochastic gradient ascent on the objective
+𝔼s,z⁡[F​(s,πη​(s),z)⊤​z]\E_{s,z}[F(s,\pi_{\eta}(s),z)^{\top}z] for FB or 𝔼s,z⁡[ψ​(s,πη​(s),z)⊤​z]\
+E_{s,z}[\psi(s,\pi_{\eta}(s),z)^{\top}z] for SFs.
+
+We also incorporate techniques introduced in the TD3 paper [FHM18] to address function
+approximation error in actor-critic methods: double networks and target policy smoothing, adding
+noise ε\varepsilon to the actions.
+
+Let θ1\theta_{1} and θ2\theta_{2} the parameters of two forward networks and let ω\omega the
+parameters of the backward network. Let θ1−\theta_{1}^{-}, θ2−\theta_{2}^{-} and ω−\omega^{-} be
+the parameters of their corresponding target networks.
+
+Let {(si,ai,sinext)}i∈I⊂𝒟\{(s_{i},a_{i},s_{i}^{\mathrm{next}})\}_{i\in I}\subset\mathcal{D} a
+mini-batch of size |I|=b|I|=b of transitions and let {zi}i∈I\{z_{i}\}_{i\in I} a mini-batch of size
+|I|=b|I|=b of latent variables sampled according to G.3. The empirical version of the main FB loss
+in (8) is (with an additional 1/21/2 factor):
+
+                 =12​b​(b−1)​∑i,j∈I2i≠j(Fθk​(si,ai,zi)⊤​Bω​(sjnext)−γ​minl=1,2​Fθl−​
+ ℒ⁡(θk,ω)\       (sinext,πη​(sinext)+εi,zi)⊤​Bω−​(sjnext))2\displaystyle=\frac{1}{2b(b-1)}\
+ displaystyle\   sum_{\begin{subarray}{c}i,j\in I^{2}\\ i\neq j\end{subarray}}\left(F_{\
+ mathscr{L}(\    theta_{k}}(s_{i},a_{i},z_{i})^{\top}B_{\omega}(s_{j}^{\mathrm{next}})-\gamma
+ theta_{k},\     \min_{l=1,2}F_{\theta_{l}^{-}}(s_{i}^{\mathrm{next}},\pi_{\eta}(s_{i}^{\
+ omega)          mathrm{next}})+\varepsilon_{i},z_{i})^{\top}B_{\omega^{-}}(s_{j}^{\mathrm
+                 {next}})\right)^{2}
+                 −1b∑i∈IFθk(si,ai,zi)⊤Bω(sinext)∀k=1,2\displaystyle-\frac{1}{b}\sum_{i\in I}
+                 F_{\theta_{k}}(s_{i},a_{i},z_{i})^{\top}B_{\omega}(s_{i}^{\mathrm{next}})\    (41)
+                 quad\forall k=1,2
+
+where εi\varepsilon_{i} is sampled from a truncated centered Gaussian with variance σ2\sigma^{2}
+(for policy smoothing). The empirical version of the auxiliary FF loss in (9) is: for k=1,2k=1,2,
+
+ ℒ′​(θk)\         =1b​∑i∈I(Fθk​(si,ai,zi)⊤​zi−Bω​(sinext)⊤​Cov+​zi−γ​minl=1,2​Fθl−​
+ displaystyle\    (sinext,πη​(sinext,z)+εi,zi)⊤​zi)2\displaystyle=\frac{1}{b}\sum_{\begin
+ mathscr{L^{\     {subarray}{c}i\in I\end{subarray}}\left(F_{\theta_{k}}(s_{i},a_{i},z_{i})^   (42)
+ prime}}(\theta_  {\top}z_{i}-B_{\omega}(s_{i}^{\mathrm{next}})^{\top}\Cov^{+}z_{i}-\gamma\
+ {k})             min_{l=1,2}F_{\theta_{l}^{-}}(s_{i}^{\mathrm{next}},\pi_{\eta}(s_{i}^{\
+                  mathrm{next}},z)+\varepsilon_{i},z_{i})^{\top}z_{i}\right)^{2}
+
+where Cov+\Cov^{+} is the pseudo-inverse of the empirical covariane matrix Cov=1b​∑i∈IBω​(si)​Bω​
+(si)⊤\Cov=\frac{1}{b}\sum_{i\in I}B_{\omega}(s_{i})B_{\omega}(s_{i})^{\top}. We use 1/d1/d as
+regularization coefficient in front of ℒ′​(θk)\mathscr{L^{\prime}}(\theta_{k}).
+
+For policy training, the empirical loss is:
+
+ ℒ(η)=−1b∑i∈Iminl=1,2Fθl(si,πη(si,z)+εi,zi)⊤zi\displaystyle\mathscr{L}(\eta)=-\frac{1}{b}\
+ sum_{i\in I}\min_{l=1,2}F_{\theta_{l}}(s_{i},\pi_{\eta}(s_{i},z)+\varepsilon_{i},z_{i})^{\    (43)
+ top}z_{i}
+
+The same techniques are also used for SFs.
+
+G.5 Hyperparameters
+
+Table 1 summarizes the hyperparameters used in our experiments.
+
+A hyperparameter sensitivity analysis for two domains (Walker and Cheetah) is included in Appendix
+J.
+
+
+Table 1: Hyperparameters used in our experiments.
+
+                    Hyperparameter                     Value
+                  Replay buffer size                   5×1065\times 10^{6} (10×10610\times 10^{6}
+                                                       for maze)
+               Representation dimension                5050 (100100 for maze)
+                      Batch size                       10241024
+               Discount factor γ\gamma                 0.980.98 (0.990.99 for maze)
+                      Optimizer                        Adam
+                    Learning rate                      10−410^{-4}
+             Mixing ratio for zz sampling              0.50.5
+       Momentum coefficient for target networks        0.990.99
+         Stddev σ\sigma for policy smoothing           0.20.2
+        Truncation level for policy smoothing          0.30.3
+               Number of gradient steps                10610^{6}
+      Number of reward labels for task inference       10410^{4}
+   Discount factor γCL\gamma_{\textbf{{CL}}} for CL    0.60.6 (0.20.2 for maze)
+    Regularization weight for orthonormality loss      1
+                  (spectral methods)
+
+Hyperparameter tuning.
+
+Since all methods share the same core, we chose to use the same hyperparameters rather than tune
+per method, which could risk leading to less robust conclusions.
+
+We did not do hyperparameter sweeps for each baseline and task, first because this would have been
+too intensive given the number of setups, and, second, this would be too close to going back to a
+supervised method for each task.
+
+Instead, to avoid any overfitting, we tuned architectures and hyperparameters by hand on the Walker
+environment only, with the RND replay buffer, and reused these parameters across all methods and
+tasks (except for Maze, on which all methods behave differently). We identified some trends by
+monitoring learning curves and downstream performance on Walker, and we fixed a configuration that
+led to overall good performance for all the methods. We avoided a full sweep to avoid overfitting
+based on Walker, to focus on robustness.
+
+For instance, the learning rate 10−410^{-4} seemed to work well with all methods, as seen in
+Appendix J.
+
+Some trends were common between all methods: indeed, all the methods share a common core (training
+of the successor features ψ\psi or FF, and training of the policies π\pi) and differ by the
+training of the basic features φ\varphi or BB.
+
+For the basic features φ\varphi, the various representation learning losses were easy to fit and
+had low hyperparameter sensitivity: we always observed smooth decreasing of losses until
+convergence. The challenging part was learning ψ\psi and FF and their corresponding policies, which
+is common across methods.
+
+Appendix H Detailed Experimental Results
+
+We report the full experimental results, first as a table (Section H.1).
+
+In Section H.2 we plot aggregated results for easier interpretation: first, aggregated across all
+tasks with a plot of the variability for each method; second, aggregated over environments (since
+each environment corresponds to a trained zero-shot model); third, for each individual task but
+still aggregated over replay buffers.
+
+In Section H.3 we plot all individual results per task and replay buffer.
+
+In Section H.4 we plot aggregate results split by replay buffer.
+
+H.1 Full Table of Results
+
+Buffer  Domain       Task                                     Method                          
+                               Rand  AEnc   ICM  Latent Trans  Lap   LRA-P  CL   LRA-SR  FB    APS
+       cheetah   run           145±\ 97±\  432±\ 49±\pm 133±\ 198±\  8±\pm 2±\pm 247±\  267±\ 25±\
+                               pm7   pm3   pm8   14     pm15  pm4    1     0     pm10   pm33  pm3
+                 run-backward  189±\ 365±\ 404±\ 32±\pm 382±\ 221±\  1±\pm 14±\  261±\  238±\ 98±\
+                               pm20  pm6   pm3   3      pm3   pm4    0     pm6   pm5    pm7   pm21
+                 walk          665±\ 404±\ 928±\ 302±\  287±\ 900±\  75±\  2±\pm 918±\  844±\ 144±\
+                               pm60  pm19  pm54  pm67   pm53  pm49   pm31  1     pm22   pm51  pm11
+                 walk-backward 653±\ 982±\ 986±\ 453±\  985±\ 937±\  8±\pm 150±\ 983±\  981±\ 452±\
+                               pm75  pm0   pm0   pm105  pm0   pm17   1     pm51  pm0    pm1   pm77
+       maze      reach         11±\  5±\pm 8±\pm 10±\pm 15±\  432±\  436±\ 12±\  145±\  410±\ 59±\
+                               pm5   1     3     4      pm5   pm18   pm16  pm3   pm8    pm16  pm7
+       quadruped jump          784±\ 727±\ 164±\ 554±\  624±\ 718±\  309±\ 102±\ 632±\  649±\ 311±\
+                               pm5   pm12  pm20  pm24   pm14  pm18   pm50  pm29  pm20   pm23  pm24
+APS              run           487±\ 459±\ 91±\  382±\  411±\ 491±\  238±\ 53±\  448±\  476±\ 196±\
+                               pm1   pm5   pm19  pm14   pm16  pm3    pm21  pm15  pm6    pm8   pm10
+                 stand         966±\ 925±\ 248±\ 752±\  890±\ 963±\  497±\ 56±\  872±\  924±\ 417±\
+                               pm3   pm16  pm46  pm36   pm17  pm1    pm53  pm9   pm20   pm13  pm10
+                 walk          543±\ 444±\ 108±\ 489±\  490±\ 524±\  228±\ 45±\  463±\  712±\ 205±\
+                               pm19  pm8   pm25  pm20   pm20  pm13   pm26  pm14  pm18   pm29  pm6
+       walker    flip          158±\ 317±\ 452±\ 299±\  471±\ 454±\  340±\ 69±\  186±\  413±\ 39±\
+                               pm10  pm31  pm3   pm53   pm15  pm12   pm18  pm26  pm21   pm16  pm2
+                 run           96±\  127±\ 290±\ 359±\  263±\ 289±\  115±\ 63±\  204±\  346±\ 35±\
+                               pm4   pm8   pm9   pm11   pm12  pm10   pm11  pm11  pm26   pm14  pm3
+                 stand         486±\ 617±\ 925±\ 868±\  864±\ 895±\  643±\ 205±\ 591±\  822±\ 176±\
+                               pm27  pm37  pm19  pm57   pm24  pm9    pm35  pm51  pm35   pm26  pm17
+                 walk          177±\ 462±\ 724±\ 857±\  816±\ 386±\  159±\ 76±\  671±\  817±\ 34±\
+                               pm30  pm58  pm41  pm8    pm30  pm40   pm20  pm44  pm19   pm15  pm2
+       cheetah   run           58±\  84±\  333±\ 27±\pm 322±\ 142±\  149±\ 0±\pm 209±\  210±\ -
+                               pm8   pm10  pm14  5      pm5   pm2    pm3   0     pm10   pm13
+                 run-backward  149±\ 262±\ 329±\ 30±\pm 274±\ 146±\  133±\ 16±\  230±\  157±\ -
+                               pm6   pm7   pm3   5      pm7   pm2    pm6   pm13  pm6    pm7
+                 walk          287±\ 327±\ 961±\ 112±\  929±\ 722±\  770±\ 1±\pm 860±\  908±\ -
+                               pm38  pm51  pm24  pm11   pm13  pm19   pm31  0     pm31   pm18
+                 walk-backward 664±\ 973±\ 987±\ 101±\  982±\ 798±\  629±\ 151±\ 979±\  742±\ -
+                               pm39  pm3   pm0   pm15   pm0   pm16   pm31  pm86  pm1    pm46
+       maze      reach         27±\  7±\pm 7±\pm 15±\pm 8±\pm 571±\  556±\ 19±\  134±\  326±\ -
+                               pm5   1     2     4      1     pm16   pm15  pm5   pm7    pm16
+       quadruped jump          196±\ 185±\ 137±\ 209±\  282±\ 177±\  184±\ 57±\  113±\  183±\ -
+                               pm29  pm37  pm27  pm32   pm27  pm26   pm25  pm14  pm12   pm24
+Proto            run           134±\ 234±\ 88±\  123±\  191±\ 125±\  166±\ 65±\  99±\pm 137±\ -
+                               pm17  pm8   pm13  pm17   pm14  pm14   pm19  pm16  9      pm14
+                 stand         413±\ 321±\ 220±\ 270±\  436±\ 231±\  264±\ 86±\  215±\  287±\ -
+                               pm56  pm42  pm29  pm38   pm34  pm52   pm34  pm12  pm47   pm53
+                 walk          148±\ 171±\ 122±\ 156±\  212±\ 135±\  172±\ 40±\  100±\  280±\ -
+                               pm21  pm21  pm10  pm24   pm12  pm16   pm21  pm13  pm26   pm52
+       walker    flip          133±\ 346±\ 510±\ 443±\  456±\ 548±\  281±\ 78±\  551±\  507±\ -
+                               pm12  pm6   pm13  pm30   pm10  pm33   pm22  pm21  pm13   pm18
+                 run           84±\  234±\ 259±\ 347±\  303±\ 280±\  183±\ 45±\  391±\  336±\ -
+                               pm2   pm9   pm18  pm20   pm9   pm22   pm28  pm5   pm15   pm9
+                 stand         415±\ 905±\ 910±\ 582±\  951±\ 937±\  687±\ 253±\ 874±\  902±\ -
+                               pm26  pm9   pm13  pm62   pm5   pm5    pm41  pm49  pm23   pm25
+                 walk          125±\ 632±\ 839±\ 791±\  832±\ 883±\  300±\ 92±\  867±\  917±\ -
+                               pm21  pm33  pm17  pm17   pm16  pm30   pm31  pm16  pm12   pm7
+       cheetah   run           64±\  68±\  96±\  183±\  66±\  50±\pm 6±\pm 163±\ 138±\  247±\ -
+                               pm3   pm5   pm8   pm26   pm4   5      1     pm14  pm17   pm9
+                 run-backward  96±\  162±\ 160±\ 60±\pm 143±\ 90±\pm 2±\pm 124±\ 82±\pm 185±\ -
+                               pm6   pm18  pm22  4      pm17  7      0     pm13  8      pm17
+                 walk          289±\ 337±\ 401±\ 567±\  286±\ 330±\  29±\  622±\ 446±\  827±\ -
+                               pm22  pm28  pm40  pm70   pm30  pm65   pm11  pm28  pm36   pm41
+                 walk-backward 469±\ 542±\ 743±\ 345±\  572±\ 499±\  14±\  517±\ 352±\  793±\ -
+                               pm38  pm70  pm60  pm59   pm100 pm40   pm1   pm60  pm45   pm66
+       maze      reach         9±\pm 4±\pm 4±\pm 8±\pm4 8±\pm 707±\  759±\ 736±\ 532±\  710±\ -
+                               2     1     1            4     pm12   pm7   pm3   pm20   pm8
+       quadruped jump          770±\ 474±\ 176±\ 663±\  806±\ 490±\  447±\ 326±\ 731±\  651±\ -
+                               pm7   pm40  pm13  pm20   pm14  pm48   pm31  pm72  pm9    pm8
+RND              run           465±\ 415±\ 98±\  418±\  478±\ 399±\  301±\ 263±\ 461±\  429±\ -
+                               pm4   pm10  pm13  pm10   pm8   pm26   pm12  pm40  pm6    pm3
+                 stand         919±\ 770±\ 426±\ 830±\  973±\ 720±\  552±\ 529±\ 944±\  815±\ -
+                               pm19  pm28  pm45  pm31   pm2   pm27   pm32  pm70  pm11   pm2
+                 walk          586±\ 486±\ 90±\  527±\  552±\ 410±\  310±\ 210±\ 516±\  528±\ -
+                               pm28  pm37  pm13  pm21   pm33  pm30   pm14  pm42  pm30   pm10
+       walker    flip          267±\ 332±\ 461±\ 34±\pm 399±\ 569±\  512±\ 50±\  454±\  578±\ -
+                               pm28  pm18  pm9   3      pm19  pm30   pm27  pm9   pm23   pm10
+                 run           96±\  167±\ 251±\ 47±\pm 250±\ 299±\  325±\ 38±\  350±\  388±\ -
+                               pm8   pm12  pm11  22     pm6   pm20   pm10  pm5   pm14   pm8
+                 stand         516±\ 733±\ 813±\ 191±\  853±\ 836±\  904±\ 326±\ 828±\  890±\ -
+                               pm36  pm22  pm10  pm62   pm18  pm38   pm21  pm41  pm20   pm15
+                 walk          152±\ 457±\ 518±\ 30±\pm 607±\ 748±\  818±\ 53±\  853±\  760±\ -
+                               pm35  pm33  pm74  2      pm31  pm75   pm36  pm10  pm15   pm19
+
+
+Table 2: Score of each method, split by task and replay buffer. Average over ten random seeds, with
+±1​σ\pm 1\sigma estimated standard deviation on this average estimator. For Maze, we report the
+average over the 20 goals defined in the environment. We highlight the three leading methods (four
+when confidence intervals overlap) for each task.
+
+H.2 Aggregate Plots of Results
+
+Here we plot the results, first averaged over everything, then by environment averaged over the
+tasks of that environment, and finally by task.
+
+
+Figure 4: Zero-shot scores of ten SF methods and FB, aggregated over tasks using normalized scores
+as described in the text. To assess variability, the box plot on the right shows the variations of
+the distribution of normalized scores over random seeds, environments, and replay buffers.
+
+
+Figure 5: Zero-shot scores averaged over tasks for each environment, with supervised online and
+offline TD3 as toplines. Average over 3 replay buffers and 10 random seeds.
+
+
+Figure 6: Zero-shot scores for each task, with supervised online and offline TD3 as toplines.
+Average over 3 replay buffers and 10 random seeds.
+
+H.3 Full Plots of Results per Task and Replay Buffer
+
+
+Figure 7: Per-task results on the RND replay buffer, average over 10 random seeds.
+
+
+Figure 8: Per-task results on the APS replay buffer, average over 10 random seeds.
+
+
+Figure 9: Per-task results on the Proto replay buffer, average over 10 random seeds.
+
+H.4 Influence of the Replay Buffer
+
+Here we plot the influence of the replay buffer, by reporting results separated by replay buffer,
+but averaged over the tasks corresponding to each environment (Fig 10).
+
+Overall, there is a clear failure case of the Proto buffer on the Quadruped environment: the TD3
+supervised baseline performs poorly for all tasks in that environment.
+
+Otherwise, results are broadly consistent on the different replay buffers: with a few exceptions,
+the same methods succeed or fail on the same environments.
+
+
+Figure 10: Results on each replay buffer: RND (top), APS (middle), Proto (bottom). Average over 4
+tasks for the Walker, Cheetah and Quadruped environments, average over 20 goals for Maze.
+
+In Fig. 11, we plot results aggregated over all tasks but split by replay buffer. Box plots further
+show variability within random seeds and environments for a given replay buffer.
+
+Overall method rankings are broadly consistent between RND and APS, except for CL. Note that the
+aggregated normalized score for Proto is largely influenced by the failure on Quadruped:
+normalization by a very low baseline (Fig. 10, Quadruped plot for Proto), somewhat artificially
+pushes Trans high up (this shows the limit of using scores normalized by offline TD3 score), while
+the other methods’ rankings are more similar to RND and APS.
+
+FB and Lap work very well in all replay buffers, with LRA-SR and Trans a bit behind due to their
+feailures on some tasks.
+
+
+Figure 11: Zero-shot scores by replay buffer, as a percentage of the supervised score of offline
+TD3 trained on the same buffer, averaged over tasks and environments and random seeds. Top: RND
+buffer; middle: APS buffer; bottom: Proto buffer.
+
+Appendix I Analysis of The Learned Features
+
+I.1 Feature Rank
+
+Here we test the hypothesis that feature collapse for some methods is responsible for some cases of
+bad performance. This is especially relevant for Maze, where some methods may have little incentive
+to learn more features beyond the original two features (x,y)(x,y).
+
+We report in Table 3 the effective rank of learned features BB or φ\varphi: this is computed as in
+[LRD22], as the fraction of eigenvalues of 𝔼s∼ρ⁡B⁡(s)​B​(s)⊤\E_{s\sim\rho}B(s)B(s)^{\!\top} or
+𝔼s∼ρ⁡φ⁡(s)​φ​(s)⊤\E_{s\sim\rho}\varphi(s)\varphi(s)^{\!\top} above a certain threshold.
+
+ Domain                               Method                   
+          Rand AEnc ICM  Latent Trans Lap    LRA-P CL   LRA-SR FB
+  Maze    0.38 0.31 0.33  0.32  0.15   1.0    1.0  1.0   1.0   1.0
+Walker    1,0  0.91 1.0  1.0    0.90  1.0    1.0   0.65 1.0    1.0
+ Cheetah  1.0  0.96 1.0   1.0    1.0   1.0    1.0  1.0   1.0   1.0
+Quadruped 1.0  0.98 0.30 1.0    0.15  1.0    0.84  1.0  1.0    1.0
+
+
+Table 3: Feature rank [LRD22] of φ\varphi or BB for each method, computed as 1d​#​{σ∈eig​(1n​∑i=
+1nφ⁡(si)​φ​(si)⊤)∣σ>ε}\frac{1}{d}\,\#\left\{\sigma\in\texttt{eig}\left(\frac{1}{n}\sum_{i=1}^{n}\
+varphi(s_{i})\varphi(s_{i})^{\top}\right)\mid\sigma>\varepsilon\right\}, trained on RND replay
+buffer and averaged over 10 random seeds. We use n=100,000n=100,000 samples to estimate the
+covariance, and ε=10−4\varepsilon=10^{-4}.
+
+For most methods and all environments except Maze, more than 90%90\% (often 100%100\%) of
+eigenvalues are above 10−410^{-4}, so the effective rank is close to full.
+
+The Maze environment is a clear exception: on Maze, for the Rand, AEnc, Trans, Latent and ICM
+methods, only about one third of the eigenvalues are above 10−410^{-4}. The other methods keep
+100%100\% of the eigenvalues above 10−410^{-4}. This is perfectly aligned with the performance of
+each method on Maze.
+
+So rank reduction does happen for some methods. This reflects the fact that two features (x,y)(x,y)
+already convey the necessary information about states and dynamics, but are not sufficient to solve
+the problem via successor features. In the Maze environment, auto-encoder or transition models can
+perfectly optimize their loss just by keeping the original two features (x,y)(x,y), and they have
+no incentive to learn other features, so the effective rank could have been 2.
+
+These methods may benefit from auxiliary losses to prevent eigenvalue collapse, similar to the
+orthonormalization loss used for BB. We did not include such losses, because we wanted to keep the
+same methods (autoencoders, ICM, transition model…) used in the literature. But even with an
+auxiliary loss, keeping a full rank could be achieved just by keeping (x,y)(x,y) and then blowing
+up some additional irrelevant features.
+
+I.2 Embedding Visualization via t-SNE
+
+We visualize the learned state feature embeddings for Maze by projecting them into 2-dimensional
+space using t-SNE [VdMH08] in Fig. 12.
+
+AEnc, Trans, FB, LRA-P and CL all recover a picture of the maze. For the other methods the picture
+is less clear (notably, Rand gets a near-circle, possibly as an instance of concentration of
+measure theorems).
+
+Whether t-SNE preserves the shape of the maze does not appear to be correlated to performance: AEnc
+and Trans learn nice features but perform poorly, while the t-SNE of Lap is not visually
+interpretable but performance is good.
+
+
+Figure 12: Visualization of embedding vectors obtained by each method (φ\varphi for SF and BB for 
+FB) on the maze domain after projecting them in two-dimensional space with t-SNE .
+
+Appendix J Hyperparameters Sensitivity
+
+
+Figure 13: Return for each method trained in Walker domain on the RND replay buffer, for different
+choices of hyperparameters. Average over Walker tasks and 5 random seeds.
+
+
+Figure 14: Return for each method trained in Cheetah domain, on the RND replay buffer, for
+different choices of hyperparameters. Average over Cheetah tasks and 5 random seeds.
+
+Appendix K Goal-Oriented Baselines
+
+Goal-oriented methods such as universal value functions (UVFs) [SHGS15] learn a QQ-function Q⁡
+(s,a,g)Q(s,a,g) indexed by a goal description gg. When taking for gg the set of all possible target
+states s′∈Ss^{\prime}\in S, these methods can learn to reach arbitrary target states. For instance,
+[MAWB20] use a mixture of universal SFs and UVFs to learn goal-conditioned agents and policies.
+
+In principle, such goal-oriented methods are not designed to deal with dense rewards, which are
+linear combinations of goals gg. Indeed, the optimal QQ-function for a linear combination of goals
+is not the linear combination of the optimal QQ-functions.
+
+Nevertheless, we may still try to see how such linear combinations perform. The linear combination
+may be applied at the level of the QQ-functions, or at the level of some goal descriptors, as
+follows.
+
+Here, as an additional baseline for our experiments, we test a slight modification of the scheme
+from [MAWB20], as suggested by one reviewer. We learn two embeddings (ψ,w)(\psi,w) using
+state-reaching tasks. The QQ-function for reaching state s′s^{\prime} (goal g=s′g=s^{\prime}) is
+modeled as
+
+ Q⁡(st,at,s′)=ψ​(st,at,w⁡(s′))⊤​w​(s′).Q(s_{t},a_{t},s^{\prime})=\psi(s_{t},a_{t},w(s^{\       (44)
+ prime}))^{\!\top}w(s^{\prime}).
+
+trained for reward 𝟙st+1=s′\mathbbm{1}_{s_{t+1}=s^{\prime}}. A policy network π⁡(s,w⁡(s′))\pi(s,w(s
+^{\prime})) outputs the action at ss for reaching goal s′s^{\prime}. Thus, the training loss is
+
+ ℒ(ψ,w):=𝔼(st,at,st+1)∼ρs′∼ρ[ψ(st,at,w(s′))⊤w(s′)−𝟙{st+1=s′}−γψ¯(st+1,π(st+1,w¯(s′)),w¯(s′))
+ ⊤w¯(s′)]2\mathcal{L}(\psi,w)\mathrel{\mathop{:}}=\E_{\begin{subarray}{c}(s_{t},a_{t},s_
+ {t+1})\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}\left[\psi(s_{t},a_{t},w(s^{\prime}))^{\!\  (45)
+ top}w(s^{\prime})-\mathbbm{1}_{\{s_{t+1}=s^{\prime}\}}-\gamma\bar{\psi}(s_{t+1},\pi(s_{t+1},
+ \bar{w}(s^{\prime})),\bar{w}(s^{\prime}))^{\!\top}\bar{w}(s^{\prime})\right]^{2}
+
+Similarly to the other baselines, the policy network π⁡(s,w⁡(s′))\pi(s,w(s^{\prime})) is trained by
+gradient ascent on the policy parameters to maximize
+
+ 𝔼s∼ρs′∼ρ⁡[Q⁡(s,π⁡(s,w⁡(s′)),s′)]=𝔼s∼ρs′∼ρ⁡[ψ​(s,π⁡(s,w⁡(s′)),w⁡(s′))⊤​w​(s′)]\E_{\begin
+ {subarray}{c}s\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}[Q(s,\pi(s,w(s^{\prime})),s^{\      (46)
+ prime})]=\E_{\begin{subarray}{c}s\sim\rho\\ s^{\prime}\sim\rho\end{subarray}}\left[\psi(s,\
+ pi(s,w(s^{\prime})),w(s^{\prime}))^{\!\top}w(s^{\prime})\right]
+
+At test time, given a reward rr, we proceed as in FB and estimate
+
+ z=𝔼s∼ρ⁡[r⁡(s)​w​(s)]z=\E_{s\sim\rho}[r(s)w(s)]  (47)
+
+and use policy π⁡(s,z)\pi(s,z). This amounts to extending from goal-reaching tasks to dense tasks
+by linearity on ww, even though in principle, this method should only optimize for single-goal
+rewards.
+
+We use the same architectures for (ψ,w)(\psi,w) as for (F,B)(F,B), with double networks ψ1,ψ2\psi_
+{1},\psi_{2} and policy smoothing as in (43).
+
+The sparse reward 𝟙{st+1=s′}\mathbbm{1}_{\{s_{t+1}=s^{\prime}\}} could suffer from large variance
+in continuous state spaces. We mitigate this either by:
+
+  • •
+   
+    biasing the sampling of s′s^{\prime} by setting s′s^{\prime} to st+1s_{t+1} half of the time.
+
+  • •
+   
+    replacing the reward by a less sparse one, 𝟙{∥st+1−s′∥2≤ε}\mathbbm{1}_{\{\|s_{t+1}-s^{\prime}\|
+    _{2}\leq\varepsilon\}}.
+
+Table 4 reports normalized scores for each domain, for the two variants just described, trained on
+the RND replay buffer, averaged over tasks and over 10 random seeds.
+
+The first variant scores 84%84\% on Maze, 62%62\% on Quadruped tasks, 17%17\% on Walker tasks, and
+2%2\% on Cheetah tasks. The second variant is worse overall.
+
+So overall, this works well on Maze (as expected, since this is a goal-oriented problem),
+moderately well on Quadruped tasks (where most other methods work well), and poorly on the other
+environments. This is expected, as this method is not designed to handle dense combinations of
+goals.
+
+                             Reward                                            Domain  
+                                                                  Maze  Walker Cheetah Quadruped
+              𝟙{s=s′}\mathbbm{1}_{\{s=s^{\prime}\}}               83.82 17.06  1.60    61.92
+𝟙{∥s−s′∥2≤ε}\mathbbm{1}_{\{\|s-s^{\prime}\|_{2}\leq\varepsilon\}} 87.44 12.42  0.74    20.25
+
+
+Table 4: Normalized score for each domain of two variants of USF from [MAWB20] trained on RND
+replay buffer, averaged over tasks and 10 random seeds
+
+Relationship with FB.
+
+The use of universal SFs in [MAWB20] is quite different from the use of universal SFs in [BDM+17]
+and [BBQ+18]. The latter is mathematically related to FB, as described at the end of Section 4. The
+former uses SFs as an intermediate tool for a goal-oriented model, and is more distantly related to
+FB (notably, it is designed to deal with single goals, not linear combinations of goals such as
+dense rewards).
+
+A key difference between FB and goal-oriented methods is the following. Above, we use ψ​(s,a,w⁡(g))
+⊤​w​(g)\psi(s,a,w(g))^{\!\top}w(g) as a model of the optimal QQ-function for the policy with goal
+gg. This is reminiscent of F​(s,a,z)⊤​B​(g)F(s,a,z)^{\!\top}B(g) with z=B⁡(g)z=B(g), the value of
+zz used to reach gg in FB.
+
+However, even if we restrict FB to goal-reaching by using z=B⁡(g)z=B(g) only (a significant
+restriction), then FB learns F​(s,a,B⁡(g))⊤​B​(g′)F(s,a,B(g))^{\!\top}B(g^{\prime}) to model the
+successor measure, i.e., the number of visits to each goal g′g^{\prime} for the policy with goal
+gg, starting at (s,a)(s,a). Thus, FB learns an object indexed by (s,a,g,g′)(s,a,g,g^{\prime}) for
+all pairs (g,g′)(g,g^{\prime}).
+
+Thus, FB learns more information (it models successor measures instead of QQ-functions), and allows
+for recovering linear combinations of goals in a principled way. Meanwhile, even assuming perfect
+neural network optimization in goal-reaching methods, there is no reason the goal-oriented policies
+would be optimal for arbitrary linear combinations of goals, only for single goals.
+
+Appendix L Pseudocode of Training Losses
+
+Here we provide PyTorch snippets for the key losses, notably the FB loss, SF loss as well as the
+various feature learning methods for SF.
+
+⬇
+1
+2 def compute_fb_loss(agent, obs, action, next_obs, z, discount):
+3
+4 # compute target successor measure
+5
+6 with torch.no_grad():
+7 mu = agent.policy_net(next_obs, z)
+8 next_action = TruncatedNormal(mu=mu, stddev=agent.cfg.stddev, clip=agent.cfg.stddev_clip)
+9 target_F1, target_F2 = agent.forward_target_net(next_obs, z, next_action) # batch x z_dim
+10 target_B = agent.backward_target_net(next_obs) # batch x z_dim
+11 target_M1, target_M2 = [torch.einsum(’sd, td -> st’, target_Fi, target_B) for target_Fi in [F1, 
+F2]] # batch x batch
+12 target_M = torch.min(target_M1, target_M2)
+13
+14 # compute the main FB loss
+15
+16 F1, F2 = agent.forward_net(obs, z, action)
+17 B = agent.backward_net(next_obs)
+18 M1, M2 = [torch.einsum(’sd, td -> st’, Fi, B) for Fi in [F1, F2]] # batch x batch
+19 I = torch.eye(*M1.size(), device=M1.device)
+20 off_diag = ~I.bool()
+21 fb_offdiag: tp.Any = 0.5 * sum((M - discount * target_M)[off_diag].pow(2).mean() for M in [M1, 
+M2])
+22 fb_diag: tp.Any = -sum(M.diag().mean() for M in [M1, M2])
+23 fb_loss = fb_offdiag + fb_diag
+24
+25 # compute the auxiliary loss
+26
+27 next_Q1, nextQ2 = [torch.einsum(’sd, sd -> s’, target_Fi, z) for target_Fi in [target_F1, 
+target_F2]]
+28 next_Q = torch.min(next_Q1, nextQ2)
+29 cov = torch.matmul(B.T, B) / B.shape[0]
+30 inv_cov = torch.linalg.pinv(cov)
+31 implicit_reward = (torch.matmul(B, inv_cov) * z).sum(dim=1) # batch_size
+32 target_Q = implicit_reward.detach() + discount * next_Q # batch_size
+33
+34 Q1, Q2 = [torch.einsum(’sd, sd -> s’, Fi, z) for Fi in [F1, F2]]
+35 q_loss = F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
+36 q_loss /= agent.cfg.z_dim
+37 fb_loss += q_loss
+38
+39 # compute Orthonormality losss
+40
+41 Cov = torch.matmul(B, B.T)
+42 orth_loss_diag = - 2 * Cov.diag().mean()
+43 orth_loss_offdiag = Cov[off_diag].pow(2).mean()
+44 orth_loss = orth_loss_offdiag + orth_loss_diag
+45 fb_loss += agent.cfg.ortho_coef * orth_loss
+46
+47 return fb_loss
+
+Listing 1: Pytorch code for FB training loss
+
+⬇
+1 def compute_sf_loss(agent, obs, action, next_obs, z, discount):
+2
+3 # compute target q-value
+4 with torch.no_grad():
+5 mu = agent.policy_net(next_obs, z)
+6 next_action = TruncatedNormal(mu=mu, stddev=agent.cfg.stddev, clip=agent.cfg.stddev_clip)
+7 next_F1, next_F2 = agent.successor_target_net(next_obs, z, next_action) # batch x z_dim
+8 target_phi = agent.feature_net(next_goal).detach() # batch x z_dim
+9 next_Q1, next_Q2 = [torch.einsum(’sd, sd -> s’, next_Fi, z) for next_Fi in [next_F1, next_F2]]
+10 next_Q = torch.min(next_Q1, next_Q2)
+11 target_Q = torch.einsum(’sd, sd -> s’, target_phi, z) + discount * next_Q
+12
+13 F1, F2 = agent.successor_net(obs, z, action)
+14 Q1, Q2 = [torch.einsum(’sd, sd -> s’, Fi, z) for Fi in [F1, F2]]
+15 sf_loss = F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
+16
+17 return sf_loss
+
+Listing 2: Pytorch code for SF training loss
+
+⬇
+1
+2 def compute_phi_loss(agent, obs, next_obs):
+3
+4 phi = agent.feature_net(obs)
+5 next_phi = agent.feature_net(next_obs)
+6 loss = (phi - next_phi).pow(2).mean()
+7
+8 # compute Orthonormality losss
+9
+10 Cov = torch.matmul(phi, phi.T)
+11 I = torch.eye(*Cov.size(), device=Cov.device)
+12 off_diag = ~I.bool()
+13 orth_loss_diag = - 2 * Cov.diag().mean()
+14 orth_loss_offdiag = Cov[off_diag].pow(2).mean()
+15 orth_loss = orth_loss_offdiag + orth_loss_diag
+16
+17 loss += orth_loss
+18
+19 return loss
+
+Listing 3: Pytorch code for Laplacian Eigenfunctions Lap loss
+
+⬇
+1 def compute_phi_loss(agent, obs, future_obs):
+2
+3 future_phi = agent.feature_net(future_obs)
+4 mu = agent.mu_net(obs)
+5 future_phi = F.normalize(future_phi, dim=1)
+6 mu = F.normalize(mu, dim=1)
+7 logits = torch.einsum(’sd, td-> st’, mu, future_phi) # batch x batch
+8 I = torch.eye(*logits.size(), device=logits.device)
+9 off_diag = ~I.bool()
+10 logits_off_diag = logits[off_diag].reshape(logits.shape[0], logits.shape[0] - 1)
+11 loss = - logits.diag() + torch.logsumexp(logits_off_diag, dim=1)
+12 loss = loss.mean()
+13
+14 return loss
+
+Listing 4: Pytorch code for the contrastive CL loss
+
+⬇
+1 def compute_phi_loss(agent, obs, action, next_obs):
+2
+3 phi = agent.feature_net(obs)
+4 next_phi = agent.feature_net(next_obs)
+5 predicted_action = agent.inverse_dynamic_net(torch.cat([phi, next_phi], dim=-1))
+6 loss = (action - predicted_action).pow(2).mean()
+7
+8 return loss
+
+Listing 5: Pytorch code of ICM loss
+
+⬇
+1 def compute_phi_loss(agent, obs, action, next_obs):
+2
+3 phi = agent.feature_net(obs)
+4 predicted_next_obs = agent.forward_dynamic_net(torch.cat([phi, action], dim=-1))
+5 loss = (predicted_next_obs - next_obs).pow(2).mean()
+6
+7 return loss
+
+Listing 6: Pytorch code for Trans loss
+
+⬇
+1 def compute_phi_loss(agent, obs, action, next_obs):
+2 phi = agent.feature_net(obs)
+3 with torch.no_grad():
+4 next_phi = agent.target_feature_net(next_obs)
+5 predicted_next_obs = agent.forward_dynamic_net(torch.cat([phi, action], dim=-1))
+6 loss = (predicted_next_obs - next_phi.detach()).pow(2).mean()
+7
+8 # update target network
+9 for param, target_param in zip(agent.feature_net.parameters(), agent.target_feature_net.
+parameters()):
+10 target_param.data.copy_(tau * param.data +
+11 (1 - tau) * target_param.data)
+12
+13 return loss
+
+Listing 7: Pytorch code for Latent loss
+
+⬇
+1 def compute_phi_loss(agent, obs):
+2
+3 phi = agent.feature_net(obs)
+4 predicted_obs = agent.decoder(phi)
+5 loss = (predicted_obs - obs).pow(2).mean()
+6
+7 return loss
+
+Listing 8: Pytorch code for AEnc loss
+
+⬇
+1 def compute_phi_loss(agent, obs, action, next_obs):
+2
+3 phi = agent.feature_net(next_obs)
+4 mu = agent.mu_net(torch.cat([obs, action], dim=1))
+5 P = torch.einsum("sd, td -> st", mu, phi)
+6 I = torch.eye(*P.size(), device=P.device)
+7 off_diag = ~I.bool()
+8 loss = - 2 * P.diag().mean() + P[off_diag].pow(2).mean()
+9
+10 # compute orthonormality loss
+11 Cov = torch.matmul(phi, phi.T)
+12 I = torch.eye(*Cov.size(), device=Cov.device)
+13 off_diag = ~I.bool()
+14 orth_loss_diag = - 2 * Cov.diag().mean()
+15 orth_loss_offdiag = Cov[off_diag].pow(2).mean()
+16 orth_loss = orth_loss_offdiag + orth_loss_diag
+17 loss += orth_loss
+18
+19 return loss
+
+Listing 9: Pytorch code for LRA-P loss
+
+⬇
+1 def compute_phi_loss(agent, obs, action, next_obs, discount):
+2
+3 phi = agent.feature_net(next_obs)
+4 mu = agent.mu_net(obs)
+5 SR = torch.einsum(’sd, td -> st’, mu, phi)
+6 with torch.no_grad():
+7 target_phi = agent.target_feature_net(next_obs)
+8 target_mu = agent.target_mu_net(next_obs)
+9 target_SR = torch.einsum("sd, td -> st", target_mu, target_phi)
+10
+11 I = torch.eye(*SR.size(), device=SR.device)
+12 off_diag = ~I.bool()
+13 loss = - 2 * SR.diag().mean()
+14 + (SR - discount * target_SR.detach())[off_diag].pow(2).mean()
+15
+16 # compute orthonormality loss
+17 Cov = torch.matmul(phi, phi.T)
+18 orth_loss_diag = - 2 * Cov.diag().mean()
+19 orth_loss_offdiag = Cov[off_diag].pow(2).mean()
+20 orth_loss = orth_loss_offdiag + orth_loss_diag
+21 loss += orth_loss
+22
+23 return loss
+
+Listing 10: Pytorch code for LRA-SR loss
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 
