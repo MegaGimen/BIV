@@ -1,7 +1,7 @@
 # refs：世界模型当下层、agent 当上层
 
-本目录只收 **arXiv HTML 转出的纯文本**，不收 PDF。
-正文在 `papers/`。下面的分组对应一个具体问题：
+本目录只收 **arXiv HTML 转出的纯文本**，不收 PDF。正文在 `papers/`。
+`python3 refs/fetch_html_text.py` 可重拉。下面的分组对应一个具体问题：
 
 英文理解能当 agent 的底座，是因为 agent 仍在同一套 next-token 目标上往上长。
 代码 / 医疗 / 法律能 merge，是因为目标函数同类、领域平行。
