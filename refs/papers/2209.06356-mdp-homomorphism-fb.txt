@@ -1,0 +1,1130 @@
+source: https://arxiv.org/html/2209.06356
+arxiv: https://arxiv.org/abs/2209.06356
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Equivalent Effect Abstraction
+     1. 2.1 Preliminaries
+     2. 2.2 Transition Models
+     3. 2.3 Assumptions
+     4. 2.4 Equivalent effect abstraction provides a MDP homomorphism
+     5. 2.5 How limiting are the assumptions introduced?
+ 4. 3 Experiments
+     1. 3.1 Tabular Maze
+     2. 3.2 Cartpole
+     3. 3.3 Stochastic Predator Prey
+     4. 3.4 MinAtar
+ 5. 4 Related Work
+ 6. 5 Future Work
+ 7. 6 Conclusion
+ 8. References
+ 9. A Appendix
+     1. A.1 Impact Statement
+     2. A.2 Theoretical Results
+     3. A.3 Hyperparameter Search
+         1. A.3.1 Sutton and Barto Tabular Gridworld
+         2. A.3.2 Cartpole
+         3. A.3.3 Stochastic Predator Prey
+         4. A.3.4 Minatar
+     4. A.4 Model Architectures
+         1. A.4.1 Cartpole
+         2. A.4.2 Predator Prey
+         3. A.4.3 MinAtar
+10. B Full MinAtar Results
+
+License: CC BY 4.0
+arXiv:2209.06356v3 [cs.LG] 02 Mar 2024
+
+Using Forwards-Backwards Models to Approximate MDP Homomorphisms
+
+Augustine N. Mavor-Parker Affiliation: Centre for Artificial Intelligence, University College
+London, UK Correspondence to: a.mavor-parker@cs.ucl.ac.uk    Matthew J. Sargent Affiliation: Centre
+for Artificial Intelligence, University College London, UK    Christian Pehle Affiliation: Cold
+Spring Harbor Laboratory, NY, USA    Andrea Banino Affiliation: Google Deepmind, London, UK    
+Lewis D. Griffin Affiliation: Computer Science, University College London, UK    Caswell Barry 
+Affiliation: Department of Cell and Developmental Biology, University College London, UK
+
+Abstract
+
+Reinforcement learning agents must painstakingly learn through trial and error what sets of
+state-action pairs are value equivalent—requiring an often prohibitively large amount of
+environment experience. MDP homomorphisms have been proposed that reduce the MDP of an environment
+to an abstract MDP, enabling better sample efficiency. Consequently, impressive improvements have
+been achieved when a suitable homomorphism can be constructed a priori—usually by exploiting a
+practitioner’s knowledge of environment symmetries. We propose a novel approach to constructing
+homomorphisms in discrete action spaces, which uses a learnt model of environment dynamics to infer
+which state-action pairs lead to the same state—which can reduce the size of the state-action space
+by a factor as large as the cardinality of the original action space. In MinAtar, we report an
+almost 4x improvement over a value-based off-policy baseline in the low sample limit, when
+averaging over all games and optimizers.
+
+Keywords: 
+
+Machine Learning, ICML
+
+1 Introduction
+
+Reinforcement learning (RL) has achieved superhuman performance on previously unsolvable benchmarks
+such as Go (Silver et al.,, 2016) and Starcraft (Vinyals et al.,, 2019). However, the computational
+expense of RL hinders its deployment in the real world. RL can demand hundreds of millions of
+samples to learn a policy, either within an environment model (Hafner et al.,, 2020) or by direct
+interaction (Badia et al.,, 2020). While sample efficiency is improving, there is a gap between the
+best performing agents and those that are sample efficient (Schwarzer et al.,, 2023; Fan et al.,,
+2023).
+
+Refer to caption
+Figure 1: We predict equivalent state-action pairs with dynamics models. In Asterix, an agent needs
+to collect gold. To predict the value of state SS and action move up, we first predict forward in
+time to get S′S^{\prime}. We then predict backwards assuming the previous action was the
+alternative move right, to obtain a hypothetical state-action pair for our Q-network (Sh​y​pS_
+{hyp}, move right). Icons generated with Dall-e 3 (Betker et al.,, 2023).
+
+Humans abstract away details about state-action pairs that do not effect their values. Consider the
+Atari game Asterix, where an agent collects gold while avoiding enemies in a 2D navigation task—a
+human gamer understands that collecting treasure when approaching from below has the same value as
+collecting the same treasure but approaching from the right (figure 1), which allows them to
+progress more quickly by generalising value predictions between equivalent state-action pairs. In
+this work, we identify this abstraction as a Markov decision process (MDP) homomorphism (Ravindran
+and Barto,, 2001; van der Pol et al., 2020b, ). MDP homomorphisms collapse equivalent state-actions
+in an observed MDP onto a smaller abstract state-action space in an abstract MDP (van der Pol
+et al., 2020b, ).
+
+Given a mapping to an abstract MDP, policies can be learned efficiently in the smaller abstract
+space and then mapped back to the experienced MDP when interacting with the environment (Ravindran
+and Barto,, 2001). Previous works hard code homomorphisms into a policy (van der Pol et al., 2020b,
+) but developing approaches that learn homomorphic mappings online from experience is an active
+area of research (Rezaei-Shoshtari et al.,, 2022; Keurti et al.,, 2023).
+
+We present equivalent effect abstraction, a method for constructing MDP homomorphisms from
+experience via a partial dynamics model of state transitions (without needing to predict rewards)
+—leveraging the fact that state-action pairs leading to the same next state frequently have
+equivalent values. We use this insight in off-policy value-based RL, which is the most sample
+efficient class of RL algorithms for discrete control (Schwarzer et al.,, 2023). Off-policy RL
+predicts separate values for different actions in a given state. We improve sample efficiency
+further by only requiring a value function to predict the value of a single action selected by the
+practitioner, which we call the hypothetical action, in a separate state called a hypothetical
+state. The hypothetical state is computed by first moving through a forwards dynamics model with a
+given state-action pair. Then, we move backwards through a model that predicts what hypothetical
+state would lead to the same next state as the original state-action pair, given the hypothetical
+action was selected.
+
+Consider again the Asterix example—moving to a given state has the same value whether your previous
+action was right, left, up or down. Thus, equipped with a dynamics model, we show that if the value
+of approaching a state from the right is known, one can also deduce the value of approaching the
+same state from the left, below, or above. Consequently, equivalent effect abstraction extrapolates
+value judgements between equivalent state-action pairs, reducing the amount of experience required
+to learn a policy. We make the following contributions.
+
+ 1. 1.
+   
+    We develop a novel approach for learning a reduced MDP without knowledge of symmetries, and
+    prove that, under certain assumptions, our mapping to the reduced MDP is a homomorphism.
+
+ 2. 2.
+   
+    We confirm these theoretical results in an idealised tabular setting, where we show equivalent
+    effect abstraction improves the planning efficiency of model-based RL and the sample efficiency
+    of model-free RL.
+
+ 3. 3.
+   
+    In the deep RL setting, we test our approach when the homomorphism is approximate due to
+    imperfect learned models—we show an improvement upon standard baselines on Cartpole and
+    Predator-Prey environments (which are MDP homomorphisms benchmarks from van der Pol et al.,
+    2020b ()).
+
+ 4. 4.
+   
+    In the MinAtar suite (Young and Tian,, 2019), where the assumptions required for our
+    theoretical results are further violated (especially relating to stochasticity), we find an
+    almost 4x improvement over a value based baseline at 250k frames (when averaging all results
+    over different optimizers and games).
+
+We are not the first to exploit the equivalence of state action pairs that lead to the same next
+state. Tesauro et al., (1995) use the concept of afterstates (states immediately before an
+opponents response to an action (Antonoglou et al.,, 2021)) in their backgammon program. This is
+similar to our approach and has been scaled within MuZero to other board games (Antonoglou et al.,,
+2021), but in general afterstates have not found wider applicability. Misra et al., (2020)’s
+kinematic inseparability is a related but distinct abstraction that uses contrastive learning to
+classify whether two states will lead to the same next state for the same action. In contrast, our
+approach looks for state-action pairs (with different actions) that lead to the same next state,
+which is a broader form of abstraction. Another difference is that our equivalent effect
+abstraction does not require states to be discrete, which makes it readily applicable to common RL
+environments where it is rare to reach the same state twice. Finally Anand et al., (2015) defines a
+state-action equivalence that is more comprehensive than the equivalence defined by Ravindran and
+Barto, (2001), which is satisfied by various equivalent state-action pairs like those found in
+Ravindran and Barto, (2001); van der Pol et al., 2020b (); Misra et al., (2020) as well as the
+state-action pairs satisfying the equivalent effect abstraction we present. However, they assume a
+tree of discrete states can be searched over for equivalences, which is challenging in deep RL.
+
+2 Equivalent Effect Abstraction
+
+2.1 Preliminaries
+
+Using the definition from Sutton and Barto, (2018), an MDP ℳ\mathcal{M} can be described by a tuple
+⟨𝒮,𝒜,𝒫,ℛ,γ⟩\left<\mathcal{S},\mathcal{A},\mathcal{P},\mathcal{R},\gamma\right> where 𝒮\mathcal{S}
+is the set of all states, 𝒜\mathcal{A} is the set of all actions, ℛ=𝔼[Rt|St−1=s,At−1=a]\mathcal{R}=
+\mathbb{E}[R_{t}|S_{t-1}=s,A_{t-1}=a] is the reward function that determines the scalar reward
+received at each state, 𝒫=Pr{St=s′|St−1=s,At−1=a}\mathcal{P}=\text{Pr}\{S_{t}=s^{\prime}|S_{t-1}=
+s,A_{t-1}=a\} is the transition function of the environment describing the probability of moving
+from state to another for a given action and γ∈[0,1]\gamma\in[0,1] is the discount factor
+describing how much an agent should favour immediate rewards over those in future states. An agent
+interacts with an environment through its policy π⁡(a|s)=Pr​{At=a|St=s}\pi(a|s)=\text{Pr}\{A_{t}=a|
+S_{t}=s\} (Sutton and Barto,, 2018), which maps the current state to a given action. An RL agent
+learns a policy that maximises the expected return GtG_{t}, equal to the sum of discounted future
+rewards Gt=𝔼π​[∑t=0Tγt​Rt+1]G_{t}=\mathbb{E}_{\pi}[\sum_{t=0}^{T}\gamma^{t}R_{t+1}], where tt is
+the timestep and TT is length of a learning episode (Sutton and Barto,, 2018).
+
+This work focuses on improving the sample efficiency of value-based reinforcement learning
+algorithms. Value-based algorithms predict the expected returns of a given agent—often by learning
+Q-functions Qπ(s,a)=𝔼[Gt|St=s,At=a]Q_{\pi}(s,a)=\mathbb{E}[G_{t}|S_{t}=s,A_{t}=a] (Sutton and
+Barto,, 2018). The amount of samples required to learn a Q-function depends, in part, on the size
+of the state action space for which it needs to accurately predict values. Equivalent effect
+abstraction aims to reduce the number of state-action pairs a value function needs to model by
+leveraging knowledge from learned transition models. Recent work in the model-based RL literature
+has used backwards model to gain more supervision for latent representation learning (Yu et al.,
+2021a, ; Yu et al., 2021b, ). Here, we find another use for forwards-backwards models—to find
+state-action pairs with similar values.
+
+2.2 Transition Models
+
+Equivalent effect abstraction requires two transition models: a forward transition model fθ:𝒮×𝒜→𝒮f_
+{\theta}:\mathcal{S}\times\mathcal{A}\rightarrow\mathcal{S}, which is parameterised by θ∈ℝDf\theta\
+in\mathbb{R}^{D_{f}} where is DfD_{f} is the number of parameters; and a backwards transition model
+bϕ:𝒮×𝒜→𝒮b_{\phi}:\mathcal{S}\times\mathcal{A}\rightarrow\mathcal{S}, which is parameterised by
+ϕ∈ℝDb\phi\in\mathbb{R}^{D_{b}} where is DbD_{b} is the number of parameters in the backwards model.
+These two models are trained to model the forwards and backwards dynamics of the environment. More
+explicitly, fθf_{\theta} and bϕb_{\phi} are trained on collected experience tuples ⟨st,at,st+1⟩\
+left<{s}_{t},a_{t},{s}_{t+1}\right> to minimize a supervised learning objective.
+
+ arg​minθ⁡‖fθ​(st,at)−st+1‖22\argmin_{\theta}\|f_{\theta}(s_{t},a_{t})-s_{t+1}\|^{2}_{2}  (1)
+
+ arg​minϕ⁡‖bϕ​(st+1,at)−st‖22\argmin_{\phi}\|b_{\phi}({s}_{t+1},a_{t})-{s}_{t}\|^{2}_{2}  (2)
+
+In words, fθf_{\theta} predicts what state the agent transitions into after taking action ata_{t}
+in state sts_{t}, while bϕb_{\phi} predicts what state the agent has come from if it has just taken
+ata_{t} and ended up in st+1s_{t+1}. Next, we explain how these models are used to extract a
+smaller MDP than the one experienced, by reducing the action space to an action we call the 
+hypothetical action.
+
+Definition 2.1.
+
+The hypothetical action ah​y​pa_{hyp} is a single action ah​y​p∈𝒜a_{hyp}\in\mathcal{A} selected by
+the practitioner before training.
+
+When predicting values, equivalent effect abstraction maps state-action pairs into equivalent
+hypothetical state-action pairs using the transition models defined and a predetermined
+hypothetical action (see algorithm 1). Before introducing the reduced MDP in section 2.4, we first
+define the assumptions that our mapping relies on, which is then used to support our theoretical
+results. In section 2.5, we discuss the limitations introduced by our assumptions. In section 3, we
+investigate empirically how equivalent effect abstraction behaves when these assumptions are
+relaxed.
+
+2.3 Assumptions
+
+Assumption 2.2.
+
+Transitions are deterministic, meaning for every state-action pair (s,a)(s,a), the transition
+dynamics are 𝒫⁡(s,a,s′)=1\mathcal{P}(s,a,s^{\prime})=1 for a single next state s′∈𝒮s^{\prime}\in\
+mathcal{S} and 𝒫⁡(s,a,s′′)=0\mathcal{P}(s,a,s^{\prime\prime})=0, ∀s′′∈𝒮\forall s^{\prime\prime}\in\
+mathcal{S} where s′′≠s′s^{\prime\prime}\neq s^{\prime}.
+
+This assumption means that we can predict what state s′s^{\prime} a state-action pair (s,a)(s,a)
+will transition into with certainty. Conversely, it also means we can predict what state an agent
+could have just come from given a previous action aa and the current state s′s^{\prime}. This is
+useful, because in the construction of our reduced MDP, we select one hypothetical action ah​y​pa_
+{hyp} for our reduced action space and then we map all state action-pairs into this action’s
+reference frame when predicting values. That is, we map a given state action pair (s,a)(s,a) to a
+hypothetical state-action pair (sh​y​pCLOSE(s_{hyp}, OPENah​y​p)a_{hyp}) (see algorithm 1). For
+this mapping to be generally computable, it is also required that the following assumption holds.
+
+Assumption 2.3.
+
+There exists an action ah​y​p∈𝒜a_{hyp}\in\mathcal{A}, such that for all s,s′∈𝒮,s,s^{\prime}\in\
+mathcal{S}, a∈𝒜a\in\mathcal{A} there exists sh​y​p∈𝒮s_{hyp}\in\mathcal{S} such that 𝒫⁡
+(sh​y​p,ah​y​p,s′)=𝒫⁡(s,a,s′).\mathcal{P}(s_{hyp},a_{hyp},s^{\prime})=\mathcal{P}(s,a,s^{\prime}).
+
+This means for every state-action pair, at least one equivalent hypothetical state-action pair can
+be computed. This is often true but it is not guaranteed. For example, near borders in a grid world
+there is no way to travel left to a border state that has a border on its right. As a result, there
+is no mapping for a hypothetical action of move left if the current state sits to the right of a
+border. We address the consequences of this in section 2.5.
+
+Assumption 2.4.
+
+Rewards only depend on the state the agent transitions into ℛ⁡(sh​y​p,ah​y​p,s′)=ℛ⁡(s,a,s′)\mathcal
+{R}(s_{hyp},a_{hyp},s^{\prime})=\mathcal{R}(s,a,s^{\prime}).
+
+State-action pairs that lead to the same state have equivalent rewards in the majority of RL
+testbeds such as DeepMind control (Tassa et al.,, 2018), classic control (Brockman et al.,, 2016)
+and Atari (Bellemare et al.,, 2013). While common MDP formulations (including section 2.1) define
+reward functions as dependent on the previous action, it is often possible to drop the dependence
+on the previous action. Nevertheless, we highlight that we assume no dependence on the previous
+action, so our approach is not suitable for optimal control settings where different actions have
+different costs (Liberzon,, 2011, p. 145).
+
+2.4 Equivalent effect abstraction provides a MDP homomorphism
+
+Given assumptions [2.2-2.4] and transition models, we can map an MDP ℳ\mathcal{M} to a smaller
+hypothetical MDP ℳh​y​p\mathcal{M}_{hyp}.
+
+Definition 2.5.
+
+The hypothetical MDP ℳh​y​p\mathcal{M}_{hyp} induced by equivalent effect abstraction is a tuple
+ℳh​y​p=⟨𝒮,𝒜h​y​p,𝒫h​y​p,ℛh​y​p,γ⟩\mathcal{M}_{hyp}=\left<\mathcal{S},\mathcal{A}_{hyp},\mathcal{P}_
+{hyp},\mathcal{R}_{hyp},\gamma\right> where 𝒮h​y​p=𝒮\mathcal{S}_{hyp}=\mathcal{S}, 𝒜h​y​p={ah​y​p}\
+mathcal{A}_{hyp}=\{a_{hyp}\}, ℛh​y​p=ℛ\mathcal{R}_{hyp}=\mathcal{R} and 𝒫h​y​p​(s,a,s′)=𝒫⁡(bϕ​(fθ​
+(s,a),ah​y​p),ah​y​p,s′)\mathcal{P}_{hyp}(s,a,s^{\prime})=\mathcal{P}(b_{\phi}(f_{\theta}(s,a),a_
+{hyp}),a_{hyp},s^{\prime}), which simplifies to 𝒫h​y​p​(s,a,s′)=𝒫⁡(sh​y​p,ah​y​p,s′)\mathcal{P}_
+{hyp}(s,a,s^{\prime})=\mathcal{P}(s_{hyp},a_{hyp},s^{\prime}).
+
+Equivalent effect abstraction maps all actions in the action space to one hypothetical action,
+while mapping a given state to an equivalent hypothetical states in the original state space
+(algorithm 1). By finding an equivalent hypothetical state-action pair for each experienced
+state-action pair, we reduce the number of state-action pairs that an off-policy algorithm must
+learn to estimate. In the ideal case where all assumptions are satisfied, this reduces the
+state-action space a value function needs to model from 𝒮×𝒜\mathcal{S}\times\mathcal{A} to 𝒮×1\
+mathcal{S}\times 1.
+
+Definition 2.6.
+
+An MDP homomorphism (Ravindran,, 2004; van der Pol et al., 2020b, ; Rezaei-Shoshtari et al.,, 2022)
+is a tuple of surjections h=⟨σa,gs|{(s,a)∈(𝒮×𝒜)}⟩h=\left<\sigma_{a},{g_{s}|\{(s,a)\in(\mathcal{S}\
+times\mathcal{A})}\}\right> that maps from one MDP ℳ\mathcal{M} to another MDP ℳ¯\bar{\mathcal{M}}
+where:
+
+ 𝒫¯​(σa​(s),gs​(a),σa​(s′))=∑s′′∈[s′]Bh|𝒮𝒫⁡(s,a,s′′)\bar{\mathcal{P}}(\sigma_{a}(s),g_{s}(a),\
+ sigma_{a}(s^{\prime}))=\sum_{s^{\prime\prime}\in[s^{\prime}]_{B_{h}|\mathcal{S}}}\mathcal{P}   (3)
+ (s,a,s^{\prime\prime})
+
+ ℛ¯​(σa​(s),gs​(a),σa​(s′))=ℛ⁡(s,a,s′′)\bar{\mathcal{R}}(\sigma_{a}(s),g_{s}(a),\sigma_{a}(s^   (4)
+ {\prime}))=\mathcal{R}(s,a,s^{\prime\prime})
+
+The homomorphism splits the state space 𝒮\mathcal{S} in subsets of states—[s′]Bh|𝒮[s^{\prime}]_{B_
+{h}|\mathcal{S}} is the subset of states that are in the same subset as s′s^{\prime} (Ravindran,,
+2004; Rezaei-Shoshtari et al.,, 2022). Equations (3) and (4) show that a homomorphic map maintains
+the transition dynamics and reward functions of the experienced MDP within the constructed abstract
+MDP.
+
+Note that we have made an extension to the definition of Ravindran, (2004), as our definition uses
+state mappings σa\sigma_{a} that are dependent on actions, not just state inputs. This naturally
+encompasses previous definitions of MDP homomorphisms as the mapping σa\sigma_{a} can simply ignore
+input actions to be consistent with Ravindran, (2004). This has no effect on the optimal value
+equivalence property (theorem 2.8), as the proof from Ravindran, (2004) does not rely on σ\sigma
+only being a function of states only.
+
+Theorem 2.7.
+
+Given assumptions [2.2-2.4] and exact models of forwards and backwards dynamics, the MDP mapping
+provided by equivalent effect abstraction (definition 2.5) is an MDP homomorphism.
+
+Proof.
+
+proof in appendix A.2. ∎
+
+As equivalent effect abstraction is an MDP homomorphism (theorem 2.7), it inherits the value
+equivalence property.
+
+Theorem 2.8.
+
+(Ravindran,, 2004) The optimal action-value function Q∗Q^{*} in an MDP implied by an MDP
+homomorphism is equal to the optimal action-value function in the full MDP.
+
+ Q∗​(σa​(s),gs​(a))=Q∗​(s,a)Q^{*}(\sigma_{a}(s),g_{s}(a))=Q^{*}(s,a)  (5)
+
+Consequently, an agent equipped with a homomorphic map can learned values in the abstract
+state-action space and the used these to predict values in the experienced state-action space (
+Ravindran and Barto,, 2001). Note that in addition to the assumptions discussed next, theorem 2.7
+states that equivalent effect abstraction requires exact models, meaning predicting transitions
+without any prediction error. This is usually not feasible, which motivates our empirical work in
+sections [3.2-3.4] to see how our approach behaves when the model is imperfect and learned from
+experience.
+
+Refer to caption
+
+Refer to caption
+
+
+Figure 2: (𝐚),(𝐛)\mathbf{(a),(b)} In a gridworld, equivalent effect abstraction improves sample
+efficiency. Equivalent effect abstraction improves both model-free Q-learning and model-based
+approaches Q-planning. 50 seeds are used for Q-learning while 10 seeds are used for Q-planning.
+
+
+Algorithm 1 Equivalent Effect Abstraction Value Prediction
+0:  Forward Model fθf_{\theta}, Backward Model bϕb_{\phi}, List of NN environment actions ANA_{N},
+hypothetical action ah​y​pa_{hyp}, environment state ss, value function QQ
+0:  List of predicted Q-values qNq_{N}
+ Initialize list of Q-values qNq_{N}
+ for i=0​to​Ni=0\;\text{to}\;N do
+  if AN​[i]=ah​y​pA_{N}[i]=a_{hyp} then
+   qN​[i]←Q⁡(s,ah​y​p)q_{N}[i]\leftarrow Q(s,a_{hyp})
+  else
+   s′←fθ​(s,A⁡[i])s^{\prime}\leftarrow f_{\theta}(s,A[i]) {predict one step forward}
+   sh​y​p←bϕ​(s′,ah​y​p)s_{hyp}\leftarrow b_{\phi}(s^{\prime},a_{hyp}) {predict hypothetical state}
+   qN​[i]←Q⁡(sh​y​p,ah​y​p)q_{N}[i]\leftarrow Q(s_{hyp},a_{hyp})
+  end if
+ end for
+
+2.5 How limiting are the assumptions introduced?
+
+It is unlikely that all assumptions will be met completely in the deployment of equivalent effect
+abstraction. The remainder of this work studies empirically how the performance varies as
+assumptions [2.2-2.4] are violated.
+
+Most systems in the real world have some level of stochasticity in their dynamics. While theorem
+2.7 relies on assumptions of determinism, we find empirically that allowing our models to predict
+the mean of stochastic transitions, and then using these predictions in algorithm 1 enables faster
+value learning (see section 3.3 and 3.4). In future work, equivalent effect abstraction could be
+extended to perform predictions on latent distributions or aggregate samples from such
+distributions (Hafner et al.,, 2019; Yu et al., 2021a, ).
+
+Regarding assumption 2.3 that previous states are always computable. In some environments like
+Cartpole, it is always possible to predict a valid previous state given any hypothetical action and
+any current state, meaning assumption 2.3 always holds. In other environments backwards state
+predictions are not always possible such as near a border in a 2D navigation setting.
+
+One strategy to avoid uncomputable hypothetical states is to select hypothetical actions that
+minimize violations of assumption 2.3 (i.e. actions that are plausible previous actions for many
+states in the environment). For example, in many video games and physics simulators there an action
+which is a “no-op”, which usually leaves states unchanged. Additionally, a practitioner can choose
+not to collapse a portion of the action space. This is the approach we apply in section 3.4 on
+Space Invaders and Seaquest, where we can deduce beforehand that there will be no hypothetical
+state-action pairs for states where the “fire” action is chosen. In this case, we predict the
+Q-values for the fire action separately and then collapse all the other action values onto the
+hypothetical action.
+
+Additionally, when uncomputable states are still present, we find that allowing our models to
+hallucinate a previous state that could have lead to the current state allows for reasonable value
+predictions to be made in section 3.4 (even if there is no ground truth hypothetical state that is
+plausible given environment dynamics). In future work, this assumption could be addressed more
+directly, by predicting whether a previous action can lead to a valid state transition for a given
+current state as in (Yu et al., 2021a, ). If border states are known (section 3.1) one call fall
+back to full Q-learning in that particular state.
+
+Lastly, our theoretical results assume that rewards only depend on the current state and not the
+previous state and action (see assumption 2.4). While this limits our applicability in optimal
+control settings (Liberzon,, 2011, p. 145), we posit that there are many environments where our
+approach is applicable, including standard benchmarks such as Atari (Bellemare et al.,, 2013) or
+Deepmind Control (Tassa et al.,, 2018). Note that Deepmind control would require an extension of
+equivalent effect abstraction into continuous action spaces. Lastly, in future work the difference
+in costs for actions could be estimated and corrected for.
+
+3 Experiments
+
+Our experiments gradually build up in their complexity—with each successive experiment, we
+investigate how performances changes when the reliance on our assumptions is further relaxed. Where
+possible, we overlap with the MDP homomorphism literature—using Cartpole to overlap with van der
+Pol et al., 2020b (); van der Pol et al., 2020a () and Predator Prey to overlap with van der Pol
+et al., 2020b (). Hyperparameters are in the Appendix. Shaded regions indicate the standard error.
+
+3.1 Tabular Maze
+
+We begin an idealised environment where all our assumptions are satisfied—the maze environment from
+Sutton and Barto, (2018, p. 165). The maze consists of 6×96\times 9 cells. The agent starts on the
+far west of the maze and must move east around walls in the middle of the environment. In this
+experiment, we assume a perfect model of the environment is known beforehand—which we leverage to
+create a homomorphic map.
+
+We use an open-source Q-learning (Watkins and Dayan,, 1992) and environment implementation (Khan,,
+2019). We adapt this implementation to make use of a homomorphic map as shown in algorithm 1. We
+only apply algorithm 1 to non-border states. In border states, we use standard Q-learning value
+predictions and maintain a table of values for all border state-action pairs.
+
+Our approach compares favorably to Q-learning, converging much faster to the optimal policy (figure
+2(a)). In the gridworld environment, we reduce the size of the state-action space and hence the
+number of Q-values (when going left is the hypothetical action) from 216216 to 6767. In this case,
+the number of states in the reduced action space is not reduced by the cardinality of the action
+space exactly. This is because of the 13 states where it is not possible to reach them by traveling
+left because there is a border to the right.
+
+Refer to caption
+
+Refer to caption
+
+Refer to caption
+
+
+Figure 3: (𝐚,𝐛)\mathbf{(a,b)} Equivalent effect abstraction learns more quickly than the DQN
+baseline. For Cartpole, dynamics models are learned in 3 initial episodes of experience that are
+shown on the x-axis of the plot. For predator prey, the experience used to train the dynamics
+models is not included in the plot. PRAE 10 refers to using PRAE with 10 episodes of data to
+construct an environment model, which it then plans in. For predator prey the equivalent effect
+abstraction results reuse one set of pre-trained backwards and forwards models for each RL run.
+
+3.2 Cartpole
+
+Testing performance when the dynamics models are learned and therefore imperfect. We apply
+equivalent effect abstraction to the Cartpole environment (Brockman et al.,, 2016). In Cartpole, an
+agent controls a cart with a pendulum attached that it must balance upright. The states are a
+four-dimensional vector (position,velocity,angle,angular velocity)(\text{position},\text{velocity},
+\text{angle},\text{angular velocity}) and the action space is discrete (move the cart left or
+right). To learn our models, we train on 3 episodes of experience at the start of training (two
+simple linear models, one for each action optimised with Adam (Kingma and Ba,, 2015)). These
+initial training steps are included for equivalent effect abstraction in figure 3. We apply our
+abstraction in a DQN implementation (Silver et al.,, 2016; Šlambora,, 2017), where Q-values are
+only learned for an arbitrary hypothetical action.
+
+We compare to three baselines: DQN, MDP homomorphic Networks (van der Pol et al., 2020b, ) and PRAE
+(van der Pol et al., 2020a, ). For all experiments we use the baselines’ implementations (Stooke
+and Abbeel,, 2019). MDP homomorphic networks use weights that are equivariant to symmetries
+(requiring prior knowledge). PRAE trains a contrastive model to map to a latent “plannable” MDP,
+that satisfies the definitions of an MDP homomorphism. PRAE then plans in the learned abstract MDP.
+For Cartpole, we learned a mapping for PRAE with datasets of [10,100,10000][10,100,10000] episodes
+of random experience. We plot the converged performance of PRAE’s planning algorithm. For the
+Cartpole and Predator Prey experiments (next section) we use 30 seeds for DQN, equivalent effect
+abstraction and the homomorphic DQN. For PRAE, we only use 5 seeds due to its computational
+expense.
+
+As shown in figure 3, in the low sample regime we improve upon both PRAE and DQN—with our approach
+reaching a score of 175 at around episode 12 while Q-learning takes around 16 episodes to
+converge—note that this improvement includes the number of episodes required to learn our mapping.
+The MDP homomorphic network also learns quickly, using prior knowledge of environment symmetries,
+but takes longer to converge.
+
+3.3 Stochastic Predator Prey
+
+Testing performance when dynamics models are learned and the dynamics are stochastic. Following the
+seminal work of van der Pol et al., 2020b (), we benchmark on the Predator Prey environment, where
+an agent must chase a stochastically moving prey in a 2D world. The observations are 7×7×37\times 7
+\times 3 tensors.
+
+We train action-dependent forwards and backwards models on a dataset of transitions created by
+taking random actions in the environment for 10410^{4} environment steps (equivalent to around
+170170 episodes). Note that the environment is stochastic, so learning a perfect environment model
+is impossible. We compare to the baselines introduced in section 3.2. For PRAE, we benchmark with
+10000 and 100 episodes of data and perform planning to convergence.
+
+
+Table 1: Normalized scores for MinAtar 250K
+
+     game      actions removed      DQN           EEA           DYNA      homomorphic DQN
+   Asterix            4        0.093 ± 0.015  0.3 ± 0.056  0.05 ± 0.0058  0.076 ± 0.0099
+   Breakout           2        0.71 ± 0.052   0.77 ± 0.036 0.72 ± 0.046   0.65 ± 0.077
+   Freeway            2        0.7 ± 0.02     0.72 ± 0.023 0.037 ± 0.025  0.018 ± 0.012
+   Seaquest           4        0.031 ± 0.0074 0.11 ± 0.02  0.039 ± 0.0056 0.046 ± 0.0043
+Space Invaders        2        0.69 ± 0.028   0.66 ± 0.032 0.79 ± 0.079   0.71 ± 0.061
+
+In Predator Prey, a policy is learned with around 5 episodes with a DQN. As a result, in this
+particular environment it is not practical to use equivalent effect abstraction as by the time a
+model can be learned the policy has already converged. However, figure 3(b) shows that if a model
+can be obtained before policy learning, then equivalent effect abstraction can deliver an
+improvement over DQN—even though the environment is stochastic.
+
+3.4 MinAtar
+
+Testing performance when models are learned, dynamics are stochastic, and hypothetical states may
+be incomputable. Next, we benchmark on MinAtar (Young and Tian,, 2019)—a more accesible version of
+the Atari benchmark (Bellemare et al.,, 2013) where observations are image-like tensors. Minatar is
+relatively high dimensional compared to previous sections [3.1-3.3] and the homomorphisms
+literature (van der Pol et al., 2020b, ). For example, Seaquest has observations of 10×10×1010\
+times 10\times 10 tensors. Further, MinAtar has sticky actions (Machado et al.,, 2018)—meaning
+predicting the next state perfectly is impossible. Lastly, MinAtar games contain border states
+where predicting the equivalent hypothetical state is impossible.
+
+We do not make any corrections for stochasticity or impossible to compute hypothetical border
+states. The only inductive bias we inject is the hard-coding of the hypothetical actions. For
+Asterix and Breakout, we select “no-op” as our hypothetical action, Freeway uses “up” as its
+hypothetical action while in Seaquest and Space Invaders we use two actions in the reduced MDP
+“fire” and “no-op” (because there is equivalent moving/no-op action for fire we collapse all the
+movement actions onto no-op and leave fire value predictions untouched). We train a U-Net style
+architecture (Ronneberger et al.,, 2015) for our dynamics models (see appendix A.4.3 for details on
+architecture). We train these models continuously in parallel with our Q-network, making model
+updates with samples from the replay buffer after each Q-learning step.
+
+
+Table 2: Peak performance across all frames
+
+     game      actions removed     DQN         EEA          DYNA     homomorphic DQN
+   Asterix            4        1.0 ± 0.059 0.85 ± 0.083 0.67 ± 0.047 0.69 ± 0.10
+   Breakout           2        1.2 ± 0.098 1.0 ± 0.11   1.0 ± 0.17   1.1 ± 0.11
+   Freeway            2        1 ± 0.019   0.96 ± 0.015 0.79 ± 0.022 0.97 ± 0.0064
+   Seaquest           4        1.1 ± 0.17  0.91 ± 0.18  1.1 ± 0.26   0.80 ± 0.13
+Space Invaders        2        1.2 ± 0.090 1.1 ± 0.093  0.79 ± 0.079 1.4 ± 0.099
+
+Refer to caption
+Figure 4: EEA delivers an almost 4x improvement at 250k frames when averaging over all games and
+optimizers.
+
+
+
+We include three different baselines, a DQN implementation that we build upon (Young and Tian,,
+2019), a homomorphic DQN (van der Pol et al., 2020b, ) and a model-based Dyna-DQN agent (Sutton and
+Barto,, 2018, p. 164). The Dyna agent that augments the DQN baseline with additional experience
+from a learned model for a direct comparison with equivalent effect abstraction. Our Dyna agent
+makes forward state, reward and episode termination predictions—it then augments its value network
+experience with these rollouts. While other model-based baselines exist (e.g. Hafner et al., (2019)
+), they are on-policy and actor-critic based making them an unfair comparison to our off-policy
+value-based DQN. We also note that the state of the art in discrete control is a off-policy value
+based agent, which outperforms all model-based approaches in the low-sample regime (Schwarzer
+et al.,, 2023). As a result, improving the sample efficiency of off-policy value-based methods
+could to advance the overall state-of-the-art.
+
+We report normalised scores, dividing the score by the performance of a DQN after 2.5×1062.5\times
+10^{6} frames. Inspired by (Kaiser et al.,, 2019), we benchmark performance at 250k frames. At 250k
+frames, equivalent effect abstraction outperforms all baselines on 2/5 games while matching the
+other best algorithm’s performance on 2/5 games and only being significantly worse than than the
+best algorithm (Dyna) on one game. While all games have 6 actions, the number of effective actions
+may be smaller. For example, in Freeway only up, down and “no-op” are relevant—meaning the number
+of actions collapsed by equivalent effect abstraction is only 2. We outperform other methods when
+the number of effective actions removed is large.
+
+In table 1, equivalent effect abstraction (EEA) and DQN performances are quoted when using Adam,
+the overall best optimizer in the low sample limit for EEA and DQN. All other methods report
+performance with the default RMSprop. In some environments, like Seaquest and Asterix, using Adam
+performs worse than RMSprop for both DQN and EEA (see figure 5 for a full breakdown).
+
+To disentangle the effects of specific optimizers on different games from the effect of using EEA,
+we ask the following: how much of an improvement does EEA give when compared to DQN when averaging
+over all games and optimizers? To do this we compute the ratio of EEA RMSprop performance to DQN
+RMSprop performance and the ratio of EEA Adam performance to DQN Adam performance for each game.
+After, we average these ratios over all games and plot them against training experience in figure 4
+, showing on average an almost 4x improvement over DQN in the low sample limit. Error bars are
+standard error.
+
+Tradeoffs of equivalent effect abstraction in the large sample limit. EEA maintains respectable
+performance as the number of samples increases but does not improve overall performance in the
+large sample limit. Results in table 2 use the RMSprop optimizer for DQN and EEA as it performs
+best given a large sample limit. We attribute EEAs weaker performance here to violations of the
+assumptions we made in the theoretical development of our method. In summary, when samples are
+scarce, equivalent effect abstraction can improve performance. On the other hand, stochasticity,
+imperfect models and uncomputable hypothetical states mean that baselines overtake equivalent
+effect abstraction as the number of samples increases.
+
+4 Related Work
+
+Work on MDP homomorphisms was initialised by Ravindran and Barto, (2001) who developed a framework
+for abstraction under symmetry with theoretical guarantees. Contemporaneously, Givan et al., (2003)
+proposed model minimisation (Larsen and Skou,, 1991), where states could be mapped to an abstract
+state if their transition dynamics and rewards were indistinguishable. Related approaches explore
+state-action equivalences where transitions pairs lead to otherwise unrelated states but with the
+same probabilities (Asadi et al.,, 2019; Lyu et al.,, 2023). For a more general taxonomy of
+state-action abstractions, Abel et al., (2020) define related abstractions and their
+characteristics.
+
+In contrast to our approach, homomorphisms are often used in tasks with symmetries. van der Pol
+et al., 2020b () learn network weights that are equivariant to environment symmetries but require a
+practitioner to indentify symmetry groups beforehand. Similar approaches apply to environments with
+continuous symmetries (Wang et al.,, 2022). Biza and Platt, (2019) approach the problem of finding
+MDP homomorphisms using online partition iteration—predicting which partition a state should fall
+into given an action, and refining the partitions through splitting.
+
+Another class of MDP abstraction methods use bisimulation metrics (which compute distances between
+trajectories), often in conjuction with a contrastive loss function. For example, Biza et al.,
+(2021) use bisimulation to compute hidden Markov model priors to infer a reduced state space. Ferns
+et al., (2011); Ferns and Precup, (2014), condition embeddings with contrastive losses to generate
+invariant representations. Zhang et al., (2020) augment an embedding encoder with an additional
+contrastive loss term that results in encoder distances forming an approximate bisimulation metric,
+which allowing agents to perform control tasks in the presence of distractors. Rezaei-Shoshtari
+et al., (2022) formalise continuous homomorphisms with a bisimulation metric. In general,
+contrastive learning achieves impressive results but can be sample hungry (van der Pol et al.,
+2020a, ).
+
+Perhaps the most relevant related approach is the use of afterstates (Sutton and Barto,, 2018, p.
+136). Afterstates shift an MDP out of phase with conventional transitions, creating states
+in-between the effect of a policy’s action and the reaction of the environment. Applications of
+afterstates have been constrained to board games (Tesauro et al.,, 1995) and focus on dealing with
+the stochasticity of an opponent rather than improved sample efficiency (Antonoglou et al.,, 2021).
+Also related, Misra et al., (2020) deploy a similar concept, finding states with equivalent
+transition dynamics by grouping together state-action pairs that will pass through or have passed
+through same state with the same previous action in block MDPs, where a discretisation of the state
+space needs to be learned. Our approach goes beyond this, looking at abstracting state-action pairs
+that do not necessarily have equivalent dynamics for the same actions but instead for different
+actions. Also related, (Grinsztajn et al.,, 2022) learn to explore by avoiding action sequences
+that lead to the same next state.
+
+More broadly, model-based RL has enabled superhuman performance in Atari (Hafner et al.,, 2020),
+but the number of planning steps required to learn a policy is still large. Backwards models have
+been proposed to improve representation learning (Yu et al., 2021a, ; Yu et al., 2021b, ), which
+would be interesting if integrated with equivalent effect abstraction.
+
+5 Future Work
+
+While many of the recent breakthroughs are value based (e.g. (Silver et al.,, 2017; Badia et al.,,
+2020)), actor-critic approaches (Schulman et al.,, 2017; Mnih et al.,, 2016) are often the natural
+choice for control tasks. Embedding equivalent effect abstraction into actor-critic architectures
+is a fruitful avenue for future research. It is also conceivable to formulate equivalent effect
+abstraction within a continuous action space by simply discretising the action space (Banino
+et al.,, 2021). Lastly, equivalent effect abstraction could also be integrated into existing
+homomorphic MDP methods that rely on symmetries to further reduce the size of the abstract
+state-action space (van der Pol et al., 2020b, ).
+
+6 Conclusion
+
+Equivalent effect abstraction is a simple method that reduces the size of a state-action space and
+requires no prior knowledge of environment symmetries. We show equivalent effect abstraction can
+improve the sample efficiency of policy learning in tabular environments, control tasks with
+continuous state spaces, and stochastic deep RL environments. An exciting next step would be to
+integrate equivalent effect abstraction into model-based RL (Hafner et al.,, 2020; Yu et al.,
+2021a, ) to improve planning efficiency.
+
+References
+
+  • Abel et al., (2020) Abel, D., Umbanhowar, N., Khetarpal, K., Arumugam, D., Precup, D., and
+    Littman, M. (2020). Value preserving state-action abstractions. In International Conference on
+    Artificial Intelligence and Statistics, pages 1639–1650. PMLR.
+  • Anand et al., (2015) Anand, A., Grover, A., Mausam, M., and Singla, P. (2015). Asap-uct:
+    Abstraction of state-action pairs in uct. In Proceedings of the 24th International Conference
+    on Artificial Intelligence, pages 1509–1515.
+  • Antonoglou et al., (2021) Antonoglou, I., Schrittwieser, J., Ozair, S., Hubert, T. K., and
+    Silver, D. (2021). Planning in stochastic environments with a learned model. In International
+    Conference on Learning Representations.
+  • Asadi et al., (2019) Asadi, M., Talebi, M. S., Bourel, H., and Maillard, O.-A. (2019). 
+    Model-based reinforcement learning exploiting state-action equivalence. In Asian Conference on
+    Machine Learning, pages 204–219. PMLR.
+  • Badia et al., (2020) Badia, A. P., Piot, B., Kapturowski, S., Sprechmann, P., Vitvitskyi, A.,
+    Guo, Z. D., and Blundell, C. (2020). Agent57: Outperforming the atari human benchmark. In 
+    International Conference on Machine Learning, pages 507–517. PMLR.
+  • Banino et al., (2021) Banino, A., Badia, A. P., Walker, J., Scholtes, T., Mitrovic, J., and
+    Blundell, C. (2021). Coberl: Contrastive bert for reinforcement learning. arXiv preprint
+    arXiv:2107.05431.
+  • Bellemare et al., (2013) Bellemare, M. G., Naddaf, Y., Veness, J., and Bowling, M. (2013). The
+    arcade learning environment: An evaluation platform for general agents. Journal of Artificial
+    Intelligence Research, 47:253–279.
+  • Betker et al., (2023) Betker, J., Goh, G., Jing, L., Brooks, T., Wang, J., Li, L., Ouyang, L.,
+    Zhuang, J., Lee, J., Guo, Y., et al. (2023). Improving image generation with better captions. 
+    Computer Science. https://cdn. openai. com/papers/dall-e-3. pdf, 2(3):8.
+  • Biza and Platt, (2019) Biza, O. and Platt, R. (2019). Online abstraction with mdp homomorphisms
+    for deep learning. In Proceedings of the 18th International Conference on Autonomous Agents and
+    MultiAgent Systems.
+  • Biza et al., (2021) Biza, O., Platt, R., van de Meent, J., and Wong, L. (2021). Learning
+    discrete state abstractions with deep variational inference. Advances in Approximate Bayesian
+    Inference.
+  • Brockman et al., (2016) Brockman, G., Cheung, V., Pettersson, L., Schneider, J., Schulman, J.,
+    Tang, J., and Zaremba, W. (2016). Openai gym. arXiv preprint arXiv:1606.01540.
+  • Fan et al., (2023) Fan, J., Zhuang, Y., Liu, Y., Hao, J., Wang, B., Zhu, J., Wang, H., and Xia,
+    S.-T. (2023). Learnable behavior control: Breaking atari human world records via
+    sample-efficient behavior selection. arXiv preprint arXiv:2305.05239.
+  • Ferns et al., (2011) Ferns, N., Panangaden, P., and Precup, D. (2011). Bisimulation metrics for
+    continuous markov decision processes. SIAM Journal on Computing, 40(6):1662–1714.
+  • Ferns and Precup, (2014) Ferns, N. and Precup, D. (2014). Bisimulation metrics are optimal
+    value functions. In Proceedings of the Thirtieth Conference on Uncertainty in Artificial
+    Intelligence, UAI’14, page 210–219, Arlington, Virginia, USA. AUAI Press.
+  • Givan et al., (2003) Givan, R., Dean, T., and Greig, M. (2003). Equivalence notions and model
+    minimization in markov decision processes. Artificial Intelligence, 147(1-2):163–223.
+  • Grinsztajn et al., (2022) Grinsztajn, N., Johnstone, T., Ferret, J., and Preux, P. (2022). 
+    Better state exploration using action sequence equivalence. In NeurIPS workshop on Deep
+    Reinforcement Learning.
+  • Hafner et al., (2019) Hafner, D., Lillicrap, T., Fischer, I., Villegas, R., Ha, D., Lee, H.,
+    and Davidson, J. (2019). Learning latent dynamics for planning from pixels. In International
+    conference on machine learning, pages 2555–2565. PMLR.
+  • Hafner et al., (2020) Hafner, D., Lillicrap, T. P., Norouzi, M., and Ba, J. (2020). Mastering
+    atari with discrete world models. In International Conference on Learning Representations.
+  • Kaiser et al., (2019) Kaiser, L., Babaeizadeh, M., Milos, P., Osinski, B., Campbell, R. H.,
+    Czechowski, K., Erhan, D., Finn, C., Kozakowski, P., Levine, S., et al. (2019). Model-based
+    reinforcement learning for atari. arXiv preprint arXiv:1903.00374.
+  • Keurti et al., (2023) Keurti, H., Pan, H.-R., Besserve, M., Grewe, B. F., and Schölkopf, B.
+    (2023). Homomorphism autoencoder–learning group structured representations from observed
+    transitions. In International Conference on Machine Learning, pages 16190–16215. PMLR.
+  • Khan, (2019) Khan, S. (2019). dyna-maze. GitHub repository.
+  • Kingma and Ba, (2015) Kingma, D. P. and Ba, J. (2015). Adam: A method for stochastic
+    optimization. In ICLR (Poster).
+  • Larsen and Skou, (1991) Larsen, K. G. and Skou, A. (1991). Bisimulation through probabilistic
+    testing. Information and computation, 94(1):1–28.
+  • Liberzon, (2011) Liberzon, D. (2011). Calculus of variations and optimal control theory: a
+    concise introduction. Princeton university press.
+  • Lyu et al., (2023) Lyu, Y., Côme, A., Zhang, Y., and Talebi, M. S. (2023). Scaling up
+    q-learning via exploiting state–action equivalence. Entropy, 25(4):584.
+  • Machado et al., (2018) Machado, M. C., Bellemare, M. G., Talvitie, E., Veness, J., Hausknecht,
+    M., and Bowling, M. (2018). Revisiting the arcade learning environment: Evaluation protocols
+    and open problems for general agents. Journal of Artificial Intelligence Research, 61:523–562.
+  • Misra et al., (2020) Misra, D., Henaff, M., Krishnamurthy, A., and Langford, J. (2020). 
+    Kinematic state abstraction and provably efficient rich-observation reinforcement learning. In 
+    International conference on machine learning, pages 6961–6971. PMLR.
+  • Mnih et al., (2016) Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap, T., Harley, T.,
+    Silver, D., and Kavukcuoglu, K. (2016). Asynchronous methods for deep reinforcement learning. 
+    In International conference on machine learning, pages 1928–1937. PMLR.
+  • Ravindran, (2004) Ravindran, B. (2004). An algebraic approach to abstraction in reinforcement
+    learning. University of Massachusetts Amherst.
+  • Ravindran and Barto, (2001) Ravindran, B. and Barto, A. G. (2001). Symmetries and model
+    minimization in markov decision processes.
+  • Rezaei-Shoshtari et al., (2022) Rezaei-Shoshtari, S., Zhao, R., Panangaden, P., Meger, D., and
+    Precup, D. (2022). Continuous mdp homomorphisms and homomorphic policy gradient. arXiv preprint
+    arXiv:2209.07364.
+  • Ronneberger et al., (2015) Ronneberger, O., Fischer, P., and Brox, T. (2015). U-net:
+    Convolutional networks for biomedical image segmentation. In Medical Image Computing and
+    Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich, Germany,
+    October 5-9, 2015, Proceedings, Part III 18, pages 234–241. Springer.
+  • Schulman et al., (2017) Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O.
+    (2017). Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347.
+  • Schwarzer et al., (2023) Schwarzer, M., Ceron, J. S. O., Courville, A., Bellemare, M. G.,
+    Agarwal, R., and Castro, P. S. (2023). Bigger, better, faster: Human-level atari with
+    human-level efficiency. In International Conference on Machine Learning, pages 30365–30380.
+    PMLR.
+  • Silver et al., (2016) Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre, L., Van
+    Den Driessche, G., Schrittwieser, J., Antonoglou, I., Panneershelvam, V., Lanctot, M., et al.
+    (2016). Mastering the game of go with deep neural networks and tree search. nature, 529
+    (7587):484–489.
+  • Silver et al., (2017) Silver, D., Schrittwieser, J., Simonyan, K., Antonoglou, I., Huang, A.,
+    Guez, A., Hubert, T., Baker, L., Lai, M., Bolton, A., et al. (2017). Mastering the game of go
+    without human knowledge. nature, 550(7676):354–359.
+  • Stooke and Abbeel, (2019) Stooke, A. and Abbeel, P. (2019). rlpyt: A research code base for
+    deep reinforcement learning in pytorch. arXiv preprint arXiv:1909.01500.
+  • Sutton and Barto, (2018) Sutton, R. S. and Barto, A. G. (2018). Reinforcement learning: An
+    introduction. MIT press.
+  • Tassa et al., (2018) Tassa, Y., Doron, Y., Muldal, A., Erez, T., Li, Y., Casas, D. d. L.,
+    Budden, D., Abdolmaleki, A., Merel, J., Lefrancq, A., et al. (2018). Deepmind control suite. 
+    arXiv preprint arXiv:1801.00690.
+  • Tesauro et al., (1995) Tesauro, G. et al. (1995). Temporal difference learning and td-gammon. 
+    Communications of the ACM, 38(3):58–68.
+  • (41) van der Pol, E., Kipf, T., Oliehoek, F. A., and Welling, M. (2020a). Plannable
+    approximations to mdp homomorphisms: Equivariance under actions. In AAMAS.
+  • (42) van der Pol, E., Worrall, D., van Hoof, H., Oliehoek, F., and Welling, M. (2020b). Mdp
+    homomorphic networks: Group symmetries in reinforcement learning. Advances in Neural
+    Information Processing Systems, 33:4199–4210.
+  • Vinyals et al., (2019) Vinyals, O., Babuschkin, I., Czarnecki, W. M., Mathieu, M., Dudzik, A.,
+    Chung, J., Choi, D. H., Powell, R., Ewalds, T., Georgiev, P., et al. (2019). Grandmaster level
+    in starcraft ii using multi-agent reinforcement learning. Nature, 575(7782):350–354.
+  • Wang et al., (2022) Wang, D., Walters, R., and Platt, R. (2022). So (2) equivariant
+    reinforcement learning. In International conference on learning representations (ICLR).
+  • Watkins and Dayan, (1992) Watkins, C. J. and Dayan, P. (1992). Q-learning. Machine learning, 8
+    (3):279–292.
+  • Young and Tian, (2019) Young, K. and Tian, T. (2019). Minatar: An atari-inspired testbed for
+    thorough and reproducible reinforcement learning experiments. arXiv preprint arXiv:1903.03176.
+  • (47) Yu, C., Li, D., Hao, J., Wang, J., and Burgess, N. (2021a). Learning state representations
+    via retracing in reinforcement learning. arXiv preprint arXiv:2111.12600.
+  • (48) Yu, T., Lan, C., Zeng, W., Feng, M., Zhang, Z., and Chen, Z. (2021b). Playvirtual:
+    Augmenting cycle-consistent virtual trajectories for reinforcement learning. Advances in Neural
+    Information Processing Systems, 34:5276–5289.
+  • Zhang et al., (2020) Zhang, A., McAllister, R. T., Calandra, R., Gal, Y., and Levine, S.
+    (2020). Learning invariant representations for reinforcement learning without reconstruction. 
+    In International Conference on Learning Representations.
+  • Šlambora, (2017) Šlambora, J. (2017). Cartpole-v0.py. GitHub gist.
+
+Appendix A Appendix
+
+A.1 Impact Statement
+
+We do not believe that EEA introduces any novel dangers or concerns in terms of broader impact.
+Like all reinforcement learning algorithms, our agents likely do not generalise very well and could
+behave unexpectedly when deployed in real world environments. We suggest extreme caution when using
+any RL algorithm for consequential applications.
+
+A.2 Theoretical Results
+
+Theorem 2.7 Given assumptions [2.2-2.3], the MDP mapping provided by equivalent effect abstraction
+is an MDP homomorphism.
+
+Proof.
+
+We can use our definition of state and action mappings in the left hand side.
+
+ 𝒫⁡(bϕ​(fθ​(s,a),ah​y​p),ah​y​p,s′)=∑s′′∈[s′]Bh|𝒮𝒫⁡(s,a,s′′)\mathcal{P}(b_{\phi}(f_{\theta}
+ (s,a),a_{hyp}),a_{hyp},s^{\prime})=\sum_{s^{\prime\prime}\in[s^{\prime}]_{B_{h}|\mathcal{S}}}  (6)
+ \mathcal{P}(s,a,s^{\prime\prime})
+
+Where we use the fact that the dynamics of the reduced MDP are equal to that of the full MDP
+(except with a reduced action space), meaning 𝒫¯=𝒫\bar{\mathcal{P}}=\mathcal{P}. Using assumption
+2.3, which states that there exists a hypothetical state action pair (sh​y​p,ah​y​p)(s_{hyp},a_
+{hyp}) that transitions into s′s^{\prime}, equation 6 reduces to the following.
+
+ 𝒫⁡(sh​y​p,ah​y​p,s′)=∑s′′∈[s′]Bh|𝒮𝒫⁡(s,a,s′′)\mathcal{P}(s_{hyp},a_{hyp},s^{\prime})=\sum_{s^  (7)
+ {\prime\prime}\in[s^{\prime}]_{B_{h}|\mathcal{S}}}\mathcal{P}(s,a,s^{\prime\prime})
+
+Assumption 2.2 means our MDP assumes deterministic dynamics, which means allows equation 7 to be
+rewritten without the summation.
+
+ 𝒫⁡(sh​y​p,ah​y​p,s′)=𝒫⁡(s,a,s′)\mathcal{P}(s_{hyp},a_{hyp},s^{\prime})=\mathcal{P}(s,a,s^{\    (8)
+ prime})
+
+Given our assumptions, both sides of 8 are equal to one if (s,a,s′)(s,a,s^{\prime}) is a valid
+environment transition, otherwise both sides are equal to zero. Finally, one can see from the
+defintion 2.5, that the following is true by construction.
+
+ ℛ¯​(sh​y​p,ah​y​p,s′)=ℛ⁡(s,a,s′)\displaystyle\bar{\mathcal{R}}(s_{hyp},a_{hyp},s^{\prime})=\   (9)
+ mathcal{R}(s,a,s^{\prime})
+
+As a result, equivalent effect abstraction obeys both the transition and reward function
+requirements of an MDP homomorphism. ∎
+
+A.3 Hyperparameter Search
+
+Below we show the hyperparameters swept through for homomorphic MDP, DQN and Equivalent Effect
+Abstraction agents, broken down by environment. The PRAE architectures were generally kept the same
+as the hyperparameters provided in (van der Pol et al., 2020a, ), with the exception of the
+learning rate which we evaluate at 0.0001,0.0010.0001,0.001 and 0.10.1
+
+A.3.1 Sutton and Barto Tabular Gridworld
+
+We use the hyperparameters specified in (Sutton and Barto,, 2018, p. 165): namely, Learning Rate=
+0.1=0.1, γ=0.95\gamma=0.95 and ϵ=0.1\epsilon=0.1
+
+A.3.2 Cartpole
+
+
+Table 3: Hyperparameters swept through for the Cartpole environment. Learning rate decay refers to
+decaying the learning rate by a factor of ten at after a specified number of episodes have elapsed.
+
+     Hyperparameter      Values
+     Learning Rate       0.00001,0.0001,0.001,0.010.00001,0.0001,0.001,0.01
+ϵ\epsilon decay schedule No decay, exponential τ=−1200\tau=\frac{-1}{200}
+        γ\gamma          0.8,0.990.8,0.99
+       Activation        ReLU, tanh
+  Learning Rate decay    No decay, 5, 10, 15, 20
+
+Homomorphic MDP best hyperparameters: Learning Rate = 0.0010.001, ϵ\epsilon decay schedule = No
+decay, γ=0.8\gamma=0.8, activation = tanh, Learning Rate decay = No decay
+
+Equivalent Effect Abstraction best hyperparameters: Learning Rate = 0.0010.001, ϵ\epsilon decay
+schedule = No decay, γ=0.8\gamma=0.8, activation = tanh, Learning Rate decay = 10
+
+DQN best hyperparameters: Learning Rate = 0.0010.001, ϵ\epsilon decay schedule = No decay, γ=0.8\
+gamma=0.8, activation = tanh, Learning Rate decay = 15
+
+A.3.3 Stochastic Predator Prey
+
+
+Table 4: Hyperparameters swept through for the Predator Prey environment.
+
+Hyperparameter        Values
+Learning Rate  0.0001, 0.001, 0.01
+   γ\gamma     0.8, 0.99
+
+Homomorphic MDP best hyperparameters: Learning Rate = 0.0010.001, γ=0.99\gamma=0.99
+
+Equivalent Effect Abstraction best hyperparameters: Learning Rate = 0.010.01, γ=0.8\gamma=0.8
+
+DQN best hyperparameters: Learning Rate = 0.0010.001, γ=0.99\gamma=0.99
+
+
+A.3.4 Minatar
+
+All hyperparameters were kept at the tuned DQN values provided in (Young and Tian,, 2019) except
+for the optimizer for DQN and EEA, which we experimented with using Adam and RMSprop. For the
+homomorphic DQN, the symmetry groups breakdown as follows:
+
+
+
+Table 5: Symmetry groups used for the homomorphic DQN (van der Pol et al., 2020b, ) on MinAtar.
+
+     Game      Symmetry Group
+Asterix        P4
+Breakout       R2
+Freeway        R2
+Seaquest       P4
+Space Invaders R2
+
+
+
+The groups for the homomorphic DQN were chosen by looking at gameplay footage and estimating what
+symmetry groups would be most useful.
+
+For the model learning (in both EEA and Dyna), we found a learning rate of 0.0001 with an Adam
+optimizer was optimal. For Dyna, we tried 1 and 3 step rollouts as well as different replay ratios
+and found a replay ratio of 1 and rollout length of 1 to have the highest mean overall scores.
+
+The returns provided by training runs for MinAtar be noisy—to make the performance of the
+algorithms at different numbers of frames clear we pause each training run and perform 30
+evaluations to get the performances we quote in the tables and figures in the main text.
+
+A.4 Model Architectures
+
+A.4.1 Cartpole
+
+
+Listing 1: Homomorphic MDP Network (van der Pol et al., 2020b, )
+⬇
+BasisLinear*(repr_in=4, channels_in=1, repr_out=2, channels_out=64)
+ReLU() / tanh()
+BasisLinear(repr_in=2, channels_in=64, repr_out=2, channels_out=64)
+ReLU() / tanh()
+BasisLinear(repr_in=2, channels_in=64, repr_out=2, channels_out=1)
+
+*BasisLinear refers to the symmeterised layers used in (van der Pol et al., 2020b, ) to create
+homomorphic networks. This network is identical to the Cartpole network presented in that paper,
+but with only one output head that outputs state-action values.
+
+
+Listing 2: Value Network architecture for DQN and Equivalent Effect Abstraction
+⬇
+Linear(input_size=4, output_size=1024)
+tanh()
+Linear(input_size=1024, output_size=1024)
+tanh()
+Linear(input_size=8, output_size=1024)
+tanh()
+Linear(input_size=1024, output_size=2)
+
+
+Listing 3: Transition Model Architecture for Equivalent Effect Abstraction
+⬇
+Linear(input_size=2, output_size=2)
+
+
+Listing 4: PRAE Architectures (van der Pol et al., 2020a, )
+⬇
+# state encoder
+Linear(input_size=4 ,output_size=64)
+ReLU()
+Linear(input_size=64, output_size=32)
+ReLU()
+Linear(input_size=32, output_size=50)
+#action encoder
+Linear(input_size=54 ,output_size=100)
+ReLU()
+Linear(input_size=100, output_size=2)
+# reward prediction network
+Linear(input_size=50 ,output_size=64)
+ReLU()
+Linear(input_size=64, output_size=1)
+
+A.4.2 Predator Prey
+
+
+Listing 5: Homomorphic MDP Network (van der Pol et al., 2020b, )
+⬇
+BasisConv2d(repr_in=1, channels_in=1, repr_out=4, channels_out=4,
+filter_size=(7,7), stride=2, padding=0)
+ReLU()
+BasisConv2d(repr_in=4, channels_in=4, repr_out=4, channels_out=8,
+filter_size=(5,5), stride=1, padding=0)
+ReLU()
+GlobalMaxPool()
+BasisLinear(repr_in=4, channels_in=8, repr_out=4, channels_out=128)
+ReLU()
+BasisLinear(repr_in=4, channels_in=8, repr_out=4, channels_out=128)
+ReLU()
+BasisLinear(repr_in=4, channels_in=128, repr_out=5, channels_out=1)
+
+This is again the same network used in van der Pol et al., 2020b (), albeit with a different output
+head.
+
+
+Listing 6: Value Network Architecture for DQN and Equivalent Effect Abstraction
+⬇
+Linear(input_size=441, output_size=1024)
+ReLU()
+Linear(input_size=1024, output_size=8)
+ReLU()
+Linear(input_size=8, output_size=1024)
+ReLU()
+Linear(input_size=1024, output_size=5)
+
+
+Listing 7: Transition Model Architecture for Equivalent Effect Abstraction
+⬇
+Linear(input_size=882, output_size=512)
+ReLU()
+Linear(input_size=512, output_size=8)
+ReLU()
+Linear(input_size=8, output_size=512)
+ReLU()
+Linear(input_size=512, output_size=441)
+
+
+Listing 8: PRAE Architectures (van der Pol et al., 2020a, )
+⬇
+# state encoder
+Linear(input_size=441, output_size=64)
+ReLU()
+Linear(input_size=64, output_size=32)
+ReLU()
+Linear(input_size=32, output_size=50)
+#action encoder
+Linear(input_size=54, output_size=100)
+ReLU()
+Linear(input_size=100, output_size=2)
+# reward prediction network
+Linear(input_size=50, output_size=64)
+ReLU()
+Linear(input_size=64, output_size=1)
+
+A.4.3 MinAtar
+
+
+Listing 9: Homomorphic MDP Network (van der Pol et al., 2020b, )
+⬇
+BasisConv2d(repr_in=1, channels_in=4, repr_out=2, channels_out=16,
+filter_size=(3,3), stride=1, padding=0)
+ReLU()
+Linear(input_size=1408, output_size=256)
+ReLU()
+Linear(input_size=256, output_size=6)
+
+
+Listing 10: Value Network Architecture for DQN and Equivalent Effect Abstraction
+⬇
+Conv2d(channels_in=4, channels_out=16, filter_size=(3,3), stride=1, padding=0)
+ReLU()
+Linear(input_size=1024, output_size=128)
+ReLU()
+Linear(input_size=128, output_size=6)
+
+
+Listing 11: MinAtar Environment Model U-net
+⬇
+Linear(input_size=10 * 10 * num_channels + num_actions, output_size=800)
+ReLU()
+Linear(input_size=800, output_size=10 * 10 * num_channels)
+ReLU()
+Linear(input_size=10 * 10 * num_channels, output_size=10 * 10 * num_channels)
+
+Where there is a skip connection from the input to output layer.
+
+
+Listing 12: MinAtar Reward Model
+⬇
+Linear(10 * 10 * self.num_channels + num_actions, 500)
+Linear(input=500, output=10 * 10 * self.num_channels)
+Linear(input=10 * 10 * self.num_channels, output=2)
+
+Appendix B Full MinAtar Results
+
+Refer to caption
+
+Refer to caption
+
+Refer to caption
+
+Refer to caption
+
+Refer to caption
+
+Refer to caption
+
+
+Figure 5: Full results for all different configurations of equivalent effect abstraction and the
+other baselines. Equivalent effect abstraction
+with the Adam optimizer generally performs best in the low sample limit.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

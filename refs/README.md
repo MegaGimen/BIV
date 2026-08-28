@@ -85,6 +85,11 @@ WM vs agent 三条都不满足。
 - **Cosmos / PhyWorld / Phys4D**（[2501.03575](https://arxiv.org/abs/2501.03575), [2605.19242](https://arxiv.org/abs/2605.19242), [2603.03485](https://arxiv.org/abs/2603.03485)）— 外观预训练会幻觉物理，再用仿真监督把规律压进去。
 - **PSG-JEPA**（[2608.06799](https://arxiv.org/abs/2608.06799)）— 只做前向预测不够，要用物理状态把 latent 钉住。
 
+## G. 从观测发现律，再编进可提前触发的表征
+
+- **发现律：** AI Feynman / SINDy / Othello-GPT / grokking / 因果表征
+- **提前躲：** Dyna 把想象编进策略；后继表征把未来占用编进特征；Dreamer/I2A/MuZero；婴儿 VoE
+
 ## 检索词
 
 按问题搜，不要只搜 `world model agent merge`。

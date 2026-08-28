@@ -1,0 +1,1658 @@
+source: https://arxiv.org/html/1606.05312
+arxiv: https://arxiv.org/abs/1606.05312
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Background and problem formulation
+ 4. 3 Successor features
+ 5. 4 Transfer via successor features
+     1. 4.1 Generalized policy improvement
+     2. 4.2 Generalized policy improvement with successor features
+ 6. 5 Experiments
+ 7. 6 Related work
+ 8. 7 Conclusion
+ 9. References
+10. A Proofs of theoretical results
+11. B Details of the experiments
+     1. B.1 Four-room environment
+         1. B.1.1 Environment
+         2. B.1.2 Algorithms
+         3. B.1.3 Experimental setup
+     2. B.2 Reacher environment
+         1. B.2.1 Environment
+         2. B.2.2 Algorithms
+         3. B.2.3 Experimental setup
+12. C Additional empirical analysis
+     1. C.1 Understanding the types of transfer promoted by SFs
+     2. C.2 Analyzing the robustness of SFs
+13. References
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:1606.05312v2 [cs.AI] 12 Apr 2018
+
+Successor Features for
+Transfer in Reinforcement Learning
+
+André Barreto    Will Dabney    Rémi Munos    Jonathan J. Hunt    Tom Schaul    Hado van Hasselt   
+David Silver Affiliation: {andrebarreto,wdabney,munos,jjhunt,schaul,hado,davidsilver}@google.com 
+Affiliation: DeepMind
+
+Abstract
+
+In this supplement we give details of the theory and experiments that had to be left out of the
+main paper due to the space limit. For the convenience of the reader the statements of the
+theoretical results are reproduced before the respective proofs. We also provide a thorough
+description of the protocol used to carry out our experiments, present details of the algorithms,
+including their pseudo-code, and report additional empirical analysis that could not be included in
+the paper. The numbering of sections, equations, and figures resume that used in the main paper, so
+we refer to these elements as if paper and supplement were a single document. We also cite
+references listed in the main paper.
+
+   
+
+
+
+1 Introduction
+
+Reinforcement learning (RL) provides a framework for the development of situated agents that learn
+how to behave while interacting with the environment [21]. The basic RL loop is defined in an
+abstract way so as to capture only the essential aspects of this interaction: an agent receives
+observations and selects actions to maximize a reward signal. This setup is generic enough to
+describe tasks of different levels of complexity that may unroll at distinct time scales. For
+example, in the task of driving a car, an action can be to turn the wheel, make a right turn, or
+drive to a given location.
+
+Clearly, from the point of view of the designer, it is desirable to describe a task at the highest
+level of abstraction possible. However, by doing so one may overlook behavioral patterns and
+inadvertently make the task more difficult than it really is. The task of driving to a location
+clearly encompasses the subtask of making a right turn, which in turn encompasses the action of
+turning the wheel. In learning how to drive an agent should be able to identify and exploit such
+interdependencies. More generally, the agent should be able to break a task into smaller subtasks
+and use knowledge accumulated in any subset of those to speed up learning in related tasks. This
+process of leveraging knowledge acquired in one task to improve performance on other tasks is
+called transfer [25, 11].
+
+In this paper we look at one specific type of transfer, namely, when subtasks correspond to
+different reward functions defined in the same environment. This setup is flexible enough to allow
+transfer to happen at different levels. In particular, by appropriately defining the rewards one
+can induce different task decompositions. For instance, the type of hierarchical decomposition
+involved in the driving example above can be induced by changing the frequency at which rewards are
+delivered: a positive reinforcement can be given after each maneuver that is well executed or only
+at the final destination. Obviously, one can also decompose a task into subtasks that are
+independent of each other or whose dependency is strictly temporal (that is, when tasks must be
+executed in a certain order but no single task is clearly “contained” within another).
+
+The types of task decomposition discussed above potentially allow the agent to tackle more complex
+problems than would be possible were the tasks modeled as a single monolithic challenge. However,
+in order to apply this divide-and-conquer strategy to its full extent the agent should have an
+explicit mechanism to promote transfer between tasks. Ideally, we want a transfer approach to have
+two important properties. First, the flow of information between tasks should not be dictated by a
+rigid diagram that reflects the relationship between the tasks themselves, such as hierarchical or
+temporal dependencies. On the contrary, information should be exchanged across tasks whenever
+useful. Second, rather than being posed as a separate problem, transfer should be integrated into
+the RL framework as much as possible, preferably in a way that is almost transparent to the agent.
+
+In this paper we propose an approach for transfer that has the two properties above. Our method
+builds on two conceptual pillars that complement each other. The first is a generalization of Dayan
+’s [7] successor representation. As the name suggests, in this representation scheme each state is
+described by a prediction about the future occurrence of all states under a fixed policy. We
+present a generalization of Dayan’s idea which extends the original scheme to continuous spaces and
+also facilitates the use of approximation. We call the resulting scheme successor features. As will
+be shown, successor features lead to a representation of the value function that naturally
+decouples the dynamics of the environment from the rewards, which makes them particularly suitable
+for transfer.
+
+The second pillar of our framework is a generalization of Bellman’s [3] classic policy improvement
+theorem that extends the original result from one to multiple decision policies. This novel result
+shows how knowledge about a set of tasks can be transferred to a new task in a way that is
+completely integrated within RL. It also provides performance guarantees on the new task before any
+learning has taken place, which opens up the possibility of constructing a library of “skills” that
+can be reused to solve previously unseen tasks. In addition, we present a theorem that formalizes
+the notion that an agent should be able to perform well on a task if it has seen a similar task
+before—something clearly desirable in the context of transfer. Combined, the two results above not
+only set our approach in firm ground but also outline the mechanics of how to actually implement
+transfer. We build on this knowledge to propose a concrete method and evaluate it in two
+environments, one encompassing a sequence of navigation tasks and the other involving the control
+of a simulated two-joint robotic arm.
+
+2 Background and problem formulation
+
+As usual, we assume that the interaction between agent and environment can be modeled as a Markov
+decision process (MDP, Puterman, [19]). An MDP is defined as a tuple M≡(𝒮,𝒜,p,R,γ)M\equiv(\mathcal
+{S},\mathcal{A},p,R,\gamma). The sets 𝒮\mathcal{S} and 𝒜\mathcal{A} are the state and action
+spaces, respectively; here we assume that 𝒮\mathcal{S} and 𝒜\mathcal{A} are finite whenever such an
+assumption facilitates the presentation, but most of the ideas readily extend to continuous spaces.
+For each s∈𝒮s\in\mathcal{S} and a∈𝒜a\in\mathcal{A} the function p(⋅|s,a)p(\cdot|s,a) gives the
+next-state distribution upon taking action aa in state ss. We will often refer to p(⋅|s,a)p(\cdot|
+s,a) as the dynamics of the MDP. The reward received at transition s→𝑎s′s\xrightarrow{a}s^{\prime}
+is given by the random variable R⁡(s,a,s′)R(s,a,s^{\prime}); usually one is interested in the
+expected value of this variable, which we will denote by r⁡(s,a,s′)r(s,a,s^{\prime}) or by r(s,a)=
+ES′∼p(⋅|s,a)[r(s,a,S′)]r(s,a)=\mathrm{E}_{S^{\prime}\sim p(\cdot|s,a)}[r(s,a,S^{\prime})]. The
+discount factor γ∈[0,1)\gamma\in[0,1) gives smaller weights to future rewards.
+
+The objective of the agent in RL is to find a policy π\pi—a mapping from states to actions—that
+maximizes the expected discounted sum of rewards, also called the return Gt=∑i=0∞γi​Rt+i+1,G_{t}=\
+sum_{i=0}^{\infty}\gamma^{i}R_{t+i+1}, where Rt=R⁡(St,At,St+1)R_{t}=R(S_{t},A_{t},S_{t+1}). One way
+to address this problem is to use methods derived from dynamic programming (DP), which heavily rely
+on the concept of a value function [19]. The action-value function of a policy π\pi is defined as
+
+ Qπ(s,a)≡Eπ[Gt|St=s,At=a],Q^{\pi}(s,a)\equiv\mathrm{E}^{\pi}\left[G_{t}\,|\,S_{t}=s,A_{t}=a\    (1)
+ right],
+
+where Eπ​[⋅]\mathrm{E}^{\pi}[\cdot] denotes expected value when following policy π\pi. Once the
+action-value function of a particular policy π\pi is known, we can derive a new policy π′\pi^{\
+prime} which is greedy with respect to Qπ​(s,a)Q^{\pi}(s,a), that is, π′​(s)∈argmaxa​Qπ​(s,a)\pi^{\
+prime}(s)\in\mathrm{argmax}_{a}Q^{\pi}(s,a). Policy π′\pi^{\prime} is guaranteed to be at least as
+good as (if not better than) policy π\pi. The computation of Qπ​(s,a)Q^{\pi}(s,a) and π′\pi^{\
+prime}, called policy evaluation and policy improvement, define the basic mechanics of RL
+algorithms based on DP; under certain conditions their successive application leads to an optimal
+policy π∗\pi^{*} that maximizes the expected return from every s∈𝒮s\in\mathcal{S} [21].
+
+In this paper we are interested in the problem of transfer, which we define as follows. Let 𝒯,𝒯′\
+mathcal{T},\mathcal{T}^{\prime} be two sets of tasks such that 𝒯′⊂𝒯\mathcal{T}^{\prime}\subset\
+mathcal{T}, and let tt be any task. Then there is transfer if, after training on 𝒯\mathcal{T}, the
+agent always performs as well or better on task tt than if only trained on 𝒯′\mathcal{T}^{\prime}.
+Note that 𝒯′\mathcal{T}^{\prime} can be the empty set. In this paper a task will be defined as a
+specific instantiation of the reward function R⁡(s,a,s′)R(s,a,s^{\prime}) for a given MDP. In
+Section 4 we will revisit this definition and make it more formal.
+
+3 Successor features
+
+In this section we present the concept that will serve as a cornerstone for the rest of the paper.
+We start by presenting a simple reward model and then show how it naturally leads to a
+generalization of Dayan’s [7] successor representation (SR).
+
+Suppose that the expected one-step reward associated with transition (s,a,s′)(s,a,s^{\prime}) can
+be computed as
+
+ r⁡(s,a,s′)=ϕ​(s,a,s′)⊤​𝐰,r(s,a,s^{\prime})=\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\top}\  (2)
+ boldsymbol{\mathrm{w}},
+
+where ϕ⁡(s,a,s′)∈ℝd\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})\in\mathbb{R}^{d} are features of
+(s,a,s′)(s,a,s^{\prime}) and 𝐰∈ℝd\boldsymbol{\mathrm{w}}\in\mathbb{R}^{d} are weights. Expression (
+2) is not restrictive because we are not making any assumptions about ϕ⁡(s,a,s′)\boldsymbol{\mathrm
+{\phi}}(s,a,s^{\prime}): if we have ϕi​(s,a,s′)=r⁡(s,a,s′)\phi_{i}(s,a,s^{\prime})=r(s,a,s^{\
+prime}) for some ii, for example, we can clearly recover any reward function exactly. To simplify
+the notation, let ϕt=ϕ⁡(st,at,st+1)\boldsymbol{\mathrm{\phi}}_{t}=\boldsymbol{\mathrm{\phi}}(s_
+{t},a_{t},s_{t+1}). Then, by simply rewriting the definition of the action-value function in (1) we
+have
+
+ Qπ​(s,a)\     =Eπ[rt+1+γrt+2+…|St=s,At=a]\displaystyle=\mathrm{E}^{\pi}\left[r_{t+1}+\gamma
+ displaystyle  r_{t+2}+...\,|\,S_{t}=s,A_{t}=a\right]
+ Q^{\pi}(s,a)
+               =Eπ[ϕt+1⊤𝐰+γϕt+2⊤𝐰+…|St=s,At=a]\displaystyle=\mathrm{E}^{\pi}\left[\boldsymbol
+               {\mathrm{\phi}}_{t+1}^{\top}\boldsymbol{\mathrm{w}}+\gamma\boldsymbol{\mathrm{\
+               phi}}_{t+2}^{\top}\boldsymbol{\mathrm{w}}+...\,|\,S_{t}=s,A_{t}=a\right]
+               =Eπ[∑i=t∞γi−tϕi+1|St=s,At=a]⊤𝐰=𝝍π(s,a)⊤𝐰.\displaystyle=\mathrm{E}^{\pi}\left[{\
+               textstyle\sum_{i=t}^{\infty}}\gamma^{i-t}\boldsymbol{\mathrm{\phi}}_{i+1}\,|     (3)
+               \,S_{t}=s,A_{t}=a\right]^{\top}\boldsymbol{\mathrm{w}}=\boldsymbol{\mathrm{\
+               psi}}^{\pi}(s,a)^{\top}\boldsymbol{\mathrm{w}}.
+
+The decomposition (3) has appeared before in the literature under different names and
+interpretations, as discussed in Section 6. Since here we propose to look at (3) as an extension of
+Dayan’s [7] SR, we call 𝝍π​(s,a)\boldsymbol{\mathrm{\psi}}^{\pi}(s,a) the successor features (SFs)
+of (s,a)(s,a) under policy π\pi.
+
+The i^th component of 𝝍π​(s,a)\boldsymbol{\mathrm{\psi}}^{\pi}(s,a) gives the expected discounted
+sum of ϕi\phi_{i} when following policy π\pi starting from (s,a)(s,a). In the particular case where
+𝒮\mathcal{S} and 𝒜\mathcal{A} are finite and ϕ\boldsymbol{\mathrm{\phi}} is a tabular
+representation of 𝒮×𝒜×𝒮\mathcal{S}\times\mathcal{A}\times\mathcal{S}—that is, ϕ⁡(s,a,s′)\boldsymbol
+{\mathrm{\phi}}(s,a,s^{\prime}) is a one-hot vector in ℝ|𝒮|2​|𝒜|\mathbb{R}^{|\mathcal{S}|^{2}|\
+mathcal{A}|}—𝝍π​(s,a)\boldsymbol{\mathrm{\psi}}^{\pi}(s,a) is the discounted sum of occurrences,
+under π\pi, of each possible transition. This is essentially the concept of SR extended from the
+space 𝒮\mathcal{S} to the set 𝒮×𝒜×𝒮\mathcal{S}\times\mathcal{A}\times\mathcal{S} [7].
+
+One of the contributions of this paper is precisely to generalize SR to be used with function
+approximation, but the exercise of deriving the concept as above provides insights already in the
+tabular case. To see this, note that in the tabular case the entries of 𝐰∈ℝ|𝒮|2​|𝒜|\boldsymbol{\
+mathrm{w}}\in\mathbb{R}^{|\mathcal{S}|^{2}|\mathcal{A}|} are the function r⁡(s,a,s′)r(s,a,s^{\
+prime}) and suppose that r⁡(s,a,s′)≠0r(s,a,s^{\prime})\neq 0 in only a small subset 𝒲⊂𝒮×𝒜×𝒮\mathcal
+{W}\subset\mathcal{S}\times\mathcal{A}\times\mathcal{S}. From (2) and (3), it is clear that the
+cardinality of 𝒲\mathcal{W}, and not of 𝒮×𝒜×𝒮\mathcal{S}\times\mathcal{A}\times\mathcal{S}, is what
+effectively defines the dimension of the representation 𝝍π\boldsymbol{\mathrm{\psi}}^{\pi}, since
+there is no point in having d>|𝒲|d>|\mathcal{W}|. Although this fact is hinted at by Dayan [7], it
+becomes more apparent when we look at SR as a particular case of SFs.
+
+SFs extend SR in two other ways. First, the concept readily applies to continuous state and action
+spaces without any modification. Second, by explicitly casting (2) and (3) as inner products
+involving feature vectors, SFs make it evident how to incorporate function approximation: as will
+be shown, these vectors can be learned from data.
+
+The representation in (3) requires two components to be learned, 𝐰\boldsymbol{\mathrm{w}} and 𝝍π\
+boldsymbol{\mathrm{\psi}}^{\pi}. Since the latter is the expected discounted sum of ϕ\boldsymbol{\
+mathrm{\phi}} under π\pi, we must either be given ϕ\boldsymbol{\mathrm{\phi}} or learn it as well.
+Note that approximating r⁡(s,a,s′)≈ϕ​(s,a,s′)⊤​𝐰~r(s,a,s^{\prime})\approx\boldsymbol{\mathrm{\phi}}
+(s,a,s^{\prime})^{\top}\tilde{\boldsymbol{\mathrm{w}}} is a supervised learning problem, so we can
+use well-understood techniques from the field to learn 𝐰~\tilde{\boldsymbol{\mathrm{w}}} (and
+potentially ϕ~\tilde{\boldsymbol{\mathrm{\phi}}}, too) [9]. As for 𝝍π\boldsymbol{\mathrm{\psi}}^{\
+pi}, we note that
+
+ 𝝍π​(s,a)\displaystyle\    =ϕt+1+γEπ[𝝍π(St+1,π(St+1))|St=s,At=a],\displaystyle=\boldsymbol{\
+ boldsymbol{\mathrm{\psi}} mathrm{\phi}}_{t+1}+\gamma E^{\pi}[\boldsymbol{\mathrm{\psi}}^{\pi}  (4)
+ ^{\pi}(s,a)               (S_{t+1},\pi(S_{t+1}))\,|\,S_{t}=s,A_{t}=a],
+
+that is, SFs satisfy a Bellman equation in which ϕi\phi_{i} play the role of rewards—something also
+noted by Dayan [7] regarding SR. Therefore, in principle any RL method can be used to compute 𝝍π\
+boldsymbol{\mathrm{\psi}}^{\pi} [24].
+
+The SFs 𝝍π\boldsymbol{\mathrm{\psi}}^{\pi} summarize the dynamics induced by π\pi in a given
+environment. As shown in (3), this allows for a modular representation of QπQ^{\pi} in which the
+MDP’s dynamics are decoupled from its rewards, which are captured by the weights 𝐰\boldsymbol{\
+mathrm{w}}. One potential benefit of having such a decoupled representation is that only the
+relevant module must be relearned when either the dynamics or the reward changes, which may serve
+as an argument in favor of adopting SFs as a general approximation scheme for RL. However, in this
+paper we focus on a scenario where the decoupled value-function approximation provided by SFs is
+exploited to its full extent, as we discuss next.
+
+4 Transfer via successor features
+
+We now return to the discussion about transfer in RL. As described, we are interested in the
+scenario where all components of an MDP are fixed, except for the reward function. One way to
+formalize this model is through (2): if we suppose that ϕ∈ℝd\boldsymbol{\mathrm{\phi}}\in\mathbb{R}
+^{d} is fixed, any 𝐰∈ℝd\boldsymbol{\mathrm{w}}\in\mathbb{R}^{d} gives rise to a new MDP. Based on
+this observation, we define
+
+ ℳϕ​(𝒮,𝒜,p,γ)≡{M⁡(𝒮,𝒜,p,r,γ)|r⁡(s,a,s′)=ϕ​(s,a,s′)⊤​𝐰},\mathcal{M}^{\phi}(\mathcal{S},\mathcal
+ {A},p,\gamma)\hskip-2.84526pt\equiv\{M(\mathcal{S},\mathcal{A},p,r,\gamma)\;|\;r(s,a,s^{\      (5)
+ prime})\hskip-2.84526pt=\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\top}\boldsymbol{\mathrm
+ {w}}\},
+
+that is, ℳϕ\mathcal{M}^{\phi} is the set of MDPs induced by ϕ\boldsymbol{\mathrm{\phi}} through all
+possible instantiations of 𝐰\boldsymbol{\mathrm{w}}. Since what differentiates the MDPs in ℳϕ\
+mathcal{M}^{\phi} is essentially the agent’s goal, we will refer to Mi∈ℳϕM_{i}\in\mathcal{M}^{\phi}
+as a task. The assumption is that we are interested in solving (a subset of) the tasks in the
+environment ℳϕ\mathcal{M}^{\phi}.
+
+Definition (5) is a natural way of modeling some scenarios of interest. Think, for example, how the
+desirability of water or food changes depending on whether an animal is thirsty or hungry. One way
+to model this type of preference shifting is to suppose that the vector 𝐰\boldsymbol{\mathrm{w}}
+appearing in (2) reflects the taste of the agent at any given point in time [17]. Further in the
+paper we will present experiments that reflect this scenario. For another illustrative example,
+imagine that the agent’s goal is to produce and sell a combination of goods whose production line
+is relatively stable but whose prices vary considerably over time. In this case updating the price
+of the products corresponds to picking a new 𝐰\boldsymbol{\mathrm{w}}. A slightly different way of
+motivating (5) is to suppose that the environment itself is changing, that is, the element 𝐰i\
+boldsymbol{\mathrm{w}}_{i} indicates not only desirability, but also availability, of feature ϕi\
+phi_{i}.
+
+In the examples above it is desirable for the agent to build on previous experience to improve its
+performance on a new setup. More concretely, if the agent knows good policies for the set of tasks
+ℳ≡{M1,M2,…,Mn}\mathcal{M}\equiv\{M_{1},M_{2},...,M_{n}\}, with Mi∈ℳϕM_{i}\in\mathcal{M}^{\phi}, it
+should be able to leverage this knowledge to improve its behavior on a new task Mn+1M_{n+1}—that
+is, it should perform better than it would had it been exposed to only a subset of the original
+tasks, ℳ′⊂ℳ\mathcal{M}^{\prime}\subset\mathcal{M}. We can assess the performance of an agent on
+task Mn+1M_{n+1} based on the value function of the policy followed after 𝐰n+1\boldsymbol{\mathrm
+{w}}_{n+1} has become available but before any policy improvement has taken place in Mn+1M_{n+1}.^1
+^1 1 Of course 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1} can, and will be, learned, as discussed in
+Section 4.2 and illustrated in Section 5. Here we assume that 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1} is
+given to make our performance criterion clear. More precisely, suppose that an agent has been
+exposed to each one of the tasks Mi∈ℳ′M_{i}\in\mathcal{M}^{\prime}. Based on this experience, and
+on the new 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1}, the agent computes a policy π′\pi^{\prime} that will
+define its initial behavior in Mn+1M_{n+1}. Now, if we repeat the experience replacing ℳ′\mathcal
+{M}^{\prime} with ℳ\mathcal{M}, the resulting policy π\pi should be such that Qπ​(s,a)≥Qπ′​(s,a)Q^
+{\pi}(s,a)\geq Q^{\pi^{\prime}}(s,a) for all (s,a)∈𝒮×𝒜(s,a)\in\mathcal{S}\times\mathcal{A}.
+
+Now that our setup is clear we can start to describe our solution for the transfer problem
+discussed above. We do so in two stages. First, we present a generalization of DP’s notion of
+policy improvement whose interest may go beyond the current work. We then show how SFs can be used
+to implement this generalized form of policy improvement in an efficient and elegant way.
+
+4.1 Generalized policy improvement
+
+One of the fundamental results in RL is Bellman’s [3] policy improvement theorem. In essence, the
+theorem states that acting greedily with respect to a policy’s value function gives rise to another
+policy whose performance is no worse than the former’s. This is the driving force behind DP, and
+most RL algorithms that compute a value function are exploiting Bellman’s result in one way or
+another.
+
+In this section we extend the policy improvement theorem to the scenario where the new policy is to
+be computed based on the value functions of a set of policies. We show that this extension can be
+done in a natural way, by acting greedily with respect to the maximum over the value functions
+available. Our result is summarized in the theorem below.
+
+Theorem 1.
+
+(Generalized Policy Improvement) Let π1\pi_{1}, π2\pi_{2}, …, πn\pi_{n} be nn decision policies and
+let Q~π1\tilde{Q}^{\pi_{1}}, Q~π2\tilde{Q}^{\pi_{2}}, …, Q~πn\tilde{Q}^{\pi_{n}} be approximations
+of their respective action-value functions such that
+
+ |Qπi​(s,a)−Q~πi​(s,a)|≤ϵ​ for all ​s∈𝒮,a∈𝒜, and ​i∈{1,2,…,n}.|Q^{\pi_{i}}(s,a)-\tilde{Q}^{\
+ pi_{i}}(s,a)|\leq\epsilon\,\text{ for all }s\in\mathcal{S},a\in\mathcal{A},\text{ and }i\in\   (6)
+ {1,2,...,n\}.
+
+Define
+
+ π⁡(s)∈argmaxamaxi⁡Q~πi​(s,a).{\pi}(s)\in\mathop{\mathrm{argmax}}_{a}\max_{i}\tilde{Q}^{\pi_    (7)
+ {i}}(s,a).
+
+Then,
+
+ Qπ​(s,a)≥maxi⁡Qπi​(s,a)−21−γ​ϵQ^{\pi}(s,a)\geq\max_{i}Q^{\pi_{i}}(s,a)-\dfrac{2}{1-\gamma}\    (8)
+ epsilon
+
+for any s∈𝒮s\in\mathcal{S} and a∈𝒜a\in\mathcal{A}, where QπQ^{\pi} is the action-value function of
+π{\pi}.
+
+The proofs of our theoretical results are in the supplementary material. As one can see, our
+theorem covers the case where the policies’ value functions are not computed exactly, either
+because function approximation is used or because some exact algorithm has not be run to
+completion. This error is captured by ϵ\epsilon in (6), which re-appears as a penalty term in the
+lower bound (8). Such a penalty is inherent to the presence of approximation in RL, and in fact it
+is identical to the penalty incurred in the single-policy case (see e.g. Bertsekas and Tsitsiklis’s
+Proposition 6.1 [5]).
+
+In order to contextualize generalized policy improvement (GPI) within the broader scenario of DP,
+suppose for a moment that ϵ=0\epsilon=0. In this case Theorem 1 states that π\pi will perform no
+worse than all of the policies π1\pi_{1}, π2,…,πn\pi_{2},...,\pi_{n}. This is interesting because
+in general maxi⁡Qπi\max_{i}Q^{\pi_{i}}—the function used to induce π\pi—is not the value function
+of any particular policy. It is not difficult to see that π\pi will be strictly better than all
+previous policies if no single policy dominates all other policies, that is, if argmaxi​maxa​Q~πi​
+(s,a)∩argmaxi​maxa​Q~πi​(s′,a)=∅\mathrm{argmax}_{i}\max_{a}\tilde{Q}^{\pi_{i}}(s,a)\cap\mathrm
+{argmax}_{i}\max_{a}\tilde{Q}^{\pi_{i}}(s^{\prime},a)=\emptyset for some s,s′∈𝒮s,s^{\prime}\in\
+mathcal{S}. If one policy does dominate all others, GPI reduces to the original policy improvement
+theorem.
+
+If we consider the usual DP loop, in which policies of increasing performance are computed in
+sequence, our result is not of much use because the most recent policy will always dominate all
+others. Another way of putting it is to say that after Theorem 1 is applied once adding the
+resulting π\pi to the set {π1\{\pi_{1}, π2,…,πn}\pi_{2},...,\pi_{n}\} will reduce the next
+improvement step to standard policy improvement, and thus the policies π1\pi_{1}, π2,…,πn\pi_
+{2},...,\pi_{n} can be simply discarded. There are however two situations in which our result may
+be of interest. One is when we have many policies πi\pi_{i} being evaluated in parallel. In this
+case GPI provides a principled strategy for combining these policies. The other situation in which
+our result may be useful is when the underlying MDP changes, as we discuss next.
+
+4.2 Generalized policy improvement with successor features
+
+We start this section by extending our notation slightly to make it easier to refer to the
+quantities involved in transfer learning. Let MiM_{i} be a task in ℳϕ\mathcal{M}^{\phi} defined by
+𝐰i∈ℝd\boldsymbol{\mathrm{w}}_{i}\in\mathbb{R}^{d}. We will use πi∗\pi^{*}_{i} to refer to an
+optimal policy of MDP MiM_{i} and use Qπi∗iQ^{{}_{\pi_{i}^{*}}}_{i} to refer to its value function.
+The value function of πi∗\pi^{*}_{i} when executed in Mj∈ℳϕM_{j}\in\mathcal{M}^{\phi} will be
+denoted by Qπi∗jQ^{{}_{\pi_{i}^{*}}}_{j}.
+
+Suppose now that an agent has computed optimal policies for the tasks M1,M2,…,Mn∈ℳϕM_{1},M_
+{2},...,M_{n}\in\mathcal{M}^{\phi}. Suppose further that when presented with a new task Mn+1M_{n+1}
+the agent computes {Qn+1π1∗,Qn+1π2∗,…,Qn+1πn∗}\{Q^{\pi_{1}^{*}}_{n+1},Q^{\pi_{2}^{*}}_{n+1},...,Q^
+{\pi_{n}^{*}}_{n+1}\}, the evaluation of each πi∗\pi^{*}_{i} under the new reward function induced
+by 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1}. In this case, applying the GPI theorem to the newly-computed
+set of value functions will give rise to a policy that performs at least as well as a policy based
+on any subset of these, including the empty set. Thus, this strategy satisfies our definition of
+successful transfer.
+
+There is a caveat, though. Why would one waste time computing the value functions of π1∗,π2∗\pi_{1}
+^{*},\pi^{*}_{2}, …, πn∗\pi_{n}^{*}, whose performance in Mn+1M_{n+1} may be mediocre, if the same
+amount of resources can be allocated to compute a sequence of nn policies with increasing
+performance? This is where SFs come into play. Suppose that we have learned the functions Qπi∗iQ^
+{{}_{\pi_{i}^{*}}}_{i} using the representation scheme shown in (3). Now, if the reward changes to
+rn+1​(s,a,s′)=ϕ​(s,a,s′)⊤​𝐰n+1r_{n+1}(s,a,s^{\prime})=\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\
+top}\boldsymbol{\mathrm{w}}_{n+1}, as long as we have 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1} we can
+compute the new value function of πi∗\pi_{i}^{*} by simply making Qn+1πi∗(s,a)=𝝍πi∗(s,a)⊤𝐰n+1Q^{{}_
+{\pi_{i}^{*}}}_{n+1}(s,a)=\boldsymbol{\mathrm{\psi}}^{{}_{\pi_{i}^{*}}}(s,a)^{\top}\boldsymbol{\
+mathrm{w}}_{n+1}. This reduces the computation of all Qπi∗n+1{Q}^{{}_{\pi_{i}^{*}}}_{n+1} to the
+much simpler supervised problem of approximating 𝐰n+1\boldsymbol{\mathrm{w}}_{n+1}.
+
+Once the functions Qπi∗n+1{Q}^{{}_{\pi_{i}^{*}}}_{n+1} have been computed, we can apply GPI to
+derive a policy π\pi whose performance on Mn+1M_{n+1} is no worse than the performance of
+π1∗,π2∗,…,πn∗\pi_{1}^{*},\pi^{*}_{2},...,\pi^{*}_{n} on the same task. A question that arises in
+this case is whether we can provide stronger guarantees on the performance of π\pi by exploiting
+the structure shared by the tasks in ℳϕ\mathcal{M}^{\phi}. The following theorem answers this
+question in the affirmative.
+
+Theorem 2.
+
+Let Mi∈ℳϕM_{i}\in\mathcal{M}^{\phi} and let Qπj∗iQ^{{}_{\pi_{j}^{*}}}_{i} be the action-value
+function of an optimal policy of Mj∈ℳϕM_{j}\in\mathcal{M}^{\phi} when executed in MiM_{i}. Given
+approximations {Q~iπ1∗,Q~iπ2∗,…,Q~iπn∗}\{\tilde{Q}^{\pi_{1}^{*}}_{i},\tilde{Q}^{\pi_{2}^{*}}_
+{i},...,\tilde{Q}^{\pi_{n}^{*}}_{i}\} such that
+
+ |Qiπj∗(s,a)−Q~iπj∗(s,a)|≤ϵ\left|Q^{{}_{\pi_{j}^{*}}}_{i}(s,a)-\tilde{Q}^{{}_{\pi_{j}^{*}}}_    (9)
+ {i}(s,a)\right|\leq\epsilon
+
+for all s∈𝒮s\in\mathcal{S}, a∈𝒜a\in\mathcal{A}, and j∈{1,2,…,n}j\in\{1,2,...,n\}, let π(s)
+∈argmaxamaxjQ~iπj∗(s,a).\pi(s)\in\mathop{\mathrm{argmax}}_{a}\max_{j}\tilde{Q}^{{}_{\pi_{j}^{*}}}_
+{i}(s,a). Finally, let ϕmax=maxs,a⁡‖ϕ⁡(s,a)‖\boldsymbol{\mathrm{\phi}}_{\max}=\max_{s,a}||\
+boldsymbol{\mathrm{\phi}}(s,a)||, where ||⋅||||\cdot|| is the norm induced by the inner product
+adopted. Then,
+
+ Qiπi∗(s,a)−Qiπ(s,a)≤21−γ(ϕmaxminj||𝐰i−𝐰j||+ϵ).Q^{{}_{\pi_{i}^{*}}}_{i}(s,a)-Q^{\pi}_{i}(s,a)
+ \leq\dfrac{2}{1-\gamma}\left(\boldsymbol{\mathrm{\phi}}_{\max}\,\mathrm{min}_{j}||\           (10)
+ boldsymbol{\mathrm{w}}_{i}-\boldsymbol{\mathrm{w}}_{j}||+\epsilon\right).
+
+Note that we used MiM_{i} rather than Mn+1M_{n+1} in the theorem’s statement to remove any
+suggestion of order among the tasks. Theorem 2 is a specialization of Theorem 1 for the case where
+the set of value functions used to compute π\pi are associated with tasks in the form of (5). As
+such, it provides stronger guarantees: instead of comparing the performance of π\pi with that of
+the previously-computed policies πj\pi_{j}, Theorem 2 quantifies the loss incurred by following π\
+pi as opposed to one of MiM_{i}’s optimal policies.
+
+As shown in (10), the loss Qiπi∗(s,a)−Qiπ(s,a)Q^{{}_{\pi_{i}^{*}}}_{i}(s,a)-Q^{\pi}_{i}(s,a) is
+upper-bounded by two terms. The term 2​ϕmax​minj​‖𝐰i−𝐰j‖/(1−γ)2\boldsymbol{\mathrm{\phi}}_{\max}\
+mathrm{min}_{j}||\boldsymbol{\mathrm{w}}_{i}-\boldsymbol{\mathrm{w}}_{j}||/(1-\gamma) is of more
+interest here because it reflects the structure of ℳϕ\mathcal{M}^{\phi}. This term is a multiple of
+the distance between 𝐰i\boldsymbol{\mathrm{w}}_{i}, the vector describing the task we are currently
+interested in, and the closest 𝐰j\boldsymbol{\mathrm{w}}_{j} for which we have computed a policy.
+This formalizes the intuition that the agent should perform well in task 𝐰i\boldsymbol{\mathrm{w}}_
+{i} if it has solved a similar task before. More generally, the term in question relates the
+concept of distance in ℝd\mathbb{R}^{d} with difference in performance in ℳϕ\mathcal{M}^{\phi}.
+Note that this correspondence depends on the specific set of features ϕ\boldsymbol{\mathrm{\phi}}
+used, which raises the interesting question of how to define ϕ\boldsymbol{\mathrm{\phi}} such that
+tasks that are close in ℝd\mathbb{R}^{d} induce policies that are also similar in some sense.
+Regardless of how exactly ϕ\boldsymbol{\mathrm{\phi}} is defined, the bound (10) allows for
+powerful extrapolations. For example, by covering the relevant subspace of ℝd\mathbb{R}^{d} with
+balls of appropriate radii centered at 𝐰j\boldsymbol{\mathrm{w}}_{j} we can provide performance
+guarantees for any task 𝐰\boldsymbol{\mathrm{w}} [14]. This corresponds to building a library of
+options (or “skills”) that can be used to solve any task in a (possibly infinite) set [22]. In
+Section 5 we illustrate this concept with experiments.
+
+Although Theorem 2 is inexorably related to the characterization of ℳϕ\mathcal{M}^{\phi} in (5), it
+does not depend on the definition of SFs in any way. Here SFs are the mechanism used to efficiently
+apply the protocol suggested by Theorem 2. When SFs are used the value function approximations are
+given by Q~iπj∗(s,a)=𝝍~πj∗(s,a)⊤𝐰~i\tilde{Q}^{{}_{\pi_{j}^{*}}}_{i}(s,a)=\tilde{\boldsymbol{\mathrm
+{\psi}}}^{{}_{\pi_{j}^{*}}}(s,a)^{\top}\tilde{\boldsymbol{\mathrm{w}}}_{i}. The modules 𝝍~πj∗\tilde
+{\boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{j}^{*}}} are computed and stored when the agent is learning
+the tasks MjM_{j}; when faced with a new task MiM_{i} the agent computes an approximation of 𝐰i\
+boldsymbol{\mathrm{w}}_{i}, which is a supervised learning problem, and then uses the GPI policy π\
+pi defined in Theorem 2 to learn 𝝍~πi∗\tilde{\boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{i}^{*}}}. Note
+that we do not assume that either 𝝍πj∗{\boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{j}^{*}}} or 𝐰i\
+boldsymbol{\mathrm{w}}_{i} is computed exactly: the effect of errors in 𝝍~πj∗\tilde{\boldsymbol{\
+mathrm{\psi}}}^{{}_{\pi_{j}^{*}}} and 𝐰~i\tilde{\boldsymbol{\mathrm{w}}}_{i} are accounted for by
+the term ϵ\epsilon appearing in (9). As shown in (10), if ϵ\epsilon is small and the agent has seen
+enough tasks the performance of π\pi on MiM_{i} should already be good, which suggests it may also
+speed up the process of learning 𝝍~πi∗\tilde{\boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{i}^{*}}}.
+
+Interestingly, Theorem 2 also provides guidance for some practical algorithmic choices. Since in an
+actual implementation one wants to limit the number of SFs 𝝍~πj∗\tilde{\boldsymbol{\mathrm{\psi}}}^
+{{}_{\pi_{j}^{*}}} stored in memory, the corresponding vectors 𝐰~j\tilde{\boldsymbol{\mathrm{w}}}_
+{j} can be used to decide which ones to keep. For example, one can create a new 𝝍~πi∗\tilde{\
+boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{i}^{*}}} only when minj​‖𝐰~i−𝐰~j‖\mathrm{min}_{j}||\tilde{\
+boldsymbol{\mathrm{w}}}_{i}-\tilde{\boldsymbol{\mathrm{w}}}_{j}|| is above a given threshold;
+alternatively, once the maximum number of SFs has been reached, one can replace 𝝍~πk∗\tilde{\
+boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{k}^{*}}}, where k=argminj​‖𝐰~i−𝐰~j‖k=\mathrm{argmin}_{j}||\
+tilde{\boldsymbol{\mathrm{w}}}_{i}-\tilde{\boldsymbol{\mathrm{w}}}_{j}|| (here 𝐰i\boldsymbol{\
+mathrm{w}}_{i} is the current task).
+
+5 Experiments
+
+In this section we present our main experimental results. Additional details, along with further
+results and analysis, can be found in Appendix B of the supplementary material.
+
+The first environment we consider involves navigation tasks defined over a two-dimensional
+continuous space composed of four rooms (Figure 1). The agent starts in one of the rooms and must
+reach a goal region located in the farthest room. The environment has objects that can be picked up
+by the agent by passing over them. Each object belongs to one of three classes determining the
+associated reward. The objective of the agent is to pick up the “good” objects and navigate to the
+goal while avoiding “bad” objects. The rewards associated with object classes change at every
+20 00020\,000 transitions, giving rise to very different tasks (Figure 1). The goal is to maximize
+the sum of rewards accumulated over a sequence of 250250 tasks, with each task’s rewards sampled
+uniformly from [−1,1]3[-1,1]^{3}.
+
+
+Figure 1: Environment layout and some examples of optimal trajectories associated with specific
+tasks. The shapes of the objects represent their classes; ‘S’ is the start state and ‘G’ is the
+goal.
+
+We defined a straightforward instantiation of our approach in which both 𝐰~\tilde{\boldsymbol{\
+mathrm{w}}} and 𝝍~π\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi} are computed incrementally in order to
+minimize losses induced by (2) and (4). Every time the task changes the current 𝝍~πi\tilde{\
+boldsymbol{\mathrm{\psi}}}^{\pi_{i}} is stored and a new 𝝍~πi+1\tilde{\boldsymbol{\mathrm{\psi}}}^
+{\pi_{i+1}} is created. We call this method SFQL as a reference to the fact that SFs are learned
+through an algorithm analogous to QQ-learning (QL)—which is used as a baseline in our comparisons [
+27]. As a more challenging reference point we report results for a transfer method called
+probabilistic policy reuse [8]. We adopt a version of the algorithm that builds on QL and reuses
+all policies learned. The resulting method, PRQL, is thus directly comparable to SFQL. The details
+of QL, PRQL, and SFQL, including their pseudo-codes, are given in Appendix B.
+
+We compared two versions of SFQL. In the first one, called SFQL-ϕ\boldsymbol{\mathrm{\phi}}, we
+assume the agent has access to features ϕ\boldsymbol{\mathrm{\phi}} that perfectly predict the
+rewards, as in (2). The second version of our agent had to learn an approximation ϕ~∈ℝh\tilde{\
+boldsymbol{\mathrm{\phi}}}\in\mathbb{R}^{h} directly from data collected by QL in the first 2020
+tasks. Note that hh may not coincide with the true dimension of ϕ\boldsymbol{\mathrm{\phi}}, which
+in this case is 44; we refer to the different instances of our algorithm as SFQL-hh. The process of
+learning ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} followed the multi-task learning protocol proposed by
+Caruana [6] and Baxter [2], and described in detail in Appendix B.
+
+The results of our experiments can be seen in Figure 2. As shown, all versions of SFQL
+significantly outperform the other two methods, with an improvement on the average return of more
+than 100%100\% when compared to PRQL, which itself improves on QL by around 100%100\%.
+Interestingly, SFQL-hh seems to achieve good overall performance faster than SFQL-ϕ\phi, even
+though the latter uses features that allow for an exact representation of the rewards. One possible
+explanation is that, unlike their counterparts ϕi\phi_{i}, the features ϕ~i\tilde{\phi}_{i} are
+activated over most of the space 𝒮×𝒜×𝒮\mathcal{S}\times\mathcal{A}\times\mathcal{S}, which results
+in a dense pseudo-reward signal that facilitates learning.
+
+Refer to caption
+Figure 2: Average and cumulative return per task in the four-room domain. SFQL-hh receives no
+reward during the first 2020 tasks while learning ϕ~\tilde{\boldsymbol{\mathrm{\phi}}}. Error-bands
+show one standard error over 3030 runs.
+
+The second environment we consider is a set of control tasks defined in the MuJoCo physics engine [
+26]. Each task consists in moving a two-joint torque-controlled simulated robotic arm to a specific
+target location; thus, we refer to this environment as “the reacher domain.” We defined 1212 tasks,
+but only allowed the agents to train in 44 of them (Figure 3c). This means that the agent must be
+able to perform well on tasks that it has never experienced during training.
+
+In order to solve this problem, we adopted essentially the same algorithm as above, but we replaced
+QL with Mnih et al.’s DQN—both as a baseline and as the basic engine underlying the SF agent [15].
+The resulting method, which we call SFDQN, is an illustration of how our method can be naturally
+combined with complex nonlinear approximators such as neural networks. The features ϕi\phi_{i} used
+by SFDQN are the negation of the distances to the center of the 1212 target regions. As usual in
+experiments of this type, we give the agents a description of the current task: for DQN the target
+coordinates are given as inputs, while for SFDQN this is provided as an one-hot vector 𝐰t∈ℝ12\
+boldsymbol{\mathrm{w}}_{t}\in\mathbb{R}^{12} [12]. Unlike in the previous experiment, in the
+current setup each transition was used to train all four 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\
+pi_{i}} through losses derived from (4). Here πi\pi_{i} is the GPI policy on the i^th task: πi​(s)
+∈argmaxa​maxj​𝝍~j​(s,a)⊤​𝐰i\pi_{i}(s)\in\mathrm{argmax}_{a}\max_{j}\tilde{\boldsymbol{\mathrm{\
+psi}}}_{j}(s,a)^{\top}\boldsymbol{\mathrm{w}}_{i}.
+
+Results are shown in Figures 3a and 3b. Looking at the training curves, we see that whenever a task
+is selected for training SFDQN’s return on that task quickly improves and saturates at near-optimal
+performance. The interesting point to be noted is that, when learning a given task, SFDQN’s
+performance also improves in all other tasks, including the test ones, for which it does not have
+specialized policies. This illustrates how the combination of SFs and GPI can give rise to flexible
+agents able to perform well in any task of a set of tasks with shared dynamics—which in turn can be
+seen as both a form of temporal abstraction and a step towards more general hierarchical RL [22, 1
+].
+
+
+(a) Performance on training tasks (faded dotted lines in the background are DQN’s results).
+
+
+(b) Average performance on test tasks.
+Refer to caption
+   (c) Colored and gray circles depict
+training and test targets, respectively.
+
+
+(b)
+
+
+Figure 3: Normalized return on the reacher domain: ‘11’ corresponds to the average result achieved
+by DQN after learning each task separately and ‘00’ corresponds to the average performance of a
+randomly-initialized agent (see Appendix B for details). SFDQN’s results were obtained using the
+GPI policies πi​(s)\pi_{i}(s) defined in the text. Shading shows one standard error over 3030 runs.
+
+6 Related work
+
+Mehta et al.’s [14] approach for transfer learning is probably the closest work to ours in the
+literature. There are important differences, though. First, Mehta et al. [14] assume that both ϕ\
+boldsymbol{\mathrm{\phi}} and 𝐰\boldsymbol{\mathrm{w}} are always observable quantities provided by
+the environment. They also focus on average reward RL, in which the quality of a decision policy
+can be characterized by a single scalar. This reduces the process of selecting a policy for a task
+to one decision made at the outset, which is in clear contrast with GPI.
+
+The literature on transfer learning has other methods that relate to ours [25, 11]. Among the
+algorithms designed for the scenario considered here, two approaches are particularly relevant
+because they also reuse old policies. One is Fernández et al.’s [8] probabilistic policy reuse,
+adopted in our experiments and described in Appendix B. The other approach, by Bernstein [4],
+corresponds to using our method but relearning all 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}
+from scratch at each new task.
+
+When we look at SFs strictly as a representation scheme, there are clear similarities with Littman
+et al.’s [13] predictive state representation (PSR). Unlike SFs, though, PSR tries to summarize the
+dynamics of the entire environment rather than of a single policy π\pi. A scheme that is perhaps
+closer to SFs is the value function representation sometimes adopted in inverse RL [18].
+
+SFs are also related to Sutton et al.’s [23] general value functions (GVFs), which extend the
+notion of value function to also include “pseudo-rewards.” If we see ϕi\phi_{i} as a pseudo-reward,
+ψiπ​(s,a)\psi^{\pi}_{i}(s,a) becomes a particular case of GVF. Beyond the technical similarities,
+the connection between SFs and GVFs uncovers some principles underlying both lines of work that,
+when contrasted, may benefit both. On one hand, Sutton et al.’s [23] and Modayil et al.’s [16]
+hypothesis that relevant knowledge about the world can be expressed in the form of many predictions
+naturally translates to SFs: if ϕ\boldsymbol{\mathrm{\phi}} is expressive enough, the agent should
+be able to represent any relevant reward function. Conversely, SFs not only provide a concrete way
+of using this knowledge, they also suggest a possible criterion to select the pseudo-rewards ϕi\
+phi_{i}, since ultimately we are only interested in features that help in the approximation ϕ​
+(s,a,s′)⊤​𝐰~≈r⁡(s,a,s′)\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\top}\tilde{\boldsymbol{\mathrm
+{w}}}\approx r(s,a,s^{\prime}).
+
+Another generalization of value functions that is related to SFs is Schaul et al.’s [20] universal
+value function approximators (UVFAs). UVFAs extend the notion of value function to also include as
+an argument an abstract representation of a “goal,” which makes them particularly suitable for
+transfer. The function maxj𝝍~πj∗(s,a)⊤𝐰~\max_{j}\tilde{\boldsymbol{\mathrm{\psi}}}^{{}_{\pi_{j}^
+{*}}}(s,a)^{\top}\tilde{\boldsymbol{\mathrm{w}}} used in our framework can be seen as a function of
+ss, aa, and 𝐰~\tilde{\boldsymbol{\mathrm{w}}}—the latter a generic way of representing a goal—, and
+thus in some sense this representation is a UVFA. The connection between SFs and UVFAs raises an
+interesting point: since under this interpretation 𝐰~\tilde{\boldsymbol{\mathrm{w}}} is simply the
+description of a task, it can in principle be a direct function of the observations, which opens up
+the possibility of the agent determining 𝐰~\tilde{\boldsymbol{\mathrm{w}}} even before seeing any
+rewards.
+
+As discussed, our approach is also related to temporal abstraction and hierarchical RL: if we look
+at 𝝍π\boldsymbol{\mathrm{\psi}}^{\pi} as instances of Sutton et al.’s [22] options, acting greedily
+with respect to the maximum over their value functions corresponds in some sense to planning at a
+higher level of temporal abstraction (that is, each 𝝍π​(s,a)\boldsymbol{\mathrm{\psi}}^{\pi}(s,a)
+is associated with an option that terminates after a single step). This is the view adopted by Yao
+et al. [28], whose universal option model closely resembles our approach in some aspects (the main
+difference being that they do not do GPI).
+
+Finally, there have been previous attempts to combine SR and neural networks. Kulkarni et al. [10]
+and Zhang et al. [29] propose similar architectures to jointly learn 𝝍~π​(s,a)\tilde{\boldsymbol{\
+mathrm{\psi}}}^{\pi}(s,a), ϕ~​(s,a,s′)\tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime}) and 𝐰~\
+tilde{\boldsymbol{\mathrm{w}}}. Although neither work exploits SFs for GPI, they both discuss other
+uses of SFs for transfer. In principle the proposed (or similar) architectures can also be used
+within our framework.
+
+7 Conclusion
+
+This paper builds on two concepts, both of which are generalizations of previous ideas. The first
+one is SFs, a generalization of Dayan’s [7] SR that extends the original definition from discrete
+to continuous spaces and also facilitates the use of function approximation. The second concept is
+GPI, formalized in Theorem 1. As the name suggests, this result extends Bellman’s [3] classic
+policy improvement theorem from a single to multiple policies.
+
+Although SFs and GPI are of interest on their own, in this paper we focus on their combination to
+induce transfer. The resulting framework is an elegant extension of DP’s basic setting that
+provides a solid foundation for transfer in RL. As a complement to the proposed transfer approach,
+we derived a theoretical result, Theorem 2, that formalizes the intuition that an agent should
+perform well on a novel task if it has seen a similar task before. We also illustrated with a
+comprehensive set of experiments how the combination of SFs and GPI promotes transfer in practice.
+
+We believe the proposed ideas lay out a general framework for transfer in RL. By specializing the
+basic components presented one can build on our results to derive agents able to perform well
+across a wide variety of tasks, and thus extend the range of environments that can be successfully
+tackled.
+
+Acknowledgments
+
+The authors would like to thank Joseph Modayil for the invaluable discussions during the
+development of the ideas described in this paper. We also thank Peter Dayan, Matt Botvinick, Marc
+Bellemare, and Guy Lever for the excellent comments, and Dan Horgan and Alexander Pritzel for their
+help with the experiments. Finally, we thank the anonymous reviewers for their comments and
+suggestions to improve the paper.
+
+References
+
+  • [1] Andrew G. Barto and Sridhar Mahadevan. Recent advances in hierarchical reinforcement
+    learning. Discrete Event Dynamic Systems, 13(4):341–379, 2003.
+  • [2] Jonathan Baxter. A model of inductive bias learning. Journal of Artificial Intelligence
+    Research, 12:149–198, 2000.
+  • [3] Richard E. Bellman. Dynamic Programming. Princeton University Press, 1957.
+  • [4] Daniel S. Bernstein. Reusing old policies to accelerate learning on new MDPs. Technical
+    report, Amherst, MA, USA, 1999.
+  • [5] Dimitri P. Bertsekas and John N. Tsitsiklis. Neuro-Dynamic Programming. Athena Scientific,
+    1996.
+  • [6] Rich Caruana. Multitask learning. Machine Learning, 28(1):41–75, 1997.
+  • [7] Peter Dayan. Improving generalization for temporal difference learning: The successor
+    representation. Neural Computation, 5(4):613–624, 1993.
+  • [8] Fernando Fernández, Javier García, and Manuela Veloso. Probabilistic policy reuse for
+    inter-task transfer learning. Robotics and Autonomous Systems, 58(7):866–871, 2010.
+  • [9] Trevor Hastie, Robert Tibshirani, and Jerome Friedman. The Elements of Statistical
+    Learning: Data Mining, Inference, and Prediction. Springer, 2002.
+  • [10] Tejas D. Kulkarni, Ardavan Saeedi, Simanta Gautam, and Samuel J Gershman. Deep successor
+    reinforcement learning. arXiv preprint arXiv:1606.02396, 2016.
+  • [11] Alessandro Lazaric. Transfer in Reinforcement Learning: A Framework and a Survey.
+    Reinforcement Learning: State-of-the-Art, pages 143–173, 2012.
+  • [12] Timothy P. Lillicrap, Jonathan J. Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval
+    Tassa, David Silver, and Daan Wierstra. Continuous control with deep reinforcement learning. 
+    arXiv preprint arXiv:1509.02971, 2015.
+  • [13] Michael L. Littman, Richard S. Sutton, and Satinder Singh. Predictive representations of
+    state. In Advances in Neural Information Processing Systems (NIPS), pages 1555–1561, 2001.
+  • [14] Neville Mehta, Sriraam Natarajan, Prasad Tadepalli, and Alan Fern. Transfer in
+    variable-reward hierarchical reinforcement learning. Machine Learning, 73(3), 2008.
+  • [15] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G.
+    Bellemare, Alex Graves, Martin Riedmiller, Andreas K. Fidjeland, Georg Ostrovski, Stig
+    Petersen, Charles Beattie, Amir Sadik, Ioannis Antonoglou, Helen King, Dharshan Kumaran, Daan
+    Wierstra, Shane Legg, and Demis Hassabis. Human-level control through deep reinforcement
+    learning. Nature, 518(7540):529–533, 2015.
+  • [16] Joseph Modayil, Adam White, and Richard S. Sutton. Multi-timescale nexting in a
+    reinforcement learning robot. Adaptive Behavior, 22(2):146–160, 2014.
+  • [17] Sriraam Natarajan and Prasad Tadepalli. Dynamic preferences in multi-criteria
+    reinforcement learning. In Proceedings of the International Conference on Machine Learning
+    (ICML), pages 601–608, 2005.
+  • [18] Andrew Ng and Stuart Russell. Algorithms for inverse reinforcement learning. In
+    Proceedings of the International Conference on Machine Learning (ICML), pages 663–670, 2000.
+  • [19] Martin L. Puterman. Markov Decision Processes—Discrete Stochastic Dynamic Programming. 
+    John Wiley & Sons, Inc., 1994.
+  • [20] Tom Schaul, Daniel Horgan, Karol Gregor, and David Silver. Universal Value Function
+    Approximators. In International Conference on Machine Learning (ICML), pages 1312–1320, 2015.
+  • [21] Richard S. Sutton and Andrew G. Barto. Reinforcement Learning: An Introduction. MIT Press,
+    1998.
+  • [22] Richard S. Sutton, Doina Precup, and Satinder Singh. Between MDPs and semi-MDPs: a
+    framework for temporal abstraction in reinforcement learning. Artificial Intelligence,
+    112:181–211, 1999.
+  • [23] Richard S. Sutton, Joseph Modayil, Michael Delp, Thomas Degris, Patrick M. Pilarski, Adam
+    White, and Doina Precup. Horde: A scalable real-time architecture for learning knowledge from
+    unsupervised sensorimotor interaction. In International Conference on Autonomous Agents and
+    Multiagent Systems, pages 761–768, 2011.
+  • [24] Csaba Szepesvári. Algorithms for Reinforcement Learning. Synthesis Lectures on Artificial
+    Intelligence and Machine Learning. Morgan & Claypool Publishers, 2010.
+  • [25] Matthew E. Taylor and Peter Stone. Transfer learning for reinforcement learning domains: A
+    survey. Journal of Machine Learning Research, 10(1):1633–1685, 2009.
+  • [26] Emanuel Todorov, Tom Erez, and Yuval Tassa. MuJoCo: A physics engine for model-based
+    control. In IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), pages
+    5026–5033, 2012.
+  • [27] Christopher Watkins and Peter Dayan. Q-learning. Machine Learning, 8:279–292, 1992.
+  • [28] Hengshuai Yao, Csaba Szepesvári, Richard S Sutton, Joseph Modayil, and Shalabh Bhatnagar. 
+    Universal option models. In Advances in Neural Information Processing Systems (NIPS), pages
+    990–998. 2014.
+  • [29] Jingwei Zhang, Jost Tobias Springenberg, Joschka Boedecker, and Wolfram Burgard. Deep
+    reinforcement learning with successor features for navigation across similar environments. CoRR
+    , abs/1612.05533, 2016.
+
+ 
+
+Successor Features for
+
+Transfer in Reinforcement Learning
+
+Supplementary Material
+
+ 
+
+André Barreto,   Will Dabney,   Rémi Munos,   Jonathan J. Hunt,  
+
+Tom Schaul,   Hado van Hasselt,   David Silver
+
+{andrebarreto,wdabney,munos,jjhunt,schaul,hado,davidsilver}@google.com
+
+DeepMind
+
+Appendix A Proofs of theoretical results
+
+Theorem 1.
+
+(Generalized Policy Improvement) Let π1\pi_{1}, π2\pi_{2}, …, πn\pi_{n} be nn decision policies and
+let Q~π1\tilde{Q}^{\pi_{1}}, Q~π2\tilde{Q}^{\pi_{2}}, …, Q~πn\tilde{Q}^{\pi_{n}} be approximations
+of their respective action-value functions such that
+
+ |Qπi​(s,a)−Q~πi​(s,a)|≤ϵ​ for all ​s∈S,a∈A, and ​i∈{1,2,…,n}.|Q^{\pi_{i}}(s,a)-\tilde{Q}^{\pi_
+ {i}}(s,a)|\leq\epsilon\,\text{ for all }s\in S,a\in A,\text{ and }i\in\{1,2,...,n\}.
+
+Define
+
+ π⁡(s)∈argmaxamaxi⁡Q~πi​(s,a).{\pi}(s)\in\mathop{\mathrm{argmax}}_{a}\max_{i}\tilde{Q}^{\pi_{i}}
+ (s,a).
+
+Then,
+
+ Qπ​(s,a)≥maxi⁡Qπi​(s,a)−21−γ​ϵQ^{\pi}(s,a)\geq\max_{i}Q^{\pi_{i}}(s,a)-\dfrac{2}{1-\gamma}\
+ epsilon
+
+for any s∈Ss\in S and any a∈Aa\in A, where QπQ^{\pi} is the action-value function of π{\pi}.
+
+Proof.
+
+To simplify the notation, let
+
+ Qmax​(s,a)=maxi⁡Qπi​(s,a) and Q~max​(s,a)=maxi⁡Q~πi​(s,a).\begin{array}[]{ccc}Q_{\mathrm{max}}
+ (s,a)=\max_{i}Q^{\pi_{i}}(s,a)&\text{ and }&\tilde{Q}_{\mathrm{max}}(s,a)=\max_{i}\tilde{Q}^{\pi_
+ {i}}(s,a).\end{array}
+
+We start by noting that for any s∈Ss\in S and any a∈Aa\in A the following holds:
+
+ |Qmax​(s,a)−Q~max​(s,a)|=|maxi⁡Qπi​(s,a)−maxi⁡Q~πi​(s,a)|≤maxi|Qπi​(s,a)−Q~πi​(s,a)|≤ϵ.\
+ displaystyle|Q_{\mathrm{max}}(s,a)-\tilde{Q}_{\mathrm{max}}(s,a)|=|\max_{i}Q^{\pi_{i}}(s,a)-\max_
+ {i}\tilde{Q}^{\pi_{i}}(s,a)|\leq\max_{i}|Q^{\pi_{i}}(s,a)-\tilde{Q}^{\pi_{i}}(s,a)|\leq\epsilon.
+
+For all s∈Ss\in S, a∈Aa\in A, and i∈{1,2,…,n}i\in\{1,2,...,n\} we have
+
+ Tπ​Q~max​(s,a)\displaystyle  =r⁡(s,a)+γ​∑s′p⁡(s′|s,a)​Q~max​(s′,π⁡(s′))\displaystyle=r(s,a)+\
+ T^{\pi}\tilde{Q}_{\mathrm    gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)\tilde{Q}_{\mathrm{max}}(s^{\
+ {max}}(s,a)                  prime},{\pi}(s^{\prime}))
+                              =r⁡(s,a)+γ​∑s′p⁡(s′|s,a)​maxb​Q~max​(s′,b)\displaystyle=r(s,a)+\
+                              gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)\max_{b}\tilde{Q}_{\mathrm
+                              {max}}(s^{\prime},b)
+                              ≥r⁡(s,a)+γ​∑s′p⁡(s′|s,a)​maxb​Qmax​(s′,b)−γ​ϵ\displaystyle\geq r
+                              (s,a)+\gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)\max_{b}Q_{\mathrm
+                              {max}}(s^{\prime},b)-\gamma\epsilon
+                              ≥r⁡(s,a)+γ​∑s′p⁡(s′|s,a)​Qmax​(s′,πi​(s′))−γ​ϵ\displaystyle\geq r
+                              (s,a)+\gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)Q_{\mathrm{max}}(s^{\
+                              prime},\pi_{i}(s^{\prime}))-\gamma\epsilon
+                              ≥r⁡(s,a)+γ​∑s′p⁡(s′|s,a)​Qπi​(s′,πi​(s′))−γ​ϵ\displaystyle\geq r
+                              (s,a)+\gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)Q^{\pi_{i}}(s^{\
+                              prime},\pi_{i}(s^{\prime}))-\gamma\epsilon
+                              =Tπi​Qπi​(s,a)−γ​ϵ\displaystyle=T^{\pi_{i}}Q^{\pi_{i}}(s,a)-\gamma\
+                              epsilon
+                              =Qπi​(s,a)−γ​ϵ.\displaystyle=Q^{\pi_{i}}(s,a)-\gamma\epsilon.
+
+Since Tπ​Q~max​(s,a)≥Qπi​(s,a)−γ​ϵT^{\pi}\tilde{Q}_{\mathrm{max}}(s,a)\geq Q^{\pi_{i}}(s,a)-\gamma\
+epsilon for any ii, it must be the case that
+
+ Tπ​Q~max​(s,a)\displaystyle T^{\pi}\     ≥maxi⁡Qπi​(s,a)−γ​ϵ\displaystyle\geq\max_{i}Q^{\pi_{i}}
+ tilde{Q}_{\mathrm{max}}(s,a)             (s,a)-\gamma\epsilon
+                                          =Qmax​(s,a)−γ​ϵ\displaystyle=Q_{\mathrm{max}}(s,a)-\
+                                          gamma\epsilon
+                                          ≥Q~max​(s,a)−ϵ−γ​ϵ.\displaystyle\geq\tilde{Q}_{\mathrm
+                                          {max}}(s,a)-\epsilon-\gamma\epsilon.
+
+Let e⁡(s,a)=1e(s,a)=1 for all s,a∈S×As,a\in S\times A. It is well known that Tπ​(Q~max​(s,a)+c​e​
+(s,a))=Tπ​Q~max​(s,a)+γ​cT^{\pi}(\tilde{Q}_{\mathrm{max}}(s,a)+ce(s,a))=T^{\pi}\tilde{Q}_{\mathrm
+{max}}(s,a)+\gamma c for any c∈ℝc\in\mathbb{R}. Using this fact together with the monotonicity and
+contraction properties of the Bellman operator TπT^{\pi}, we have
+
+ Qπ​(s,a)\displaystyle Q =limk→∞(Tπ)k​Q~max​(s,a)\displaystyle=\lim_{k\rightarrow\infty}(T^{\pi})^
+ ^{\pi}(s,a)             {k}\tilde{Q}_{\mathrm{max}}(s,a)
+                         ≥Q~max​(s,a)−1+γ1−γ​ϵ\displaystyle\geq\tilde{Q}_{\mathrm{max}}(s,a)-\
+                         dfrac{1+\gamma}{1-\gamma}\epsilon
+                         ≥Qmax​(s,a)−ϵ−1+γ1−γ​ϵ.\displaystyle\geq Q_{\mathrm{max}}(s,a)-\epsilon-\
+                         dfrac{1+\gamma}{1-\gamma}\epsilon.
+
+∎
+
+Lemma 1.
+
+Let δi​j=maxs,a⁡|ri​(s,a)−rj​(s,a)|\delta_{ij}=\max_{s,a}\left|r_{i}(s,a)-r_{j}(s,a)\right|. Then,
+
+ Qiπi∗​(s,a)−Qiπj∗​(s,a)≤2​δi​j1−γ.Q_{i}^{\pi^{*}_{i}}(s,a)-Q^{\pi_{j}^{*}}_{i}(s,a)\leq\dfrac{2\
+ delta_{ij}}{1-\gamma}.
+
+Proof.
+
+To simplify the notation, let Qij​(s,a)≡Qiπj∗​(s,a)Q^{j}_{i}(s,a)\equiv Q_{i}^{\pi^{*}_{j}}(s,a).
+Then,
+
+ Qii​(s,a)−Qij​(s,a)\            =Qii​(s,a)−Qjj​(s,a)+Qjj​(s,a)−Qij​(s,a)\displaystyle=Q_{i}^
+ displaystyle Q_{i}^{i}(s,a)-Q^  {i}(s,a)-Q^{j}_{j}(s,a)+Q_{j}^{j}(s,a)-Q^{j}_{i}(s,a)
+ {j}_{i}(s,a)
+                                 ≤|Qii​(s,a)−Qjj​(s,a)|+|Qjj​(s,a)−Qij​(s,a)|.\displaystyle\
+                                 leq|Q_{i}^{i}(s,a)-Q^{j}_{j}(s,a)|+|Q_{j}^{j}(s,a)-Q^{j}_{i}  (11)
+                                 (s,a)|.
+
+Our strategy will be to bound |Qii​(s,a)−Qjj​(s,a)||Q_{i}^{i}(s,a)-Q^{j}_{j}(s,a)| and |Qjj​(s,a)
+−Qij​(s,a)||Q_{j}^{j}(s,a)-Q^{j}_{i}(s,a)|. Note that |Qii​(s,a)−Qjj​(s,a)||Q_{i}^{i}(s,a)-Q^{j}_
+{j}(s,a)| is the difference between the value functions of two MDPs with the same transition
+function but potentially different rewards. Let Δi​j=maxs,a⁡|Qii​(s,a)−Qjj​(s,a)|\Delta_{ij}=\max_
+{s,a}|Q_{i}^{i}(s,a)-Q^{j}_{j}(s,a)|. Then, ^2^2 2 We follow the steps of Strehl and Littman [2].
+
+                        =|ri​(s,a)+γ​∑s′p⁡(s′|s,a)​maxb​Qii​(s′,b)−rj​(s,a)−γ​∑s′p⁡(s′|s,a)
+ |Qii​(s,a)−Qjj​(s,a)|\ ​maxb​Qjj​(s′,b)|\displaystyle=\left|r_{i}(s,a)+\gamma\sum_{s^{\
+ displaystyle|Q_{i}^{i} prime}}p(s^{\prime}|s,a)\max_{b}Q^{i}_{i}(s^{\prime},b)-r_{j}(s,a)-\
+ (s,a)-Q^{j}_{j}(s,a)|  gamma\sum_{s^{\prime}}p(s^{\prime}|s,a)\max_{b}Q^{j}_{j}(s^{\
+                        prime},b)\right|
+                        =|ri​(s,a)−rj​(s,a)+γ​∑s′p⁡(s′|s,a)​(maxb⁡Qii​(s′,b)−maxb⁡Qjj​(s′,b))
+                        |\displaystyle=\left|r_{i}(s,a)-r_{j}(s,a)+\gamma\sum_{s^{\prime}}p(s
+                        ^{\prime}|s,a)\left(\max_{b}Q^{i}_{i}(s^{\prime},b)-\max_{b}Q^{j}_{j}
+                        (s^{\prime},b)\right)\right|
+                        ≤|ri​(s,a)−rj​(s,a)|+γ​∑s′p⁡(s′|s,a)​|maxb⁡Qii​(s′,b)−maxb⁡Qjj​(s′,b)
+                        |\displaystyle\leq\left|r_{i}(s,a)-r_{j}(s,a)\right|+\gamma\sum_{s^{\
+                        prime}}p(s^{\prime}|s,a)\left|\max_{b}Q^{i}_{i}(s^{\prime},b)-\max_
+                        {b}Q^{j}_{j}(s^{\prime},b)\right|
+                        ≤|ri​(s,a)−rj​(s,a)|+γ​∑s′p⁡(s′|s,a)​maxb​|Qii​(s′,b)−Qjj​(s′,b)|\
+                        displaystyle\leq\left|r_{i}(s,a)-r_{j}(s,a)\right|+\gamma\sum_{s^{\
+                        prime}}p(s^{\prime}|s,a)\max_{b}\left|Q^{i}_{i}(s^{\prime},b)-Q^{j}_
+                        {j}(s^{\prime},b)\right|
+                        ≤δi​j+γ​Δi​j.\displaystyle\leq\delta_{ij}+\gamma\Delta_{ij}.           (12)
+
+Since (12) is valid for any s,a∈S×As,a\in S\times A, we have shown that Δi​j≤δi​j+γ​Δi​j\Delta_{ij}
+\leq\delta_{ij}+\gamma\Delta_{ij}. Solving for Δi​j\Delta_{ij} we get
+
+ Δi​j≤11−γ​δi​j.\Delta_{ij}\leq\dfrac{1}{1-\gamma}\delta_{ij}.  (13)
+
+We now turn our attention to |Qjj​(s,a)−Qij​(s,a)||Q_{j}^{j}(s,a)-Q^{j}_{i}(s,a)|. Following the
+previous steps, define Δi​j′=maxs,a⁡|Qii​(s,a)−Qij​(s,a)|\Delta^{\prime}_{ij}=\max_{s,a}|Q_{i}^{i}
+(s,a)-Q^{j}_{i}(s,a)|. Then,
+
+                        =|rj​(s,a)+γ​∑s′p⁡(s′|s,a)​Qjj​(s′,πj∗​(s′))−ri​(s,a)−γ​∑s′p⁡(s′|s,a)​Qij​
+ |Qjj​(s,a)−Qij​(s,a)|\ (s′,πj∗​(s′))|\displaystyle=\left|r_{j}(s,a)+\gamma\sum_{s^{\prime}}p(s^{\
+ displaystyle|Q_{j}^{j} prime}|s,a)Q^{j}_{j}(s^{\prime},\pi_{j}^{*}(s^{\prime}))-r_{i}(s,a)-\gamma
+ (s,a)-Q^{j}_{i}(s,a)|  \sum_{s^{\prime}}p(s^{\prime}|s,a)Q^{j}_{i}(s^{\prime},\pi_{j}^{*}(s^{\
+                        prime}))\right|
+                        =|ri​(s,a)−rj​(s,a)+γ​∑s′p⁡(s′|s,a)​(Qjj​(s′,πj∗​(s′))−Qij​(s′,πj∗​(s′)))|
+                        \displaystyle=\left|r_{i}(s,a)-r_{j}(s,a)+\gamma\sum_{s^{\prime}}p(s^{\
+                        prime}|s,a)\left(Q^{j}_{j}(s^{\prime},\pi_{j}^{*}(s^{\prime}))-Q^{j}_{i}(s
+                        ^{\prime},\pi_{j}^{*}(s^{\prime}))\right)\right|
+                        ≤|ri​(s,a)−rj​(s,a)|+γ​∑s′p⁡(s′|s,a)​|Qjj​(s′,πj∗​(s′))−Qij​(s′,πj∗​(s′))|
+                        \displaystyle\leq\left|r_{i}(s,a)-r_{j}(s,a)\right|+\gamma\sum_{s^{\
+                        prime}}p(s^{\prime}|s,a)\left|Q^{j}_{j}(s^{\prime},\pi_{j}^{*}(s^{\
+                        prime}))-Q^{j}_{i}(s^{\prime},\pi_{j}^{*}(s^{\prime}))\right|
+                        ≤δi​j+γ​Δi​j′.\displaystyle\leq\delta_{ij}+\gamma\Delta^{\prime}_{ij}.
+
+Solving for Δi​j′\Delta^{\prime}_{ij}, as above, we get
+
+ Δi​j′≤11−γ​δi​j.\Delta^{\prime}_{ij}\leq\dfrac{1}{1-\gamma}\delta_{ij}.  (14)
+
+Plugging (13) and (14) back in (11) we get the desired result. ∎
+
+Theorem 2.
+
+Let Mi∈ℳϕM_{i}\in\mathcal{M}^{\phi} and let Qiπj∗Q^{\pi_{j}^{*}}_{i} be the value function of an
+optimal policy of Mj∈ℳϕM_{j}\in\mathcal{M}^{\phi} when executed in MiM_{i}. Given the set
+{Q~iπ1∗,Q~iπ2∗,…,Q~iπn∗}\{\tilde{Q}^{\pi_{1}^{*}}_{i},\tilde{Q}^{\pi_{2}^{*}}_{i},...,\tilde{Q}^{\
+pi_{n}^{*}}_{i}\} such that
+
+ |Qiπj∗​(s,a)−Q~iπj∗​(s,a)|≤ϵ​ for all ​s∈S,a∈A, and ​j∈{1,2,…,n},\left|Q^{\pi_{j}^{*}}_{i}(s,a)-\
+ tilde{Q}^{\pi_{j}^{*}}_{i}(s,a)\right|\leq\epsilon\,\text{ for all }s\in S,a\in A,\text{ and }j\
+ in\{1,2,...,n\},
+
+let
+
+ π⁡(s)∈argmaxamaxj⁡Q~iπj∗​(s,a).\pi(s)\in\mathop{\mathrm{argmax}}_{a}\max_{j}\tilde{Q}^{\pi_{j}^
+ {*}}_{i}(s,a).
+
+Finally, let ϕmax=maxs,a⁡‖ϕ⁡(s,a)‖\boldsymbol{\mathrm{\phi}}_{\max}=\max_{s,a}||\boldsymbol{\mathrm
+{\phi}}(s,a)||, where ||⋅||||\cdot|| is the norm induced by the inner product adopted. Then,
+
+ Qi∗​(s,a)−Qiπ​(s,a)≤21−γ​(ϕmax​minj​‖𝐰i−𝐰j‖+ϵ).Q^{*}_{i}(s,a)-Q^{\pi}_{i}(s,a)\leq\dfrac{2}{1-\
+ gamma}\left(\boldsymbol{\mathrm{\phi}}_{\max}\,\mathrm{min}_{j}||\boldsymbol{\mathrm{w}}_{i}-\
+ boldsymbol{\mathrm{w}}_{j}||+\epsilon\right).
+
+Proof.
+
+The result is a direct application of Theorem 1 and Lemma 1. For any j∈{1,2,…,n}j\in\{1,2,...,n\},
+we have
+
+ Qi∗​(s,a)−Qiπ​(s,a)≤Qi∗​(s,a)−Qiπj∗​(s,a)+21−γ​ϵ (Theorem 1) ≤21−γ​maxs,a​|ri​(s,a)−rj​(s,a)|
+ +21−γ​ϵ (Lemma 1) =21−γ​maxs,a​|ϕ​(s,a)⊤​𝐰i−ϕ​(s,a)⊤​𝐰j|+21−γ​ϵ=21−γ​maxs,a​|ϕ​(s,a)⊤​(𝐰i−𝐰j)|
+ +21−γ​ϵ≤21−γ​maxs,a​‖ϕ⁡(s,a)‖||𝐰i−𝐰j||+21−γ​ϵ (Cauchy-Schwarz’s inequality) =
+ 2​ϕmax1−γ​‖𝐰i−𝐰j‖+21−γ​ϵ.\begin{array}[]{llr}Q_{i}^{*}(s,a)-Q^{\pi}_{i}(s,a)&\leq Q_{i}^{*}(s,a)
+ -Q^{\pi_{j}^{*}}_{i}(s,a)+\dfrac{2}{1-\gamma}\epsilon&\text{ (Theorem~\ref{teo:gpi}) }\\ &\leq\
+ dfrac{2}{1-\gamma}\max_{s,a}|r_{i}(s,a)-r_{j}(s,a)|+\dfrac{2}{1-\gamma}\epsilon&\text{ (Lemma~\
+ ref{teo:bound_pair}) }\\ &=\dfrac{2}{1-\gamma}\max_{s,a}|\boldsymbol{\mathrm{\phi}}(s,a)^{\top}\
+ boldsymbol{\mathrm{w}}_{i}-\boldsymbol{\mathrm{\phi}}(s,a)^{\top}\boldsymbol{\mathrm{w}}_{j}|\
+ par+\dfrac{2}{1-\gamma}\epsilon\\ &=\dfrac{2}{1-\gamma}\max_{s,a}|\boldsymbol{\mathrm{\phi}}(s,a)
+ ^{\top}(\boldsymbol{\mathrm{w}}_{i}-\boldsymbol{\mathrm{w}}_{j})|+\dfrac{2}{1-\gamma}\epsilon\\ &
+ \leq\dfrac{2}{1-\gamma}\max_{s,a}||\boldsymbol{\mathrm{\phi}}(s,a)||\,||\boldsymbol{\mathrm{w}}_
+ {i}-\boldsymbol{\mathrm{w}}_{j}||+\dfrac{2}{1-\gamma}\epsilon&\text{ (Cauchy-Schwarz's
+ inequality) }\\ &=\dfrac{2\boldsymbol{\mathrm{\phi}}_{\max}}{1-\gamma}||\boldsymbol{\mathrm{w}}_
+ {i}-\boldsymbol{\mathrm{w}}_{j}||+\dfrac{2}{1-\gamma}\epsilon.\\ \end{array}
+
+∎
+
+Appendix B Details of the experiments
+
+In this section we provide additional information about our experiments. We start with the
+four-room environment and then we discuss the reacher domain. In both cases the structure of the
+discussion is the same: we start by giving a more in depth description of the environment itself,
+both at a conceptual level and at a practical level, then we provide a thorough description of the
+algorithms used, and, finally, we explain the protocol used to carry out the experiments.
+
+B.1 Four-room environment
+
+B.1.1 Environment
+
+In Section 5 of the paper we gave an intuitive description of the four-room domain used in our
+experiments. In this section we provide a more formal definition of the environment ℳ\mathcal{M} as
+a family of Markov decision processes (MDPs) MM, each one associated with a task.
+
+The environment has objects that can be picked up by the agent by passing over them. There is a
+total of non_{o} objects, each belonging to one of nc≤non_{c}\leq n_{o} classes. The class of an
+object determines the reward rcr_{c} associated with it. An episode ends when the agent reaches the
+goal, upon which all the objects re-appear. We assume that rgr_{g} is always 11 but rcr_{c} may
+vary: a specific instantiation of the rewards rcr_{c} defines a task. Every time a new task starts
+the rewards rcr_{c} are sampled from a uniform distribution over [−1,1][-1,1]. Figure 1 shows the
+specific environment layout used, in which no=12n_{o}=12 and nc=3n_{c}=3.
+
+We now focus on a single task M∈ℳM\in\mathcal{M}. We start by describing the state and action
+spaces, and the transition dynamics. The agent’s position at any instant in time is a point {sx,sy}
+∈[0,1]2\{s_{x},s_{y}\}\in[0,1]^{2}. There are four actions available, 𝒜≡{up,down,left,right}\
+mathcal{A}\equiv\{\mathrm{up},\mathrm{down},\mathrm{left},\mathrm{right}\}. The execution of one of
+the actions moves the agent 0.050.05 units in the desired direction, and normal random noise with
+zero mean and standard deviation 0.0050.005 is added to the position of the agent (that is, a move
+along the xx axis would be sx′=sx±𝒩⁡(0.05,0.005)s^{\prime}_{x}=s_{x}\pm\mathcal{N}(0.05,0.005),
+where 𝒩⁡(0.05,0.005)\mathcal{N}(0.05,0.005) is a normal variable with mean 0.050.05 and standard
+deviation 0.0050.005). If after a move the agent ends up outside of the four rooms or on top of a
+wall the move is undone. Otherwise, if the agent lands on top of an object it picks it up, and if
+it lands on the goal region the episode is terminated (and all objects re-appear). In the specific
+instance of the environment shown in Figure 1 objects were implemented as circles of radius
+0.040.04, the goal is a circle of radius 0.10.1 centered at one of the extreme points of the map,
+and the walls are rectangles of width 0.040.04 traversing the environment’s range.
+
+As described in the paper, within an episode each of the non_{o} objects can be present or absent,
+and since they define the reward function a well defined Markov state must distinguish between all
+possible 2no2^{n_{o}} object configurations. Therefore, the state space of our MDP is 𝒮≡{0,1}no×ℝ2\
+mathcal{S}\equiv\{0,1\}^{n_{o}}\times\mathbb{R}^{2}. An intuitive way of visualizing 𝒮\mathcal{S}
+is to note that each of the 2no2^{n_{o}} object configurations is potentially associated with a
+different value function over the continuous space [0,1]2[0,1]^{2}.
+
+Having already described 𝒮\mathcal{S}, 𝒜\mathcal{A}, and p(⋅|s,a)p(\cdot|s,a), we only need to
+define the reward function R⁡(s,a,s′)R(s,a,s^{\prime}) and the discount factor γ\gamma in order to
+conclude the formulation of the MDP MM. As discussed in Section 5, the reward R⁡(s,a,s′)R(s,a,s^{\
+prime}) is a deterministic function of s′s^{\prime}: if the agent is over an object of class cc in
+s′s^{\prime} it gets a reward of rcr_{c}, and if it is in the goal region it gets a reward of rg=
+1r_{g}=1; in all other cases the reward is zero. In our experiments we fixed γ=0.95\gamma=0.95.
+
+By mapping each object onto its class, it is possible to construct features ϕ⁡(s,a,s′)\boldsymbol{\
+mathrm{\phi}}(s,a,s^{\prime}) that perfectly predicts the reward for all tasks MM in the
+environment ℳϕ\mathcal{M}^{\phi}, as in (2) and (5). Let ϕc(s,a,s′)≡δ{\boldsymbol{\mathrm{\phi}}_
+{c}(s,a,s^{\prime})\equiv\delta\{is the agent over an object of class cc in s′s^{\prime}?}\}, where
+δ​{false}=0\delta\{\mathrm{false}\}=0 and δ​{true}=1\delta\{\mathrm{true}\}=1. Similarly, let ϕg
+(s,a,s′)≡δ{\boldsymbol{\mathrm{\phi}}_{g}(s,a,s^{\prime})\equiv\delta\{is the agent over the goal
+region in s′s^{\prime}?}\}. By concatenating the ncn_{c} functions ϕc\boldsymbol{\mathrm{\phi}}_{c}
+and ϕg\boldsymbol{\mathrm{\phi}}_{g} we get the vector ϕ⁡(s,a,s′)∈{0,1}nc+1\boldsymbol{\mathrm{\
+phi}}(s,a,s^{\prime})\in\{0,1\}^{n_{c}+1}; now, if we make 𝐰c=rc\boldsymbol{\mathrm{w}}_{c}=r_{c}
+for all cc and 𝐰nc+1=rg\boldsymbol{\mathrm{w}}_{n_{c}+1}=r_{g}, it should be clear that r⁡(s,a,s′)=
+ϕ​(s,a,s′)⊤​𝐰r(s,a,s^{\prime})=\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\top}\boldsymbol{\mathrm
+{w}}, as desired.
+
+Since r⁡(s,a,s′)r(s,a,s^{\prime}) can be written in the form of  (2), the definition of MM can be
+naturally extended to ℳ\mathcal{M}, as in (5). In our experiments we assume that the agents receive
+a signal from ℳ\mathcal{M} whenever the task changes (see Algorithms 1, 2, and 3 and discussion
+below).
+
+B.1.2 Algorithms
+
+We assume that the agents know their position {sx,sy}∈[0,1]2\{s_{x},s_{y}\}\in[0,1]^{2} and also
+have an “object detector” 𝐨∈{0,1}no\boldsymbol{\mathrm{o}}\in\{0,1\}^{n_{o}} whose i^th component
+is 11 if and only if the agent is over object ii. Using this information the agents build two
+vectors of features. The vector 𝝋p​(s)∈ℝ100\boldsymbol{\mathrm{\varphi}}_{p}(s)\in\mathbb{R}^{100}
+is composed of the activations of a regular 10×1010\times 10 grid of radial basis functions at the
+point {sx,sy}\{s_{x},s_{y}\}. Specifically, in our experiments we used Gaussian functions, that is:
+
+ 𝝋p​i​(s)=exp⁡(−(sx−𝐜i​1)2+(sy−𝐜i​2)2σ),\boldsymbol{\mathrm{\varphi}}_{pi}(s)=\exp\left(-\
+ dfrac{(s_{x}-\boldsymbol{\mathrm{c}}_{i1})^{2}+(s_{y}-\boldsymbol{\mathrm{c}}_{i2})^{2}}{\    (15)
+ sigma}\right),
+
+where 𝐜i∈ℝ2\boldsymbol{\mathrm{c}}_{i}\in\mathbb{R}^{2} is the center of the i^th Gaussian. As
+explained in Section B.1.3, the value of σ\sigma was determined in preliminary experiments with QL;
+all algorithms used σ=0.1\sigma=0.1. In addition to 𝝋p​(s)\boldsymbol{\mathrm{\varphi}}_{p}(s),
+using 𝐨\boldsymbol{\mathrm{o}} the agents build an “inventory” 𝝋i​(s)∈{0,1}no\boldsymbol{\mathrm{\
+varphi}}_{i}(s)\in\{0,1\}^{n_{o}} whose i^th component indicates whether the i^th object has been
+picked up or not. The concatenation of 𝝋i​(s)\boldsymbol{\mathrm{\varphi}}_{i}(s) and 𝝋p​(s)\
+boldsymbol{\mathrm{\varphi}}_{p}(s) plus a constant term gives rise to the feature vector 𝝋⁡(s)∈ℝD\
+boldsymbol{\mathrm{\varphi}}(s)\in\mathbb{R}^{D} used by all the agents to represent the value
+function: Q~π​(s,a)=𝝋​(s)⊤​𝐳aπ\tilde{Q}^{\pi}(s,a)=\boldsymbol{\mathrm{\varphi}}(s)^{\top}\
+boldsymbol{\mathrm{z}}_{a}^{\pi}, where 𝐳aπ∈ℝD\boldsymbol{\mathrm{z}}_{a}^{\pi}\in\mathbb{R}^{D}
+are learned weights.
+
+It is instructive to take a closer look at how exactly SFQL represents the value function. Note
+that, even though our algorithm also represents Q~π\tilde{Q}^{\pi} as a linear combination of the
+features 𝝋⁡(s)\boldsymbol{\mathrm{\varphi}}(s), it never explicitly computes 𝐳aπ\boldsymbol{\mathrm
+{z}}^{\pi}_{a}. Specifically, SFQL represent SFs as 𝝍~π​(s,a)=𝝋​(s)⊤​𝐙aπ\tilde{\boldsymbol{\mathrm
+{\psi}}}^{\pi}(s,a)=\boldsymbol{\mathrm{\varphi}}(s)^{\top}\boldsymbol{\mathrm{Z}}^{\pi}_{a}, where
+𝐙aπ∈ℝD×d\boldsymbol{\mathrm{Z}}^{\pi}_{a}\in\mathbb{R}^{D\times d}, and the value function as Q~π​
+(s,a)=𝝍~π​(s,a)⊤​𝐰~=𝝋​(s)⊤​𝐙aπ​𝐰~\tilde{Q}^{\pi}(s,a)=\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi}(s,a)
+^{\top}\tilde{\boldsymbol{\mathrm{w}}}=\boldsymbol{\mathrm{\varphi}}(s)^{\top}\boldsymbol{\mathrm
+{Z}}^{\pi}_{a}\tilde{\boldsymbol{\mathrm{w}}}. By making 𝐳aπ=𝐙aπ​𝐰~\boldsymbol{\mathrm{z}}^{\pi}_
+{a}=\boldsymbol{\mathrm{Z}}^{\pi}_{a}\tilde{\boldsymbol{\mathrm{w}}}, it becomes clear that SFQL
+unfolds the problem of learning 𝐳aπ\boldsymbol{\mathrm{z}}^{\pi}_{a} into the sub-problems of
+learning 𝐙aπ\boldsymbol{\mathrm{Z}}^{\pi}_{a} and 𝐰~\tilde{\boldsymbol{\mathrm{w}}}. These
+parameters are learned via gradient descent in order to minimize losses induced by (4) and (2),
+respectively (see below).
+
+The pseudo-codes of QL, PRQL, and SFQL are given in Algorithms 1, 2, and 3, respectively. As one
+can see, all algorithms used an ϵ\epsilon-greedy policy to explore the environment, with ϵ=0.15\
+epsilon=0.15 [21]. Two design choices deserve to be discussed here. First, as mentioned in Section 
+B.1.1, the agents “know” when the task changes. This makes it possible for the algorithms to take
+measures like reinitializing the weights 𝐳aπ\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}^{\pi}_{a}
+or adding a new representative to the set of decision policies. Another design choice, this one
+specific to PRQL and SFQL, was not to limit the number of decision policies (or 𝝍~πi\tilde{\
+boldsymbol{\mathrm{\psi}}}^{\pi_{i}}) stored. It is not difficult to come up with strategies to
+avoid both an explicit end-of-task signal and an ever-growing set of policies. For example, in
+Section 4.2 we discuss how 𝐰~\tilde{\boldsymbol{\mathrm{w}}} can be used to select which 𝝍~πi\tilde
+{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}} to keep in the case of limited memory. Also, by monitoring
+the error in the approximation ϕ~​(s,a,s′)⊤​𝐰~\tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime})^{\
+top}\tilde{\boldsymbol{\mathrm{w}}} one can detect when the task has changed in a significant way.
+Although these are interesting extensions, given the introductory character of this paper we
+refrained from overspecializing the algorithms in order to illustrate the properties of the
+proposed approach in the clearest way possible.
+
+
+Algorithm 1 QL
+1:
+
+ϵ\epsilon exploration parameter for ϵ\epsilon-greedy strategy
+α\alpha   learning rate
+
+2: for t←1,2,…,num​_​taskst\leftarrow 1,2,...,\mathrm{num\_tasks} do
+3:  𝐳a←\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}_{a}\leftarrow small random initial values for
+all a∈𝒜a\in\mathcal{A}
+4:  new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+5:  for i←1,2,…,num​_​stepsi\leftarrow 1,2,...,\mathrm{num\_steps} do
+6:   if new​_​episode\mathrm{new\_episode} then
+7:    new​_​episode←false\mathrm{new\_episode}\leftarrow\mathrm{false}
+8:    s←s\leftarrow initial state
+9:   end if
+10:   sel​_​rand​_​a∼Bernoulli⁡(ϵ)\mathrm{sel\_rand\_a}\sim\mathrm{Bernoulli}(\epsilon) // Sample
+from a Bernoulli distribution with parameter ϵ\epsilon
+11:   if sel​_​rand​_​a\mathrm{sel\_rand\_a} then a∼Uniform⁡({1,2,…,|A|})a\sim\mathrm{Uniform}\left
+(\{1,2,...,|A|\}\right) // ϵ\epsilon-greedy exploration strategy
+12:   else a←argmaxb​Q​(s,b)a\leftarrow\mathrm{argmax}_{b}Q(s,b)
+13:   Take action aa and observe reward rr and next state s′s^{\prime}
+14:   if s′s^{\prime} is a terminal state then
+15:    γ←0\gamma\leftarrow 0
+16:    new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+17:   end if
+18:   𝐳a←𝐳a+α⁡(r+γ​maxa′⁡Q⁡(s′,a′)−Q⁡(s,a))​∇𝐳Q​(s,a)\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}_
+{a}\leftarrow\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}_{a}+\alpha{\left(r+\gamma\max_{a^{\
+prime}}Q(s^{\prime},a^{\prime})-Q(s,a)\right)}\nabla_{\boldsymbol{\mathrm{\boldsymbol{\mathrm
+{z}}}}}Q(s,a)
+19: // For Q⁡(s,a)=𝝋​(s)⊤​𝐳aQ(s,a)=\boldsymbol{\mathrm{\varphi}}(s)^{\top}\boldsymbol{\mathrm{\
+boldsymbol{\mathrm{z}}}}_{a}, ∇𝐳Q​(s,a)=𝝋⁡(s)\nabla_{\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}}
+Q(s,a)=\boldsymbol{\mathrm{\varphi}}(s)
+20:   s←s′s\leftarrow s^{\prime}
+21:  end for
+22: end for
+
+
+Algorithm 2 PRQL
+1:
+
+ϵ\epsilon   exploration parameter for ϵ\epsilon-greedy strategy
+ α\alpha  learning rate
+  η\eta   parameter to control probability to reuse old policy
+  τ\tau   parameter to control bias in favor of stronger policies
+
+2: for t←1,2,…,num​_​taskst\leftarrow 1,2,...,\mathrm{num\_tasks} do
+3:  for k←1,2,…,tk\leftarrow 1,2,...,t do
+4:   scorek←0\mathrm{score}_{k}\leftarrow 0 // scorek\mathrm{score}_{k} is the score associated
+with policy πk\pi_{k}
+5:   usedk←0\mathrm{used}_{k}\leftarrow 0 // usedk\mathrm{used}_{k} is the number of times policy
+πk\pi_{k} was used
+6:  end for
+7:  c←t\mathrm{c}\leftarrow t // c\mathrm{c} is the index of the policy currently being used
+8:  𝐳at←\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}^{t}_{a}\leftarrow small random initial values
+9:  curr​_​score←0\mathrm{curr\_score}\leftarrow 0
+10:  new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+11:  for i←1,2,…,num​_​stepsi\leftarrow 1,2,...,\mathrm{num\_steps} do
+12:   if new​_​episode\mathrm{new\_episode} then
+13:    scorec←scorec×usedc+curr​_​scoreusedc+1\mathrm{score}_{\mathrm{c}}\leftarrow\dfrac{\mathrm
+{score}_{\mathrm{c}}\times\mathrm{used}_{\mathrm{c}}+\mathrm{curr\_score}}{\mathrm{used}_{\mathrm
+{c}}+1} // Update score for policy currently being used
+14:    for k←1,2,…,tk\leftarrow 1,2,...,t do pk←eτ×scorek/∑j=1teτ×scorejp_{k}\leftarrow e^{\tau\
+times\mathrm{score}_{k}}/{\sum_{j=1}^{t}e^{\tau\times\mathrm{score}_{j}}} // Turn scores into
+probabilities
+15:    c∼Multinomial⁡(p1,p2,…,pt)c\sim\mathrm{Multinomial}(p_{1},p_{2},...,p_{t}) // Select policy
+cc with probability pcp_{c}
+16:    usedc←usedc+1\mathrm{used}_{\mathrm{c}}\leftarrow\mathrm{used}_{\mathrm{c}}+1 // Update
+number of times policy πc\pi_{c} has been used
+17:    curr​_​score←0\mathrm{curr\_score}\leftarrow 0
+18:    new​_​episode←false\mathrm{new\_episode}\leftarrow\mathrm{false}
+19:    s←s\leftarrow initial state
+20:   end if
+21:   if t≠ct\neq c then use​_​prev​_​policy∼Bernoulli⁡(η)\mathrm{use\_prev\_policy}\sim\mathrm
+{Bernoulli}(\eta) else use​_​prev​_​policy←false\mathrm{use\_prev\_policy}\leftarrow\mathrm{false}
+22:   if use​_​prev​_​policy\mathrm{use\_prev\_policy} then // Action will be selected by πc\pi_
+{c}, the policy being reused
+23:    a←argmaxa′​Qc​(s,a′)a\leftarrow\mathrm{argmax}_{a^{\prime}}Q_{\mathrm{c}}(s,a^{\prime})
+24:   else // Action will be selected by πc\pi_{c}, the most recent policy
+25:    sel​_​rand​_​a∼Bernoulli⁡(ϵ)\mathrm{sel\_rand\_a}\sim\mathrm{Bernoulli}(\epsilon)
+26:    if sel​_​rand​_​a\mathrm{sel\_rand\_a} then a∼Uniform⁡({1,2,…,|A|})a\sim\mathrm{Uniform}\
+left(\{1,2,...,|A|\}\right) else a←argmaxa′​Qt​(s,a′)a\leftarrow\mathrm{argmax}_{a^{\prime}}Q_{t}
+(s,a^{\prime})
+27: // ϵ\epsilon-greedy exploration strategy
+28:   end if
+29:   Take action aa and observe reward rr and next state s′s^{\prime}
+30:   if s′s^{\prime} is a terminal state then
+31:    γ←0\gamma\leftarrow 0
+32:    new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+33:   end if
+34:   𝐳at←𝐳at+α⁡(r+γ​maxa′​Qt​(s′,a′)−Qt​(s,a))​∇𝐳Qt​(s,a)\boldsymbol{\mathrm{\boldsymbol{\mathrm
+{z}}}}^{t}_{a}\leftarrow\boldsymbol{\mathrm{\boldsymbol{\mathrm{z}}}}^{t}_{a}+\alpha{\left(r+\gamma
+\max_{a^{\prime}}Q_{t}(s^{\prime},a^{\prime})-Q_{t}(s,a)\right)}\nabla_{\boldsymbol{\mathrm{\
+boldsymbol{\mathrm{z}}}}}Q_{t}(s,a)
+35: // For Qt​(s,a)=𝝋​(s)⊤​𝐳atQ_{t}(s,a)=\boldsymbol{\mathrm{\varphi}}(s)^{\top}\boldsymbol{\mathrm
+{\boldsymbol{\mathrm{z}}}}^{t}_{a}, ∇𝐳Qt​(s,a)=𝝋⁡(s)\nabla_{\boldsymbol{\mathrm{\boldsymbol{\mathrm
+{z}}}}}Q_{t}(s,a)=\boldsymbol{\mathrm{\varphi}}(s)
+36:   curr​_​score←curr​_​score+r\mathrm{curr\_score}\leftarrow\mathrm{curr\_score}+r
+37:   s←s′s\leftarrow s^{\prime}
+38:  end for
+39: end for
+
+
+Algorithm 3 SFQL
+1:
+
+         ϵ\epsilon          exploration parameter for ϵ\epsilon-greedy strategy
+          α\alpha           learning rate for 𝝍\boldsymbol{\mathrm{\psi}}’s parameters
+       αw\alpha_{w}         learning rate for 𝐰\boldsymbol{\mathrm{w}}
+ϕ\boldsymbol{\mathrm{\phi}} features to be predicted by SFs
+
+2: for t←1,2,…,num​_​taskst\leftarrow 1,2,...,\mathrm{num\_tasks} do
+3:  𝐰t←\boldsymbol{\mathrm{w}}_{t}\leftarrow small random initial values
+4:  𝐙at←\boldsymbol{\mathrm{Z}}^{t}_{a}\leftarrow small random initial values in ℝD×h\mathbb{R}^{D\
+times h} if t=1t=1 else 𝐙at−1\boldsymbol{\mathrm{Z}}^{t-1}_{a}
+5: // The k^th column of 𝐙at\boldsymbol{\mathrm{Z}}^{t}_{a}, 𝐳at​k\boldsymbol{\mathrm{z}}^{tk}_{a},
+are the parameters of the k^th component of 𝝍~t\tilde{\boldsymbol{\mathrm{\psi}}}_{t}, (𝝍~t)k≡𝝍~t​k
+(\tilde{\boldsymbol{\mathrm{\psi}}}_{t})_{k}\equiv\tilde{\boldsymbol{\mathrm{\psi}}}_{tk}
+6:  new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+7:  for i←1,2,…,num​_​stepsi\leftarrow 1,2,...,\mathrm{num\_steps} do
+8:   if new​_​episode\mathrm{new\_episode} then
+9:    new​_​episode←false\mathrm{new\_episode}\leftarrow\mathrm{false}
+10:    s←s\leftarrow initial state
+11:   end if
+12:   c←argmaxk∈{1,2,…,t}​maxb​𝝍~k​(s,b)⊤​𝐰tc\leftarrow\mathrm{argmax}_{k\in\{1,2,...,t\}}\max_{b}\
+tilde{\boldsymbol{\mathrm{\psi}}}_{k}(s,b)^{\top}\boldsymbol{\mathrm{w}}_{t}
+13: // cc is the index of the 𝝍~\tilde{\boldsymbol{\mathrm{\psi}}} associated with the largest
+value in ss
+14:   sel​_​rand​_​a∼Bernoulli⁡(ϵ)\mathrm{sel\_rand\_a}\sim\mathrm{Bernoulli}(\epsilon) // Sample
+from a Bernoulli distribution with parameter ϵ\epsilon
+15:   if sel​_​rand​_​a\mathrm{sel\_rand\_a} then a∼Uniform⁡({1,2,…,|A|})a\sim\mathrm{Uniform}\left
+(\{1,2,...,|A|\}\right) // ϵ\epsilon-greedy exploration strategy
+16:   else a←argmaxb​𝝍~c​(s,b)⊤​𝐰ta\leftarrow\mathrm{argmax}_{b}\tilde{\boldsymbol{\mathrm{\psi}}}_
+{c}(s,b)^{\top}\boldsymbol{\mathrm{w}}_{t}
+17:   Take action aa and observe reward rr and next state s′s^{\prime}
+18:   if s′s^{\prime} is a terminal state then
+19:    γ←0\gamma\leftarrow 0
+20:    new​_​episode←true\mathrm{new\_episode}\leftarrow\mathrm{true}
+21:   else
+22:    a′←argmaxb​maxk∈{1,2,…,t}​𝝍~k​(s′,b)⊤​𝐰ta^{\prime}\leftarrow\mathrm{argmax}_{b}\max_{k\in\
+{1,2,...,t\}}\tilde{\boldsymbol{\mathrm{\psi}}}_{k}(s^{\prime},b)^{\top}\boldsymbol{\mathrm{w}}_{t}
+// a′a^{\prime} is the action with the highest value in s′s^{\prime}
+23:   end if
+24:   𝐰t←𝐰t+αw​[r−ϕ​(s,a,s′)⊤​𝐰]​ϕ​(s,a,s′)\boldsymbol{\mathrm{w}}_{t}\leftarrow\boldsymbol{\mathrm
+{w}}_{t}+\alpha_{w}{\left[r-\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime})^{\top}\boldsymbol{\mathrm
+{w}}\right]}\boldsymbol{\mathrm{\phi}}(s,a,s^{\prime}) // Update 𝐰\boldsymbol{\mathrm{w}}
+25:   for k←1,2,…,dk\leftarrow 1,2,...,d do
+26:    𝐳at​k←𝐳at​k+α⁡[ϕk​(s,a,s′)+γ​𝝍~t​k​(s′,a′)−𝝍~t​k​(s,a)]​∇𝐳𝝍~t​k​(s,a)\boldsymbol{\mathrm{z}}
+^{tk}_{a}\leftarrow\boldsymbol{\mathrm{z}}^{tk}_{a}+\alpha{\left[\boldsymbol{\mathrm{\phi}}_{k}
+(s,a,s^{\prime})+\gamma\tilde{\boldsymbol{\mathrm{\psi}}}_{tk}(s^{\prime},a^{\prime})-\tilde{\
+boldsymbol{\mathrm{\psi}}}_{tk}(s,a)\right]}\nabla_{\boldsymbol{\mathrm{z}}}\tilde{\boldsymbol{\
+mathrm{\psi}}}_{tk}(s,a)
+27: // For 𝝍~t​(s,a)=𝝋​(s)⊤​𝐙at\tilde{\boldsymbol{\mathrm{\psi}}}_{t}(s,a)=\boldsymbol{\mathrm{\
+varphi}}(s)^{\top}\boldsymbol{\mathrm{Z}}^{t}_{a}, ∇𝐳𝝍~t​k​(s,a)=𝝋⁡(s)\nabla_{\boldsymbol{\mathrm{\
+boldsymbol{\mathrm{z}}}}}\tilde{\boldsymbol{\mathrm{\psi}}}_{tk}(s,a)=\boldsymbol{\mathrm{\varphi}}
+(s)
+28:   end for
+29:   if c≠tc\neq t then
+30:    a′←argmaxb​𝝍~c​(s′,b)⊤​𝐰ca^{\prime}\leftarrow\mathrm{argmax}_{b}\tilde{\boldsymbol{\mathrm{\
+psi}}}_{c}(s^{\prime},b)^{\top}\boldsymbol{\mathrm{w}}_{c} // a′a^{\prime} is selected according to
+reward function induced by 𝐰c\boldsymbol{\mathrm{w}}_{c}
+31:    for k←1,2,…,dk\leftarrow 1,2,...,d do
+32:     𝐳ac​k←𝐳ac​k+α⁡[ϕk​(s,a,s′)+γ​𝝍~c​k​(s′,a′)−𝝍~c​k​(s,a)]​∇𝐳𝝍~c​k​(s,a)\boldsymbol{\mathrm
+{z}}^{ck}_{a}\leftarrow\boldsymbol{\mathrm{z}}^{ck}_{a}+\alpha{\left[\boldsymbol{\mathrm{\phi}}_{k}
+(s,a,s^{\prime})+\gamma\tilde{\boldsymbol{\mathrm{\psi}}}_{ck}(s^{\prime},a^{\prime})-\tilde{\
+boldsymbol{\mathrm{\psi}}}_{ck}(s,a)\right]}\nabla_{\boldsymbol{\mathrm{z}}}\tilde{\boldsymbol{\
+mathrm{\psi}}}_{ck}(s,a) // Update 𝝍~c\tilde{\boldsymbol{\mathrm{\psi}}}_{c}
+33:    end for
+34:   end if
+35:   s←s′s\leftarrow s^{\prime}
+36:  end for
+37: end for
+
+SFQL
+
+We now discuss some characteristics of the specific SFQL algorithm used in the experiments. First,
+note that errors in the value-function approximation can potentially have a negative effect on GPI,
+since an overestimated Q~πi​(s,a)\tilde{Q}^{\pi_{i}}(s,a) may be the function determining the
+action selected by π\pi in (7). One way of keeping this phenomenon from occurring indefinitely is
+to continue to update the functions Q~πi​(s,a)\tilde{Q}^{\pi_{i}}(s,a) that are relevant for action
+selection. In the context of SFs this corresponds to constantly refining 𝝍~πi\tilde{\boldsymbol{\
+mathrm{\psi}}}^{\pi_{i}}, which can be done as long as we have access to πi\pi_{i}. In the scenario
+considered here we can recover πi\pi_{i} by keeping the weights 𝐰~i\tilde{\boldsymbol{\mathrm{w}}}_
+{i} used to learn the SFs 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}} (line 3 of Algorithm 3).
+Note that with this information one can easily update any 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\
+pi_{i}} off-policy; as shown in lines 29–34 of Algorithm 3, in the version of SFQL used in the
+experiments we always update the 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}} that achieves the
+maximum in (7) (line 12 of the pseudo-code).
+
+Next we discuss the details of how 𝐰~\tilde{\boldsymbol{\mathrm{w}}} and 𝝍~π\tilde{\boldsymbol{\
+mathrm{\psi}}}^{\pi} are learned. We start by showing the loss function used to compute 𝐰~\tilde{\
+boldsymbol{\mathrm{w}}}:
+
+ Lw​(𝐰~)=E(s,a,s′)∼𝒟​[(r⁡(s,a,s′)−ϕ~​(s,a,s′)⊤​𝐰~)2],\mathrm{L}_{w}(\tilde{\boldsymbol{\
+ mathrm{w}}})=\mathrm{E}_{(s,a,s^{\prime})\sim\mathcal{D}}\left[\left(r(s,a,s^{\prime})-\      (16)
+ tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime})^{\top}\tilde{\boldsymbol{\mathrm{w}}}\
+ right)^{2}\right],
+
+where 𝒟\mathcal{D} is a distribution over 𝒮×𝒜×𝒮\mathcal{S}\times\mathcal{A}\times\mathcal{S} which
+in RL is usually the result of executing a policy under the environment’s dynamics p(⋅|s,a)p(\cdot|
+s,a). The minimization of (16) is done in line 24 of Algorithm 3. As discussed, SFQL keeps a set of
+𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}, each one associated with a policy πi\pi_{i}. The
+loss function used to compute each 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}} is
+
+ LZ​(𝝍~πi)≡LZ​(𝐙aπi)=E(s,a,s′)∼𝒟​[(ϕ~​(s,a,s′)+γ​𝝍~πi​(s′,a′)−𝝍~πi​(s,a))2]=E(s,a,s′)∼𝒟​[(ϕ~​
+ (s,a,s′)+γ​𝝋​(s′)⊤​𝐙a′πi−𝝋​(s)⊤​𝐙aπi)2],\begin{array}[]{cl}\mathrm{L}_{Z}(\tilde{\boldsymbol
+ {\mathrm{\psi}}}^{\pi_{i}})\equiv\mathrm{L}_{Z}(\boldsymbol{\mathrm{Z}}^{\pi_{i}}_{a})&=\
+ mathrm{E}_{(s,a,s^{\prime})\sim\mathcal{D}}\left[\left(\tilde{\boldsymbol{\mathrm{\phi}}}
+ (s,a,s^{\prime})+\gamma\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}(s^{\prime},a^{\prime})-\  (17)
+ tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}(s,a)\right)^{2}\right]\\ &=\mathrm{E}_{(s,a,s^{\
+ prime})\sim\mathcal{D}}\left[\left(\tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime})+\gamma
+ \boldsymbol{\mathrm{\varphi}}(s^{\prime})^{\top}\boldsymbol{\mathrm{Z}}^{\pi_{i}}_{a^{\
+ prime}}-\boldsymbol{\mathrm{\varphi}}(s)^{\top}\boldsymbol{\mathrm{Z}}^{\pi_{i}}_{a}\right)^
+ {2}\right],\\ \end{array}
+
+where a′=argmaxb​Q~πi​(s′,b)=argmaxb​𝝍~πi​(s′,b)⊤​𝐰~a^{\prime}=\mathrm{argmax}_{b}\tilde{Q}^{\pi_
+{i}}(s^{\prime},b)=\mathrm{argmax}_{b}\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}(s^{\prime},b)^{\
+top}\tilde{\boldsymbol{\mathrm{w}}}. Note that the policy that induces 𝒟\mathcal{D} is not
+necessarily πi\pi_{i}—that is, 𝝍~πi​(s,a)\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}(s,a) can be
+learned off-policy, as discussed above. As usual in RL, the target ϕ~​(s,a,s′)+γ​𝝋​(s′)⊤​𝐙a′πi\
+tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime})+\gamma\boldsymbol{\mathrm{\varphi}}(s^{\prime})^
+{\top}\boldsymbol{\mathrm{Z}}^{\pi_{i}}_{a^{\prime}} is considered fixed, i.e., the loss LZ\mathrm
+{L}_{Z} is minimized with respect to 𝐙aπi\boldsymbol{\mathrm{Z}}^{\pi_{i}}_{a} only. The
+minimization of (17) is done in lines 26 and 32 of Algorithm 3.
+
+As discussed in Section 5, we used two versions of SFQL in our experiments. In the first one,
+SFQL-ϕ\boldsymbol{\mathrm{\phi}}, we assume that the agent knows how to construct a vector of
+features ϕ\boldsymbol{\mathrm{\phi}} that perfectly predicts the reward for all tasks MM in the
+environment ℳϕ\mathcal{M}^{\phi}. The other version of our algorithm, SFQL-hh, uses an approximate
+ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} learned from data. We now give details of how ϕ~\tilde{\
+boldsymbol{\mathrm{\phi}}} was computed in this case. In order to learn ϕ~\tilde{\boldsymbol{\
+mathrm{\phi}}}, we used the samples (si,ai,ri,si′)t(s_{i},a_{i},r_{i},s^{\prime}_{i})_{t} collected
+by QL in the first t=1,2,…,20t=1,2,...,20 tasks. Since this results in an unbalanced dataset in
+which most of the transitions have ri=0r_{i}=0, we kept all the samples with ri≠0r_{i}\neq 0 and
+discarded 75%75\% of the remaining samples. We then used the resulting dataset to minimize the
+following loss:
+
+ LH​(ϕ~)≡LH​(𝐇,𝐰t)=E(s,s′,r)∼𝒟t′​[(ς​(𝝋​(s,s′)⊤​𝐇)⊤​𝐰t−r)2]​ for ​t=1,2,…,20,\begin{array}[]
+ {cl}\mathrm{L}_{H}(\tilde{\boldsymbol{\mathrm{\phi}}})\equiv\mathrm{L}_{H}(\boldsymbol{\
+ mathrm{H}},\boldsymbol{\mathrm{w}}_{t})=\mathrm{E}_{(s,s^{\prime},r)\sim\mathcal{D}^{\prime}  (18)
+ _{t}}\left[\left(\varsigma(\boldsymbol{\mathrm{\varphi}}(s,s^{\prime})^{\top}\boldsymbol{\
+ mathrm{H}})^{\top}\boldsymbol{\mathrm{w}}_{t}-r\right)^{2}\right]\;\text{ for }t=1,2,...,20,
+ \\ \end{array}
+
+where 𝒟t′\mathcal{D}^{\prime}_{t} reflects the down-sampling of zero rewards. The vector of
+features 𝝋⁡(s,s′)\boldsymbol{\mathrm{\varphi}}(s,s^{\prime}) is the concatenation of 𝝋⁡(s)\
+boldsymbol{\mathrm{\varphi}}(s) and 𝝋⁡(s′)\boldsymbol{\mathrm{\varphi}}(s^{\prime}), and ς⁡(⋅)\
+varsigma(\cdot) is a sigmoid function applied element-wise. We note that 𝐨⁡(s′)=𝝋i​(s′)−𝝋i​(s)\
+boldsymbol{\mathrm{o}}(s^{\prime})=\boldsymbol{\mathrm{\varphi}}_{i}(s^{\prime})-\boldsymbol{\
+mathrm{\varphi}}_{i}(s), from which it is possible to compute an “exact” ϕ~=ϕ\tilde{\boldsymbol{\
+mathrm{\phi}}}=\boldsymbol{\mathrm{\phi}}. In order to minimize (18) we used the multi-task
+framework proposed by Caruana [6]. Simply put, Caruana’s [6] approach consists in looking at ς​(𝝋​
+(s,s′)⊤​𝐇)⊤​𝐰t\varsigma(\boldsymbol{\mathrm{\varphi}}(s,s^{\prime})^{\top}\boldsymbol{\mathrm{H}})^
+{\top}\boldsymbol{\mathrm{w}}_{t} as a neural network with one hidden layer and 2020 outputs, that
+is, 𝐰~\tilde{\boldsymbol{\mathrm{w}}} is replaced with 𝐖~∈ℝh×20\tilde{\boldsymbol{\mathrm{W}}}\in\
+mathbb{R}^{h\times 20} and a reward rr received in the t^th task is extended into a
+2020-dimensional vector in which the t^th component is rr and all other components are zero. One
+can then minimize (18) with respect to the parameters 𝐇\boldsymbol{\mathrm{H}} and 𝐰t\boldsymbol{\
+mathrm{w}}_{t} through gradient descent.
+
+Although this strategy of using the kk first tasks to learn ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} is
+feasible, in practice one may want to replace this arbitrary decision with a more adaptive
+approach, such as updating ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} online until a certain stop
+criterion is satisfied. Note though that a significant change in ϕ~\tilde{\boldsymbol{\mathrm{\
+phi}}} renders the SFs 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}} outdated, and thus the
+benefits of refining the former should be weighed against the overhead of constantly updating the
+latter, potentially off-policy.
+
+As one can see in this section, we tried to keep the methods as simple as possible in order to not
+obfuscate the main message of the paper, which is not to propose any particular algorithm but
+rather to present a general framework for transfer based on the combination of SFs and GPI.
+
+B.1.3 Experimental setup
+
+In this section we describe the precise protocol adopted to carry out our experiments. Our initial
+step was to use QL, the basic algorithm behind all three algorithms, to make some decisions that
+apply to all of them. First, in order to define the features 𝝋⁡(s)\boldsymbol{\mathrm{\varphi}}(s)
+used by the algorithms, we checked the performance of QL when using different configurations of the
+vector 𝝋p​(s)\boldsymbol{\mathrm{\varphi}}_{p}(s) giving the position of the agent. Specifically,
+we tried two-dimensional grids of Gaussians with 55, 1010, 1515, and 2020 functions per dimension.
+Since the improvement in QL’s performance when using a number of functions larger than 1010 was not
+very significant, we adopted a 10×1010\times 10 grid of Gaussians in our experiments. We also
+varied the value of the parameter σ\sigma appearing in (15) in the set {0.01,0.1,0.3}\{0.01,0.1,0.3
+\}. Here the best performance of QL was obtained with σ=0.1\sigma=0.1, which was then the value
+adopted throughout the experiments. The parameter ϵ\epsilon used for ϵ\epsilon-greedy exploration
+was also set based on QL’s performance. Specifically, we varied ϵ\epsilon in the set {0.15,0.2,0.3}
+\{0.15,0.2,0.3\} and verified that the best results were obtained with ϵ=0.15\epsilon=0.15 (we
+tried relatively large values for ϵ\epsilon because of the non-stationarity of the underlying
+environment). Finally, we tested two variants of QL: one that resets the weights 𝐳aπ\boldsymbol{\
+mathrm{\boldsymbol{\mathrm{z}}}}^{\pi}_{a} every time a new task starts, as in line 3 of Algorithm 
+1, and one that keeps the old values. Since the performance of the former was significantly better,
+we adopted this strategy for all algorithms.
+
+QL, PRQL, and SFQL depend on different sets of parameters, as shown in Algorithms 1, 2, and 3. In
+order to properly configure the algorithms we tried three different values for each parameter and
+checked the performance of the corresponding agents under each resulting configuration.
+Specifically, we tried the following sets of values for each parameter:
+
+ Parameter     Algorithms                Values
+  α\alpha    QL, PRQL, SFQL {0.01,0.05,0.1}\{0.01,0.05,0.1\}
+αw\alpha_{w} SFQL           {0.01,0.05,0.1}\{0.01,0.05,0.1\}
+   η\eta     PRQL           {0.1,0.3,0.5}\{0.1,0.3,0.5\}
+   τ\tau     PRQL           {1,10,100}\{1,10,100\}
+
+The cross-product of the values above resulted in 33 configurations of QL, 2727 configurations of
+PRQL, and 99 configurations of SFQL. The results reported correspond to the best performance of
+each algorithm, that is, for each algorithm we picked the configuration that lead to the highest
+average return over all tasks.
+
+B.2 Reacher environment
+
+B.2.1 Environment
+
+The reacher environment is a two-joint torque-controlled robotic arm simulated using the MuJoCo
+physics engine [26]. It is based on one of the domains used by Lillicrap et al. [12]. This is a
+particularly appropriate domain to illustrate our ideas because it is straightforward to define
+multiple tasks (goal locations) sharing the same dynamics.
+
+The problem’s state space 𝒮⊂ℝ4\mathcal{S}\subset\mathbb{R}^{4} is composed of the angle and angular
+velocities of the two joints. The two-dimensional continuous action space 𝒜\mathcal{A} was
+discretized using 33 values per dimension (maximum positive, maximum negative or zero torque for
+each actuator), resulting in a total of 99 discrete actions. We adopted a discount factor of γ=0.9\
+gamma=0.9.
+
+The reward received at each time step was −δ-\delta, where δ\delta is the Euclidean distance
+between the target position and the tip of the arm. The start state at each episode was defined as
+follows during training: the inner joint angle was sampled from an uniform distribution over
+[0,2​π][0,2\pi], the outer joint was sampled from an uniform distribution over {−π/2,π/2}\{-\pi/2,\
+pi/2\}, and both angular velocities were set to 00 (during the evaluation phase two fixed start
+states were used—see below). We used a time step of 0.020.02s and episodes lasted for 1010s (500500
+time steps). We defined 1212 target locations, 44 of which we used for training and 88 were
+reserved for testing (see Figure 3).
+
+B.2.2 Algorithms
+
+The baseline method used for comparisons in the reacher domain was the DQN algorithm by Mnih et al.
+[15]. In order to make it possible for DQN to generalize across tasks we provided the target
+locations as part of the state description. The action-value function Q~\tilde{Q} was represented
+by a multi-layer perceptron (MLP) with two hidden layers of 256256 linear units followed by tanh\
+tanh non-linearities. The output of the network was a vector in ℝ9\mathbb{R}^{9} with the estimated
+value associated with each action. The replay buffer adopted was large enough to retain all the
+transitions seen by the agent—that is, we never removed transitions from the buffer (this helps
+prevent DQN from “forgetting” previously seen tasks when learning new ones). Each value-function
+update used a mini-batch of 3232 transitions sampled uniformly from the replay buffer, and the
+associated minimization (line 18 of Algorithm 1) was carried out using the Adam optimizer with a
+learning rate of 10−310^{-3} [1].
+
+SFDQN is similar to SFQL, whose pseudo-code is shown in Algorithm 3, with a few modifications to
+make learning with nonlinear function approximators more stable. The vector of features ϕ∈ℝ12\
+boldsymbol{\mathrm{\phi}}\in\mathbb{R}^{12} used by SFDQN was composed of the negation of the
+distances to all target locations.^3^3 3 In fact, instead of the negation of the distances −δ-\
+delta we used 1−δ1-\delta in the definition of both the rewards and the features ϕi\boldsymbol{\
+mathrm{\phi}}_{i}. Since in our domain δ<1\delta<1, this change made the rewards always positive.
+This helps preventing randomly-initialized value function approximations from dominating the ‘max\
+max’ operation in (7). We used a separate MLP to represent each of the four 𝝍~i\tilde{\boldsymbol{\
+mathrm{\psi}}}_{i}. The MLP architecture was the same as the one adopted with DQN, except that in
+this case the output of the network was a matrix 𝚿~i∈ℝ9×12\tilde{\boldsymbol{\mathrm{\Psi}}}_{i}\in
+\mathbb{R}^{9\times 12} representing 𝝍~i​(s,a)∈ℝ12\tilde{\boldsymbol{\mathrm{\psi}}}_{i}(s,a)\in\
+mathbb{R}^{12} for each a∈𝒜a\in\mathcal{A}. This means that the parameters 𝐙i\boldsymbol{\mathrm
+{Z}}_{i} in Algorithm 3 should now be interpreted as weights of a nonlinear neural network. The
+final output of the network was computed as 𝝍~i⊤𝐰t\tilde{\boldsymbol{\mathrm{\psi}}}_{i}^{{}_{\
+top}}\boldsymbol{\mathrm{w}}_{t}, where 𝐰t∈ℝ12\boldsymbol{\mathrm{w}}_{t}\in\mathbb{R}^{12} is an
+one-hot vector indicating the task tt currently active. Analogously to the the target locations
+given as inputs to DQN, here we assume that 𝐰t\boldsymbol{\mathrm{w}}_{t} is provided by the
+environment. Again making the connection with Algorithm 3, this means that line 24 would be
+skipped.
+
+Following Mnih et al. [15], in order to make the training of the neural network more stable we
+updated 𝝍~\tilde{\boldsymbol{\mathrm{\psi}}} using a target network. This corresponds to replacing
+(17) with the following loss:
+
+ LZ(𝝍~πi)≡LZ(𝐙πi)=E(s,a,s′)∼𝒟[(ϕ(s,a,s′)+γ𝝍~−πi(s′,a′)−𝝍~πi(s,a))2],\begin{array}[]{cl}\mathrm{L}_
+ {Z}(\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}})\equiv\mathrm{L}_{Z}(\boldsymbol{\mathrm{Z}}^{\
+ pi_{i}})=\mathrm{E}_{(s,a,s^{\prime})\sim\mathcal{D}}\left[\left(\boldsymbol{\mathrm{\phi}}(s,a,s
+ ^{\prime})+\gamma\tilde{\boldsymbol{\mathrm{\psi}}}_{{}^{-}}^{\pi_{i}}(s^{\prime},a^{\prime})-\
+ tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}(s,a)\right)^{2}\right],\end{array}
+
+where 𝝍~−πi\tilde{\boldsymbol{\mathrm{\psi}}}_{{}^{-}}^{\pi_{i}} is a target network that remained
+fixed during updates and was periodically replaced by 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_
+{i}} at every 10001000 steps (the same configuration used for DQN). For each transition we updated
+all four MLPs 𝝍~i\tilde{\boldsymbol{\mathrm{\psi}}}_{i} in order to minimize losses derived from (4
+). As explained in Section 5, the policies πi​(s)\pi_{i}(s) used in (4) were the GPI policies
+associated with each training task, πi​(s)∈argmaxa​maxj​𝝍~j​(s,a)⊤​𝐰i\pi_{i}(s)\in\mathrm{argmax}_
+{a}\max_{j}\tilde{\boldsymbol{\mathrm{\psi}}}_{j}(s,a)^{\top}\boldsymbol{\mathrm{w}}_{i}. An easy
+way to modify Algorithm 3) to reflect this update strategy would be to select the action a′a^{\
+prime} in line 30 using πi​(s)\pi_{i}(s) and then repeat the block in lines 29–34 for all 𝐰i\
+boldsymbol{\mathrm{w}}_{i}, with i∈{1,2,3,4}i\in\{1,2,3,4\} and i≠ti\neq t, where tt is the current
+task.
+
+B.2.3 Experimental setup
+
+The agents were trained for 200 000200\,000 transitions on each of the 44 training tasks. Data was
+collected using an ϵ\epsilon-greedy policy with ϵ=0.1\epsilon=0.1 (for SFDQN, this corresponds to
+lines 15 and 16 of Algorithm 3). As is common in fixed episode-length control tasks, we excluded
+the terminal transitions during training to make the value of states independent of time, which
+corresponds to learning continuing policies [12].
+
+During the entire learning process we monitored the performance of the agents on all 1212 tasks
+when using an ϵ\epsilon-greedy policy with ϵ=0.03\epsilon=0.03. The results shown in Figure 3
+reflect the performance of this policy. Specifically, the return shown in the figure is the sum of
+rewards received by the 0.030.03-greedy policy over two episodes starting from fixed states. Since
+the maximum possible return varies across tasks, we normalized the returns per task based on the
+performance of standard DQN on separate experiments (this is true for both training and test
+tasks). Specifically, we carried out the normalization as follows. First, we ran DQN 3030 times on
+each task and recorded the algorithm’s performance before and after training. Let G¯b\bar{G}_{b}
+and G¯a\bar{G}_{a} be the average performance of DQN over the 3030 runs before and after training,
+respectively. Then, if during our actual experiments DQN or SFDQN got a return of GG, the
+normalized version of this metric was obtained as Gn=(G−G¯b)/(G¯a−G¯b)G_{n}=(G-\bar{G}_{b})/(\bar
+{G}_{a}-\bar{G}_{b}). These are the values shown in Figure 3. Visual inspection of videos extracted
+from the experiments with DQN alone suggests that the returns used for normalization were obtained
+by near-optimal policies that reach the targets almost directly.
+
+Appendix C Additional empirical analysis
+
+In this section we report empirical results that had to be left out of the main paper due to the
+space limit. Specifically, the objective of the experiments described here is to provide a deeper
+understanding of SFQL, in particular, and of SFs, more generally. We use the four-room environment
+to carry out our empirical investigation.
+
+C.1 Understanding the types of transfer promoted by SFs
+
+We start by asking why exactly SFQL performed so much better than QL and PRQL in our experiments
+(see Figure 2). Note that there are several possible reasons for that to be the case. As shown in (
+3), SFQL uses a decoupled representation of the value function in which the environment’s dynamics
+are dissociated from the rewards. If the reward function of a given environment can be
+non-trivially decomposed in the form (2) assumed by SFQL, the algorithm can potentially build on
+this knowledge to quickly learn the value function and to adapt to changes in the environment, as
+discussed in Section 3. In our experiments not only did we know that such a non-trivial
+decomposition exists, we actually provided such an information to SFQL— either directly, through a
+handcrafted ϕ\boldsymbol{\mathrm{\phi}}, or indirectly, by providing features that allow for ϕ\
+boldsymbol{\mathrm{\phi}} to be recovered exactly. Although this fact should help explain the good
+results of SFQL, it does not seem to be the main reason for the difference in performance. Observe
+in Figure 2 how the advantage of SFQL over the other methods only starts to show up in the second
+task, and it only becomes apparent from the third task on. This suggests that the the algorithm’s
+good performance is indeed due to some form of transfer.
+
+But what kind of transfer, exactly? We note that SFQL naturally promotes two forms of transfer. The
+first one is of course a consequence of GPI. As discussed in the paper, SFQL applies GPI by storing
+a set of SFs 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}. Note though that SFs promote a
+weaker form of transfer even when only a single 𝝍~π\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi} exists.
+To see why this is so, observe that if 𝝍~π\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi} persists from
+task tt to t+1t+1, instead of arbitrary approximations Q~π\tilde{Q}^{\pi} one will have reasonable
+estimates of π\pi’s value function under the current 𝐰~\tilde{\boldsymbol{\mathrm{w}}}. In other
+words, 𝝍~π\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi} will transfer knowledge about π\pi from one task
+to the other.
+
+In order to have a better understanding of the two types of transfer promoted by SFs, we carried
+out experiments in which we tried to isolate as much as possible each one of them. Specifically, we
+repeated the experiments shown in Figure 2 but now running SFQL with and without GPI (we can turn
+off GPI by replacing cc with tt in line 12 of Algorithm 3).
+
+Refer to caption
+Figure 4: Understanding how much each type of transfer promoted by SFs helps in performance.
+Results averaged over 3030 runs; standard errors are shown as shadowed regions but are almost
+imperceptible at this scale. PRQL’s results are shown for reference.
+
+The results of our experiments are shown in Figure 4. It is interesting to note that even without
+GPI SFQL initially outperforms PRQL. This is probably the combined effect of the two factors
+discussed above: the decoupled representation of the value function plus the weak transfer promoted
+by 𝝍~π\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi}. Note though that, although these factors do give
+SFQL a head-start, eventually both algorithms reach the same performance level, as clear by the
+slope of the respective curves. In contrast, SFQL with GPI consistently outperforms the other two
+methods, which is evidence in favor of the hypothesis that GPI is indeed a crucial component of the
+proposed approach. Another evidence in this direction is given in Figure 5, which shows all the
+functions computed by the SFQL agent. Note how after only 200200 transitions into a new task SFQL
+already has a good approximation of the reward function, which, combined with the set of previously
+computed 𝝍~πi\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{i}}, with i<ti<t, provide a very informative
+value function even without the current 𝝍~πt\tilde{\boldsymbol{\mathrm{\psi}}}^{\pi_{t}}.
+
+Refer to caption              Refer to caption                  Refer to caption                   
+Refer to caption              Refer to caption                  Refer to caption                   
+Refer to caption              Refer to caption                  Refer to caption                   
+ϕ~​(s,a,s′)⊤​𝐰~t\tilde{\      maxa,i<t⁡𝝍~i​(s,a)⊤​𝐰~t\max\      maxa,i≤t⁡𝝍~i​(s,a)⊤​𝐰~t\max\       
+boldsymbol{\mathrm{\phi}}}    limits_{a,i<t}\tilde{\boldsymbol  limits_{a,i\leq t}\tilde{\
+(s,a,s^{\prime})^{\top}\tilde {\mathrm{\psi}}}_{i}(s,a)^{\top}\ boldsymbol{\mathrm{\psi}}}_{i}
+{\boldsymbol{\mathrm{w}}}_{t} tilde{\boldsymbol{\mathrm{w}}}_   (s,a)^{\top}\tilde{\boldsymbol{\
+                              {t}                               mathrm{w}}}_{t}
+
+
+Figure 5: Functions computed by SFQL after 200200 transitions into three randomly selected tasks
+(all objects present).
+
+C.2 Analyzing the robustness of SFs
+
+As discussed in the previous section, part of the benefits provided by SFs come from the decoupled
+representation of the value function shown in (3), which depends crucially on a decomposition of
+the reward function ϕ~​(s,a,s′)⊤​𝐰≈r⁡(s,a,s′)\tilde{\boldsymbol{\mathrm{\phi}}}(s,a,s^{\prime})^{\
+top}\boldsymbol{\mathrm{w}}\approx r(s,a,s^{\prime}). In Section 5 we illustrated two ways in which
+such a decomposition can be obtained: by handcrafting ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} based on
+prior knowledge about the environment or by learning it from data. When ϕ~\tilde{\boldsymbol{\
+mathrm{\phi}}} is learned it is obviously not reasonable to expect an exact decomposition of the
+reward function, but even when it is handcrafted the resulting reward model can be only an
+approximation (for example, the “object detector” used by the agents in the experiments with the
+four-room environment could be noisy). Regardless of the source of the imprecision, we do not want
+SFQL in particular, and more generally any method using SFs, to completely break with the addition
+of noise to ϕ~\tilde{\boldsymbol{\mathrm{\phi}}}. In Section 5 we saw how an approximate ϕ~\tilde{\
+boldsymbol{\mathrm{\phi}}} can in fact lead to very good performance. In this section we provide a
+more systematic investigation of this matter by analyzing the performance of SFQL with ϕ~\tilde{\
+boldsymbol{\mathrm{\phi}}} corrupted in different ways.
+
+
+Figure 6: Environment layout with additional objects. Spurious objects are represented as diamonds;
+numbers indicate the classes of the objects.
+
+Our first experiment consisted in adding spurious features to ϕ\boldsymbol{\mathrm{\phi}} that do
+not help in any way in the approximation of the reward function. This reflects the scenario where
+the agent’s set of predictions is a superset of the features needed to compute the reward (see in
+Section 6 the connection with Sutton et al.’s GVFs, 2011). In order to implement this, we added
+objects to our environment that always lead to zero reward—that is, even though the SFs 𝝍~π\tilde{\
+boldsymbol{\mathrm{\psi}}}^{\pi} learned by SFQL would predict the occurrence of these objects,
+such predictions would not help in the approximation of the reward function. Specifically, we added
+to our basic layout 1515 objects belonging to 66 classes, as shown in Figure 6, which means that in
+this case SFQL used a ϕ~∈ℝ10\tilde{\boldsymbol{\mathrm{\phi}}}\in\mathbb{R}^{10}. In addition to
+adding spurious features, we also corrupted ϕ~\tilde{\boldsymbol{\mathrm{\phi}}} by adding to each
+of its components, in each step, a sample from a normal distribution with mean zero and different
+standard deviations σ\sigma.
+
+The outcome of our experiment is shown in Figure 7. Overall, the results are as expected, with both
+spurious features and noise hurting the performance of SFQL. Interestingly, the two types of
+perturbations do not seem to interact very strongly, since their effects seem to combine in an
+additive way. More important, SFQL’s performance seems to degrade gracefully as a result of either
+intervention, which corroborate our previous experiments showing that the proposed approach is
+robust to approximation errors in ϕ~\tilde{\boldsymbol{\mathrm{\phi}}}.
+
+Refer to caption
+Figure 7: Analyzing SFQL’s robustness to distortions in ϕ~\tilde{\boldsymbol{\mathrm{\phi}}}.
+PRQL’s and QL’s results are shown for reference. Results averaged over 3030 runs; standard errors
+are shown on top of each bar.
+
+References
+
+  • [1] Diederik Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint
+    arXiv:1412.6980, 2014.
+  • [2] Alexander L. Strehl and Michael L. Littman. A theoretical analysis of model-based interval
+    estimation. In Proceedings of the International Conference on Machine Learning (ICML), pages
+    857–864, 2005.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

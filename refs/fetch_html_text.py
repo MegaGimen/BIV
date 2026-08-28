@@ -72,6 +72,22 @@ PAPERS: list[tuple[str, str]] = [
     ("1912.01603", "dreamer-v1"),
     ("1604.00289", "lake-think-like-people"),
     ("2102.11107", "causal-representation-learning"),
+    # Fill theory gaps: identifiability, explicit z, compile T→π
+    ("2202.03169", "citris-identifiability"),
+    ("2206.06169", "icitris"),
+    ("1907.04809", "ivae"),
+    ("1501.01332", "invariant-causal-prediction"),
+    ("2112.03321", "noether-networks"),
+    ("1906.02736", "deepmdp"),
+    ("2006.10742", "dbc-bisimulation"),
+    ("1907.00953", "slac"),
+    ("2206.15477", "denoised-mdp"),
+    ("2001.08837", "kg-a2c"),
+    ("2209.06356", "mdp-homomorphism-fb"),
+    ("1606.05312", "successor-features"),
+    ("1906.08253", "mbpo"),
+    ("1707.03497", "value-prediction-networks"),
+    ("1106.3538", "horde-gvf"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
