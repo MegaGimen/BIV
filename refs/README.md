@@ -82,7 +82,7 @@ WM vs agent 三条都不满足。
 - **GNS**（[2002.09405](https://arxiv.org/abs/2002.09405)）— 状态是粒子图，不是像素。
 - **NeuMA / DeformMaster**（[2410.08257](https://arxiv.org/abs/2410.08257), [2605.09586](https://arxiv.org/abs/2605.09586)）— \(\mathcal{M}=\mathcal{M}_0+\Delta\mathcal{M}\)：冻物理先验，残差/LoRA 只补未建模项。
 - **PhysGaussian / Physically Native WM**（[2311.12198](https://arxiv.org/abs/2311.12198), [2605.00412](https://arxiv.org/abs/2605.00412)）— 外观跟物理轨迹走；核心是潜动力学不是视频生成。
-- **Cosmos / PhyWorld / Phys4D**（[2501.03575](https://arxiv.org/abs/2501.03575), [2605.19242](https://arxiv.org/abs/2505.19242), [2603.03485](https://arxiv.org/abs/2603.03485)）— 外观预训练会幻觉物理，再用仿真监督把规律压进去。
+- **Cosmos / PhyWorld / Phys4D**（[2501.03575](https://arxiv.org/abs/2501.03575), [2605.19242](https://arxiv.org/abs/2605.19242), [2603.03485](https://arxiv.org/abs/2603.03485)）— 外观预训练会幻觉物理，再用仿真监督把规律压进去。
 - **PSG-JEPA**（[2608.06799](https://arxiv.org/abs/2608.06799)）— 只做前向预测不够，要用物理状态把 latent 钉住。
 
 ## 检索词
