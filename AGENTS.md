@@ -61,7 +61,7 @@ Still open:
 - **Real shell.** Strict mediation, AC-State, and epistemic/aleatoric separation are all verified on TextWorld, low-dim control, or gridworlds.
 - **We do not choose `do(a)`.** Our corpus is offline; the Causal Hierarchy Theorem ([2107.00793](https://arxiv.org/abs/2107.00793)) says observation alone cannot reach the interventional layer, and [2606.19476](https://arxiv.org/abs/2606.19476) proves in-context prediction error cannot estimate learning progress without bias in general MDPs.
 
-**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** action in the trajectory is the intervention label; state \(z\) is a bundle of **testable future predictions** (PSR / DeepMDP — e.g. “if I `cat` this path, File Not Found?”), not “some unnamed hidden layer”; observation CE is a **render** of \(z\); policy \(\pi(a\mid z)\) **only reads** \(z\); compile \(T\to\pi\) with successor features or imagination backup (Dyna/Dreamer/MuZero), not by co-updating observation CE and policy CE on the same unfrozen LM head. Freeze \(z\)’s transition when training \(\pi\). Instruct + same agent data remains the control for “did the world substrate help.”
+**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** action in the trajectory is the intervention label; state \(z\) is a bundle of **testable future predictions** (PSR / DeepMDP), not “some unnamed hidden layer” — and the tests are **corpus-sampled \((a_k,o_k)\) pairs of any command type**, never a hand-listed read-only probe set (that partition is rejected, see the objective section below); policy \(\pi(a\mid z)\) **only reads** \(z\), via stop-gradient; compile \(T\to\pi\) with successor features or imagination backup (Dyna/Dreamer/MuZero), not by co-updating observation CE and policy CE on the same unfrozen LM head. Freeze \(z\)’s transition when training \(\pi\). Instruct + same agent data remains the control for “did the world substrate help.”
 
 **Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–W (194 HTML dumps). Section **V** is the assembled algorithm chain (each step hung on a theorem, holes marked); section **O** is what is still genuinely missing. A–H = merge failure, world-first ordering, physics WM. **I–T = the 2026-08 gap-closing round**: I 预测准≠学到律, J 未知多点干预可识别性, K 文本显式状态 z（strict mediation）, L 世界理解→agent 的定理链（低秩 MDP / 多任务表征迁移 / 自预测=谱分解 / T→π 编译）, M 辅助任务何时帮何时伤, N 评测（VoE / 反事实 / 探针≠因果）, P 自由文本动作的动作表征, Q 文本域可执行世界模型（含 PatchWorld 的保真度↔效用权衡实证）, R 谁来选 do(a)（主动干预 / 学习进度好奇心）, S 律进权重 vs 留上下文 + 多样性阈值, T 架构表达力硬约束（TC⁰ / Gated DeltaNet 是 PNC¹-complete）, O 仍缺的洞. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
 
@@ -100,20 +100,51 @@ Still open:
 **Analogy (GPT):** next-token prediction on text → emergent skills.  
 **Here:** next-observation / world-dynamics learning on real multi-domain tool I/O → hoped-for **transfer** to agent benchmarks. Do not refuse a method because it is not “observation tokens only”; do not substitute a pure-policy run and still call it this hypothesis.
 
+### Objective (settled 2026-08): two heads, one trunk, one direction
+
+The world-model interface stays **exactly** \(P(o \mid h, a)\) — 统一到 `context + action → observation`。**Do not** partition commands into read-only vs world-changing; that partition is a rejected prior (the user cut it explicitly). Other engineering priors (sandbox verification, fixed architecture, a corpus-sampled query battery, ChatML) are fine and were never objected to.
+
 \[
-P(o_t \mid h_{<t}, a_t)
+\underbrace{\hat z[k] \;=\; \mathrm{score}_\psi\!\big(h,\; a_k,\; o_k\big)}_{\text{world knowledge — scoring head }\psi}
+\qquad\longrightarrow\qquad
+\underbrace{\pi\big(a \mid h,\ \mathrm{sg}[\hat z]\big)}_{\text{agent — LM head}}
 \]
+
+\(\hat z[k]\) reads: “if I executed \(a_k\) here, would the observation be \(o_k\)?” The battery \(\{(a_k,o_k)\}\) is **sampled from the corpus itself** (real (action, observation) pairs, any command type), so labels are free and sandbox-grounded: whenever the actually-taken action equals \(a_k\), the true \(o\) supervises that entry; other entries are masked this step (sparse BCE, GVFN / Predictive-State-Decoder style).
+
+**Why the two objectives stop fighting** (this is the whole point — 世界模型和 agent 抢权重的原始问题):
+
+1. **Separate output organs.** Decoder-only models have exactly one assistant slot / LM head. Old setup asked that one softmax to emit **observations** and **actions** for the same input — the two objectives were fighting over the same organ, which is also why the Chat-Vector merge could not work. Now the observation loss lands on \(\psi\), the action loss on the LM head; they meet only in the shared trunk, where the relation is “one feature set, two consumers” — the **same** relation English understanding has with agent ability. This is the 上层建筑 the user asked for.
+2. **Serial, not adversarial.** \(\pi\) *reads* \(\psi\)'s output. Better world model ⇒ more informative policy input; the policy loss now **depends on** the world model being right instead of requiring it to be forgotten.
+3. **One-way (stop-gradient).** \(\mathrm{sg}[\hat z]\) means the agent loss cannot rewrite what counts as world state. Without it, \(\pi\) bends \(\hat z\) into task-convenient features and world knowledge becomes task features.
+4. **Anti-forgetting is now structural.** The LM head is never trained to emit observations, so collapse into an env-simulator shell is ruled out by architecture, not by tuning a mix ratio.
+
+**Not a relabelled observation-SFT:** answering “would \(o_k\) follow \(a_k\) here” requires the **precondition → effect** rule (same command, different state ⇒ different answer; same observation, different command ⇒ different answer). Memorising stdout strings does not score.
+
+**Sampling detail that is load-bearing, not cosmetic:** negatives must come from **within the same trajectory**. Cross-trajectory negatives make contrastive predictive objectives encode slowly-varying trajectory fingerprints (repo name, Python version, container id, issue text) instead of dynamics, and more/longer trajectories do **not** fix it ([2606.07770](https://arxiv.org/abs/2606.07770)). Within-trajectory negatives also *are* the intervention contrasts for free: same \(h\) different \(a\), and same \(a\) different \(h\).
 
 | Item | Choice |
 |------|--------|
 | Checkpoint (current) | **`meta-models/Muse-Glimmer-30B`** on branch `Muse` (TRL LoRA). Prior controls: Kimi-Dev-72B (`Kimi-Dev-72B/msswift`), Unsloth `Qwen/Qwen3.5-9B`. Changing base invalidates prior controls unless re-run. |
-| Primary update | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere): learn env dynamics, not Demon / Matrix Law |
+| Stage 0 (cheap gate) | Measure whether the base can track state in weights at all — Gated DeltaNet eigenvalue range must cover negatives ([2603.03612](https://arxiv.org/abs/2603.03612)). Minutes; if it fails, \(\hat z\) is hopeless on this checkpoint. |
+| Stage 1 — world | Train \(\psi\) + trunk LoRA on real \((h,a,o)\); **LM head frozen** |
+| Stage 2 — agent | Freeze \(\psi\)'s transition, attach \(\pi\), feed \(\mathrm{sg}[\hat z]\), train agent SFT/RL |
+| Legacy path (still in tree) | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere) — the single-head version that has the objective collision; keep only as a baseline |
 | Labels | **Real** sandbox / execution-grounded tool outputs only |
 | Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
-| Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL **with no world-understanding cause** (shuffled / no-dynamics twin still required) |
-| Control | shuffled-observation twin — identical setup on **shuffled** \(o_t\) |
+| Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL with **no** world-understanding cause |
 
-**Claim only if all hold:** (a) world-model / env-consistency metrics improve; (b) same-scaffold agent metrics (console + coding tools) improve vs base; (c) shuffled control does **not** explain the agent gain; (d) agent capability does **not** collapse vs base (anti-forgetting check).
+**Eval scope (user, 2026-08): before-vs-after is enough.** AgentWorld itself did not ablate training methods; do **not** gate the experiment on a full method-comparison matrix. Same scaffold, TB2.1 / Harbor, **base checkpoint vs after Stage 2**. Three numbers to report:
+
+1. **TB2.1 before vs after** — the headline.
+2. **Consistent-renaming probe** (`rm` → `zaq` across the corpus): scores hold ⇒ learned the transition rule; scores collapse ⇒ only invoking pretrained lexical semantics.
+3. **Raised-blade / VoE probe:** truncate the trajectory so \(o_t\) is *not* in context; does \(\hat z\) already score failure-shaped observations high (those \(o\) taken from turns preceding task failure — no hand labelling)? This answers question 2 and needs **no** control arm: the observation is absent, the score moved or it did not.
+
+World-model metrics must report **ranking** (real \(o\) above same-trajectory alternatives) and **fidelity** separately, plus the sign of their correlation — fidelity↑ can mean utility↓ ([PatchWorld](https://arxiv.org/abs/2605.30880)).
+
+Shuffled-\(o\) / shuffled-\(\hat z\) twins and \(\hat z\)-ablation remain **available** sharpening controls, not preconditions for reporting.
+
+**Honest boundary:** dropping the command partition also drops known intervention targets, so **question 1 (law discovery) cannot be claimed as identifiability** — it degrades to an empirical claim (“extrapolates to held-out (precondition × command) combinations”), with the discovered action-equivalence structure ([BMAS](https://doi.org/10.3390/a17020060), [2209.06356](https://arxiv.org/abs/2209.06356)) reported as a **result** rather than assumed. The end-to-end composition proposition is still unproven; that hole predates this design.
 
 Detailed runbook: [`train/README.md`](./train/README.md).
 
