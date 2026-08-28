@@ -71,6 +71,20 @@ WM vs agent 三条都不满足。
 
 - **Qwen-AgentWorld**（[2606.24597](https://arxiv.org/abs/2606.24597)）— §6.2 Table 9：从 **已经会当 agent 的 SFT 模型** 做 LWM RL，再零微调上 TB2.1。这是 agent 底座 + 世界上层。你们要测的是反序；文里 **没有**「开源模拟器权重再 SFT 成通用 agent」的成功对照。
 
+## F. 经典 / 3D 物理世界模型：把规律写进参数
+
+下一观察 CE 只拟合表面；物理 WM 用结构或损失把 \(F=ma\) 一类约束写进参数，外观只是渲染。
+
+- **PINNs**（[1711.10561](https://arxiv.org/abs/1711.10561)）— PDE 残差进 loss，不是只拟合观测点。
+- **HNN / LNN**（[1906.01563](https://arxiv.org/abs/1906.01563), [2003.04630](https://arxiv.org/abs/2003.04630)）— 网络输出能量，动力学由方程生成，守恒是结构。
+- **Neural ODE**（[1806.07366](https://arxiv.org/abs/1806.07366)）— 连续时间状态转移。
+- **Ha World Models / PlaNet**（[1803.10122](https://arxiv.org/abs/1803.10122), [1811.04551](https://arxiv.org/abs/1811.04551)）— 潜动力学是世界，像素是渲染；策略在潜空间上训。
+- **GNS**（[2002.09405](https://arxiv.org/abs/2002.09405)）— 状态是粒子图，不是像素。
+- **NeuMA / DeformMaster**（[2410.08257](https://arxiv.org/abs/2410.08257), [2605.09586](https://arxiv.org/abs/2605.09586)）— \(\mathcal{M}=\mathcal{M}_0+\Delta\mathcal{M}\)：冻物理先验，残差/LoRA 只补未建模项。
+- **PhysGaussian / Physically Native WM**（[2311.12198](https://arxiv.org/abs/2311.12198), [2605.00412](https://arxiv.org/abs/2605.00412)）— 外观跟物理轨迹走；核心是潜动力学不是视频生成。
+- **Cosmos / PhyWorld / Phys4D**（[2501.03575](https://arxiv.org/abs/2501.03575), [2605.19242](https://arxiv.org/abs/2505.19242), [2603.03485](https://arxiv.org/abs/2603.03485)）— 外观预训练会幻觉物理，再用仿真监督把规律压进去。
+- **PSG-JEPA**（[2608.06799](https://arxiv.org/abs/2608.06799)）— 只做前向预测不够，要用物理状态把 latent 钉住。
+
 ## 检索词
 
 按问题搜，不要只搜 `world model agent merge`。
@@ -127,6 +141,19 @@ language prior as substrate policy as superstructure
 world model as foundation model then agent SFT
 hierarchical world model policy
 forward model then inverse dynamics
+```
+
+**把规律写进参数（物理 WM）**
+
+```
+physics-informed neural networks residual PDE loss
+Hamiltonian Lagrangian neural network energy conservation
+residual physics M0 plus delta M LoRA constitutive
+Dreamer PlaNet latent dynamics not pixel reconstruction
+Graph Network Simulator particle state
+world foundation model post-train Cosmos
+physics-faithful video RL after appearance pretrain
+physical state grounding JEPA
 ```
 
 ## 更新

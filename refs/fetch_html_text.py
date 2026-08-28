@@ -38,6 +38,24 @@ PAPERS: list[tuple[str, str]] = [
     ("2601.09684", "ortho-lora-task-conflicts"),
     ("2206.06522", "lst-side-tuning"),
     ("2606.24597", "qwen-agentworld"),
+    # Physics / 3D world models: encode laws in structure, not fit appearance
+    ("1711.10561", "pinns"),
+    ("1906.01563", "hamiltonian-nn"),
+    ("2003.04630", "lagrangian-nn"),
+    ("1806.07366", "neural-ode"),
+    ("1803.10122", "world-models-ha"),
+    ("1811.04551", "planet"),
+    ("2002.09405", "gns-learn-to-simulate"),
+    ("2410.08257", "neuma-residual-physics"),
+    ("2605.00412", "physically-native-hamiltonian-wm"),
+    ("2605.09586", "deformmaster-physics-neural"),
+    ("2311.12198", "physgaussian"),
+    ("2501.03575", "cosmos-world-foundation"),
+    ("2605.19242", "phyworld"),
+    ("2603.03485", "phys4d"),
+    ("2604.08503", "phantom-physics-video"),
+    ("2608.06799", "psg-jepa-physical-grounding"),
+    ("2608.07981", "distill-physical-priors"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
@@ -70,6 +88,9 @@ def html_to_text(html: bytes) -> str:
 
 def pull(arxiv_id: str, slug: str) -> bool:
     out = OUT / f"{arxiv_id}-{slug}.txt"
+    if out.is_file() and out.stat().st_size > MIN_BYTES:
+        print(f"SKIP {out.name}", flush=True)
+        return True
     urls = [
         f"https://arxiv.org/html/{arxiv_id}",
         f"https://ar5iv.labs.arxiv.org/html/{arxiv_id}",

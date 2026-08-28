@@ -1,0 +1,980 @@
+source: https://arxiv.org/html/2605.19242
+arxiv: https://arxiv.org/abs/2605.19242
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. 2.1 World Model
+     2. 2.2 Physics Evaluation
+ 4. 3 Methodology
+     1. 3.1 Physical Consistence Enhancement
+         1. 3.1.1 Video-to-Video Generation
+         2. 3.1.2 Data Processing
+         3. 3.1.3 Training with Flow Matching
+     2. 3.2 Physical Law Enforcement with Reinforcement Learning
+         1. Overview.
+         2. Data provenance.
+         3. Preference data pipeline (T0→\toT1→\toT2→\toT3).
+         4. DPO objective.
+         5. Policy and training.
+     3. 3.3 Benchmark for Physical Faithfulness
+         1. Benchmark setup.
+         2. Judge inference.
+ 5. 4 Experiments
+     1. 4.1 Experiment Setup
+         1. Training.
+         2. Baselines.
+         3. Benchmark.
+     2. 4.2 Main Results
+         1. Evaluation on Generation Quality.
+         2. Evaluation on Physical Faithfulness.
+     3. 4.3 Visual Demonstration
+ 6. 5 Conclusion
+ 7. References
+ 8. A Benchmarks for Physical Faithfulness
+ 9. B More Details for our Benchmark for Physics Alignment
+     1. Annotators and onboarding.
+     2. Per-rater protocol.
+     3. From annotations to training corpus.
+10. C Visual Demonstrations
+11. D Per-prompt comparison: Wan2.2-I2V-A14B base vs. our RL-DPO LoRA
+
+License: CC BY-NC-SA 4.0
+arXiv:2605.19242v1 [cs.CV] 19 May 2026
+
+PhyWorld: Physics-Faithful World Model for Video Generation
+
+Pu Zhao ^†^†thanks: These authors contributed equally. Affiliation: Northeastern University    Juyi
+Lin    Timothy Rupprecht Affiliation: Northeastern University    Arash Akbari Affiliation: 
+Northeastern University    Chence Yang Affiliation: University of Georgia    Rahul Chowdhury 
+Affiliation: Northeastern University    Elaheh Motamedi Affiliation: Northeastern University    
+Arman Akbari Affiliation: Northeastern University    Yumei He Affiliation: Tulane University    
+Chen Wang Affiliation: EmbodyX    Geng Yuan Affiliation: University of Georgia    Weiwei Chen 
+Affiliation: EmbodyX    Yanzhi Wang Email: {p.zhao, lin.juy, yanzhiwang}@northeastern.eduPhyWorld: 
+https://huggingface.co/NU-World-Model-Embodied-AI/phyworld Affiliation: Northeastern University
+
+Abstract
+
+World simulators can provide safe and scalable environments for training Physical AI systems before
+real-world deployment. Large video generation models are emerging as a promising basis for such
+simulators because they can generate diverse and realistic visual futures. However, using them as
+world simulators requires physically faithful video continuations, namely, generated videos that
+preserve the physical state implied by the conditioning input, and evolve in ways consistent with
+basic physical principles. We propose PhyWorld, a video generation world model designed to produce
+temporally coherent and physically faithful scene continuations through two-stage post-training. In
+the first stage, we improve video-to-video continuation with flow matching fine-tuning, encouraging
+stable visual attributes and coherent motion dynamics across frames. In the second stage, we align
+generated dynamics with physical principles using Direct Preference Optimization (DPO) over physics
+preference pairs, guiding the model toward outputs with higher physical plausibility. To evaluate
+PhyWorld, we use both standard video-quality benchmarks and a dedicated physical-faithfulness
+benchmark with per-law scoring. Experiments show that PhyWorld improves video consistency,
+achieving an average score of 0.769 on VBench compared with 0.756 or below for state-of-the-art
+baselines. PhyWorld also improves physical plausibility, reaching an average score of 3.09 on our
+physical-faithfulness benchmark compared with 2.99 for the strongest baseline. These results
+suggest that post-training large video generation models with continuation and physics-preference
+signals can make them more effective world simulators for Physical AI.
+
+1 Introduction
+
+Physical AI systems are embodied agents that perceive the world through sensors and act on it
+through actuators. Training these agents directly in the real world is slow, expensive, and risky,
+especially when early-stage policies may produce unsafe or damaging actions. This makes simulation
+central to Physical AI: before acting in the real world, an agent should be able to practice in
+environments that are visually rich, diverse, and physically plausible. Large video generation
+models offer a promising basis for such simulators. Trained on Internet-scale video corpora, models
+such as Sora, CogVideoX, Veo, Cosmos, and Wan (Liu et al., 2024; Yang et al., 2024; Wiedemer et
+al., 2025; Agarwal et al., 2025; Wan et al., 2025) learn rich visual priors about how objects move,
+collide, fall, deform, and interact with light. Unlike classical physics engines, which often
+require hand-authored assets, materials, and rules for each domain, video generation models can
+synthesize diverse scene continuations from text, images, or preceding clips. This makes
+video-to-video continuation especially relevant for world simulation: given an observed scene, the
+model must generate what happens next while preserving the physical state implied by the input. We
+therefore study video generation models as world simulators for Physical AI. Specifically, we ask
+whether they can generate physically faithful scene continuations: videos that remain temporally
+consistent across frames and whose dynamics are plausible under basic physical principles.
+
+Existing video generation world models exhibit two fundamental challenges that undermine their
+capacity to generate physically plausible video content. First, the physical consistency is hard to
+maintain across generated frames. As a result, the generation quality of state-of-the-art models in
+this domain remains limited. Artifacts such as background color drift and inconsistent object
+motion speeds are frequently observed, undermining temporal coherence and visual realism.
+Text-to-video and image-to-video approaches are similarly inadequate, as neither modality provides
+sufficient grounding for inferring fine-grained physical attributes from static or linguistic
+inputs alone. Second, physical law enforcement is largely absent from existing model architectures.
+Prevailing world models are trained on empirical video data without incorporating explicit
+supervisory signals or loss functions designed to instill knowledge of physical principles.
+Consequently, these models lack a structured mechanism for internalizing laws governing dynamics,
+causality, or physical interactions. This architectural gap manifests in generated outputs that may
+violate fundamental physical constraints, rendering the models both unaware of and non-compliant
+with the underlying laws that govern realistic physical environments.
+
+To address the above challenges, we propose our video-generation world model, PhyWorld, to generate
+more consistent and physically faithful videos. It includes two stage training: (1) physical
+consistency enhancement, and (2) physics enforcement through reinforcement learning. The first
+stage targets to enable the video-to-video generation capability and improve the video continuation
+performance through flow matching fine-tuning, thus continuing the scene with consistent physical
+behavior (such as color and speed of objects). Besides achieving superior performance on generation
+quality, the second stage targets to enforce physics through reinforcement learning, with explicit
+supervisory signals or loss functions designed to instill knowledge of physical principles. This
+stage is based on evaluating the physics faithfulness of the PhyWorld model using our 250-prompt
+text/image-to-video benchmark organized under a taxonomy of physical laws. Each generated video is
+scored on a 1-5 Likert scale across general quality dimensions and physics-specific dimensions
+using our developed 9B open-weight video-language judge model. Our evaluation demonstrates the
+outstanding performance on physical consistency and plausibility. Our paper makes three key
+contributions.
+
+  • •
+   
+    Physical Consistency Enhancement. We introduce a video-to-video training pipeline to
+    effectively produce temporally coherent and visually stable continuations. It substantially
+    improves the temporal consistency during video continuation.
+
+  • •
+   
+    Physics Enforcement with Reinforcement Learning and Benchmarking. To further align generated
+    video content with real-world physical principles, we employ Direct Preference Optimization
+    (DPO) to finetune the model obtained from the first training stage. This approach incentivizes
+    the model to preferentially generate outputs that adhere to physically plausible dynamics,
+    thereby improving compliance with fundamental physical laws in practice. This DPO-based
+    reinforcement learning process leverages our text/image-to-video physics benchmark to evaluate
+    the physical plausibility of generated videos.
+
+  • •
+   
+    Superior Performance on Physical Evaluation. Our evaluation demonstrates that PhyWorld can
+    achieve superior generation performance with outstanding video generation quality (an average
+    score of 0.769 v.s. 0.756 or below from SOTA baselines on VBench Huang et al. (2024)) and
+    physics alignment (an average score of 3.09 v.s. 2.99 from SOTA baselines on our dedicated
+    physical faithfulness benchmark).
+
+2 Related Work
+
+2.1 World Model
+
+A synthesis of recent surveys on state-of-the-art world models Ding et al. (2025); Li et al.
+(2025b); Yue et al. (2025); Long et al. (2025); Zhao et al. (2025b); Zhao et al. (2024a); Lin et
+al. (2025b); Liu et al. (2025); Xu et al. (2026); Dong et al. (2026) reveals a consistent
+architectural paradigm: to support planning and decision-making (particularly in embodied settings
+Long et al. (2025); Li et al. (2025b)), world models are broadly designed to function as simulators
+that (1) represent the current state of the world and (2) predict future world dynamics Ding et al.
+(2025). Recent literature has further extended this paradigm across several specialized dimensions,
+including advances in video-based world models Yue et al. (2025), embodied intelligence Li et al.
+(2025b), joint temporal-spatial modeling Liu et al. (2025), and physical realism Lin et al. (2025b)
+. Collectively, these works converge on a set of persistent open challenges, notably long-horizon
+temporal consistency, computational scalability, and faithful alignment with the governing
+principles of real-world physics.
+
+The landscape of world models is organized along several distinct axes, including domain-specific
+applications Long et al. (2025); Yue et al. (2025); Li et al. (2025b); Shen et al. (2025a); Zhao et
+al. (2024b); Shen et al. (2024); Shen et al. (2025b); Lin et al. (2025b); Dong et al. (2026),
+architectural and input modality distinctions Liu et al. (2025), and abstract taxonomic frameworks
+Ding et al. (2025); Xu et al. (2026). Beyond the established contributions from SOTA world models
+such as V-JEPA Hansen et al. (2024); Garrido et al. (2026); Yuan et al. (2026), Wan Wan et al.
+(2025), Cosmos Kim et al. (2026) and PointWorld Yang et al. (2025b); Wang et al. (2025); Huang et
+al. (2026), a growing body of work explores architectural innovations Shen et al. (2025e); Zhan et
+al. (2024a); Zhan et al. (2024c); Guan et al. (2021); Mi et al. (2026) that push the boundaries of
+world model design, including Vision-Action models Li et al. (2026), Vision-Language-Action
+frameworks Team et al. (2026b); Lin et al. (2025a), autoregressive (AR) architectures Gao et al.
+(2025); Shen et al. (2026); Shen et al. (2025d); Shen et al. (2025c), and diffusion-based
+approaches Zhang and others (2025); Zhao et al. (2026); Zhao et al. (2025a); Zhan et al. (2024b);
+Li et al. (2025c). Nevertheless, a unified world model framework that reconciles these diverse
+paradigms remains an open and elusive goal.
+
+Several recent efforts have explored AR video generation as a means of enabling temporally extended
+world simulation. Self-Forcing Huang et al. (2025); Cui et al. (2025) addresses the
+training-inference discrepancy in AR video generation by training the model to condition on its own
+previously generated frames rather than ground-truth frames, thereby reducing compounding errors
+during long-horizon rollouts. Similarly, LongCAT Team et al. (2025); Yang et al. (2025a); Team et
+al. (2026a) proposes a framework for generating long, temporally consistent video sequences through
+a context-aware tokenization strategy. However, these methods are relatively compact in terms of
+model scale and consequently exhibit notable limitations in generation quality, including reduced
+visual fidelity, weaker photorealism, and less reliable physical consistency compared to
+larger-scale video generation models. This trade-off between model size and generation quality
+represents a fundamental constraint for their use as world simulators in Physical AI training
+pipelines, where both temporal coherence and physical adherence are critical requirements.
+
+2.2 Physics Evaluation
+
+A recent line of work has sought to systematically evaluate the degree to which generated videos
+adhere to physical laws. However, each existing benchmark embeds methodological choices that
+constrain its discriminative power in important ways. Physics-IQ (Motamed et al., 2026) introduces
+pixel-level reference metrics (including spatial IoU, spatiotemporal IoU, and mean squared error)
+across 66 image-to-video scenarios. However, its design pre-supposes a unique ground-truth
+trajectory, thereby penalizing both legitimate camera motion and physically valid stochastic
+outcomes such as collision rebound angles and fluid splash dynamics. PhyGenBench (Meng et al., 2024
+) extends coverage to 160 prompts spanning 27 physical laws, yet relies on a three-stage cascaded
+binary scoring mechanism in which classification errors propagate across successive stages,
+potentially compounding evaluation noise. VideoPhy-2 (Bansal et al., 2025) scales to approximately
+590–688 prompts with 12 human annotators, but reports only two coarse evaluation axes (semantic
+adherence and holistic physical correctness) without providing per-law decomposition, limiting the
+granularity of physical assessment. WorldModelBench (Li et al., 2025a) encompasses 350 prompts but
+evaluates only 5 physical laws using binary per-law judgments.
+
+A synthesis of the limitations described above reveals three cross-cutting methodological failures
+that recur across existing benchmarks with more details in Appendix A. (i) A pervasive reliance on
+implicit prompts, which describe a physical scene without explicitly specifying the expected
+outcome, means that evaluators can only assess whether the generated video appears visually
+plausible, rather than whether the underlying physics is demonstrably correct. In the absence of a
+well-defined physical expectation, evaluation necessarily collapses into a subjective judgment of
+surface-level realism. (ii) The predominant use of holistic or binary scoring rubrics obscures
+concrete physical law violations within a single aggregate score, precluding the kind of per-law
+diagnostic analysis necessary to identify and interpret model-specific failure modes. Such
+coarse-grained scoring conflates qualitatively distinct physical errors, rendering benchmarks
+unable to attribute performance differences to specific physical phenomena. (iii) A widespread
+dependence on closed-source evaluators (including GPT-4o, GPT-5, and Gemini-3.1-Pro) introduces
+compounding reliability concerns. The API behavior of these models is subject to silent drift over
+time, and empirical inspection reveals systematic failure on specific physics domains. Notably,
+Gemini-3.1-Pro has been observed to classify visibly dynamic fluid motion as completely static, and
+produces markedly unstable scores on shadow and reflection phenomena.
+
+3 Methodology
+
+We first finetune our model to enhance the physical consistence through flow matching training.
+Then we adopt Direct Preference Optimization (DPO) Rafailov et al. (2023) to train the model by
+enforcing physics, with explicit supervisory signals or loss functions designed to instill
+knowledge of physical principles. We demonstrate our framework in Figure 1.
+
+Refer to caption
+Figure 1: Framework overview with flow matching and DPO training. We first finetune our model to
+enhance the physical consistence through flow matching. Then we adopt DPO to train the model by
+enforcing physics, with explicit supervisory signals to instill knowledge of physical principles.
+
+3.1 Physical Consistence Enhancement
+
+3.1.1 Video-to-Video Generation
+
+We introduce a video prompt as an additional conditioning signal to guide video synthesis.
+Specifically, the conditioning video I∈ℝC×R×H×WI\in\mathbb{R}^{C\times R\times H\times W},
+consisting of RR frames, is concatenated with zero-padded frames along the temporal axis to form
+the guidance tensor Ic∈ℝC×T×H×WI_{c}\in\mathbb{R}^{C\times T\times H\times W}, which is
+subsequently compressed by the Wan-VAE encoder Wan et al. (2025) into a condition latent
+representation zc∈ℝc×t×h×wz_{c}\in\mathbb{R}^{c\times t\times h\times w}, where c=16c=16 denotes
+the latent channel dimensionality, t=1+(T−1)/4t=1+(T-1)/4, h=H/8h=H/8, and w=W/8w=W/8. To
+explicitly distinguish between preserved and generated frames, we further introduce a binary mask
+M∈{0,1}1×T×h×wM\in\{0,1\}^{1\times T\times h\times w}, where a value of 1 designates frames to be
+retained from the conditioning input and 0 designates frames to be synthesized. The spatial
+dimensions of MM are consistent with those of the condition latent zcz_{c}. However, MM adopts the
+same the temporal length of the target video and is subsequently rearranged to the shape s×t×h×ws\
+times t\times h\times w, where ss denotes the temporal stride of the Wan-VAE. The noise latent ztz_
+{t}, the condition latent zcz_{c}, and the rearranged mask mm are then concatenated along the
+channel axis and fed into the Wan DiT model for denoising.
+
+To further enrich the conditioning signal with global semantic context, we employ the CLIP encoder 
+Radford et al. (2021) to extract feature representations from the final frame of the conditioning
+video. The extracted features are subsequently projected into the model’s feature space via a
+three-layer multi-layer perceptron (MLP), whose output serves as a global context embedding. This
+embedding is injected into the DiT model through a decoupled cross-attention mechanism, enabling
+the model to leverage high-level semantic cues throughout the generation process. Together, the
+proposed masking mechanism and global context injection explicitly delineate the boundary between
+conditioning input and generation targets, providing structured and semantically grounded guidance
+for faithful video continuation and enabling effective video-to-video generation.
+
+3.1.2 Data Processing
+
+We adopt OpenVid-1M Nan et al. (2024) to finetune our world model. OpenVid-1M is a high-quality
+video dataset with text descriptions designed for research institutions to enhance video quality,
+featuring high aesthetics, clarity, and resolution.
+
+To ensure dataset quality, we apply a multi-stage filtering pipeline designed to retain video clips
+exhibiting suitable temporal consistency and motion characteristics. For temporal consistency, we
+employ CLIP Radford et al. (2021) to extract visual features from consecutive frames and compute
+pairwise cosine similarity between adjacent frames as a proxy for inter-frame coherence. Clips
+yielding excessively high similarity scores (indicative of near-static content), as well as those
+yielding excessively low scores (indicative of frequent flickering or abrupt scene transitions),
+are discarded, yielding a filtered subset of temporally stable clips.
+
+As temporal consistency alone is insufficient to exclude clips containing high-speed objects that
+nonetheless maintain frame-to-frame coherence, we additionally incorporate a motion-based filtering
+criterion. Specifically, we apply UniMatch Yang et al. (2023) to estimate optical flow and derive a
+per-clip motion difference score. Clips exhibiting high optical flow magnitudes, corresponding to
+rapid or erratic motion, are deemed unsuitable for training and subsequently removed. Clips falling
+at both extremes of the motion score distribution are filtered out, producing a final subset
+characterized by smooth, controlled motion that is conducive to stable and consistent video
+generation.
+
+3.1.3 Training with Flow Matching
+
+We adopt the flow matching framework Lipman et al. (2022); Esser et al. (2024) to model a unified
+generative process applicable to both image and video domains. The training procedure follows a
+progressive curriculum: we begin with training on low-resolution videos, followed by additional
+optimization over videos at progressively increasing spatial resolutions and temporal durations.
+This staged training strategy allows the model to develop robust low-level visual priors before
+scaling to the full spatiotemporal complexity of high-resolution video generation.
+
+Flow matching provides a theoretically principled foundation for learning continuous-time
+generative processes within the diffusion framework. Rather than relying on iterative score-based
+velocity prediction, flow matching parameterizes the generative process as an ordinary differential
+equation (ODE), enabling stable and efficient training while maintaining equivalence to maximum
+likelihood estimation objectives. Formally, given an image or video latent x1x_{1}, a Gaussian
+noise sample x0∼𝒩⁡(𝟎,𝐈)x_{0}\sim\mathcal{N}(\mathbf{0},\mathbf{I}), and a timestep t∈[0,1]t\in[0,1]
+drawn from a logit-normal distribution, an intermediate latent xtx_{t} is constructed as a linear
+interpolation along the probability flow trajectory and serves as the training input to the
+denoising network. Following Rectified Flows (RFs) Esser et al. (2024), xtx_{t} is defined as a
+linear interpolation between x0x_{0} and x1x_{1}, i.e.,
+
+ xt=t​x1+(1−t)​x0\displaystyle x_{t}=tx_{1}+(1-t)x_{0}  (1)
+
+The ground-truth velocity vtv_{t} is
+
+ vt=d​xtd​t=x1−x0\displaystyle v_{t}=\frac{dx_{t}}{dt}=x_{1}-x_{0}  (2)
+
+The model is trained to predict the velocity. Thus, the loss function can be formulated as the mean
+squared error (MSE) between the model output and vtv_{t},
+
+ ℒ=𝔼x0,x1,ct​x​t,t;θ​‖u⁡(xt,ct​x​t,t,θ)−vt‖2\displaystyle\mathcal{L}=\mathbb{E}_{x_{0},x_       (3)
+ {1},c_{txt},t;\theta}\|u(x_{t},c_{txt},t;\theta)-v_{t}\|^{2}
+
+where ct​x​tc_{txt} is the umT5 text embedding sequence of 512 tokens long, θ\theta is the model
+weights, and u⁡(xt,ct​x​t,t,θ)u(x_{t},c_{txt},t;\theta) denotes the output velocity predicted by
+the model.
+
+3.2 Physical Law Enforcement with Reinforcement Learning
+
+Overview.
+
+We treat physical law violations (more details in Appendix A) in a pretrained image-to-video (I2V)
+diffusion model as a preference learning problem and correct them with offline reinforcement
+learning (RL), specifically direct preference optimization (DPO), over preference pairs. The base
+model is our derived model from the first stage (starting from the Wan2.2-I2V-A14B model but
+adapting the model to both image-to-video and video-to-video generation). The policy π\pi is the
+base denoiser augmented with a low-rank LoRA adapter, whose trainable weight increment denoted by ϕ
+\phi (i.e., π\pi adds ϕ\phi on top of the frozen base weights). It is optimized against a fixed
+reference ref\mathrm{ref} that copies the same frozen base weights with ϕ=0\phi=0, so the
+physics-correcting signal does not perturb the base model’s conditioning or generation prior.
+
+Data provenance.
+
+The raw preference signal is taken directly from the human annotation pool of our text/
+image-to-video (TI2V) physics benchmark used for evaluation (Sec. 3.3). Concretely, every video
+that enters the pipeline below is one of the benchmark’s 2,0002{,}000 pre-rated videos (250250
+prompts ×\times 88 generators), each scored by multiple human annotators on the 11–55 Likert scale
+across the three general dimensions (including semantic alignment (SA), physical-temporal validity
+(PTV), and persistence), as well as the applicable physics laws, drawn from a quality-controlled
+multi-annotator study of approximately 350350 raters yielding ∼\sim4,5004{,}500 cleaned
+annotations. We reuse these released ratings as-is, without any re-collection, re-judging, or
+model-derived scoring. The pipeline below only filters, aggregates, and pairs them.
+
+
+Table 1: T0→\toT1→\toT2→\toT3 preference-pair funnel. T1 retained excludes 203 ties, 730 low-margin
+pairs, and 268 rater-filtered pairs; heldout is evaluation only. T2 is the train∪\cupval candidate
+pool; T3 is the RL sampling pool. Trainset is the 1,000-pair round-4 class balanced subset sampled
+from T3, with quotas in Table 2.
+
+ Stage / pool  #pairs #groups #prompts
+ T1 retained   3,324  250     253
+     heldout   579    245     42
+T2 cand. pool  2,745  —       211
+  T3 RL pool   2,202  208     —
+   Trainset    1,000  —       —
+
+
+Table 2: Round-4 trainset class quota. The 1,000-pair trainset is sampled from T3 pool (2,202
+pairs) with per-class budget below, fixed in the manifest before any score from this run is read.
+
+    Physical-event class     #pairs
+A (collision/rebound)        513
+B (destruction/deformation)  93
+C (fluids/liquids)           168
+D (shadow/reflection)        68
+E (chain/multi-stage)        13
+F (rolling/sliding)          75
+G (throwing/ballistic)       55
+unclassified                 15
+total                        1,000
+
+Preference data pipeline (T0→\toT1→\toT2→\toT3).
+
+Pairs are produced by a four-stage, content-addressed offline pipeline (Table 2). T0 fixes a
+per-video aggregate quality score s⁡(v)=1|ℛ⁡(v)|​∑r∈ℛ⁡(v)(SAr​(v)+PTVr​(v)+persistencer​(v))s(v)=\
+tfrac{1}{|\mathcal{R}(v)|}\sum_{r\in\mathcal{R}(v)}(\mathrm{SA}_{r}(v)+\mathrm{PTV}_{r}(v)+\mathrm
+{persistence}_{r}(v)) on a 33–1515 summed-axis scale, where rr indexes individual human raters,
+SAr​(v)\mathrm{SA}_{r}(v), PTVr​(v)\mathrm{PTV}_{r}(v), persistencer​(v)∈{1,…,5}\mathrm
+{persistence}_{r}(v)\in\{1,\dots,5\} are the three axis ratings given by rater rr to video vv, and
+ℛ⁡(v)\mathcal{R}(v) is the cross-group union of complete-triple raters for vv (a within-group mean
+is degenerate because at most one rater is assigned per (group, video) cell). T1 enumerates
+within-group ordered pairs (vw,vl)(v_{w},v_{l}), where vwv_{w} (winner) is preferred to vlv_{l}
+(loser). A pair is admitted only if the score margin satisfies s⁡(vw)−s⁡(vl)≥1.0s(v_{w})-s(v_{l})\
+geq 1.0 and each video has at least rmin=2r_{\min}=2 raters. Cross-prompt and cross-group pairings
+abort the run. The export retains 3,3243{,}324 pairs over 250250 unique (prompt, physical-law)
+groups, with a prompt-disjoint 0.7/0.15/0.150.7/0.15/0.15 split into 171/40/42171/40/42 prompts.
+The 4242-prompt heldout slice (579579 pairs) is the sole evaluation set and is verified absent from
+every encode-cache and latent sidecar produced downstream. We refer to the remaining train∪\cupval
+portion (2,7452{,}745 pairs over 211211 prompts) as Tier B-candidate – the RL candidate pool that
+subsequent stages further filter. T2 resolves and pre-encodes the I2V conditioning image, drops
+pairs whose first frame is missing on disk (the surviving 2,2022{,}202 pairs over 208208 groups
+form Tier B-cond-present), and stamps a SHA-256 over the bytes actually fed to the model, so that
+host-local fallback resolution cannot silently swap images. T3 packages explicitly named subsets
+from Tier B-cond-present. The reported run uses a 1,0001{,}000-pair, class-balanced round-4 subset
+over seven induced physical event classes (collision/rebound, destruction/deformation, fluids,
+shadow/reflection, chain, rolling/sliding, throwing/ballistic, taxonomy verified 42/4242/42 on
+heldout). Pair budget, per-class quotas (Table 2), and seed are fixed in the manifest before any
+score is read.
+
+DPO objective.
+
+For a winner/loser video pair (w,l)(w,l) (shorthand for (vw,vl)(v_{w},v_{l}) from T1) sharing the
+same text prompt cc and conditioning image x0x_{0} (the I2V first frame), let MSEθ,v\mathrm{MSE}_{\
+theta,v} denote the noise prediction mean-squared error of a denoiser with parameters θ\theta on
+video vv, evaluated at diffusion timestep t∼𝒰⁡[tmin,tmax]t\sim\mathcal{U}[t_{\min},t_{\max}] with a
+Gaussian noise sample ϵ∼𝒩⁡(𝟎,𝐈)\epsilon\sim\mathcal{N}(\mathbf{0},\mathbf{I}) that is shared across
+ww and ll (paired-noise variance reduction). The diffusion DPO loss is
+
+ ℒDPO=−log⁡σ⁡(β​Δ),Δ=(MSEπ,l−MSEπ,w)−(MSEref,l−MSEref,w),\mathcal{L}_{\mathrm{DPO}}=-\log\sigma(\
+ beta\,\Delta),\quad\Delta=\bigl(\mathrm{MSE}_{\pi,l}-\mathrm{MSE}_{\pi,w}\bigr)-\bigl(\mathrm
+ {MSE}_{\mathrm{ref},l}-\mathrm{MSE}_{\mathrm{ref},w}\bigr),
+
+where σ⁡(⋅)\sigma(\cdot) is the logistic sigmoid, π\pi is the LoRA-augmented policy and ref\mathrm
+{ref} the frozen base. β>0\beta>0 is the DPO inverse temperature that controls the strength of the
+preference signal, and Δ\Delta is the implicit reward margin, i.e., how much more π\pi (relative to
+ref\mathrm{ref}) prefers ww over ll in noise prediction error. The reference branch is computed
+without gradient tracking by zeroing the LoRA increment ϕ\phi in place (rather than instantiating a
+second model), halving activation memory at the cost of one extra forward per pair. We restrict
+training to the high-noise window t∈[901,999]t\in[901,999] to suppress reward-hacking via timestep
+selection, matching where the automated judge places most of its discriminative signal.
+
+Policy and training.
+
+The LoRA increment ϕ\phi is parameterized as a low-rank adapter with rank r=16r{=}16 and scaling
+factor α=16\alpha{=}16, applied to the attention and feed-forward projection matrices of the Wan2.2
+denoiser. All other parameters are frozen. We treat β\beta (the DPO inverse temperature defined
+above) as the only hyper-parameter selected on held-out automated judge validation, sweeping β∈
+{30,100,300}\beta\in\{30,100,300\} and locking β=100\beta=100 before unblinding. Under the
+pre-registered trajectory criterion (axis-averaged Spearman monotonicity plus step-250250 value), β
+=100\beta=100 at step 250250 wins both metrics (Spearman +0.520+0.520 vs. +0.020+0.020 for β=30\
+beta=30; final implicit reward margin Δ=+0.200\Delta=+0.200 vs. +0.075+0.075) and is the reported
+RL checkpoint.
+
+3.3 Benchmark for Physical Faithfulness
+
+Standard video-quality benchmarks such as VBench Huang et al. (2024) measure visual fidelity and
+motion smoothness, but are not designed to detect physical law violations. Because the central
+claim of PhyWorld concerns physical faithfulness, our evaluation needs a benchmark whose scoring is
+grounded in per-law physical correctness rather than holistic plausibility, and whose protocol
+distinguishes among categories of physical failure rather than collapsing them into a single
+aggregate value.
+
+Benchmark setup.
+
+We evaluate on our text/image-to-video (TI2V) physics benchmark of 250250 prompts, each paired with
+a conditioning first frame and organized under a structured taxonomy of physical laws. Each
+generated video is scored on a 11–55 Likert scale along general video-quality dimensions (semantic
+alignment, physical-temporal validity, persistence) and along the physics-law dimensions (collision
+/rebound, destruction/deformation, fluids, shadow/reflection, chain, rolling/sliding, and throwing/
+ballistic) applicable to its prompt. To perform scoring, we finetune the VLM model Qwen3.5-9B Qwen
+Team (2026), released as the video-language judge model. This judge model is fine-tuned on a
+quality-controlled multi-annotator human study (approximately 350350 raters, ∼\sim4,5004{,}500
+cleaned annotations across 1313 physics laws plus the three general dimensions). We use the
+released judge as-is to give scores for generated videos, so that the resulting scores are
+reproducible and not subject to closed-source API drift. More details about the benchmark and the
+judge model are demonstrated in Appendix B. Our benchmark and human annotations are used not only
+for physical faithfulness evaluation, but also to provide preference signals in DPO, as detailed in
+Sec. 3.2.
+
+Judge inference.
+
+The released judge model is an open-weight video-language model fine-tuned end-to-end on the human
+Likert annotations described above. At inference time it takes a frame-sampled clip together with
+an augmented prompt that explicitly states the expected physical outcome, and emits a single JSON
+key–value pair containing one dimension name and one integer in {1,…,5}\{1,\dots,5\}. Crucially,
+each evaluation dimension—SA, PTV, persistence, and every applicable physics law (including
+collision/rebound, destruction/deformation, fluids, shadow/reflection, chain, rolling/sliding, and
+throwing/ballistic)—is queried in a separate inference call rather than in a multi-key joint call,
+so reasoning over one dimension cannot leak into another and per-law scores remain mutually
+independent. Since the judge runs at a fixed checkpoint with deterministic (greedy) decoding, the
+same (video, prompt) input yields the same score across runs, eliminating the silent run-to-run
+drift that closed-source API judges (GPT-4o, GPT-5 Pro, Gemini-3.1-Pro) exhibit on the same inputs.
+For each model and each dimension, we report the average score across all applicable generated
+videos.
+
+4 Experiments
+
+4.1 Experiment Setup
+
+Training.
+
+In the first stage, we start from Wan2.2-I2V-A14B Wan et al. (2025), perform finetuning, and adapt
+the model to both image-to-video and video-to-video generation with the Diffsynth-Studio framework 
+DiDi (2024). Wan2.2-I2V-A14B has two DiTs for different timesteps and we finetune both DiTs
+sequentially. The learning rate is set to 1e-6. With our video-to-video training pipeline, the
+input video has 17 frames and the ground truth video has 49 frames.
+
+For the DPO training, with world_size=4\text{world\_size}=4, micro_batch=1\text{micro\_batch}=1,
+and gradient accumulation 22 (effective batch 88 per optimiser step), 1,0001{,}000 pairs amount to
+125125 optimizer steps per epoch. Training uses AdamW with learning rate 1×10−51\times 10^{-5},
+micro-batch size 11 per FSDP rank, and β=100\beta=100 in the DPO loss. We train for two epochs
+(250250 optimizer steps in total) and select the final-epoch checkpoint without further
+wrap-around. We train the model with 16 Nvidia H100 GPUs.
+
+Baselines.
+
+We compare our model with Wan2.2-I2V-A14B Wan et al. (2025), Cosmos-14B Agarwal et al. (2025),
+LTX-2.3-22B HaCohen et al. (2025), OmniWeaving Pan et al. (2026), Cosmos-2-2B Ali et al. (2025). We
+adopt the video-to-video pipeline to generate videos for comparison. For Wan2.2-I2V-A14B which is
+an image-to-video model, we adapt the image-to-video pipeline to enable the video-to-video
+capability.
+
+Benchmark.
+
+We evaluate the quality of generated videos with 500 random prompts from VBench (Huang et al., 2024
+). Especially, we report the subject consistency, background consistency, motion smoothness,
+dynamic degree, aesthetic quality, and imaging quality, from VBench for our generated videos. All
+videos are generated with prompts from VBench, with a resolution of 480p.
+
+To evaluate the physics enforcement after DPO training, we evaluate on our TI2V benchmark whose
+videos are scored on a 11–55 Likert scale by quality-controlled human annotators. We use the
+benchmark’s released automated judge model for evaluation. For PhyWorld and every baseline we
+compare against, we generate videos on the benchmark’s prompt set under each model’s default
+decoding settings, and report the per-dimension and per-law averages produced by the released
+judge. The same prompt set is used for every model, yielding paired comparisons at the prompt
+level. We do not modify the benchmark, the prompts, the rubric, or the judge. All of those are
+taken as released.
+
+4.2 Main Results
+
+
+Table 3: Evaluation results on VBench. Our PhyWorld achieves an average score of 0.769,
+demonstrating non-marginal improvements over SOTA baselines with averages scores below 0.756.
+
+                Subject     Background  Motion     Dynamic Aesthetic Imaging 
+                consistency consistency smoothness degree  quality   quality Avg.
+
+  Cosmos-2-2B   0.887       0.905       0.964      0.543   0.524     0.608   0.739
+  OmniWeaving   0.903       0.907       0.972      0.556   0.541     0.621   0.75
+  LTX-2.3-22B   0.894       0.918       0.982      0.549   0.532     0.626   0.751
+  Cosmos-14B    0.899       0.923       0.973      0.559   0.536     0.629   0.753
+Wan2.2-I2V-A14B 0.912       0.928       0.977      0.554   0.543     0.622   0.756
+PhyWorld (ours) 0.932       0.944       0.986      0.564   0.555     0.632   0.769
+
+Evaluation on Generation Quality.
+
+We evaluate the generation quality of our model on the VBench benchmark Huang et al. (2024). As
+shown in Table 3, our method achieves superior performance consistently across different evaluation
+metrics including subject consistency, motion smoothness, imaging quality and so on. The average
+score is 0.769, demonstrating non-marginal improvements over SOTA baselines with averages scores
+below 0.756.
+
+Evaluation on Physical Faithfulness.
+
+To evaluate the physical faithfulness, we adopt our judge model to provide scores for the generated
+videos. We compare our model with SOTA I2V/T2V baselines evaluated on the same 250250 prompts with
+the same judge model. In Table 4, we report the mean score for multiple evaluation metrics
+including SA/PTV/persistence for general quality, Solid-Body/Fluid/Optical for physical adherence,
+and Overall as the mean of the metrics.
+
+We can observe that our PhyWorld reaches 3.093.09 Overall, outperforming its own frozen base
+Wan2.2-I2V-A14B (2.992.99) and other five open SOTA models (Cosmos-14B, OmniWeaving, LTX-2.3-22B,
+Wan2.2-TI2V-5B, LTX-2-19B). Our non-marginal improvements over the initial base model concentrates
+on the axes that the DPO score s⁡(v)s(v) and high-noise training window are designed to move, such
+as PTV (+0.10+0.10), Persistence (+0.15+0.15), and the optical-physics domain (+0.21+0.21). To
+complement these aggregate scores with per-prompt evidence, Appendix D walks through four
+representative cases (rigid-body, gravity, fluid continuity, and material breakage) where the
+Wan2.2-I2V-A14B base produces a physically implausible video and our RL-DPO LoRA visibly fixes the
+violation.
+
+
+Table 4: Scores from our judge model on the 250-prompt humaneval set (1–5 scale, higher is better)
+for various models. Semantic alignment (SA), physical-temporal validity (PTV), and persistence are
+per-video general dimensions. Solid-Body, Fluid, and Optical are pooled over (video, law) units in
+each domain. Overall = 0.5 ×\times mean(SA, PTV, Persist.) + 0.5 ×\times pooled mean over (video,
+law) units across the three domains. Bold marks the best score.
+
+                General Quality ↑\uparrow  Physics Adherence ↑\uparrow 
+     Model        SA    PTV     Persist.    Solid-Body  Fluid Optical  Overall ↑\uparrow
+PhyWorld (ours) 2.78   3.07   3.23         2.84         3.04  3.57     3.09
+Wan2.2-I2V-A14B 2.72   2.97   3.08         2.79         3.03  3.36     2.99
+  Cosmos-14B    2.60   2.73   3.07         2.72         2.92  3.53     2.80
+  OmniWeaving   2.68   2.73   2.92         2.71         2.99  3.13     2.78
+  LTX-2.3-22B   2.63   2.79   2.91         2.55         3.02  3.21     2.72
+Wan2.2-TI2V-5B  2.48   2.70   2.76         2.61         3.01  3.45     2.68
+   LTX-2-19B    2.50   2.62   2.79         2.49         3.01  3.09     2.62
+
+4.3 Visual Demonstration
+
+We demonstrate the visualization of PhyWorld and compare with baselines including Wan-2.2-I2V-A14B,
+Cosmos-14B, and LTX-2.3-22B. We adopt the video-to-video pipeline for all models. For
+Wan-2.2-I2V-A14B, we update the image-to-video pipeline to enable the video-to-video capability. As
+shown in Figure 2 with images captured from the generated videos, PhyWorld can generate videos with
+superior physical consistency. The baselines suffer from artifacts or flaws such as color shift or
+background change. More visual examples are shown in Appendix C.
+
+Refer to caption
+Figure 2: Visual comparison with baselines. PhyWorld generates videos with superior physical
+consistency. The SOTA baseline models suffer from artifacts or flaws such as color shift or
+background change, which are not physically consistent.
+
+5 Conclusion
+
+In this work, we present PhyWorld, a two-stage world model framework for generating physically
+consistent and faithful video continuations. By combining flow matching fine-tuning for temporal
+coherence with Direct Preference Optimization for physics enforcement, our approach addresses the
+two fundamental limitations of existing video generation models: physical inconsistency across
+frames and the absence of principled physics grounding. We evaluate PhyWorld on our dedicated
+benchmark for evaluating physics faithfulness in generated video, against which PhyWorld
+demonstrates superior performance. We hope this work advances the development of scalable,
+realistic world simulators for Physical AI training and inspires further research into
+physics-aware video generation. PhyWorld is post-trained from Wan2.2-I2V-A14B and inherits its data
+biases and failure modes. The transfer of policies trained inside PhyWorld is left to future work.
+
+References
+
+  • [1] Y. Liu, K. Zhang, Y. Li, Z. Yan, C. Gao, R. Chen, Z. Yuan, Y. Huang, H. Sun, J. Gao, et al.
+    (2024) Sora: a review on background, technology, limitations, and opportunities of large vision
+    models. arXiv preprint arXiv:2402.17177. Cited by: §1.
+  • [2] Z. Yang, J. Teng, W. Zheng, M. Ding, S. Huang, J. Xu, Y. Yang, W. Hong, X. Zhang, G. Feng, 
+    et al. (2024) Cogvideox: text-to-video diffusion models with an expert transformer. arXiv
+    preprint arXiv:2408.06072. Cited by: §1.
+  • [3] T. Wiedemer, Y. Li, P. Vicol, S. S. Gu, N. Matarese, K. Swersky, B. Kim, P. Jaini, and R.
+    Geirhos (2025) Video models are zero-shot learners and reasoners. arXiv preprint
+    arXiv:2509.20328. Cited by: §1.
+  • [4] N. Agarwal, A. Ali, M. Bala, Y. Balaji, E. Barker, T. Cai, P. Chattopadhyay, Y. Chen, Y.
+    Cui, Y. Ding, et al. (2025) Cosmos world foundation model platform for physical ai. arXiv
+    preprint arXiv:2501.03575. Cited by: §1, §4.1.
+  • [5] T. Wan, A. Wang, B. Ai, B. Wen, C. Mao, C. Xie, D. Chen, F. Yu, H. Zhao, J. Yang, et al.
+    (2025) Wan: open and advanced large-scale video generative models. arXiv preprint
+    arXiv:2503.20314. Cited by: Appendix D, §1, §2.1, §3.1.1, §4.1, §4.1.
+  • [6] Z. Huang, Y. He, J. Yu, F. Zhang, C. Si, Y. Jiang, Y. Zhang, T. Wu, Q. Jin, N. Chanpaisit,
+    Y. Wang, X. Chen, L. Wang, D. Lin, Y. Qiao, and Z. Liu (2024) VBench: comprehensive benchmark
+    suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision
+    and Pattern Recognition, Cited by: 3rd item, §3.3, §4.1, §4.2.
+  • [7] J. Ding, Y. Zhang, Y. Shang, Y. Zhang, Z. Zong, J. Feng, Y. Yuan, H. Su, N. Li, N.
+    Sukiennik, et al. (2025) Understanding world or predicting future? a comprehensive survey of
+    world models. ACM Computing Surveys 58 (3), pp. 1–38. Cited by: §2.1, §2.1.
+  • [8] X. Li, X. He, L. Zhang, M. Wu, X. Li, and Y. Liu (2025) A comprehensive survey on world
+    models for embodied ai. arXiv preprint arXiv:2510.16732. Cited by: §2.1, §2.1.
+  • [9] J. Yue, Z. Huang, Z. Chen, X. Wang, P. Wan, and Z. Liu (2025) Simulating the visual world
+    with artificial intelligence: a roadmap. arXiv preprint arXiv:2511.08585. Cited by: §2.1, §2.1.
+  • [10] X. Long, Q. Zhao, K. Zhang, Z. Zhang, D. Wang, Y. Liu, Z. Shu, Y. Lu, S. Wang, X. Wei, et
+    al. (2025) A survey: learning embodied intelligence from physical simulators and world models. 
+    arXiv preprint arXiv:2507.00917. Cited by: §2.1, §2.1.
+  • [11] P. Zhao, A. Akbari, X. Shen, Z. Kong, Y. Shen, S. Chang, T. Rupprecht, L. Lu, E. Nan, C.
+    Yang, et al. (2025) Open-source multimodal moxin models with moxin-vlm and moxin-vla. arXiv
+    preprint arXiv:2512.22208. Cited by: §2.1.
+  • [12] P. Zhao, X. Shen, Z. Kong, Y. Shen, et al. (2024) 7B fully open source moxin-llm/vlm–from
+    pretraining to grpo-based reinforcement learning enhancement. arXiv preprint arXiv:2412.06845. 
+    Cited by: §2.1.
+  • [13] M. Lin, X. Wang, Y. Wang, S. Wang, F. Dai, P. Ding, C. Wang, Z. Zuo, N. Sang, S. Huang, et
+    al. (2025) Exploring the evolution of physics cognition in video generation: a survey. arXiv
+    preprint arXiv:2503.21765. Cited by: §2.1, §2.1.
+  • [14] D. Liu, J. Zhang, A. Dinh, E. Park, S. Zhang, A. Mian, M. Shah, and C. Xu (2025) 
+    Generative physical ai in vision: a survey. arXiv preprint arXiv:2501.10928. Cited by: §2.1,
+    §2.1.
+  • [15] K. Xu, H. Zhao, R. Hu, Y. Huang, Z. Zhou, W. Feng, Y. Li, S. Peng, X. Liu, Z. Liu, et al.
+    (2026) From specialist to generalist: a comprehensive survey on world models. Authorea
+    Preprints. Cited by: §2.1, §2.1.
+  • [16] J. Dong, Q. Lyu, B. Liu, X. Wang, W. Liang, D. Zhang, J. Tu, H. Li, H. Zhao, H. Ding, et
+    al. (2026) Learning to model the world: a survey of world models in artificial intelligence. 
+    Authorea Preprints. Cited by: §2.1, §2.1.
+  • [17] X. Shen, P. Dong, Z. Kong, Y. Gong, C. Yang, Z. Han, Y. Xie, L. Lu, C. Lyu, C. Wu, Y.
+    Wang, and P. Zhao (2025) Squat: quant small language models on the edge. In 2025 IEEE/ACM
+    International Conference On Computer Aided Design (ICCAD), Vol. , pp. 1–9. External Links: 
+    Document Cited by: §2.1.
+  • [18] P. Zhao, F. Sun, X. Shen, P. Yu, Z. Kong, Y. Wang, and X. Lin (2024) Pruning foundation
+    models for high accuracy without retraining. In Findings of the Association for Computational
+    Linguistics: EMNLP 2024, Miami, Florida, USA, pp. 9681–9694. Cited by: §2.1.
+  • [19] X. Shen, P. Zhao, Y. Gong, Z. Kong, Z. Zhan, Y. Wu, M. Lin, C. Wu, X. Lin, and Y. Wang
+    (2024) Search for efficient large language models. In NeurIPS, Cited by: §2.1.
+  • [20] X. Shen, W. Ma, J. Liu, C. Yang, R. Ding, Q. Wang, H. Ding, W. Niu, Y. Wang, P. Zhao, J.
+    Lin, and J. Gu (2025) QuartDepth: post-training quantization for real-time depth estimation on
+    the edge. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition
+    (CVPR), pp. 11448–11460. Cited by: §2.1.
+  • [21] N. Hansen, J. SV, V. Sobal, Y. LeCun, X. Wang, and H. Su (2024) Hierarchical world models
+    as visual whole-body humanoid controllers. arXiv preprint arXiv:2405.18418. Cited by: §2.1.
+  • [22] Q. Garrido, T. Nagarajan, B. Terver, N. Ballas, Y. LeCun, and M. Rabbat (2026) Learning
+    latent action world models in the wild. arXiv preprint arXiv:2601.05230. Cited by: §2.1.
+  • [23] J. Yuan, X. Zhang, F. Friedrich, N. Beltran-Velez, M. Hall, R. Askari-Hemmat, X. Han, N.
+    Ballas, M. Drozdzal, and A. Romero-Soriano (2026) Inference-time physics alignment of video
+    generative models with latent world models. arXiv preprint arXiv:2601.10553. Cited by: §2.1.
+  • [24] M. J. Kim, Y. Gao, T. Lin, Y. Lin, Y. Ge, G. Lam, P. Liang, S. Song, M. Liu, C. Finn, et
+    al. (2026) Cosmos policy: fine-tuning video models for visuomotor control and planning. arXiv
+    preprint arXiv:2601.16163. Cited by: §2.1.
+  • [25] S. Yang, J. Yang, P. Huang, E. Brown, Z. Yang, Y. Yu, S. Tong, Z. Zheng, Y. Xu, M. Wang, 
+    et al. (2025) Cambrian-s: towards spatial supersensing in video. arXiv preprint
+    arXiv:2511.04670. Cited by: §2.1.
+  • [26] K. Wang, P. Zhang, Z. Wang, Y. Gao, L. Li, Q. Wang, H. Chen, C. Wan, Y. Lu, Z. Yang, et
+    al. (2025) Vagen: reinforcing world model reasoning for multi-turn vlm agents. arXiv preprint
+    arXiv:2510.16907. Cited by: §2.1.
+  • [27] W. Huang, Y. Chao, A. Mousavian, M. Liu, D. Fox, K. Mo, and L. Fei-Fei (2026) PointWorld:
+    scaling 3d world models for in-the-wild robotic manipulation. arXiv preprint arXiv:2601.03782. 
+    Cited by: §2.1.
+  • [28] X. Shen, H. Zheng, Y. Gong, Z. Kong, C. Yang, Z. Zhan, Y. Wu, X. Lin, Y. Wang, P. Zhao,
+    and W. Niu (2025) Sparse learning for state space models on mobile. In The Thirteenth
+    International Conference on Learning Representations, Cited by: §2.1.
+  • [29] Z. Zhan, Z. Kong, Y. Gong, et al. (2024) Exploring token pruning in vision state space
+    models. In NeurIPS, Cited by: §2.1.
+  • [30] Z. Zhan, Y. Wu, Z. Kong, et al. (2024) Rethinking token reduction for state space models. 
+    In EMNLP, pp. 1686–1697. Cited by: §2.1.
+  • [31] H. Guan, S. Liu, X. Ma, W. Niu, B. Ren, X. Shen, Y. Wang, and P. Zhao (2021) CoCoPIE:
+    enabling real-time ai on off-the-shelf mobile devices via compression-compilation co-design. 
+    Commun. ACM 64 (6), pp. 62–68. Cited by: §2.1.
+  • [32] Z. Mi, Y. Chen, P. Zhao, X. Yu, H. Wang, Y. Wang, and S. Huang (2026) Effective moe-based
+    llm compression by exploiting heterogeneous inter-group experts routing frequency and
+    information density. arXiv preprint arXiv:2602.09316. Cited by: §2.1.
+  • [33] L. Li, Q. Zhang, Y. Luo, S. Yang, R. Wang, F. Han, M. Yu, Z. Gao, N. Xue, X. Zhu, et al.
+    (2026) Causal world modeling for robot control. arXiv preprint arXiv:2601.21998. Cited by: §2.1
+    .
+  • [34] R. Team, Z. Gao, Q. Wang, Y. Zeng, J. Zhu, K. L. Cheng, Y. Li, H. Wang, Y. Xu, S. Ma, et
+    al. (2026) Advancing open-source world models. arXiv preprint arXiv:2601.20540. Cited by: §2.1.
+  • [35] J. Lin, A. Taherin, A. Akbari, A. Akbari, L. Lu, G. Chen, T. Padir, X. Yang, W. Chen, Y.
+    Li, et al. (2025) Vote: vision-language-action optimization with trajectory ensemble voting. 
+    arXiv preprint arXiv:2507.05116. Cited by: §2.1.
+  • [36] S. Gao, S. Zhou, Y. Du, J. Zhang, and C. Gan (2025) Adaworld: learning adaptable world
+    models with latent actions. arXiv preprint arXiv:2503.18938. Cited by: §2.1.
+  • [37] X. Shen, W. Ma, Y. Zhou, E. Tang, Y. Xie, Z. Li, Y. Gong, Q. Wang, H. Ding, Y. Wang, P.
+    Zhao, J. Lin, and J. Gu (2026) Fastcar: cache attentive replay for fast auto-regressive video
+    generation on the edge. In The Fourteenth International Conference on Learning Representations,
+    Cited by: §2.1.
+  • [38] X. Shen, Z. Song, Y. Zhou, B. Chen, J. Liu, R. Zhang, et al. (2025) Numerical pruning for
+    efficient autoregressive models. Proceedings of the AAAI Conference on Artificial Intelligence 
+    39 (19), pp. 20418–20426. Cited by: §2.1.
+  • [39] X. Shen, Z. Song, Y. Zhou, B. Chen, Y. Li, Y. Gong, et al. (2025) LazyDiT: lazy learning
+    for the acceleration of diffusion transformers. Proceedings of the AAAI Conference on
+    Artificial Intelligence 39 (19), pp. 20409–20417. External Links: Document Cited by: §2.1.
+  • [40] K. Zhang et al. (2025) Epona: autoregressive diffusion world model for autonomous driving.
+    arXiv preprint arXiv:2506.24113. Cited by: §2.1.
+  • [41] L. Zhao, X. Jiang, X. Xiao, Q. Fan, L. Lu, Y. Wang, X. Lin, O. Camps, P. Zhao, and J. Gu
+    (2026) Hieramp: coarse-to-fine autoregressive amplification for generative dataset distillation
+    . arXiv preprint arXiv:2603.06932. Cited by: §2.1.
+  • [42] L. Zhao, Y. Wu, X. Jiang, J. Gu, Y. Wang, X. Xu, P. Zhao, and X. Lin (2025) Taming
+    diffusion for dataset distillation with high representativeness. In Forty-second International
+    Conference on Machine Learning, Cited by: §2.1.
+  • [43] Z. Zhan, Y. Wu, Y. Gong, Z. Meng, et al. (2024) Fast and memory-efficient video diffusion
+    using streamlined inference. In Advances in Neural Information Processing Systems, Vol. 37, 
+    pp. 13660–13684. Cited by: §2.1.
+  • [44] Z. Li, X. Han, Y. Li, N. Strauss, and M. Schubert (2025) DAWM: diffusion action world
+    models for offline reinforcement learning via action-inferred transitions. arXiv preprint
+    arXiv:2509.19538. Cited by: §2.1.
+  • [45] X. Huang, Z. Li, G. He, M. Zhou, and E. Shechtman (2025) Self forcing: bridging the
+    train-test gap in autoregressive video diffusion. arXiv preprint arXiv:2506.08009. Cited by:
+    §2.1.
+  • [46] J. Cui, J. Wu, M. Li, T. Yang, X. Li, R. Wang, A. Bai, Y. Ban, and C. Hsieh (2025) 
+    Self-forcing++: towards minute-scale high-quality video generation. arXiv preprint
+    arXiv:2510.02283. Cited by: §2.1.
+  • [47] M. L. Team, X. Cai, Q. Huang, Z. Kang, H. Li, S. Liang, L. Ma, S. Ren, X. Wei, R. Xie, and
+    T. Zhang (2025) LongCat-video technical report. External Links: 2510.22200, Link Cited by: §2.1
+    .
+  • [48] S. Yang, W. Huang, R. Chu, Y. Xiao, Y. Zhao, X. Wang, M. Li, E. Xie, Y. Chen, Y. Lu, S.
+    Han, and Y. Chen (2025) Longlive: real-time interactive long video generation. arXiv preprint
+    arXiv:2509.22622. Cited by: §2.1.
+  • [49] M. L. Team, B. Xiao, C. Wang, C. Li, C. Zhang, C. Peng, H. Yu, H. Yang, H. Yan, H. Sun, et
+    al. (2026) Longcat-next: lexicalizing modalities as discrete tokens. arXiv preprint
+    arXiv:2603.27538. Cited by: §2.1.
+  • [50] S. Motamed, L. Culp, K. Swersky, P. Jaini, and R. Geirhos (2026) Do generative video
+    models understand physical principles?. In Proceedings of the IEEE/CVF Winter Conference on
+    Applications of Computer Vision, pp. 948–958. Cited by: §2.2.
+  • [51] F. Meng, J. Liao, X. Tan, W. Shao, Q. Lu, K. Zhang, Y. Cheng, D. Li, Y. Qiao, and P. Luo
+    (2024) Towards world simulator: crafting physical commonsense-based benchmark for video
+    generation. arXiv preprint arXiv:2410.05363. Cited by: §2.2.
+  • [52] H. Bansal, C. Peng, Y. Bitton, R. Goldenberg, A. Grover, and K. Chang (2025) Videophy-2: a
+    challenging action-centric physical commonsense evaluation in video generation. arXiv preprint
+    arXiv:2503.06800. Cited by: §2.2.
+  • [53] D. Li, Y. Fang, Y. Chen, S. Yang, S. Cao, J. Wong, M. Luo, X. Wang, H. Yin, J. E.
+    Gonzalez, et al. (2025) Worldmodelbench: judging video generation models as world models. arXiv
+    preprint arXiv:2502.20694. Cited by: §2.2.
+  • [54] R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning, S. Ermon, and C. Finn (2023) Direct
+    preference optimization: your language model is secretly a reward model. Advances in neural
+    information processing systems 36, pp. 53728–53741. Cited by: §3.
+  • [55] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P.
+    Mishkin, J. Clark, et al. (2021) Learning transferable visual models from natural language
+    supervision. In International conference on machine learning, pp. 8748–8763. Cited by: §3.1.1,
+    §3.1.2.
+  • [56] K. Nan, R. Xie, P. Zhou, T. Fan, Z. Yang, Z. Chen, X. Li, J. Yang, and Y. Tai (2024) 
+    OpenVid-1m: a large-scale high-quality dataset for text-to-video generation. arXiv preprint
+    arXiv:2407.02371. Cited by: §3.1.2.
+  • [57] L. Yang, L. Qi, L. Feng, W. Zhang, and Y. Shi (2023) Revisiting weak-to-strong consistency
+    in semi-supervised semantic segmentation. In CVPR, Cited by: §3.1.2.
+  • [58] Y. Lipman, R. T. Chen, H. Ben-Hamu, M. Nickel, and M. Le (2022) Flow matching for
+    generative modeling. arXiv preprint arXiv:2210.02747. Cited by: §3.1.3.
+  • [59] P. Esser, S. Kulal, A. Blattmann, R. Entezari, J. Müller, H. Saini, Y. Levi, D. Lorenz, A.
+    Sauer, F. Boesel, et al. (2024) Scaling rectified flow transformers for high-resolution image
+    synthesis. In Forty-first international conference on machine learning, Cited by: §3.1.3,
+    §3.1.3.
+  • [60] Qwen Team (2026) Qwen3.5: towards native multimodal agents. External Links: Link Cited by:
+    §3.3.
+  • [61] DiDi (2024) DiffSynth-studio. GitHub. Note: https://github.com/datawhalechina/
+    diffsynth-studio Cited by: §4.1.
+  • [62] Y. HaCohen, B. Brazowski, N. Chiprut, Y. Bitterman, A. Kvochko, A. Berkowitz, D. Shalem,
+    D. Lifschitz, D. Moshe, E. Porat, E. Richardson, G. Shiran, I. Chachy, J. Chetboun, M.
+    Finkelson, M. Kupchick, N. Zabari, N. Guetta, N. Kotler, O. Bibi, O. Gordon, P. Panet, R.
+    Benita, S. Armon, V. Kulikov, Y. Inger, Y. Shiftan, Z. Melumian, and Z. Farbman (2025) LTX-2:
+    efficient joint audio-visual foundation model. arXiv preprint arXiv:2601.03233. Cited by: §4.1.
+  • [63] K. Pan, Q. Tian, J. Zhang, W. Kong, J. Xiong, Y. Long, S. Zhang, H. Qiu, T. Wang, Z. Lv, 
+    et al. (2026) OmniWeaving: towards unified video generation with free-form composition and
+    reasoning. arXiv preprint arXiv:2603.24458. Cited by: §4.1.
+  • [64] A. Ali, J. Bai, M. Bala, Y. Balaji, A. Blakeman, T. Cai, J. Cao, T. Cao, E. Cha, Y. Chao, 
+    et al. (2025) World simulation with video foundation models for physical ai. arXiv preprint
+    arXiv:2511.00062. Cited by: §4.1.
+
+Appendix A Benchmarks for Physical Faithfulness
+
+Current physics-evaluation pipelines for video generation suffer from a compounding set of design
+flaws that together leave their scores only weakly coupled to actual physical correctness. The most
+fundamental issue is prompt-level: benchmarks such as VideoPhy-2, Physics-IQ, and WorldModelBench
+rely on implicit prompts that describe a scene without specifying its expected physical outcome, so
+an evaluator can only judge whether the video looks plausible rather than whether the physics is
+correct — "a wooden block slides across a table" need never reach the edge or fall, and a
+physically wrong but visually coherent generation can still earn a high score with the violation
+undetected.
+
+The second flaw is scoring-level: nearly every prior benchmark reports a single holistic physics
+aggregate, or at best binary per-event judgments on a <5 level scale, which collapses heterogeneous
+failure modes- a model that obeys optical reflection while systematically violating momentum
+conservation receives the same score as one whose error pattern is the inverse - and prevents
+per-law diagnostics.
+
+Pixel-reference metrics such as Physics-IQ’s S-IoU, ST-IoU, and MSE inherit a different but equally
+fatal pathology: they assume a unique ground-truth trajectory and penalize cinematographic camera
+motion, even though many physical outcomes — collision rebound angles, fluid splashes — are
+inherently stochastic and admit multiple equally valid trajectories that can yield drastically
+different IoU values; the reference-based design moreover cannot be extended to the text-to-video
+setting at all, since no ground-truth video exists by construction.
+
+Refer to caption
+Figure 3: Visual comparison with baselines. PhyWorld generates videos with superior physical
+consistency, while baselines suffer from artifacts or flaws such as color shift or background
+change.
+
+Many benchmarks rely on closed-source evaluators (including GPT-4o, GPT-5, and Gemini-3.1-Pro) to
+provide physical evaluations. However, it introduces compounding reliability concerns. The behavior
+of these models is subject to silent drift across model versions, weights, and API changes outside
+benchmark users’ control. The empirical inspection reveals systematic failure modes in specific
+physical domains. In particular, Gemini-3.1-Pro has been observed to classify visibly dynamic fluid
+motion as entirely static, and to produce markedly unstable scores on shadow and reflection
+phenomena.
+
+Appendix B More Details for our Benchmark for Physics Alignment
+
+Refer to caption
+Figure 4: Visual comparison with baselines. PhyWorld generates videos with superior physical
+consistency, while baselines suffer from artifacts or flaws such as color shift or background
+change.
+
+Annotators and onboarding.
+
+Around 350 annotators are recruited through a web-based platform and pass through a fixed
+three-stage onboarding before rating anything: a consent / study-overview page, a structured
+demographic questionnaire (age, gender, education, major), and a training module of three
+calibration videos spanning different levels of physical realism so non-expert raters acquire a
+shared scoring reference.
+
+Per-rater protocol.
+
+Each rater receives a randomly assigned subset of the 2,000 videos (250 prompts × 8 generators)
+with the within-subset order independently randomized to neutralize ordering effects, must play
+every video at least once before submitting, and scores it on three general 1–5 Likert dimensions —
+semantic alignment (SA), physical-temporal validity (PTV), persistence — plus up to three of the
+thirteen applicable physics laws; per-video aggregates use the median across raters rather than the
+mean to limit outlier sensitivity. Quality control. Raw annotations (5,796 submissions, 37.4K
+labels) pass through a two-round filter that combines four mutually independent signals — score
+constancy (flag std < 0.3, including the std = 0 raters who give the same number to everything),
+per-video copy-paste rate (identical scores across dimensions inside one video even when
+cross-video std > 0, which constancy alone cannot catch), peer mean absolute error on shared
+videos, and behavioral telemetry (page stay time, video play count) — and an annotator is removed
+only when several signals are simultaneously abnormal, retaining 352 of 459 raters and yielding a
+cleaned corpus of 4,576 annotations and 29.5K labels.
+
+Refer to caption
+Figure 5: Per-prompt comparison (1/2): rigid-body and gravity violations. (a) Pouring syrup —
+Wan2.2-A14B never initiates the pour and the mug stays empty; ours starts the pour and the mug
+begins to fill. (b) Felling a tree — Wan2.2-A14B swings the axe vertically but the trunk splits
+along a horizontal band, after which the upper half stays suspended in mid-air rather than falling
+under gravity; ours tilts and topples the trunk to the ground.
+
+From annotations to training corpus.
+
+The judge model is trained on a subset of this same pool, namely 8 generators ×\times 93 prompts
+about 13K (video, dimension) records, partitioned at the (generator, prompt) pair level with random
+seed 42 into four disjoint splits — TRAIN (seen × seen), TEST-PROMPT (seen generators × 12 unseen
+prompts), TEST-MODEL (the fully held-out veo-3.1 generator × seen prompts), and TEST-BOTH (unseen ×
+unseen) — so generalization is measurable along both axes; because the partition is at the
+(generator, prompt) level rather than the law level, all 13 physics laws appear in roughly equal
+proportions across splits, and a further 5% of videos inside the training pool (video-disjoint but
+otherwise drawn from the same prompts and generators) is held in as a validation set used solely
+for early stopping by eval loss. Training samples. Each sample is a triple of (a) video frames
+sampled at 4 fps with the short side resized to 360 and capped at FPS MAX FRAMES = 12, IMAGE MAX
+TOKEN NUM = 1024 per frame, and VIDEO MAX TOKEN NUM = 1024 over the whole clip, (b) the augmented
+prompt containing the expected physical outcome — bit-identical to the prompt the judge sees at
+inference time, so train/inference distribution drift is zero — and (c) a structured JSON score
+block consisting of a single key (the target dimension or physical law) and a single integer 1–5
+value derived from the human annotations.
+
+Refer to caption
+Figure 6: Per-prompt comparison (2/2): fluid continuity and material/breakage. (c) Pouring hot
+chocolate — Wan2.2-A14B’s stream is non-continuous and breaks into disconnected blobs, violating
+fluid continuity; ours produces a continuous coherent stream that fills the saucer. (d) Dropping a
+mug onto a brick — Wan2.2-A14B’s mug never shatters and ignores the prompt’s semantics; ours
+releases the mug and renders the shatter event with visible fragments around the brick.
+
+The base model is Qwen3.5-9B — chosen because it fits a single GPU (TP = 1), supports video input
+natively, and after SFT closes the gap to the 27B variant (which differs only by switching
+DeepSpeed from ZeRO-2 to ZeRO-3) — and LoRA is applied at rank 32, alpha 64, dropout 0.05 across
+all linear layers (q/k/v/o plus MLP gate/up/down) of the LLM; the visual encoder (ViT) is frozen to
+preserve visual understanding, the aligner is left trainable but on a smaller learning rate (2e-6
+versus 1e-4 for the LoRA adapters), and the optimizer runs in bfloat16 with DeepSpeed ZeRO-2
+(ZeRO-3 for the 27B ablation). Training is one epoch with per-device batch size 1 and gradient
+accumulation 8 (effective batch 8), max sequence length 8192, warmup ratio 0.05, gradient clipping
+at 1.0, evaluation every 100 steps, and the checkpoint with the lowest eval loss is loaded as
+final. Inference and per-metric supervision. At both training and inference the judge is queried in
+per-metric mode: each evaluation dimension — SA, PTV, persistence, and every applicable physics law
+— is scored in a separate inference call, and the assistant target on each call is restricted to a
+single JSON key-value pair, matching the inference-time output schema exactly so the model never
+learns to imitate free-form rationales and reasoning across dimensions cannot contaminate one
+another. The combined effect is that judge accuracy on the four held-out splits is bounded by the
+quality of the human label distribution rather than by any architectural choice — exactly the
+property required for a benchmark whose primary contribution is reproducibility.
+
+Appendix C Visual Demonstrations
+
+We demonstrate more visual comparison in Figure 3 and 4.
+
+Appendix D Per-prompt comparison: Wan2.2-I2V-A14B base vs. our RL-DPO LoRA
+
+To complement the leaderboard in Table 4, we walk through four prompts on which the open-source
+base model Wan2.2-I2V-A14B (Wan et al., 2025) produces a physically implausible video, and on which
+our RL-DPO LoRA on the same backbone visibly fixes the violation. In Figure 5 and 6, each row is a
+stitched composite: the upper strip is the Wan2.2-I2V-A14B base output and the lower strip is our
+checkpoint, both decoded from the same first frame and prompt at the same four timestamps
+(t≈0.1,1.7,3.3,4.9t\approx 0.1,1.7,3.3,4.9 s of the 5 s, 16 fps clip). The case header reports our
+judge model’s physics score PphysP_{\rm phys} (1–5) for each model and the gain Δ\Delta.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 
