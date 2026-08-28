@@ -56,6 +56,22 @@ PAPERS: list[tuple[str, str]] = [
     ("2604.08503", "phantom-physics-video"),
     ("2608.06799", "psg-jepa-physical-grounding"),
     ("2608.07981", "distill-physical-priors"),
+    # Discover laws from observation; compile into anticipatory encoding
+    ("1905.11481", "ai-feynman"),
+    ("1509.03582", "sindy"),
+    ("2005.11212", "symbolic-pregression-video"),
+    ("2210.13382", "othello-gpt-world-rep"),
+    ("2309.00941", "othello-linear-wm"),
+    ("2310.02207", "lm-represent-space-time"),
+    ("2201.02177", "grokking"),
+    ("2507.21513", "what-is-a-world-model"),
+    ("2605.18847", "transformers-linear-wm"),
+    ("2607.06401", "world-models-roadmap"),
+    ("1707.06203", "i2a-imagination"),
+    ("1911.08265", "muzero"),
+    ("1912.01603", "dreamer-v1"),
+    ("1604.00289", "lake-think-like-people"),
+    ("2102.11107", "causal-representation-learning"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
