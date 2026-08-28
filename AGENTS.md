@@ -146,6 +146,99 @@ Shuffled-\(o\) / shuffled-\(\hat z\) twins and \(\hat z\)-ablation remain **avai
 
 **Honest boundary:** dropping the command partition also drops known intervention targets, so **question 1 (law discovery) cannot be claimed as identifiability** — it degrades to an empirical claim (“extrapolates to held-out (precondition × command) combinations”), with the discovered action-equivalence structure ([BMAS](https://doi.org/10.3390/a17020060), [2209.06356](https://arxiv.org/abs/2209.06356)) reported as a **result** rather than assumed. The end-to-end composition proposition is still unproven; that hole predates this design.
 
+### Architecture diagram
+
+```mermaid
+flowchart TD
+    subgraph sg_in["输入"]
+        H["历史 h_t<br/>系统提示 + 过去的 (动作, 观察)"]
+        BAT["查询电池 {(a_k, o_k)}, k=1..K<br/>从语料真实轨迹采样<br/>不区分命令类型"]
+    end
+
+    H --> TRUNK
+    BAT --> TRUNK
+
+    subgraph sg_trunk["共享主干 — 两个目标唯一相遇的地方"]
+        TRUNK["Muse-Glimmer-30B / Qwen3.5-35B-A3B<br/>Gated DeltaNet + Attention 混合层<br/>+ LoRA"]
+    end
+
+    TRUNK --> PSI
+    TRUNK --> LMH
+
+    subgraph sg_world["世界侧 — 不经过嘴"]
+        PSI["打分头 ψ<br/>score(h_t, a_k, o_k)"]
+        Z["状态向量 ẑ_t ∈ R^K<br/>第 k 维 = 「此刻若做 a_k，会看到 o_k 吗」"]
+        PSI --> Z
+    end
+
+    subgraph sg_agent["agent 侧 — 唯一的输出口"]
+        LMH["LM head<br/>只学写下一条命令"]
+        PI["π(a | h_t, sg[ẑ_t])"]
+        LMH --> PI
+    end
+
+    Z -- "stop-gradient<br/>单向：agent 不能改写「什么算世界状态」" --> PI
+
+    PI --> ACT["下一条命令 a_t"]
+    ACT --> ENV[("真实沙箱")]
+    ENV --> OBS["真观察 o_t"]
+
+    OBS --> LW["L_world 落在 ψ 上<br/>稀疏 BCE + ranking<br/>负样本只在同一条轨迹内采"]
+    ACT --> LA["L_agent 落在 LM head 上<br/>动作 token CE 或小步 RL"]
+
+    LW -.->|"梯度"| PSI
+    LA -.->|"梯度"| LMH
+    PSI -.->|"梯度"| TRUNK
+    LMH -.->|"梯度"| TRUNK
+```
+
+```mermaid
+flowchart LR
+    S0["Stage 0 门槛<br/>量 Gated DeltaNet 特征值<br/>是否覆盖负值（几分钟）"]
+    S0 -->|"通过"| S1
+    S0 -->|"不通过"| STOP["换底座<br/>ẑ 这条路在此 checkpoint 先天不行"]
+
+    S1["Stage 1 世界<br/>训 ψ + 主干 LoRA<br/>LM head 冻结"]
+    S1 --> S2["Stage 2 agent<br/>冻结 ψ 的转移部分<br/>接 π，喂 sg[ẑ]<br/>小步 RL 优先于大力 SFT"]
+
+    S2 --> E1["① TB2.1<br/>训练前 vs 训练后"]
+    S2 --> E2["② 一致重命名探针<br/>rm → zaq"]
+    S2 --> E3["③ 提前躲 / VoE 探针<br/>截断轨迹，o_t 不在上下文"]
+```
+
+**How to read it.** The trunk is the only shared resource, and sharing it is the *point* — that is the same relation English understanding has with agent ability. The old collision was never “shared parameters”, it was a **shared output slot**: both losses pressed on the one assistant softmax, one demanding observations, the other demanding commands. That edge no longer exists. \(\psi\) scores \((h_t, a_k, o_k)\) triples and never emits text; the battery is corpus-sampled so `rm -rf build`, `pytest`, `cat setup.py` are all treated alike. The \(\hat z \to \pi\) edge is one-way; **deleting the stop-gradient is the cheapest way to silently invalidate the experiment**, because \(\pi\) will bend \(\hat z\) into task-convenient features.
+
+### What each design choice is hung on
+
+| Design | Why | Hung on |
+|---|---|---|
+| Observation loss **not** on the assistant slot | Pure WM-SFT twists the assistant slot into an observation generator and wipes IF/math/code; token-level next-state prediction collapses into chasing literal wording, embedding-space alignment is stable | [RWML 2602.05842](https://arxiv.org/abs/2602.05842) |
+| Two objectives as two parts of one pass, not slot rivals | Joint tool-call + next-state in one generation; policy RL + auxiliary next-observation loss with \(\lambda\) schedule | [DyMo 2506.02918](https://arxiv.org/abs/2506.02918), [PaW 2606.02388](https://arxiv.org/abs/2606.02388) |
+| Observation CE not the main loss | Per-token observation fitting = behaviour cloning the environment, error **compounds** with horizon; value equivalence says per-state accuracy is both hard and often unnecessary | [2010.11876](https://arxiv.org/abs/2010.11876), [2011.03506](https://arxiv.org/abs/2011.03506) |
+| Latent self-prediction, not observation reconstruction, as the auxiliary | Learning-dynamics analysis: latent self-prediction is a good auxiliary; observation reconstruction *hurts* as an auxiliary | [2406.17718](https://arxiv.org/abs/2406.17718) |
+| State = a bundle of checkable future predictions | A PSR **test** is already (action seq, observation seq) — never “a read-only command”; PSR has polynomial sample complexity under function approximation; spectral criterion for choosing tests | [2207.05738](https://arxiv.org/abs/2207.05738), [AAAI 2015](https://doi.org/10.1609/aaai.v29i1.9635), [OPSR 2604.07016](https://arxiv.org/abs/2604.07016) |
+| Prediction may read only \(z\) and \(a\) (strict mediation) | Forbid looking back at history and the model is forced to build state; text-domain identifiability + fGRPO enforces mediation; next-latent prediction provably converges to belief state | [2606.27681](https://arxiv.org/abs/2606.27681), [NextLat 2511.05963](https://arxiv.org/abs/2511.05963) |
+| Filter uncontrollable noise (timestamps, PIDs, CI jitter) | Multi-step inverse models **guarantee** discovery of control-endogenous latent state; when exogenous components are action-independent, regret depends only on the exogenous space, with a matching lower bound | [AC-State 2207.08229](https://arxiv.org/abs/2207.08229), [2603.02862](https://arxiv.org/abs/2603.02862) |
+| **Negatives sampled within the same trajectory** | Cross-trajectory negatives make contrastive predictive objectives encode slow trajectory fingerprints instead of dynamics, and more/longer trajectories do **not** fix it | [2606.07770](https://arxiv.org/abs/2606.07770) |
+| Ranking-form transition loss | Local transition policy + globally decomposable energy, cooperative not adversarial, with consistency proof; offline conditional energy transition model separates in-support error from truncation risk; Ranking-NCE is asymptotically consistent while the IBC objective is biased even at population level | [2311.01388](https://arxiv.org/abs/2311.01388), [MC-ETM 2602.02900](https://arxiv.org/abs/2602.02900), [R-NCE 2309.05803](https://arxiv.org/abs/2309.05803) |
+| Command taxonomy **measured**, not declared | Learned state-specific action masks explicitly drop minimal-influence actions and merge behaviourally identical ones; learned dynamics infer which state-action pairs land in the same state | [BMAS](https://doi.org/10.3390/a17020060), [2209.06356](https://arxiv.org/abs/2209.06356) |
+| Legitimacy of the state abstraction | **Sufficient conditions** for learning a Markov abstract state, proved; practical recipe is inverse model + temporal contrastive, no reward needed, offline-compatible | [2106.04379](https://arxiv.org/abs/2106.04379) |
+| Stage 2 prefers small-step RL over heavy SFT | Mechanistically SFT rewires circuits fast and forgets more; RL stays near the original policy and preserves the base; RL-learned world models also forget less | [2605.28860](https://arxiv.org/abs/2605.28860), [RWML](https://arxiv.org/abs/2602.05842) |
+| How to set auxiliary loss weight | Gradient cosine similarity schedules it with a **guarantee** of convergence to the main task's critical point — beats hand-picked \(\lambda\) | [1812.02224](https://arxiv.org/abs/1812.02224) |
+| Where the “flinch” comes from | Successor features compile future occupancy into features; Forward-Backward learns base **and** successor features from one criterion, so \(\phi\) need not be given | [FB 2209.14935](https://arxiv.org/abs/2209.14935), [2502.10790](https://arxiv.org/abs/2502.10790) |
+| Report ranking and fidelity separately | In a stochastic one-life environment, state **ranking** and state **fidelity** are different things and ranking is where the law lives; raising observation fidelity *weakens* action-discriminative dynamics | [OneLife 2510.12088](https://arxiv.org/abs/2510.12088), [PatchWorld 2605.30880](https://arxiv.org/abs/2605.30880) |
+| VoE probe scoring | Classic surprise scores are ad hoc; likelihood-ratio theory gives two better-founded scores | N group ([IntPhys 2 2506.09849](https://arxiv.org/abs/2506.09849) et al.) |
+| Stage 0 architecture gate | Constant-depth Transformers and Mamba-class SSMs are stuck at TC⁰ and demonstrably cannot evaluate code / track entities; diagonal+low-rank LRNNs are PNC¹-complete **provided eigenvalues cover negatives**; the REPL protocol converts to a shell-version decision test | [2404.08819](https://arxiv.org/abs/2404.08819), [2603.03612](https://arxiv.org/abs/2603.03612), [2602.14814](https://arxiv.org/abs/2602.14814) |
+| Report only before vs after | The official LWM did not ablate training methods either | [Qwen-AgentWorld 2606.24597](https://arxiv.org/abs/2606.24597) §6.2 |
+
+**Three things that must stay stated, not quietly dropped:**
+
+1. **The “\(\psi\) head + corpus-sampled battery” shape is assembled here, not taken from a paper.** Every part has a source (PSR's test definition, GVF/Horde's “hidden state is a pile of predictions”, energy-based transition estimators), but nobody has run this composition on real shell corpora, and the end-to-end composition proposition is unproven. That risk is ours.
+2. **[ECHO 2605.24517](https://arxiv.org/abs/2605.24517) is counter-evidence, on our own benchmark.** It is exactly “GRPO on action tokens, extra CE on observation tokens, one forward pass two masks”, and doubles TB2.1 pass@1. So observation-token CE **does** work as a dense **on-policy auxiliary**. Our claimed dividing line — offline + main loss + long-horizon generation ⇒ compounding error; on-policy + auxiliary ⇒ it is supplying gradient to failed rollouts, unrelated to fidelity — is plausible but **unproven**, and is worth a head-to-head.
+3. **PaW runs the opposite order** (WM auxiliary on an agent base; we grow an agent on a WM base). Its \(\lambda\) schedule is reusable; its experimental conclusions are not transferable as-is.
+
+New in this round and **not yet in `refs/`**: [2606.07770](https://arxiv.org/abs/2606.07770), [2106.04379](https://arxiv.org/abs/2106.04379), [2603.02862](https://arxiv.org/abs/2603.02862), [2311.01388](https://arxiv.org/abs/2311.01388), [2602.02900](https://arxiv.org/abs/2602.02900), [2309.05803](https://arxiv.org/abs/2309.05803), [BMAS](https://doi.org/10.3390/a17020060), van der Pol “Plannable Approximations to MDP Homomorphisms” (contrastive action-equivariance loss ⇒ deterministic-MDP homomorphism when the loss is zero).
+
 Detailed runbook: [`train/README.md`](./train/README.md).
 
 ### Pilot vs full-scale (prefer pilot to screen the hypothesis)
