@@ -394,7 +394,8 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
   就得到一个能判定「模型是否在无 CoT 情况下真的在追踪 OS 状态」的干净实验。
 - 其他补强路线：[DeltaProduct](https://arxiv.org/abs/2502.10297)（多步 Householder 乘积，可调表达力）、
   [SLiCEs](https://arxiv.org/abs/2505.17761)（块对角/稀疏/Walsh-Hadamard 达到稠密矩阵的最大表达力，单层解 $A_5$）、
-  [Fixed-Point RNNs](https://arxiv.org/abs/2506.10918)、[M²RNN](https://arxiv.org/abs/2603.14360)（非线性矩阵值状态，
+  [Fixed-Point RNNs](https://consensus.app/papers/details/22e1ea9b37195e2aadfa03fd27931301/)（稠密线性 RNN 表示成可并行对角 RNN 的不动点，$A_5$/$S_5$ 上 SOTA）、
+  [M²RNN](https://arxiv.org/abs/2603.14360)（非线性矩阵值状态，
   在 7B MoE 上比同规模 Gated DeltaNet 混合低 0.4–0.5 PPL，且只换一层就有明显收益）、
   [Sparse Delta Memory](https://arxiv.org/abs/2607.07386)（把 Gated DeltaNet 的状态扩成稀疏寻址的大显式记忆，
   并可把初始状态当**参数化记忆**训——和「律进参数」这件事直接同构）。

@@ -208,11 +208,11 @@ PAPERS: list[tuple[str, str]] = [
     ("2607.07386", "sparse-delta-memory"),
     # U. objective mismatch: observation CE is provably the wrong loss for control
     ("2204.01464", "vagram-value-gradient-model-learning"),
-    ("1806.00541", "iterative-vaml"),
+    # note: Farahmand's Iterative VAML (NeurIPS 2018) has no matching arXiv HTML
     ("2106.14080", "model-advantage-value-aware"),
     ("2011.03506", "value-equivalence-principle"),
     ("2206.02072", "deciding-what-to-model-rate-distortion"),
-    ("1911.11868", "error-bounds-imitating-environments"),
+    ("2010.11876", "error-bounds-imitating-environments"),
     ("2406.16249", "optimal-tightness-simulation-lemma"),
     ("2505.22772", "calibrated-value-aware-model-learning"),
     ("2106.03273", "control-oriented-mbrl-implicit-diff"),
