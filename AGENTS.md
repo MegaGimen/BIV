@@ -43,6 +43,8 @@ Two questions the user treats as the research:
 - **Grow the agent in the orthogonal complement of WM singular vectors / “idle dimensions.”** Superstructure must **read** the substrate (English→agent works because they share representations). Orthogonal **updates** can protect WM; orthogonal **features** dump the policy into leftover junk dims.
 - Treat LATA as “layers 12–28 = physics, 29–head = policy.” LATA computes **per-layer cosine** between task and instruction vectors; layer indices are measured, not assumed. Qwen3.5-35B-A3B is a 40-layer Gated-DeltaNet + attention hybrid — do not cargo-cult dense-Transformer layer myths.
 - “100% linear decode,” “symplectic manifold on Transformers,” “hidden state collapses toward OOM” as if they were training rules. Metaphors only.
+- **Scoring head \(\psi(h,a,o)\) as the world interface fed to \(\pi\).** Scoring needs the observation \(o\) as an input. At decision time the candidate command has not run, so \(o\) is unknown. That interface cannot peek at a future it has to be handed. Abandoned 2026-08; replaced by JEPA-style \(\mathrm{Pred}(c_t,u)\to\hat z\) (observation is the training target, not an input).
+- **Soft-mixing K action vectors then decoding tokens.** Shell commands do not interpolate. The scorer may look at every branch; the token head reads **one** winning action vector.
 
 **What “law in parameters” is not:** next-observation CE getting lower (that is appearance fitting, like pixels). A law must **extrapolate** under intervention and stay stable across prompt/surface change (cwd after `cd`, file gone after `rm`, permission denied stays denied). Eval for question 2 is **VoE / raised-blade**: truncated trajectory, observation of the hit not yet in context — does the internal state or the next **action** already treat the file as gone? If a shuffled-\(o\) twin also “dodges,” it is not the law.
 
@@ -61,7 +63,7 @@ Still open:
 - **Real shell.** Strict mediation, AC-State, and epistemic/aleatoric separation are all verified on TextWorld, low-dim control, or gridworlds.
 - **We do not choose `do(a)`.** Our corpus is offline; the Causal Hierarchy Theorem ([2107.00793](https://arxiv.org/abs/2107.00793)) says observation alone cannot reach the interventional layer, and [2606.19476](https://arxiv.org/abs/2606.19476) proves in-context prediction error cannot estimate learning progress without bias in general MDPs.
 
-**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** action in the trajectory is the intervention label; state \(z\) is a bundle of **testable future predictions** (PSR / DeepMDP), not “some unnamed hidden layer” — and the tests are **corpus-sampled \((a_k,o_k)\) pairs of any command type**, never a hand-listed read-only probe set (that partition is rejected, see the objective section below); policy \(\pi(a\mid z)\) **only reads** \(z\), via stop-gradient; compile \(T\to\pi\) with successor features or imagination backup (Dyna/Dreamer/MuZero), not by co-updating observation CE and policy CE on the same unfrozen LM head. Freeze \(z\)’s transition when training \(\pi\). Instruct + same agent data remains the control for “did the world substrate help.”
+**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** two stages on an AgentWorld trunk. Stage 1 trains a JEPA predictor \(\hat z=\mathrm{Pred}(c_t,u^\star)\) in **latent space** (next-observation embedding, not stdout tokens), with \(u^\star\) = trunk encoding of the **logged command tokens**. Stage 2 attaches a draft head (K action vectors from \(c_t\)), runs JEPA on each, scores branches, **argmax**, token head decodes only the winning \(u_i\). Draft vectors are pulled toward the same command encodings JEPA already takes as input — not toward JEPA’s **output** (that is an environment vector). Observation CE never lands on the LM head. Instruct + same agent data remains the control for “did the world substrate help.” Details in the objective section below.
 
 **Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–W (194 HTML dumps). Section **V** is the assembled algorithm chain (each step hung on a theorem, holes marked); section **O** is what is still genuinely missing. A–H = merge failure, world-first ordering, physics WM. **I–T = the 2026-08 gap-closing round**: I 预测准≠学到律, J 未知多点干预可识别性, K 文本显式状态 z（strict mediation）, L 世界理解→agent 的定理链（低秩 MDP / 多任务表征迁移 / 自预测=谱分解 / T→π 编译）, M 辅助任务何时帮何时伤, N 评测（VoE / 反事实 / 探针≠因果）, P 自由文本动作的动作表征, Q 文本域可执行世界模型（含 PatchWorld 的保真度↔效用权衡实证）, R 谁来选 do(a)（主动干预 / 学习进度好奇心）, S 律进权重 vs 留上下文 + 多样性阈值, T 架构表达力硬约束（TC⁰ / Gated DeltaNet 是 PNC¹-complete）, O 仍缺的洞. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
 
@@ -100,36 +102,51 @@ Still open:
 **Analogy (GPT):** next-token prediction on text → emergent skills.  
 **Here:** next-observation / world-dynamics learning on real multi-domain tool I/O → hoped-for **transfer** to agent benchmarks. Do not refuse a method because it is not “observation tokens only”; do not substitute a pure-policy run and still call it this hypothesis.
 
-### Objective (settled 2026-08): two heads, one trunk, one direction
+### Objective (settled 2026-08-29): JEPA latents, K drafts, argmax, then tokens
 
-The world-model interface stays **exactly** \(P(o \mid h, a)\) — 统一到 `context + action → observation`。**Do not** partition commands into read-only vs world-changing; that partition is a rejected prior (the user cut it explicitly). Other engineering priors (sandbox verification, fixed architecture, a corpus-sampled query battery, ChatML) are fine and were never objected to.
+The world-model interface stays **exactly** \(P(o \mid h, a)\) — 统一到 `context + action → observation`，但观察侧预测的是 **embedding**，不是 stdout token。**Do not** partition commands into read-only vs world-changing; that partition is a rejected prior (the user cut it explicitly).
 
-\[
-\underbrace{\hat z[k] \;=\; \mathrm{score}_\psi\!\big(h,\; a_k,\; o_k\big)}_{\text{world knowledge — scoring head }\psi}
-\qquad\longrightarrow\qquad
-\underbrace{\pi\big(a \mid h,\ \mathrm{sg}[\hat z]\big)}_{\text{agent — LM head}}
-\]
+Worked example used throughout: after `rm a.txt` succeeds, the logged next command is `git checkout a.txt`.
 
-\(\hat z[k]\) reads: “if I executed \(a_k\) here, would the observation be \(o_k\)?” The battery \(\{(a_k,o_k)\}\) is **sampled from the corpus itself** (real (action, observation) pairs, any command type), so labels are free and sandbox-grounded: whenever the actually-taken action equals \(a_k\), the true \(o\) supervises that entry; other entries are masked this step (sparse BCE, GVFN / Predictive-State-Decoder style).
+**Three heads** (after the shared trunk):
 
-**Why the two objectives stop fighting** (this is the whole point — 世界模型和 agent 抢权重的原始问题):
+1. **JEPA head** — \(\hat z = \mathrm{Pred}(c_t, u)\). Input is current environment vector \(c_t\) plus an **action vector**. Output is the predicted next-environment vector. Never emits text.
+2. **Draft head** — from \(c_t\), emits K action vectors \(u_1,\ldots,u_K\). These are not tokens yet.
+3. **Token head** — the only mouth. Reads **one** winning action vector and writes command tokens (e.g. `git checkout a.txt`). Observation tokens stay masked.
 
-1. **Separate output organs.** Decoder-only models have exactly one assistant slot / LM head. Old setup asked that one softmax to emit **observations** and **actions** for the same input — the two objectives were fighting over the same organ, which is also why the Chat-Vector merge could not work. Now the observation loss lands on \(\psi\), the action loss on the LM head; they meet only in the shared trunk, where the relation is “one feature set, two consumers” — the **same** relation English understanding has with agent ability. This is the 上层建筑 the user asked for.
-2. **Serial, not adversarial.** \(\pi\) *reads* \(\psi\)'s output. Better world model ⇒ more informative policy input; the policy loss now **depends on** the world model being right instead of requiring it to be forgotten.
-3. **One-way (stop-gradient).** \(\mathrm{sg}[\hat z]\) means the agent loss cannot rewrite what counts as world state. Without it, \(\pi\) bends \(\hat z\) into task-convenient features and world knowledge becomes task features.
-4. **Anti-forgetting is now structural.** The LM head is never trained to emit observations, so collapse into an env-simulator shell is ruled out by architecture, not by tuning a mix ratio.
+**Selector:** looks at every pair \((u_k, \hat z_k)\) (and \(c_t\)), produces scores \(s[1..K]\), **argmax** \(i\), passes \(u_i\) to the token head. Attention may be used **to compute scores**. Do not fuse the K action vectors into one soup and decode that — shell strings do not interpolate. Do not gate **before** JEPA (that would skip looking at other futures).
 
-**Not a relabelled observation-SFT:** answering “would \(o_k\) follow \(a_k\) here” requires the **precondition → effect** rule (same command, different state ⇒ different answer; same observation, different command ⇒ different answer). Memorising stdout strings does not score.
+**Why the two objectives stop fighting** (世界模型和 agent 抢同一张嘴):
 
-**Sampling detail that is load-bearing, not cosmetic:** negatives must come from **within the same trajectory**. Cross-trajectory negatives make contrastive predictive objectives encode slowly-varying trajectory fingerprints (repo name, Python version, container id, issue text) instead of dynamics, and more/longer trajectories do **not** fix it ([2606.07770](https://arxiv.org/abs/2606.07770)). Within-trajectory negatives also *are* the intervention contrasts for free: same \(h\) different \(a\), and same \(a\) different \(h\).
+1. **Separate output organs.** Observation loss lands on the JEPA head; command-token CE lands on the LM head. They meet only in the trunk. The LM head is never trained to emit observations, so collapse into an env-simulator shell is architectural, not a mix-ratio knob. This is the same “English substrate → agent superstructure” relation the user asked for.
+2. **JEPA does not choose the command.** It answers “if this action vector were executed, what would the environment look like.” The draft head proposes; the selector picks; the token head writes. Peeking at the future is the K predicted \(\hat z_k\), not a score that required the real future \(o\) as an input.
+3. **Shared action-vector space, not a shared softmax.** Stage 1 action vectors are trunk encodings of **logged command tokens**. Stage 2 drafts start off-distribution (trained from scratch). Alignment is a **draft-head loss** pulling some \(u_k\) toward those command encodings — the action vectors JEPA already takes as **input**. Drafts are not pulled toward JEPA’s **output** (environment vectors). Using the selector together with JEPA does not replace that matching loss.
+4. **Token CE must not train JEPA.** That would twist “what the environment will be” into “whatever makes the command string easy to write.”
+
+**Stage 1 — world only**
+
+- History through trunk → \(h_t\) → \(c_t\) (no candidate action in this path).
+- Logged true command tokens through trunk → \(u^\star\).
+- \(\mathrm{JEPA}(c_t, u^\star)\) matches the trunk encoding of the true next observation.
+- **Updates:** trunk LoRA + JEPA head. **Frozen / not yet attached:** draft head, selector, token head.
+
+**Stage 2 — agent** (JEPA already knows action-vector → environment)
+
+- History → \(c_t\) → draft head → K vectors \(u_k\).
+- For each \(k\): \(\mathrm{JEPA}(c_t, u_k)\) → \(\hat z_k\) (predicted environment vector, not stdout tokens).
+- Scorer → \(s[1..K]\) → argmax \(i\) → token head decodes **\(u_i\)**.
+- Draft loss: at least one \(u_k\) near \(u^\star\). Token CE: generated command = logged command. JEPA loss: **only** the real-command branch (true observation exists). Do not invent stdout for the other K−1 drafts.
+- **Updates:** draft head, selector, token head, trunk LoRA. JEPA keeps the world loss at a **smaller LR** so the interface does not drift while the trunk still moves. Do not freeze the trunk; do not freeze JEPA into a brick if the trunk is still changing.
+
+**Worked forward pass (Stage 2, after `rm a.txt`):** \(c_t\) ≈ “file is gone”; drafts ≈ restore / cat / keep deleting; JEPA gives three environment vectors; scorer picks restore; token head writes `git checkout a.txt`. No command is detokenized before JEPA.
 
 | Item | Choice |
 |------|--------|
-| Checkpoint (current) | **`meta-models/Muse-Glimmer-30B`** on branch `Muse` (TRL LoRA). Prior controls: Kimi-Dev-72B (`Kimi-Dev-72B/msswift`), Unsloth `Qwen/Qwen3.5-9B`. Changing base invalidates prior controls unless re-run. |
-| Stage 0 (cheap gate) | Measure whether the base can track state in weights at all — Gated DeltaNet eigenvalue range must cover negatives ([2603.03612](https://arxiv.org/abs/2603.03612)). Minutes; if it fails, \(\hat z\) is hopeless on this checkpoint. |
-| Stage 1 — world | Train \(\psi\) + trunk LoRA on real \((h,a,o)\); **LM head frozen** |
-| Stage 2 — agent | Freeze \(\psi\)'s transition, attach \(\pi\), feed \(\mathrm{sg}[\hat z]\), train agent SFT/RL |
-| Legacy path (still in tree) | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere) — the single-head version that has the objective collision; keep only as a baseline |
+| Intended trunk for this architecture | **Qwen-AgentWorld-35B-A3B** on branch `Qwen3.5-35B-A3B`. Muse-Glimmer-30B LoRA (`Muse`) is a **separate** checkpoint line; do not mix controls. |
+| Stage 0 (cheap gate) | Gated DeltaNet eigenvalue range must cover negatives ([2603.03612](https://arxiv.org/abs/2603.03612)). Minutes; if it fails, latent state-tracking on this checkpoint is hopeless. |
+| Stage 1 — world | JEPA + trunk LoRA; token head frozen / unused |
+| Stage 2 — agent | Draft + selector + token head; trunk LoRA continues; JEPA continues on real \((u^\star,o)\) only |
+| Legacy path (still in tree) | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere) — the single-head collision; keep only as a baseline |
 | Labels | **Real** sandbox / execution-grounded tool outputs only |
 | Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
 | Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL with **no** world-understanding cause |
@@ -137,82 +154,81 @@ The world-model interface stays **exactly** \(P(o \mid h, a)\) — 统一到 `co
 **Eval scope (user, 2026-08): before-vs-after is enough.** AgentWorld itself did not ablate training methods; do **not** gate the experiment on a full method-comparison matrix. Same scaffold, TB2.1 / Harbor, **base checkpoint vs after Stage 2**. Three numbers to report:
 
 1. **TB2.1 before vs after** — the headline.
-2. **Consistent-renaming probe** (`rm` → `zaq` across the corpus): scores hold ⇒ learned the transition rule; scores collapse ⇒ only invoking pretrained lexical semantics.
-3. **Raised-blade / VoE probe:** truncate the trajectory so \(o_t\) is *not* in context; does \(\hat z\) already score failure-shaped observations high (those \(o\) taken from turns preceding task failure — no hand labelling)? This answers question 2 and needs **no** control arm: the observation is absent, the score moved or it did not.
+2. **Consistent-renaming probe** (`rm` → `zaq` across the corpus): JEPA / selector still track the transition ⇒ learned the rule; collapse ⇒ only pretrained lexical semantics.
+3. **Raised-blade / VoE probe:** truncate so \(o_t\) is *not* in context; does \(c_t\) / \(\hat z\) / the chosen next command already treat the file as gone? This answers question 2. If a shuffled-\(o\) twin also “dodges,” it is not the law.
 
-World-model metrics must report **ranking** (real \(o\) above same-trajectory alternatives) and **fidelity** separately, plus the sign of their correlation — fidelity↑ can mean utility↓ ([PatchWorld](https://arxiv.org/abs/2605.30880)).
+World-model metrics must report **ranking** (real next-env latent above same-trajectory alternatives) and **fidelity** separately, plus the sign of their correlation — fidelity↑ can mean utility↓ ([PatchWorld](https://arxiv.org/abs/2605.30880)).
 
-Shuffled-\(o\) / shuffled-\(\hat z\) twins and \(\hat z\)-ablation remain **available** sharpening controls, not preconditions for reporting.
+Shuffled-\(o\) twins remain **available** sharpening controls, not preconditions for reporting.
 
-**Honest boundary:** dropping the command partition also drops known intervention targets, so **question 1 (law discovery) cannot be claimed as identifiability** — it degrades to an empirical claim (“extrapolates to held-out (precondition × command) combinations”), with the discovered action-equivalence structure ([BMAS](https://doi.org/10.3390/a17020060), [2209.06356](https://arxiv.org/abs/2209.06356)) reported as a **result** rather than assumed. The end-to-end composition proposition is still unproven; that hole predates this design.
+**Honest boundary:** dropping the command partition also drops known intervention targets, so **question 1 (law discovery) cannot be claimed as identifiability** — it degrades to an empirical claim (“extrapolates to held-out (precondition × command) combinations”). The end-to-end composition proposition is still unproven; that hole predates this design. The K-draft + JEPA + argmax + token-head stack is **assembled here** (parts from JEPA / ω-EVA / I2A / Coconut); nobody has run it on shell corpora.
 
 ### Architecture diagram
 
 ```mermaid
 flowchart TD
     subgraph sg_in["输入"]
-        H["历史 h_t<br/>系统提示 + 过去的 (动作, 观察)"]
-        BAT["查询电池 {(a_k, o_k)}, k=1..K<br/>从语料真实轨迹采样<br/>不区分命令类型"]
+        H["历史 → h_t → c_t<br/>当前环境向量，不算候选动作"]
+        USTAR["Stage 1 真命令 token<br/>过主干 → 动作向量 u*"]
     end
 
     H --> TRUNK
-    BAT --> TRUNK
+    USTAR --> TRUNK
 
-    subgraph sg_trunk["共享主干 — 两个目标唯一相遇的地方"]
-        TRUNK["Muse-Glimmer-30B / Qwen3.5-35B-A3B<br/>Gated DeltaNet + Attention 混合层<br/>+ LoRA"]
+    subgraph sg_trunk["共享主干"]
+        TRUNK["Qwen-AgentWorld-35B-A3B<br/>Gated DeltaNet + Attention<br/>+ LoRA"]
     end
 
-    TRUNK --> PSI
-    TRUNK --> LMH
+    TRUNK --> CT["c_t"]
+    TRUNK --> UENC["u* / 命令编码"]
 
-    subgraph sg_world["世界侧 — 不经过嘴"]
-        PSI["打分头 ψ<br/>score(h_t, a_k, o_k)"]
-        Z["状态向量 ẑ_t ∈ R^K<br/>第 k 维 = 「此刻若做 a_k，会看到 o_k 吗」"]
-        PSI --> Z
+    subgraph sg_s1["Stage 1 — 只训世界"]
+        JEPA1["JEPA 头<br/>Pred(c_t, u*) → ẑ"]
+        CT --> JEPA1
+        UENC --> JEPA1
+        ZSTAR["真观察编码 z*"]
+        JEPA1 --> L1["L_world 只落在 JEPA"]
+        ZSTAR --> L1
     end
 
-    subgraph sg_agent["agent 侧 — 唯一的输出口"]
-        LMH["LM head<br/>只学写下一条命令"]
-        PI["π(a | h_t, sg[ẑ_t])"]
-        LMH --> PI
+    subgraph sg_s2["Stage 2 — 再训 agent"]
+        DRAFT["草稿头<br/>c_t → K 个 u_k"]
+        CT --> DRAFT
+        DRAFT --> JEPA2["JEPA<br/>对每个 u_k 给出 ẑ_k"]
+        JEPA2 --> SC["打分器 s[1..K]<br/>可看全部 (u_k, ẑ_k)"]
+        SC --> ARG["argmax i"]
+        ARG --> LMH["Token 头<br/>只解码 u_i"]
     end
 
-    Z -- "stop-gradient<br/>单向：agent 不能改写「什么算世界状态」" --> PI
-
-    PI --> ACT["下一条命令 a_t"]
+    LMH --> ACT["命令字符串"]
     ACT --> ENV[("真实沙箱")]
-    ENV --> OBS["真观察 o_t"]
-
-    OBS --> LW["L_world 落在 ψ 上<br/>稀疏 BCE + ranking<br/>负样本只在同一条轨迹内采"]
-    ACT --> LA["L_agent 落在 LM head 上<br/>动作 token CE 或小步 RL"]
-
-    LW -.->|"梯度"| PSI
-    LA -.->|"梯度"| LMH
-    PSI -.->|"梯度"| TRUNK
-    LMH -.->|"梯度"| TRUNK
 ```
 
 ```mermaid
 flowchart LR
-    S0["Stage 0 门槛<br/>量 Gated DeltaNet 特征值<br/>是否覆盖负值（几分钟）"]
+    S0["Stage 0 门槛<br/>Gated DeltaNet 特征值覆盖负值"]
     S0 -->|"通过"| S1
-    S0 -->|"不通过"| STOP["换底座<br/>ẑ 这条路在此 checkpoint 先天不行"]
+    S0 -->|"不通过"| STOP["换底座"]
 
-    S1["Stage 1 世界<br/>训 ψ + 主干 LoRA<br/>LM head 冻结"]
-    S1 --> S2["Stage 2 agent<br/>冻结 ψ 的转移部分<br/>接 π，喂 sg[ẑ]<br/>小步 RL 优先于大力 SFT"]
+    S1["Stage 1<br/>主干 LoRA + JEPA<br/>草稿 / 选择器 / token 头不动"]
+    S1 --> S2["Stage 2<br/>草稿 + 打分 + token 头<br/>主干 LoRA 继续<br/>JEPA 仅真命令支路、更小 LR"]
 
-    S2 --> E1["① TB2.1<br/>训练前 vs 训练后"]
-    S2 --> E2["② 一致重命名探针<br/>rm → zaq"]
-    S2 --> E3["③ 提前躲 / VoE 探针<br/>截断轨迹，o_t 不在上下文"]
+    S2 --> E1["① TB2.1 训练前 vs 后"]
+    S2 --> E2["② rm → zaq 重命名探针"]
+    S2 --> E3["③ 截断轨迹 / VoE"]
 ```
 
-**How to read it.** The trunk is the only shared resource, and sharing it is the *point* — that is the same relation English understanding has with agent ability. The old collision was never “shared parameters”, it was a **shared output slot**: both losses pressed on the one assistant softmax, one demanding observations, the other demanding commands. That edge no longer exists. \(\psi\) scores \((h_t, a_k, o_k)\) triples and never emits text; the battery is corpus-sampled so `rm -rf build`, `pytest`, `cat setup.py` are all treated alike. The \(\hat z \to \pi\) edge is one-way; **deleting the stop-gradient is the cheapest way to silently invalidate the experiment**, because \(\pi\) will bend \(\hat z\) into task-convenient features.
+**How to read it.** Stage 1: `h_t → c_t` and true-command tokens → \(u^\star\), then \(\mathrm{JEPA}(c_t,u^\star)\). Stage 2: `h_t → c_t → K·u → JEPA → K environment vectors → scores → token head decodes the winning u`. The trunk is the only place the two objectives meet. The old collision was a **shared output slot** (one softmax asked for both observations and commands). That edge is gone: JEPA never writes tokens; the token head never writes observations. **Deleting the draft↔\(u^\star\) matching loss** is the cheap way to silently break Stage 2 — JEPA then sees random action vectors. **Sending token-CE into JEPA** is the other cheap break — environment predictions become task features.
 
 ### What each design choice is hung on
 
 | Design | Why | Hung on |
 |---|---|---|
+| Predict next **latent**, not stdout tokens | Pixel/token reconstruction spends capacity on unpredictable detail; JEPA predicts embeddings so the law is not the wording | [V-JEPA 2](https://arxiv.org/abs/2506.09985), [A Path Towards Autonomous Machine Intelligence](https://consensus.app/papers/details/376c7ec2fb015a48bacc8b62901a860a/?utm_source=unknown) |
 | Observation loss **not** on the assistant slot | Pure WM-SFT twists the assistant slot into an observation generator and wipes IF/math/code; token-level next-state prediction collapses into chasing literal wording, embedding-space alignment is stable | [RWML 2602.05842](https://arxiv.org/abs/2602.05842) |
+| Propose in vectors, imagine in latents, write tokens last | ω-EVA: policy proposes an action, frozen WM predicts that proposal’s latent future, refiner rewrites using current / future / proposal — all without decoding video. We keep the loop; for shell we **argmax one** \(u_i\) instead of mixing command vectors | [ω-EVA](https://arxiv.org/abs/2606.09457) |
+| K imagined trajectories scored, then act | I2A encodes each imagined rollout and concatenates into the policy; we score then pick one action vector | [I2A](https://arxiv.org/abs/1707.06203) |
+| Hidden state → tokens only at the end | Coconut reasons in continuous space then decodes; same “no words until the mouth” constraint | [Coconut](https://arxiv.org/abs/2412.06769) |
 | Two objectives as two parts of one pass, not slot rivals | Joint tool-call + next-state in one generation; policy RL + auxiliary next-observation loss with \(\lambda\) schedule | [DyMo 2506.02918](https://arxiv.org/abs/2506.02918), [PaW 2606.02388](https://arxiv.org/abs/2606.02388) |
 | Observation CE not the main loss | Per-token observation fitting = behaviour cloning the environment, error **compounds** with horizon; value equivalence says per-state accuracy is both hard and often unnecessary | [2010.11876](https://arxiv.org/abs/2010.11876), [2011.03506](https://arxiv.org/abs/2011.03506) |
 | Latent self-prediction, not observation reconstruction, as the auxiliary | Learning-dynamics analysis: latent self-prediction is a good auxiliary; observation reconstruction *hurts* as an auxiliary | [2406.17718](https://arxiv.org/abs/2406.17718) |
@@ -233,7 +249,7 @@ flowchart LR
 
 **Three things that must stay stated, not quietly dropped:**
 
-1. **The “\(\psi\) head + corpus-sampled battery” shape is assembled here, not taken from a paper.** Every part has a source (PSR's test definition, GVF/Horde's “hidden state is a pile of predictions”, energy-based transition estimators), but nobody has run this composition on real shell corpora, and the end-to-end composition proposition is unproven. That risk is ours.
+1. **The K-draft + JEPA + argmax + token-head shape is assembled here, not taken from a paper.** Parts come from JEPA (latent next-state), ω-EVA (proposal-conditioned latent consequence), I2A (score imagined futures then act), Coconut (decode tokens last). Nobody has run this composition on real shell corpora, and the end-to-end composition proposition is unproven. That risk is ours. The previous scoring-head \(\psi(h,a,o)\) design is **rejected** (needs \(o\) at decision time).
 2. **[ECHO 2605.24517](https://arxiv.org/abs/2605.24517) is counter-evidence, on our own benchmark.** It is exactly “GRPO on action tokens, extra CE on observation tokens, one forward pass two masks”, and doubles TB2.1 pass@1. So observation-token CE **does** work as a dense **on-policy auxiliary**. Our claimed dividing line — offline + main loss + long-horizon generation ⇒ compounding error; on-policy + auxiliary ⇒ it is supplying gradient to failed rollouts, unrelated to fidelity — is plausible but **unproven**, and is worth a head-to-head.
 3. **PaW runs the opposite order** (WM auxiliary on an agent base; we grow an agent on a WM base). Its \(\lambda\) schedule is reusable; its experimental conclusions are not transferable as-is.
 
@@ -250,6 +266,10 @@ flowchart LR
 | Learning State-Specific Action Masks for RL (BMAS) | [doi:10.3390/a17020060](https://doi.org/10.3390/a17020060) | Learned action masks drop minimal-influence actions + merge behaviourally identical ones ⇒ the command taxonomy becomes a **measurement** |
 | Plannable Approximations to MDP Homomorphisms (van der Pol) | [consensus](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/), [doi:10.65109/daie3353](https://doi.org/10.65109/daie3353) | Contrastive action-equivariance loss ⇒ deterministic-MDP homomorphism when the loss is zero. **arXiv ID unverified — do not guess one** |
 | Learning Good State and Action Representations via Tensor Decomposition | [arXiv:2105.01136](https://arxiv.org/abs/2105.01136) | JMLR error bounds for learning state **and action** representations / best discrete MDP abstraction |
+| ω-EVA: Envision, Verify, and Act with Latent Interactive World Models | [arXiv:2606.09457](https://arxiv.org/abs/2606.09457) | Propose action → latent future → tri-branch refiner. Source of Stage 2 loop; we argmax instead of mixing command vectors |
+| Training LLMs to Reason in a Continuous Latent Space (Coconut) | [arXiv:2412.06769](https://arxiv.org/abs/2412.06769) | Continuous thoughts, tokens only at the end |
+| V-JEPA 2 | [arXiv:2506.09985](https://arxiv.org/abs/2506.09985) | Action-conditioned latent prediction + planning without pixel generation |
+| Imagination-Augmented Agents (I2A) | [arXiv:1707.06203](https://arxiv.org/abs/1707.06203) | Encode imagined trajectories, aggregate, then policy |
 
 Detailed runbook: [`train/README.md`](./train/README.md).
 
