@@ -63,7 +63,7 @@ Still open:
 - **Real shell.** Strict mediation, AC-State, and epistemic/aleatoric separation are all verified on TextWorld, low-dim control, or gridworlds.
 - **We do not choose `do(a)`.** Our corpus is offline; the Causal Hierarchy Theorem ([2107.00793](https://arxiv.org/abs/2107.00793)) says observation alone cannot reach the interventional layer, and [2606.19476](https://arxiv.org/abs/2606.19476) proves in-context prediction error cannot estimate learning progress without bias in general MDPs.
 
-**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** two stages on an AgentWorld trunk. Stage 1 trains a JEPA predictor \(\hat z=\mathrm{Pred}(c_t,u^\star)\) in **latent space** (next-observation embedding, not stdout tokens), with \(u^\star\) = trunk encoding of the **logged command tokens**. Stage 2 attaches a draft head (K action vectors from \(c_t\)), runs JEPA on each, scores branches, **argmax**, token head decodes only the winning \(u_i\). Draft vectors are pulled toward the same command encodings JEPA already takes as input — not toward JEPA’s **output** (that is an environment vector). Observation CE never lands on the LM head. Instruct + same agent data remains the control for “did the world substrate help.” Details in the objective section below.
+**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** two stages on an AgentWorld trunk cut at layer \(\ell\). \(T^W=[0,\ell)\) stays AgentWorld; \(T^\pi=[\ell,40)\) and `lm_head` are copied whole from Instruct before training. Stage 1 trains \(\hat z=\mathrm{Pred}(c_t,u^\star)\) with both \(c_t\) and \(u^\star\) read from \(T^W\) only (\(T^\pi\) unused). Stage 2 attaches a draft head (K action vectors from \(c_t\)), runs JEPA on each, scores branches, **argmax**, winning \(u_i\) enters \(T^\pi\) at the cut and `lm_head` writes tokens. Draft vectors are pulled toward the same \(T^W\) command encodings JEPA already takes as input — not toward JEPA’s **output**. Observation CE never lands on `lm_head`. Instruct + same agent data remains the control for “did the world substrate help.” Details in the objective section below.
 
 **Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–X (201 HTML dumps + recorded URLs). Section **V** is the assembled algorithm chain (each step hung on a theorem, holes marked); section **O** is what is still genuinely missing. A–H = merge failure, world-first ordering, physics WM. **I–T = the 2026-08 gap-closing round**: I 预测准≠学到律, J 未知多点干预可识别性, K 文本显式状态 z（strict mediation）, L 世界理解→agent 的定理链（低秩 MDP / 多任务表征迁移 / 自预测=谱分解 / T→π 编译）, M 辅助任务何时帮何时伤, N 评测（VoE / 反事实 / 探针≠因果）, P 自由文本动作的动作表征, Q 文本域可执行世界模型（含 PatchWorld 的保真度↔效用权衡实证）, R 谁来选 do(a)（主动干预 / 学习进度好奇心）, S 律进权重 vs 留上下文 + 多样性阈值, T 架构表达力硬约束（TC⁰ / Gated DeltaNet 是 PNC¹-complete）, U objective mismatch 的正式文献, W 代码域执行感知预训练经验先例, **X 嫁接：Stage 2 token 头从 Instruct 初始化，不是 merge**, O 仍缺的洞. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
 
@@ -124,32 +124,47 @@ Worked example used throughout: after `rm a.txt` succeeds, the logged next comma
 4. **Token CE must not train JEPA.** That would twist “what the environment will be” into “whatever makes the command string easy to write.”
 5. **Head separation kills the hard collision; a milder shared-trunk tension remains, and grafting must not reintroduce a new one.** Splitting JEPA head vs token head already removes the “one softmax asked for two label distributions” deadlock — this is settled by the architecture, not by any initialization trick. What is left is ordinary multi-task backbone tension: the trunk LoRA still receives gradient from both the world loss and the command CE (same as any shared backbone serving two heads). Do not confuse the two: grafting (see “Token head init” below) is an initialization choice **inside** the already-conflict-free architecture, not a second mechanism that needs to re-solve the objective conflict. **Practical constraint this implies:** tap \(c_t\) from a trunk position **before** the layers reserved for the token path, so the grafted Instruct layers + LM head do not overlap with the layers JEPA reads from — otherwise the token head’s preference for those layers and JEPA’s need for them get re-coupled, quietly re-adding a sliver of the collision that head-splitting just removed.
 
-**Trunk split at cut \(\ell\)** (40 layers, indices \(0..39\)). \(\ell\) is **measured**, not assumed (Stage −1). Everything after the cut is the token path; everything before is the world path.
+**The two-stage graph is unchanged** (user, 2026-08-29). \(T^W\) / \(T^\pi\) are names for pieces of the **original** 40-layer Qwen3.5 stack, not a third architecture.
 
-- \(T^W\) = layers \([0,\ell)\) of AgentWorld. Never replaced.
-- \(T^\pi\) = layers \([\ell,40)\) **copied whole** from the matching layers of `Qwen3.5-35B-A3B`, plus that checkpoint’s standalone `lm_head`. AgentWorld’s original \([\ell,40)\) and original `lm_head` are discarded.
-- \(c_t\) and \(u^\star\) are read **only** from \(T^W\). JEPA never sees \(T^\pi\).
-- Draft head is new (no Instruct counterpart). It is **not** copied.
+Released Qwen3.5 (Instruct or AgentWorld — same boxes, no JEPA):
 
-**Stage 1 — world only** ( \(T^\pi\) and `lm_head` exist but are unused )
+\[
+\text{token} \to \mathrm{emb} \to L_0 \to \cdots \to L_{39} \to h \to \texttt{lm\_head} \to \text{next token}
+\]
 
-- History through \(T^W\) → \(h_t\) → \(c_t\) (no candidate action in this path).
-- Logged true command tokens through \(T^W\) → \(u^\star\).
-- \(\mathrm{JEPA}(c_t, u^\star)\) matches the \(T^W\) encoding of the true next observation \(z^\star\).
-- **Updates:** \(T^W\) LoRA + JEPA head. **Frozen / not run:** draft head, selector, \(T^\pi\), `lm_head`.
+One residual stream, one mouth. No \(c_t\), no \(u^\star\), no \(\hat z\), no drafts.
 
-**Stage 2 — agent** (JEPA already knows action-vector → environment)
+Our Stage 1 / Stage 2 **add** JEPA / draft / scorer onto that stack, and they **reuse** the same boxes as follows.
 
-- History through \(T^W\) → \(c_t\) → draft head → K vectors \(u_k\).
-- For each \(k\): \(\mathrm{JEPA}(c_t, u_k)\) → \(\hat z_k\) (predicted environment vector, not stdout tokens).
-- Scorer → \(s[1..K]\) → argmax \(i\).
-- Token path: \(u_i\) enters \(T^\pi\) at the cut (same representation space as the residual \(T^W\) just produced) → `lm_head` writes command tokens.
-- Draft loss: at least one \(u_k\) near \(u^\star\). Token CE: generated command = logged command, **only** on \(T^\pi\)+`lm_head`. JEPA loss: **only** the real-command branch (true observation exists). Do not invent stdout for the other K−1 drafts.
-- **Updates:** draft head, selector, \(T^\pi\)+`lm_head` (Instruct init), \(T^W\) LoRA. JEPA keeps the world loss at a **smaller LR** so the interface does not drift while \(T^W\) still moves. Do not freeze \(T^W\); do not freeze JEPA into a brick if \(T^W\) is still changing. LP-FT: first freeze \(T^W\), adapt only draft / \(T^\pi\) / `lm_head`, then unfreeze \(T^W\) LoRA.
+**Cut \(\ell\)** (measured, indices \(0..39\)): the knife goes between \(L_{\ell-1}\) and \(L_\ell\) on that original straight pipe.
 
-**Worked forward pass (Stage 2, after `rm a.txt`):** \(T^W\) → \(c_t\) ≈ “file is gone”; drafts ≈ restore / cat / keep deleting; JEPA gives three environment vectors; scorer picks restore; \(u_i\) goes through \(T^\pi\)+`lm_head` and writes `git checkout a.txt`. No command is detokenized before JEPA.
+| Name | Which boxes of the original Qwen3.5 net | Weights from | Role in Stage 1 / 2 |
+|------|----------------------------------------|--------------|---------------------|
+| **主干** \(T^W\) | \(\mathrm{emb}+L_0+\cdots+L_{\ell-1}\) | AgentWorld, **not** copied | 「历史过主干 → \(h_t\) → \(c_t\)」和「真命令过主干 → \(u^\star\)」里的那个主干 |
+| **token 头** \(T^\pi+\texttt{lm\_head}\) | \(L_\ell+\cdots+L_{39}+\texttt{lm\_head}\) | **whole-layer copy** from Instruct (same names, same shapes) | Stage 2 only: 解码的是 \(u_i\)，不是 \(s[i]\) |
+| JEPA / 草稿头 / 打分器 | **not in** original Qwen3.5 | new | not copied |
 
-**How the copy is done.** Same architecture (checked 2026-08-29): `hidden_size=2048`, 40 layers, identical `layer_types`, `vocab_size=248320`, `tie_word_embeddings=false`. For each tensor belonging to layers \([\ell,40)\) and for `lm_head`, overwrite AgentWorld’s tensor with the Instruct tensor of the same name. No stitch adapter unless Stage −1 probe fails. See refs/README.md §X. This is initialization of the token path, not a second way to split the two objectives — the split is \(T^W\)/JEPA vs \(T^\pi\)/`lm_head`.
+Replace = for every tensor that belongs to \(L_\ell..L_{39}\) and for `lm_head`, write Instruct’s tensor over AgentWorld’s. The prefix \(L_0..L_{\ell-1}\) stays AgentWorld. Draft / JEPA / scorer have no Instruct counterpart.
+
+**Stage 1** (your graph; \(T^\pi\) is not in this forward pass):
+
+- 历史过主干 \(T^W\) → \(h_t\) → \(c_t\)
+- 日志里的真命令 token 过主干 \(T^W\) → \(u^\star\)
+- \(\mathrm{JEPA}(c_t, u^\star)\) 对齐真观察编出来的环境向量 \(z^\star=T^W(\text{真观察})\)
+- 没有 \(u^\star\) 这一路，JEPA 只知道「现在怎样」，不知道「做了什么」
+- **Updates:** \(T^W\) LoRA + JEPA. **Not run:** draft, scorer, \(T^\pi\), `lm_head`
+
+**Stage 2** (your graph, symbols fixed; \(\hat z_k\) is the predicted **environment vector**, not stdout tokens):
+
+- 历史过主干 \(T^W\) → \(h_t\) → \(c_t\)
+- 草稿头：\(c_t\) → K 个 \(u_k\)
+- 对每个 \(k\)：\(\mathrm{JEPA}(c_t, u_k)\) → \(\hat z_k\)
+- 打分器看 \((u_k,\hat z_k)\)（以及 \(c_t\)）→ \(s[1..K]\)
+- \(i=\arg\max s\)，token 头解码 **\(u_i\)**，不是解码 \(s[i]\)
+- 那颗 token 头的初始权重就是拷进来的 \(T^\pi+\texttt{lm\_head}\)；\(u_i\) 从切点进入，和 \(T^W\) 刚写出的表征同空间
+- **Updates:** draft, scorer, \(T^\pi\)+`lm_head`, \(T^W\) LoRA. JEPA 只在真命令支路 \((c_t,u^\star,z^\star)\) 上、更小 LR。LP-FT: 先冻 \(T^W\)，只适配草稿/\(T^\pi\)/`lm_head`，再解冻 \(T^W\) LoRA
+
+**Worked forward pass (Stage 2, after `rm a.txt`):** \(T^W\) → \(c_t\) ≈ “file is gone”; drafts ≈ restore / cat / keep deleting; JEPA gives three \(\hat z_k\); scorer picks restore; token head (\(T^\pi\)+`lm_head`) writes `git checkout a.txt` from \(u_i\). No command is detokenized before JEPA.
 
 | Item | Choice |
 |------|--------|
@@ -180,7 +195,19 @@ Shuffled-\(o\) twins remain **available** sharpening controls, not preconditions
 
 ```mermaid
 flowchart TD
-    subgraph sg_in["输入"]
+    subgraph sg_qwen["原始 Qwen3.5（无 JEPA）：一条直筒"]
+        QIN["token"] --> QE["emb"]
+        QE --> Q0["L0 … L_{ℓ-1}"]
+        Q0 --> Q1["L_ℓ … L39"]
+        Q1 --> QH["h"]
+        QH --> QLM["lm_head"]
+        QLM --> QOUT["next token"]
+    end
+```
+
+```mermaid
+flowchart TD
+    subgraph sg_in["我们的 Stage 1 / 2：还是那些盒子"]
         H["历史 token"]
         USTAR["真命令 token"]
     end
@@ -188,35 +215,30 @@ flowchart TD
     H --> TW
     USTAR --> TW
 
-    subgraph sg_tw["T^W = layers [0, ℓ)  AgentWorld 不动"]
-        TW["T^W"]
+    subgraph sg_tw["主干 = 原始直筒的前半截"]
+        TW["T^W = AgentWorld 的 emb + L0 … L_{ℓ-1}<br/>就是「历史过主干」「真命令过主干」"]
     end
 
     TW --> HT["h_t"]
     HT --> CT["c_t"]
     TW --> UENC["u*"]
 
-    subgraph sg_s1["Stage 1 — 只跑世界；T^π 不参与"]
-        JEPA1["JEPA 头<br/>Pred(c_t, u*) → ẑ"]
+    subgraph sg_s1["Stage 1"]
+        JEPA1["JEPA(c_t, u*) → ẑ<br/>对齐 z*"]
         CT --> JEPA1
         UENC --> JEPA1
-        ZSTAR["z* = T^W(真观察)"]
-        JEPA1 --> L1["L_world 只落在 JEPA"]
-        ZSTAR --> L1
     end
 
-    subgraph sg_s2["Stage 2 — 再接动作路径"]
-        DRAFT["草稿头（新建）<br/>c_t → K 个 u_k"]
+    subgraph sg_s2["Stage 2"]
+        DRAFT["草稿头 c_t → u_1..u_K"]
         CT --> DRAFT
-        DRAFT --> JEPA2["JEPA<br/>对每个 u_k 给出 ẑ_k"]
-        JEPA2 --> SC["打分器 s[1..K]"]
-        SC --> ARG["argmax i → u_i"]
-        ARG --> TP["T^π = layers [ℓ, 40)<br/>整层从 Instruct 拷入"]
-        TP --> LMH["lm_head 从 Instruct 拷入"]
+        DRAFT --> JEPA2["JEPA(c_t, u_k) → ẑ_k"]
+        JEPA2 --> SC["s[1..K]"]
+        SC --> ARG["argmax → u_i"]
+        ARG --> TP["token 头 = 原始直筒的后半截<br/>Instruct 的 L_ℓ … L39 + lm_head"]
     end
 
-    LMH --> ACT["命令字符串"]
-    ACT --> ENV[("真实沙箱")]
+    TP --> ACT["命令 token"]
 ```
 
 ```mermaid
@@ -234,7 +256,7 @@ flowchart LR
     S2 --> E3["③ 截断轨迹 / VoE"]
 ```
 
-**How to read it.** Cut \(\ell\) splits the 40-layer net: \(T^W\) is AgentWorld and never copied; \(T^\pi\)+`lm_head` are Instruct tensors copied in before training. Stage 1: history and true-command tokens both go through \(T^W\) only → \(c_t\), \(u^\star\), then \(\mathrm{JEPA}(c_t,u^\star)\). \(T^\pi\) is not in this forward pass. Stage 2: \(T^W\) → \(c_t\) → K·\(u\) → JEPA → scores → winning \(u_i\) enters \(T^\pi\) at the cut → `lm_head` writes tokens. The two objectives meet only in \(T^W\). **Deleting the draft↔\(u^\star\) matching loss** is the cheap way to silently break Stage 2 — JEPA then sees random action vectors. **Sending token-CE into JEPA** is the other cheap break. **Reading \(c_t\) from after \(\ell\)** is the third — JEPA would then sit on Instruct layers.
+**How to read it.** Left/top diagram is released Qwen3.5: one pipe, no JEPA. The knife at \(\ell\) splits that pipe. Prefix = the **主干** in 「历史过主干 → \(h_t\) → \(c_t\)」and 「真命令过主干 → \(u^\star\)」(AgentWorld weights). Suffix + `lm_head` = the **token 头** that decodes \(u_i\) (Instruct tensors copied in). JEPA / draft / scorer are new boxes grafted *onto* the prefix, not replacements of Qwen layers. Stage 1 does not run the suffix. Stage 2 still computes \(c_t\) from the prefix only.
 
 ### What each design choice is hung on
 
