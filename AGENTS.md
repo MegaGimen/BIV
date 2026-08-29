@@ -2,7 +2,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
-当前主线在分支 **`Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。
+当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 
@@ -160,13 +160,17 @@ flowchart LR
     S2 --> EV["Stage Eval"]
 ```
 
-### 训练栈（怎么训，和 Muse 的差别）
+### 训练库
 
-盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿，**不是**我们 Stage 2 的草稿）。AgentWorld 的 `language_model_only=true`。
+本线用 **`torch` + HuggingFace `transformers` + `peft` + `accelerate`（FSDP2）**。训练循环自己写。FSDP wrap `Qwen3_5MoeDecoderLayer`。
 
-**Muse Glimmer-30B**（另一条线）是：一个 dense CausalLM + TRL `SFTTrainer` + PEFT LoRA，损失打在助手位观察 token 上，FSDP wrap `MuseGlimmerTextDecoderLayer`，LoRA 打 `q/k/v/o/gate/up/down/output_gate_proj`。本线 Stage −1/1/2 分别是切鱼、JEPA、草稿→\(W\)→原 `lm_head`，要用自定义循环。
+Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-本线要新写的：切鱼脚本（流式 safetensors，抄 `merge/merge.py` 的 TensorStore）；自定义训练循环（隐藏状态进 JEPA / 草稿 / \(W\)）；FSDP wrap `Qwen3_5MoeDecoderLayer`。能复用的：`merge/output/cache` 里的三个 checkpoint、`prepare_data.py` 的 \((h,a,o)\)、PEFT LoRA + Accelerate FSDP2 骨架、冻 ViT。LoRA 打哪些叶子、切点 \(\ell\)、MTP/ViT 是否同名同形状，由 `merge/probe.py` 在 GPU 机上量。
+切鱼与框架可行性：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`）。
+
+盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
+
+本线要新写切鱼脚本和 JEPA / 草稿 / \(W\) 的循环。数据仍用 `prepare_data.py` 的 \((h,a,o)\)。LoRA 叶子名、切点 \(\ell\)、ViT/MTP、以及在 Transformers 里拷层后能否前向，由 probe 在 GPU 机上量。
 
 ---
 
@@ -181,7 +185,7 @@ flowchart LR
 
 **Stage −1 — 切鱼**
 
-- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)（`python merge/probe.py`）。
+- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)（`python train/scripts/probe.py`）。
 - **Step 2.** 前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。
 - **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。这时还没有 \(W\)。
 

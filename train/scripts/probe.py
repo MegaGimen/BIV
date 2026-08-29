@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Probe AgentWorld / Instruct / Base for fish-cut + JEPA training.
+"""Probe Qwen3.5-35B AgentWorld/Instruct for Transformers-based fish-cut.
 
-This is the Qwen3.5-35B-A3B line, not Muse. Muse trains one dense CausalLM
-with TRL SFTTrainer + LoRA on observation tokens. Here Stage -1 copies
-whole decoder layers, Stage 1 trains JEPA on last-layer states, Stage 2
-adds a new draft / W and feeds Instruct's original lm_head.
+Training library (this branch): PyTorch + HuggingFace Transformers + PEFT
++ Accelerate FSDP2. The loop is custom (JEPA / draft / W). Not Unsloth,
+not Axolotl, not ms-swift, not TRL SFTTrainer (Muse uses that last one).
 
-Reuses merge/output/cache/<id> from download.py (same defaults as merge.py).
-Does not keep three full 35B copies in RAM: one tensor at a time.
+Reads weights from merge/output/cache (same as merge/download.py). Writes
+under train/outputs/probe/.
 
 GPU host::
 
-    python merge/probe.py
-    python merge/probe.py --meta          # also dump HF module tree (needs transformers)
-    python merge/probe.py --skip-weights  # config / tokenizer / key index only
+    python train/scripts/probe.py
+    python train/scripts/probe.py --skip-weights   # skip 3-way cosine; still forward
+    python train/scripts/probe.py --skip-forward   # disk stats only
+    python train/scripts/probe.py --cut 36         # copy Instruct L36..L39 + lm_head onto AgentWorld
 
-Send back ``merge/output/probe/report.json`` (and summary.txt if present).
+Send back train/outputs/probe/report.json and summary.txt.
 """
 
 from __future__ import annotations
@@ -30,7 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-_MERGE_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
+_MERGE_DIR = ROOT / "merge"
 if str(_MERGE_DIR) not in sys.path:
     sys.path.insert(0, str(_MERGE_DIR))
 
@@ -39,12 +40,12 @@ from download import (  # noqa: E402
     DEFAULT_BASE,
     DEFAULT_CACHE,
     DEFAULT_WORLD,
-    ROOT,
     resolve_model,
 )
 from merge import TensorStore, is_visual_key, load_weight_map  # noqa: E402
 
-DEFAULT_OUT = ROOT / "merge" / "output" / "probe"
+DEFAULT_OUT = ROOT / "train" / "outputs" / "probe"
+PROBE_PROMPT = "cd /tmp && pwd\n"
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)\.")
 # Expected from HF config / modeling_qwen3_5_moe.py — probe verifies on disk.
@@ -621,6 +622,24 @@ def write_summary(report: dict[str, Any], path: Path) -> None:
         a(f"  lm_head={meta.get('lm_head_module')} embed={meta.get('embed_module')} norm={meta.get('final_norm_module')}")
         a(f"  lora hits={json.dumps(meta.get('lora_candidate_hits'))}")
         a(f"  decoder example={meta.get('decoder_layer_example')}")
+    fw = report.get("frameworks") or {}
+    a("")
+    a("libraries: " + json.dumps(fw.get("versions"), ensure_ascii=False))
+    a("cuda: " + json.dumps(fw.get("cuda"), ensure_ascii=False))
+    a("train_library: " + json.dumps((report.get("train_stack") or {}).get("library"), ensure_ascii=False))
+    fwd = report.get("forward") or {}
+    a("")
+    a(f"forward ok={fwd.get('ok')} error={fwd.get('error')}")
+    if fwd.get("ok"):
+        a(f"  class={fwd.get('model_class')} device_map={fwd.get('device_map')}")
+        a(f"  hidden={fwd.get('last_hidden_shape')} logits={fwd.get('logits_shape')}")
+        a(f"  n_hidden_states={fwd.get('n_hidden_states')} lm_head={fwd.get('lm_head_name')}")
+        a(f"  layers_path={fwd.get('layers_path')} n_layers={fwd.get('n_layers')}")
+    spl = report.get("splice_forward") or {}
+    a(f"splice_forward ok={spl.get('ok')} error={spl.get('error')} copied={spl.get('n_copied')} missing={spl.get('n_missing')}")
+    if spl.get("ok"):
+        a(f"  hidden={spl.get('last_hidden_shape')} logits={spl.get('logits_shape')}")
+        a(f"  dummy_W_logits={spl.get('dummy_w_logits_shape')} dummy_W_ok={spl.get('dummy_w_ok')}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -630,6 +649,296 @@ def _fmt(x: Any) -> str:
     if isinstance(x, float):
         return f"{x:.6f}"
     return str(x)
+
+
+def probe_frameworks() -> dict[str, Any]:
+    versions: dict[str, str | None] = {}
+    for name in (
+        "torch",
+        "transformers",
+        "peft",
+        "accelerate",
+        "trl",
+        "safetensors",
+        "unsloth",
+        "axolotl",
+        "ms_swift",
+        "liger_kernel",
+        "modelscope",
+    ):
+        try:
+            mod = __import__(name)
+            versions[name] = getattr(mod, "__version__", "imported")
+        except ImportError:
+            versions[name] = None
+        except Exception as e:
+            versions[name] = f"error:{type(e).__name__}"
+    cuda: dict[str, Any] = {"available": False}
+    try:
+        import torch
+
+        cuda = {
+            "available": bool(torch.cuda.is_available()),
+            "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
+            "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "bf16": bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+            "arch": torch.version.cuda,
+        }
+        if torch.cuda.is_available():
+            p = torch.cuda.get_device_properties(0)
+            cuda["total_gib"] = round(p.total_memory / 1024**3, 2)
+    except Exception as e:
+        cuda["error"] = repr(e)
+    return {
+        "versions": versions,
+        "cuda": cuda,
+        "library": {
+            "train": ["torch", "transformers", "peft", "accelerate"],
+            "loop": "custom (not TRL SFTTrainer)",
+            "unused_on_this_branch": ["unsloth", "axolotl", "ms-swift", "trl.SFTTrainer"],
+        },
+    }
+
+
+def _exc(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+def _resolve_module(root: Any, dotted: str) -> Any | None:
+    cur = root
+    for part in dotted.split("."):
+        if not hasattr(cur, part):
+            return None
+        cur = getattr(cur, part)
+    return cur
+
+
+def find_decoder_layers(model) -> tuple[str | None, Any | None]:
+    for path in (
+        "model.language_model.layers",
+        "language_model.layers",
+        "model.model.language_model.layers",
+        "model.layers",
+    ):
+        got = _resolve_module(model, path)
+        if got is not None:
+            return path, got
+    return None, None
+
+
+def find_lm_head(model) -> tuple[str | None, Any | None]:
+    for path in ("lm_head", "model.lm_head"):
+        got = _resolve_module(model, path)
+        if got is not None:
+            return path, got
+    return None, None
+
+
+def _load_qwen_moe(model_dir: Path, *, dtype, device_map: str):
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
+
+    kwargs = {
+        "trust_remote_code": True,
+        "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
+        "device_map": device_map,
+    }
+    last = None
+    for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
+        try:
+            return loader.from_pretrained(str(model_dir), **kwargs), loader.__name__, kwargs
+        except Exception as e:
+            last = e
+    raise RuntimeError(f"from_pretrained failed: {_exc(last)}")
+
+
+def _forward_once(model, tokenizer, prompt: str, device) -> dict[str, Any]:
+    import torch
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.inference_mode():
+        out = model(**inputs, output_hidden_states=True, use_cache=False)
+    hidden = getattr(out, "hidden_states", None)
+    last = getattr(out, "last_hidden_state", None)
+    if last is None and hidden:
+        last = hidden[-1]
+    logits = getattr(out, "logits", None)
+    tok = None
+    if logits is not None:
+        tok = int(logits[0, -1].argmax().item())
+    return {
+        "input_ids_shape": list(inputs["input_ids"].shape),
+        "n_hidden_states": len(hidden) if hidden is not None else 0,
+        "last_hidden_shape": list(last.shape) if last is not None else None,
+        "last_hidden_dtype": str(last.dtype) if last is not None else None,
+        "logits_shape": list(logits.shape) if logits is not None else None,
+        "argmax_last_token_id": tok,
+        "argmax_last_token": tokenizer.decode([tok]) if tok is not None else None,
+    }
+
+
+def _param_lookup(model) -> dict[str, Any]:
+    out = {}
+    for name, p in model.named_parameters():
+        out[name] = p
+    for name, b in model.named_buffers():
+        out.setdefault(name, b)
+    return out
+
+
+def copy_keys_into_model(model, store: TensorStore, keys: list[str]) -> dict[str, Any]:
+    import torch
+
+    lookup = _param_lookup(model)
+    copied = 0
+    missing: list[str] = []
+    mismatch: list[dict[str, Any]] = []
+    aliases_used: list[str] = []
+    for key in keys:
+        candidates = [key]
+        if key.startswith("model."):
+            candidates.append(key[len("model.") :])
+        else:
+            candidates.append("model." + key)
+        target = None
+        hit = None
+        for c in candidates:
+            if c in lookup:
+                target = lookup[c]
+                hit = c
+                break
+        if target is None:
+            missing.append(key)
+            continue
+        src = store.get(key)
+        if src is None:
+            missing.append(key)
+            continue
+        if tuple(src.shape) != tuple(target.shape):
+            mismatch.append({"key": key, "src": list(src.shape), "dst": list(target.shape)})
+            del src
+            continue
+        with torch.no_grad():
+            target.data.copy_(src.to(device=target.device, dtype=target.dtype))
+        copied += 1
+        if hit != key:
+            aliases_used.append(f"{key} -> {hit}")
+        del src
+    return {
+        "n_copied": copied,
+        "n_missing": len(missing),
+        "n_mismatch": len(mismatch),
+        "missing_head": missing[:30],
+        "mismatch_head": mismatch[:20],
+        "alias_head": aliases_used[:20],
+    }
+
+
+def try_forward_and_surgery(
+    *,
+    world_dir: Path,
+    agent_dir: Path,
+    agent_map: dict[str, str],
+    cut: int,
+    device_map: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    import torch
+    from transformers import AutoTokenizer
+
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    device_for_inputs = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    fwd: dict[str, Any] = {"ok": False}
+    splice: dict[str, Any] = {"ok": False, "cut": cut}
+
+    log(f"loading AgentWorld via transformers device_map={device_map} dtype={dtype}")
+    try:
+        model, loader_name, load_kwargs = _load_qwen_moe(
+            world_dir, dtype=dtype, device_map=device_map
+        )
+    except Exception as e:
+        fwd["error"] = _exc(e)
+        return fwd, splice
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(str(agent_dir), trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        layers_path, layers = find_decoder_layers(model)
+        lm_name, lm_head = find_lm_head(model)
+        # inputs on the embed device
+        embed = _resolve_module(model, "model.language_model.embed_tokens") or _resolve_module(
+            model, "language_model.embed_tokens"
+        )
+        if embed is not None and hasattr(embed, "weight"):
+            device_for_inputs = embed.weight.device
+        fwd_stats = _forward_once(model, tokenizer, PROBE_PROMPT, device_for_inputs)
+        leaf_counts: dict[str, int] = defaultdict(int)
+        for name, _p in model.named_parameters():
+            leaf_counts[name.rsplit(".", 1)[-1]] += 1
+        fwd = {
+            "ok": True,
+            "loader": loader_name,
+            "model_class": type(model).__name__,
+            "device_map": device_map,
+            "load_kwargs": {k: str(v) for k, v in load_kwargs.items()},
+            "layers_path": layers_path,
+            "n_layers": len(layers) if layers is not None else None,
+            "lm_head_name": lm_name,
+            "lm_head_shape": list(lm_head.weight.shape) if lm_head is not None else None,
+            "linear_leaf_counts": dict(sorted(leaf_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+            **fwd_stats,
+        }
+        if layers is None or lm_head is None:
+            splice["error"] = f"cannot locate layers/lm_head path={layers_path} lm={lm_name}"
+            return fwd, splice
+
+        keys = [
+            k
+            for k in agent_map
+            if k == "lm_head.weight" or k.endswith(".lm_head.weight")
+            or any(f"layers.{i}." in k for i in range(cut, 40))
+        ]
+        keys = [k for k in keys if not is_visual_key(k) and not k.startswith("mtp.")]
+        log(f"copying Instruct keys onto live AgentWorld: cut={cut} n={len(keys)}")
+        store = TensorStore(agent_dir, agent_map)
+        try:
+            copy_info = copy_keys_into_model(model, store, keys)
+        finally:
+            store.close()
+        splice.update(copy_info)
+        splice["n_keys_attempted"] = len(keys)
+        spl_stats = _forward_once(model, tokenizer, PROBE_PROMPT, device_for_inputs)
+        splice.update(spl_stats)
+
+        hidden = None
+        # dummy W: last hidden -> W -> original lm_head
+        inputs = tokenizer(PROBE_PROMPT, return_tensors="pt")
+        inputs = {k: v.to(device_for_inputs) for k, v in inputs.items()}
+        with torch.inference_mode():
+            out = model(**inputs, output_hidden_states=True, use_cache=False)
+            hidden = out.hidden_states[-1] if out.hidden_states else out.last_hidden_state
+            vec = hidden[:, -1, :]
+            w = torch.nn.Linear(vec.shape[-1], vec.shape[-1], bias=False)
+            w = w.to(device=vec.device, dtype=vec.dtype)
+            mapped = w(vec)
+            w_logits = lm_head(mapped)
+        splice["dummy_w_ok"] = True
+        splice["dummy_w_logits_shape"] = list(w_logits.shape)
+        splice["dummy_w_hidden_in"] = list(vec.shape)
+        splice["ok"] = True
+        del w, mapped, w_logits, hidden, vec
+    except Exception as e:
+        if not fwd.get("ok"):
+            fwd["error"] = _exc(e)
+        splice["error"] = _exc(e)
+        splice["ok"] = False
+    finally:
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return fwd, splice
 
 
 def parse_args() -> argparse.Namespace:
@@ -648,17 +957,27 @@ def parse_args() -> argparse.Namespace:
         choices=["modelscope", "huggingface"],
         default=os.environ.get("MERGE_SOURCE", "modelscope"),
     )
-    p.add_argument("--skip-weights", action="store_true", help="Skip tensor stats")
+    p.add_argument("--skip-weights", action="store_true", help="Skip 3-way tensor cosine")
+    p.add_argument("--skip-forward", action="store_true", help="Skip transformers load + forward")
+    p.add_argument(
+        "--cut",
+        type=int,
+        default=36,
+        help="Copy Instruct layers [cut, 40) + lm_head onto loaded AgentWorld before the second forward",
+    )
+    p.add_argument("--device-map", default="auto", help="transformers device_map")
     p.add_argument(
         "--meta",
         action="store_true",
-        help="Build module tree on meta device (needs transformers with qwen3_5_moe)",
+        help="Also build module tree on meta device (forward already dumps the live tree)",
     )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if not 0 <= int(args.cut) <= 39:
+        raise SystemExit("--cut must be in 0..39")
     cache_dir = args.cache_dir if args.cache_dir.is_absolute() else (ROOT / args.cache_dir)
     out_dir = args.out if args.out.is_absolute() else (ROOT / args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -679,14 +998,15 @@ def main() -> None:
 
     report: dict[str, Any] = {
         "train_stack": {
-            "line": "Qwen3.5-35B-A3B fish-cut + JEPA + W",
-            "not": "Muse TRL SFTTrainer / Chat Vector",
+            "library": ["torch", "transformers", "peft", "accelerate"],
+            "fsdp": "accelerate FSDP2, wrap Qwen3_5MoeDecoderLayer",
+            "loop": "custom PyTorch (JEPA then draft/W); not TRL SFTTrainer",
+            "not_used": ["unsloth", "axolotl", "ms-swift", "trl.SFTTrainer"],
             "hf_class": "Qwen3_5MoeForConditionalGeneration",
-            "fsdp_wrap": "Qwen3_5MoeDecoderLayer",
             "text_prefix": "model.language_model",
-            "lm_head": "lm_head (untied, 2048 x vocab)",
+            "lm_head": "lm_head (untied)",
             "new_modules": ["JEPA Pred", "draft head", "scorer", "W 2048x2048"],
-            "leave_unused": ["model.visual", "mtp.* (official speculative draft)"],
+            "leave_unused": ["model.visual", "mtp.*"],
             "hidden_size": (text_config(world_cfg) or {}).get("hidden_size"),
             "num_hidden_layers": (text_config(world_cfg) or {}).get("num_hidden_layers"),
             "vocab_size": (text_config(world_cfg) or {}).get("vocab_size")
@@ -760,6 +1080,24 @@ def main() -> None:
         report["meta_tree"] = try_meta_tree(agent_dir)
     else:
         report["meta_tree"] = {"ok": False, "error": "skipped (pass --meta)"}
+
+    report["frameworks"] = probe_frameworks()
+    log(f"libraries: {report['frameworks']['versions']}")
+
+    if args.skip_forward:
+        report["forward"] = {"ok": False, "error": "skipped"}
+        report["splice_forward"] = {"ok": False, "error": "skipped"}
+    else:
+        log("transformers forward + in-memory Instruct tail copy onto AgentWorld")
+        fwd, spl = try_forward_and_surgery(
+            world_dir=world_dir,
+            agent_dir=agent_dir,
+            agent_map=agent_map,
+            cut=int(args.cut),
+            device_map=str(args.device_map),
+        )
+        report["forward"] = fwd
+        report["splice_forward"] = spl
 
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
