@@ -63,7 +63,7 @@ Still open:
 - **Real shell.** Strict mediation, AC-State, and epistemic/aleatoric separation are all verified on TextWorld, low-dim control, or gridworlds.
 - **We do not choose `do(a)`.** Our corpus is offline; the Causal Hierarchy Theorem ([2107.00793](https://arxiv.org/abs/2107.00793)) says observation alone cannot reach the interventional layer, and [2606.19476](https://arxiv.org/abs/2606.19476) proves in-context prediction error cannot estimate learning progress without bias in general MDPs.
 
-**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** cut the **backbone** at layer \(\ell\) (measured). Prefix \(T^W\) stays AgentWorld; suffix \(T^\pi=L_\ell..L_{39}\) is pasted from Instruct; Instruct `lm_head` stays (not reset). JEPA / draft / scorer hang **off** \(T^W\), they are not inserted between the two halves. Stage 1: \(\hat z=\mathrm{Pred}(c_t,u^\star)\) with \(c_t,u^\star,z^\star\) from \(T^W\) only (\(T^\pi\) and `lm_head` unused). Stage 2: draft emits \(K\) vectors, JEPA scores them, argmax \(i\), **\(u_i \to\) linear \(W \to\) Instruct `lm_head`** writes command tokens. `lm_head` eats \(u_i\) (after \(W\)), not residual \(h_{39}\). Observation CE never lands on `lm_head`. Instruct + same agent data remains the control. Details below.
+**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** parse \((h,a,o)\) turns (not observation-chat SFT). Stage 0 eigenvalue gate. Stage −1: measure \(\ell\), 切鱼 (AgentWorld prefix, Instruct suffix + `lm_head` kept), zero-train **pipe** eval. Stage 1: \(T^W\) LoRA + JEPA. Stage 2a: freeze \(T^W\)/`lm_head`, train \(W\)+draft+scorer. Stage 2b: light `lm_head` then \(T^W\) LoRA. Write path \(u_i \to W \to\) Instruct `lm_head` (not \(h_{39}\)). Observation CE never on `lm_head`. Instruct + same agent data is the control. Details below.
 
 **Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–X (201 HTML dumps + recorded URLs). Section **V** is the assembled algorithm chain (each step hung on a theorem, holes marked); section **O** is what is still genuinely missing. A–H = merge failure, world-first ordering, physics WM. **I–T = the 2026-08 gap-closing round**: I 预测准≠学到律, J 未知多点干预可识别性, K 文本显式状态 z（strict mediation）, L 世界理解→agent 的定理链（低秩 MDP / 多任务表征迁移 / 自预测=谱分解 / T→π 编译）, M 辅助任务何时帮何时伤, N 评测（VoE / 反事实 / 探针≠因果）, P 自由文本动作的动作表征, Q 文本域可执行世界模型（含 PatchWorld 的保真度↔效用权衡实证）, R 谁来选 do(a)（主动干预 / 学习进度好奇心）, S 律进权重 vs 留上下文 + 多样性阈值, T 架构表达力硬约束（TC⁰ / Gated DeltaNet 是 PNC¹-complete）, U objective mismatch 的正式文献, W 代码域执行感知预训练经验先例, **X 嫁接：切鱼 backbone + 线性 \(W\) 进 Instruct `lm_head`，不是 merge**, O 仍缺的洞. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
 
@@ -181,6 +181,24 @@ Why AgentWorld in front and Instruct in back: prefix is “what the world is now
 | Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
 | Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL with **no** world-understanding cause |
 
+**Training decomposition (settled 2026-08-29).** Order is the experiment. Each step has one job; do not fuse Stage 1’s world loss onto `lm_head`, and do not start Stage 2 before the cut and the encoder exist.
+
+0. **Parse turns, not chat SFT.** From raw trajectories, pair each command with the sandbox observation that followed it. One training atom is \((h, a, o)\): history before the command, the logged command, the real next observation. No user/assistant observation-completion labels. This is masking in text: \(h\) = context, \(a\) = action, \(o\) = target. Do not invent a fourth field.
+
+1. **Stage 0 — architecture gate.** On AgentWorld (same Gated-DeltaNet hybrid), check that DeltaNet eigenvalues cover negatives ([2603.03612](https://arxiv.org/abs/2603.03612)). Minutes. Fail ⇒ this checkpoint cannot track latent OS state without CoT; stop and change base. Pass ⇒ continue. No weights written.
+
+2. **Stage −1 — cut the fish, then a zero-train look at the pipe.** Measure per-layer change of AgentWorld vs Instruct relative to Base; pick \(\ell\) (not random). Splice: AgentWorld \(\mathrm{emb}+L_0..L_{\ell-1}\) stay; paste Instruct \(L_\ell..L_{39}\); put Instruct `lm_head` back (**no reset**). Attach empty side heads later, not between the halves. **What this eval sees:** the **residual pipe** (token → \(T^W\) → \(T^\pi\) → \(h_{39}\) → `lm_head`), Harbor/TB2.1 subsample, zero extra training. It asks whether the splice still writes like an LM. It does **not** test \(u_i \to W \to\) `lm_head` — \(W\) does not exist yet. Do not read a bad Stage −1 number as “reset `lm_head`.”
+
+3. **Stage 1 — put the law in \(T^W\) + JEPA.** Hang a JEPA predictor off \(T^W\). Forward: \(h \xrightarrow{T^W} c_t\), \(a \xrightarrow{T^W} u^\star\), \(o \xrightarrow{T^W} z^\star\) (target, stop-grad / EMA-style; \(o\) is not a predictor input). Loss: \(\mathrm{Pred}(c_t, u^\star)\) aligns \(z^\star\). Update \(T^W\) LoRA + JEPA only. **Not run:** draft, scorer, \(T^\pi\), \(W\), `lm_head`. Data: \((h,a,o)\) with real \(o\). Shuffled-\(o\) twin is a control arm, not a reporting gate.
+
+4. **Stage 2a — open the doorway (LP-FT first half).** Freeze \(T^W\) and Instruct `lm_head`. Add draft head, scorer, and new \(W\) (\(2048\times 2048\)). Forward: \(c_t\) → \(K\) drafts \(u_k\); JEPA(\(c_t, u_k\)) → \(\hat z_k\); scorer → \(\arg\max i\); \(W(u_i)\) into frozen `lm_head` → command tokens. Losses: some \(u_k\) toward \(u^\star=T^W(a)\); token CE on `lm_head` **outputs** only (gradient into \(W\) / draft, not into JEPA). JEPA may keep a small loss on the **real** pair \((c_t, u^\star, z^\star)\) only. Job of this step: make \(u_i\) readable to a table that was trained on \(h_{39}\), without noise from a random \(W\) wrecking \(T^W\).
+
+5. **Stage 2b — write, then unfreeze the trunk a little.** Unfreeze `lm_head` with a small LR (or LoRA). Then \(T^W\) LoRA, still smaller JEPA on real pairs only. Token CE must not train JEPA. Scorer still argmax one \(u_i\); do not mix the \(K\) vectors. Optional later: small-step RL on the mouth; not required to start 2b.
+
+6. **Report.** Same scaffold, TB2.1 / Harbor **before vs after Stage 2**. Plus `rm`→`zaq` rename probe and truncated-trajectory / VoE (file gone before \(o_t\) is in context). Instruct + the **same** Stage 2 command rows is the control for “did the world substrate help.” Ranking and fidelity of \(\hat z\) reported separately.
+
+**Worked through `rm a.txt` then `git checkout a.txt`:** Stage 0/–1 do not see this sample. Stage 1 on the delete turn: \(c_t\) ≈ file present, \(u^\star\) ≈ rm, \(z^\star\) ≈ gone. Stage 2 on the restore turn: \(c_t\) ≈ gone; drafts restore / cat / delete more; JEPA three futures; scorer picks restore; \(W(u_i)\) writes `git checkout a.txt`.
+
 **Eval scope (user, 2026-08): before-vs-after is enough.** AgentWorld itself did not ablate training methods; do **not** gate the experiment on a full method-comparison matrix. Same scaffold, TB2.1 / Harbor, **base checkpoint vs after Stage 2**. Three numbers to report:
 
 1. **TB2.1 before vs after** — the headline.
@@ -222,15 +240,16 @@ flowchart TD
 ```mermaid
 flowchart LR
     S0["Stage 0 特征值"]
-    S0 --> SM["Stage −1 测 ℓ，贴 T^π，保留 lm_head"]
+    S0 --> SM["Stage −1 测 ℓ，贴鱼，直筒零训"]
     SM --> S1["Stage 1 T^W + JEPA"]
-    S1 --> S2["Stage 2 草稿+打分+W+lm_head"]
-    S2 --> E1["TB2.1"]
-    S2 --> E2["rm→zaq"]
-    S2 --> E3["VoE"]
+    S1 --> S2A["Stage 2a 冻主干与 lm_head，训 W+草稿"]
+    S2A --> S2B["Stage 2b 小步解开嘴巴与 T^W"]
+    S2B --> E1["TB2.1"]
+    S2B --> E2["rm→zaq"]
+    S2B --> E3["VoE"]
 ```
 
-**How to read it.** Top: original pipe, knife at \(\ell\), AgentWorld then Instruct, `lm_head` still Instruct. JEPA hangs off \(T^W\). Bottom-right: write path is \(u_i \to W \to\) `lm_head`. Layer-swap papers justify the **pipe** splice (\(h_{\ell-1}\) still flows). They do not say `lm_head` reads \(u_i\); that gap is \(W\).
+**How to read it.** Top: original pipe, knife at \(\ell\), AgentWorld then Instruct, `lm_head` still Instruct. JEPA hangs off \(T^W\). Bottom-right: write path is \(u_i \to W \to\) `lm_head`. Layer-swap papers justify the **pipe** splice (\(h_{\ell-1}\) still flows). They do not say `lm_head` reads \(u_i\); that gap is \(W\). Timeline: Stage 0 gate → −1 splice (pipe eval) → 1 world → 2a doorway → 2b mouth/trunk → three numbers.
 
 ### What each design choice is hung on
 
