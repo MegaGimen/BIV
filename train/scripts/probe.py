@@ -572,7 +572,7 @@ def cut_hints(per_layer: list[dict[str, Any]]) -> dict[str, Any]:
 def write_summary(report: dict[str, Any], path: Path) -> None:
     lines: list[str] = []
     a = lambda s: lines.append(s)
-    a("BIV merge/probe.py summary")
+    a("BIV train/scripts/probe.py summary")
     a("==========================")
     paths = report.get("paths") or {}
     for role in ("world", "agent", "base"):
