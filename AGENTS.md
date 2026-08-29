@@ -4,12 +4,11 @@ This file provides guidance to AI coding agents working with this repository.
 
 当前主线在分支 **`Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。
 
-读完下面四块就能动手，不必先翻思想日志：
+读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 
 1. **目标与叙事** — 两个研究问题、用哪个 checkpoint、什么叫成功。
 2. **模型架构** — 切鱼后的拼合主干、草稿 / JEPA / 线性层 \(W\) / `lm_head` 怎么接、每个 Stage 跑哪一段。
 3. **Stage + Step** — 从切回合到评测的走法。
-4. **思路与论文** — 为什么长这样、挂哪些文献、哪些路已经走过。全文索引在 [`refs/README.md`](./refs/README.md)。
 
 运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。
 
@@ -48,17 +47,17 @@ This file provides guidance to AI coding agents working with this repository.
 1. **从观察里能不能掌握底下的律？** 接受的答案：能，但只当观众不够，需要不变性和干预（同一段历史上的 `do(a)`，不是换一句 prompt）。
 2. **掌握的律能不能编成「潜意识」，让模型提早闪避？** 接受的答案：原则上能——把 System-2 的心智模拟编进 System-1 / 后继特征一类的东西里。Qwen-AgentWorld 论文 Table 9 的 Postfix CoT 是昂贵的显式形式，不是我们要的形态。
 
-**成功怎么量：** 同一套 Harbor / Terminal-Bench 2.1 脚手架，Stage 2 之后比之前高；再加「把 `rm` 改成 `zaq` 是否还跟得上转移」和「截断轨迹、命中观察还没进上下文时是否已经当文件没了」。世界侧同时报 \(\hat z\) 的**排序**和**表面保真度**（二者可能负相关）。对照：同一批命令行打在 Instruct 底座上，看世界主干有没有帮忙。打乱观察的孪生集用来磨因果，不是开训的前提。
+**成功怎么量：** 同一套 Harbor / Terminal-Bench 2.1 脚手架，Stage 2 之后比之前高；再加「把 `rm` 改成 `zaq` 是否还跟得上转移」和「截断轨迹、命中观察还没进上下文时是否已经当文件没了」。世界侧同时报 \(\hat z\) 的**排序**和**表面保真度**。对照：同一批命令行打在 Instruct 底座上，看世界主干有没有帮忙。打乱观察的孪生集作因果对照。
 
 **本线用的三个同源 checkpoint**（同一 Base、同一套 40 层盒子、词表一致）：
 
 | 角色 | Hub 名 | 在本实验里干什么 |
 |------|--------|------------------|
-| 世界底座 | `Qwen/Qwen-AgentWorld-35B-A3B` | 切鱼的前半层；已经走过 CPT → 下一状态 SFT → RL 的模拟器线 |
+| 世界底座 | `Qwen/Qwen-AgentWorld-35B-A3B` | 切鱼的前半层；该线经过 CPT → 下一状态 SFT → RL |
 | 写命令 | `Qwen/Qwen3.5-35B-A3B`（Instruct） | 切鱼的后半层 + 原来的 `lm_head` |
 | 量切点 | `Qwen/Qwen3.5-35B-A3B-Base` | 逐层看两条后训练相对 Base 差在哪，用来定 \(\ell\) |
 
-层数 40，`hidden_size=2048`，`vocab_size=248320`，`tie_word_embeddings=false`（`lm_head` 是独立张量）。层类型是 Gated DeltaNet 线性注意和完整注意力的混合，大约每 4 层一次 full attention。论文 HTML 在 `refs/`（只提交文本，不提交 PDF）。评测入口：`train/eval/`、`merge/eval.py`。
+层数 40，`hidden_size=2048`，`vocab_size=248320`，`tie_word_embeddings=false`（`lm_head` 是独立张量）。层类型是 Gated DeltaNet 线性注意和完整注意力的混合，大约每 4 层一次 full attention。评测入口：`train/eval/`、`merge/eval.py`。
 
 贯穿例子：日志里 `rm a.txt` 成功之后，下一条命令是 `git checkout a.txt`。
 
@@ -80,7 +79,7 @@ Instruct 和 AgentWorld 是同一套盒子：
 
 ### Stage −1 之后：切鱼得到的拼合主干
 
-在 \(L_{\ell-1}\) 和 \(L_\ell\) 之间下刀。\(\ell\) 相对 Base **量出来**，不是猜层号。摘掉当时的 `lm_head`，把 Instruct 的 \(L_\ell \ldots L_{39}\) 整层贴进这个槽，再把 **Instruct 的 `lm_head` 接回末端（不重置）**。前半 \(\mathrm{emb}+L_0\ldots L_{\ell-1}\) 留 AgentWorld。
+在 \(L_{\ell-1}\) 和 \(L_\ell\) 之间下刀。\(\ell\) 相对 Base 逐层量出来。摘掉当时的 `lm_head`，把 Instruct 的 \(L_\ell \ldots L_{39}\) 整层贴进这个槽，再把 **Instruct 的 `lm_head` 接回末端（保留原表）**。前半 \(\mathrm{emb}+L_0\ldots L_{\ell-1}\) 留 AgentWorld。
 
 切完之后，直筒仍是：
 
@@ -88,7 +87,7 @@ Instruct 和 AgentWorld 是同一套盒子：
 \text{token} \;\to\; \underbrace{\mathrm{emb}+L_0\ldots L_{\ell-1}}_{\text{AgentWorld}} \;\to\; \underbrace{L_\ell\ldots L_{39}}_{\text{Instruct}} \;\to\; h_{39} \;\to\; \texttt{lm\_head}
 \]
 
-前半负责「现在世界怎样」，后半负责「隐藏状态按会写话的方式收束」。反过来贴会把观察生成器放到管子末端。
+前半负责「现在世界怎样」，后半负责「隐藏状态按会写话的方式收束」。
 
 | 名字 | 盒子 | 权重从哪来 | 干什么 |
 |------|------|------------|--------|
@@ -103,23 +102,23 @@ Instruct 和 AgentWorld 是同一套盒子：
 
 ### 拼合主干后面接什么
 
-从 \(L_{39}\) 取出的表示记作编码结果：历史 → \(c_t\)（现在怎样），真命令 token → \(u^\star\)（做了什么），真观察 → \(z^\star\)（变成怎样）。这三路都走**完整的 40 层拼合主干**，不是只走到切点。
+从 \(L_{39}\) 取出的表示记作编码结果：历史 → \(c_t\)（现在怎样），真命令 token → \(u^\star\)（做了什么），真观察 → \(z^\star\)（变成怎样）。这三路都走**完整的 40 层拼合主干**。
 
 **JEPA** 接在这些向量之后。它回答：若执行这个动作向量，下一状态的嵌入该是什么。观察 \(o\) 只当训练目标（对 \(z^\star\) 做 stop-grad / EMA 一类处理），不进预测器输入。
 
-**草稿头** 只从 \(c_t\) 提出 \(K\) 个候选动作向量。shell 命令不能插值，所以打分器可以看所有分支，但后面只解码**一个**赢家 \(u_i\)，不把 \(K\) 个向量搅成汤。不要在 JEPA 之前先把分支门掉，否则没看见别的未来。
+**草稿头** 只从 \(c_t\) 提出 \(K\) 个候选动作向量。打分器看完所有分支的 JEPA 预测之后，只解码**一个**赢家 \(u_i\)。
 
-**出字** 是另一条路，不要和「\(h_{39}\) 进 `lm_head`」合成一条：
+**出字** 走单独一路：
 
 \[
 u_i \;\xrightarrow{W}\; \texttt{Instruct lm\_head} \;\to\; \text{命令 token}
 \]
 
-`lm_head` 吃的是 \(W(u_i)\)，不是残差流末端的 \(h_{39}\)，不是分数 \(s[i]\)，不是环境向量 \(\hat z\)。\(W\) 大约四百万参数，用来对齐「草稿向量」和「这张表当初在 \(h_{39}\) 上学会的门口」。先冻主干和 `lm_head` 只训 \(W\) 和草稿，再小步解开 `lm_head`（LP-FT 顺序）。
+`lm_head` 吃的是 \(W(u_i)\)。残差流末端的 \(h_{39}\)、打分 \(s[i]\)、环境向量 \(\hat z\) 都不进这张表。\(W\) 大约四百万参数，把草稿向量映到这张表当初在 \(h_{39}\) 上学会的门口。先冻主干和 `lm_head` 只训 \(W\) 和草稿，再小步解开 `lm_head`。
 
-世界损失打在 JEPA 上；命令的 token 交叉熵打在 `lm_head` 上。两套标签不再抢同一个 softmax。主干仍可能同时接到两路梯度，那是普通的共享主干，用切鱼解决不了，也不需要再解决一次。命令交叉熵不准回流去拧 JEPA，否则「环境会变成什么样」会被拧成「怎样写命令更顺」。
+世界损失打在 JEPA 上；命令的 token 交叉熵打在 `lm_head` 上。命令交叉熵不回流到 JEPA。主干可以同时接到两路梯度（共享主干）。
 
-Stage 1 的 \(u^\star\) 是主干对**日志里那串命令 token** 的编码。Stage 2 草稿一开始不在这个分布上，要另加损失把某个 \(u_k\) 拉近这些编码——拉的是 JEPA 已经当作**输入**的动作向量，不是拉向 JEPA 的**输出**（环境向量）。
+Stage 1 的 \(u^\star\) 是主干对**日志里那串命令 token** 的编码。Stage 2 另加损失，把某个 \(u_k\) 拉近这些编码：拉的是 JEPA 的**输入**（动作向量）。
 
 ### 每个 Stage 实际接通的图
 
@@ -170,13 +169,13 @@ flowchart LR
 **Stage Data — 切成回合**
 
 - **Step 1.** 从原始轨迹里，把每一条命令和它后面那次沙箱观察配成一对。训练原子是 \((h, a, o)\)：发命令前的历史、这条真命令、真打回来的下一观察。
-- **Step 2.** 按「上下文 / 动作 / 下一状态」来用，不要再做成 user 提问、assistant 把观察写全。打乱 \(o\) 的拷贝当对照臂，不当主集。
+- **Step 2.** 按「上下文 / 动作 / 下一状态」来用。打乱 \(o\) 的拷贝当对照臂。
 
 **Stage −1 — 切鱼**
 
 - **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)。
 - **Step 2.** 前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。
-- **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。只问拼好的鱼还会不会写话。这时还没有 \(W\)；这里的分数不能当成该把 `lm_head` 扔掉。
+- **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。这时还没有 \(W\)。
 
 **Stage 1 — 世界**
 
@@ -193,76 +192,20 @@ flowchart LR
 
 - **Step 1.** TB2.1 / Harbor：Stage 2 之前对之后（头条）。
 - **Step 2.** 语料里 `rm` 改成 `zaq`：还能跟上转移才像律。
-- **Step 3.** 截断轨迹，命中观察不在上下文里：\(c_t\) / \(\hat z\) / 下一步命令是否已经当文件没了。打乱 \(o\) 的孪生若同样会躲，就不是律。
-- **Step 4.** 对照臂（并行，不是后一个 Stage）：同一批命令行打在 Instruct 上。排序和保真度分开报。
+- **Step 3.** 截断轨迹，命中观察不在上下文里：\(c_t\) / \(\hat z\) / 下一步命令是否已经当文件没了。打乱 \(o\) 的孪生作对照。
+- **Step 4.** 对照臂（与主线并行）：同一批命令行打在 Instruct 上。排序和保真度分开报。
 
 **用例子串一遍。** Stage Data 切出删除回合和恢复回合。Stage −1 不用这两条。Stage 1 吃删除：主干编出「文件还在」和 `rm a.txt`，JEPA 对齐「没了」。Stage 2 吃恢复：主干给出「已经没了」，草稿给出恢复 / 再删 / 去 cat，JEPA 看三条未来，选中恢复，\(W(u_i)\) 写出 `git checkout a.txt`。Stage Eval Step 3 把删除成功的观察藏起来，问恢复是不是已经被选中。
-
-问 1（发现律）在当前设定下是经验外推（held-out 的「前提 × 命令」组合），不是可识别性定理。端到端组合命题仍未证。K 草稿 + JEPA + argmax + token 头是在本仓库拼起来的，没有人在真实 shell 语料上跑过这一整叠。
 
 ---
 
 ## 数据怎么对应到 Stage
 
-仓库里已经接好的三份原料：SWE-Hero（代码沙箱工具 I/O，`wm_code`）、ISETrace（真实 OS 工具 I/O，`wm_os`）、SWE-Zero（整段 agent 路径，`anti_forget`，按 `instance_id` 相对 Hero 去重）。`prepare_data.py --all` 写到 `data/processed/mix_v1/`。默认一条轨迹一行。标签始终是沙箱真实 I/O，不是 Matrix Law（`data/global_demon_prompt.txt` 只给运行时 Demon 用）。
+仓库里已经接好的三份原料：SWE-Hero（代码沙箱工具 I/O，`wm_code`）、ISETrace（真实 OS 工具 I/O，`wm_os`）、SWE-Zero（整段 agent 路径，`anti_forget`，按 `instance_id` 相对 Hero 去重）。`prepare_data.py --all` 写到 `data/processed/mix_v1/`。默认一条轨迹一行。标签始终是沙箱真实 I/O。`data/global_demon_prompt.txt` 只给运行时 Demon 用。
 
 三份都能切出 \((h,a,o)\)。Stage 1 用带真观察的回合，经拼合主干编码后只训 JEPA。Stage 2 用同一类回合里的**命令字符串**当嘴巴目标，并在真 \((c_t,u^\star,z^\star)\) 上保留较小的 JEPA。Zero 补写命令的面。Terminal 域语料仍可选。Muse 线上的 1:1:0.35 mix 属于另一条 checkpoint，不要直接当成本线配方。
 
 系统提示若还要用短世界角色，见 `train/src/biv_wm/formatting.py` 的 `DEFAULT_WM_SYSTEM`。
-
----
-
-## 思路与论文
-
-详细分组、HTML 下载和定理链在 [`refs/README.md`](./refs/README.md)（A–X 组）。刷新：`python3 refs/fetch_html_text.py`。不要提交 `refs/pdfs/`。下面只保留「为什么长这样」和查阅入口，让主文保持能走。
-
-当前理论**不够**宣称两问已解决；缺口在组合命题（自由文本动作、无界字符串观察、离线语料里没有我们选的 `do(a)`）。用户若问理论够不够，答：**不够，组合仍缺**。不要把 merge-λ / DARE 再当成科学下一步，除非用户明确要做另一轮 merge 诊断（例如**量出来的**逐层余弦）。
-
-### 这套架构各自挂在哪
-
-| 我们在做的选择 | 用意 | 文献 |
-|---|---|---|
-| 预测下一**潜向量**，不是 stdout token | 像素 / 逐字重建把容量花在不可预测的细节上；律不在用词里 | [V-JEPA 2](https://arxiv.org/abs/2506.09985)，[A Path Towards Autonomous Machine Intelligence](https://consensus.app/papers/details/376c7ec2fb015a48bacc8b62901a860a/?utm_source=unknown) |
-| 观察损失打在 JEPA，命令损失打在 `lm_head` | 纯观察 token SFT 会把助手位拧成环境模拟器 | [RWML 2602.05842](https://arxiv.org/abs/2602.05842) |
-| 向量里提案、潜空间里想象、最后才写成字 | ω-EVA 的提案→潜未来→改写；shell 上对命令向量做 argmax 而不是混合 | [ω-EVA](https://arxiv.org/abs/2606.09457) |
-| 先给 K 条想象未来打分再动 | I2A 编码想象轨迹再交给策略 | [I2A](https://arxiv.org/abs/1707.06203) |
-| 连续空间里想完再解码 | Coconut：字只在最后出现 | [Coconut](https://arxiv.org/abs/2412.06769) |
-| 观察 CE 不当主损失 | 逐 token 拟合观察 = 模仿环境，误差随规划步长复利 | [2010.11876](https://arxiv.org/abs/2010.11876)，[2011.03506](https://arxiv.org/abs/2011.03506) |
-| 潜自预测当辅助，观察重建当辅助会伤 | 学习动力学分析 | [2406.17718](https://arxiv.org/abs/2406.17718) |
-| 同轨迹内采负例 | 跨轨迹负例容易学成轨迹指纹而不是动力学 | [2606.07770](https://arxiv.org/abs/2606.07770) |
-| 排序形式的转移损失 | Ranking-NCE 等；IBC 在总体水平上仍有偏 | [2311.01388](https://arxiv.org/abs/2311.01388)，[R-NCE](https://arxiv.org/abs/2309.05803) |
-| 保真度和效用分开报 | 提高观察保真度可能削弱动作可分的动力学 | [PatchWorld](https://arxiv.org/abs/2605.30880)，[OneLife](https://arxiv.org/abs/2510.12088) |
-| 切鱼：量 \(\ell\)，前 AgentWorld 后 Instruct | 同源整层替换；残差流仍喂后半截 | [Layer Swapping](https://arxiv.org/abs/2410.01335)，[2505.18356](https://arxiv.org/abs/2505.18356)，[2605.26735](https://arxiv.org/abs/2605.26735) |
-| \(u_i\to W\to\) Instruct `lm_head`，保留原表 | 门口仿射对齐；重置半个十亿参数的表等于从零学写命令 | [Model stitching](https://arxiv.org/abs/2106.07682)，[VFM stitching](https://arxiv.org/abs/2603.12433)，LP-FT [2202.10054](https://arxiv.org/abs/2202.10054) |
-| 评测只报训练前后即可 | AgentWorld 官方也没有训法消融矩阵 | [Qwen-AgentWorld](https://arxiv.org/abs/2606.24597) §6.2 |
-| 辅助损失权重可用梯度余弦调度 | 有收敛到主任务临界点的保证 | [1812.02224](https://arxiv.org/abs/1812.02224) |
-| 「闪避」来自后继特征一类编译 | Forward-Backward 同时学基础特征和后继特征 | [FB](https://arxiv.org/abs/2209.14935)，[2502.10790](https://arxiv.org/abs/2502.10790) |
-
-书架分组（细节在 `refs/README.md`）：A–H 合并失败与世界优先；I 预测准≠学到律；J 未知多点干预；K 文本显式状态；L 世界理解→agent 的定理链；M 辅助任务何时帮；N 评测（VoE / 反事实）；P 自由文本动作；Q 文本域可执行世界模型；R 谁选 `do(a)`；S 律进权重 vs 进上下文；T 架构表达力（文献，**不是**开训步骤）；U objective mismatch；W 代码域执行感知预训练；**X 切鱼 + \(W\)**；O 仍缺的洞；V 把 I–U 串成链。
-
-设计时需要记住的三件事实：这一整叠是在本仓库组装的，零件来自 JEPA / ω-EVA / I2A / Coconut。ECHO（[2605.24517](https://arxiv.org/abs/2605.24517)）在 TB2.1 上用「动作 GRPO + 观察 token CE」也能涨，说明观察 token CE 作为**在线**辅助可以有效，和我们「离线主损失会复利」的分界还没有对打过。PaW 的顺序相反（在 agent 底座上挂世界辅助），\(\lambda\) 日程可以借鉴，实验结论不能原样搬。
-
-本轮只记 URL、未拉 HTML 的篇目（用户 2026-08：记下链接即可，除非再要求不要跑 `fetch_html_text.py`）：[2606.07770](https://arxiv.org/abs/2606.07770)、[2106.04379](https://arxiv.org/abs/2106.04379)、[2603.02862](https://arxiv.org/abs/2603.02862)、[2311.01388](https://arxiv.org/abs/2311.01388)、[2602.02900](https://arxiv.org/abs/2602.02900)、[2309.05803](https://arxiv.org/abs/2309.05803)、[BMAS](https://doi.org/10.3390/a17020060)、van der Pol 同态（[consensus](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/)，**不要猜 arXiv 号**）、[2105.01136](https://arxiv.org/abs/2105.01136)、[ω-EVA](https://arxiv.org/abs/2606.09457)、[Coconut](https://arxiv.org/abs/2412.06769)、[V-JEPA 2](https://arxiv.org/abs/2506.09985)、[I2A](https://arxiv.org/abs/1707.06203)。
-
-仍缺：组合本身；真实 shell 无界 stdout；保真度–效用负相关在参数式世界模型上有多强；离线语料没有我们选的 `do(a)`（因果层级定理）。已有文献补上、不必再当「开放缺口」复述的：未知干预目标的可识别性、PSR 测什么、后继特征假定 \(\phi\) 给定。
-
-### 已经走过、不要当主方案重开
-
-给后来者查的，不是主叙事。一行一件：
-
-| 走过的路 | 一句话 |
-|----------|--------|
-| Chat Vector：\(\theta_{\mathrm{AW}}+\lambda(\theta_{\mathrm{Inst}}-\theta_{\mathrm{Base}})\)（`merge/merge.py`） | TB2.1 几乎走平；两条后训练目标不在同一切空间 |
-| 在 AgentWorld 上做 5k–10k agent SFT「找回格式」 | 测的是格式胶水；TB 格式走 system prompt |
-| 在 AgentWorld 上全参数重训通用 agent | 预期差；Qwen Table 9 是相反顺序（先有 agent 再 LWM 热身） |
-| 写死 OS 跟踪器当 \(M_0\)、LLM 当残差 | 律在脚本里，进不了权重；运行时 Demon 可以，不是训练主张 |
-| 把策略塞进 WM 奇异向量的正交补 | 超结构必须能读底座；正交特征会把政策丢进垃圾维 |
-| 把 LATA 当成「12–28 层物理、29 以后政策」 | LATA 量的是逐层余弦，层号不是设定；本模型是 40 层混合 |
-| 打分头 \(\psi(h,a,o)\) 当世界接口 | 决策时还没有 \(o\)；已换成 JEPA |
-| 把 K 个动作向量软混合再解码 | shell 字符串不能插值；只解码赢家 |
-| Stage 0：开训前查 Gated DeltaNet 特征值是否为负 | Grazzi/Merrill 的对象是线性 RNN + parity；条件在本配方不成立 |
-
-「律进参数」的判据也不是下一观察交叉熵变低（那是外貌拟合）。律要在干预下外推，并在换表面说法时仍稳（`cd` 后 cwd、`rm` 后文件没了、拒绝保持拒绝）。
 
 ---
 
@@ -280,7 +223,7 @@ flowchart LR
 
 ## 世界模型训练操作（`train/`，含另一条 Muse 线）
 
-北极星仍是：agent 变强，原因是世界理解变好。约束是不要忘成只会补全观察的模拟器壳。详细 runbook：[`train/README.md`](./train/README.md)。
+北极星仍是：agent 变强，原因是世界理解变好。同时保持模型仍能写命令、选工具。详细 runbook：[`train/README.md`](./train/README.md)。
 
 旧 9B 线可用 `configs/pilot.yaml` 先筛（保持 8k，少采样行，不要截断序列把观察切掉）。缓存根：`outputs/ds_cache/`。GPU 上再跑 `train_sft.py` / `swift` / `axolotl`；`prepare_data.py` 等可在 CPU。
 
@@ -331,3 +274,222 @@ nanobot gateway
 代码风格：Python 3.11+，运行时全 asyncio；行宽 100；ruff E,F,I,N,W（忽略 E501）；pytest `asyncio_mode = auto`。`train/` 自备 venv。
 
 常见路径：`nanobot/config/schema.py`、`providers/base.py`、`channels/base.py`、`agent/tools/registry.py`、`cartesian/demon.py`、`cartesian/tool_proxies.py`、`train/src/biv_wm/`、`train/configs/trl/muse_glimmer_30b_lora.yaml`（Muse）、`refs/papers/`、`merge/merge.py`、`webui/vite.config.ts`。测试目录镜像 `nanobot/` 包结构。
+
+---
+
+## 灵感来源
+
+编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。
+
+世界这一头走 JEPA：在表征空间里预测下一状态，观察文本只当训练目标，不进预测器。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。潜自预测作为辅助任务、以及它和转移算子谱分解的关系来自 [4][5]。把「下一潜状态」接到 Transformer、并让预测只读当前状态和动作，来自 [6][7]。观察损失打在 JEPA、命令损失打在 `lm_head`，对应 [8][9][10]。
+
+出字这一头走「先在向量里提案，在潜空间里看未来，只把一个赢家写成字」。ω-EVA 是提案 → 潜未来 → 改写 [11]；I2A 先编码想象轨迹再交给策略 [12]；Coconut 让字只在最后出现 [13]。动作侧先学表征、再还原成真命令 [14]。负例在同一条轨迹内采 [15]；转移损失用排序形式 [16][17]。\(K\) 个草稿全部过 JEPA，\(\arg\max\) 之后只解码赢家。
+
+主干用同源整层替换：相对 Base 量切点，前半 AgentWorld、后半 Instruct，Instruct `lm_head` 保留 [18][19][20]。末端层负责把内部状态收成具体输出 [21]。门口用仿射对齐把草稿向量送进那张已经会写命令的表 [22][23]；先只训头再解冻主干 [24][25]。世界 checkpoint 与 Harbor / TB2.1 口径来自 Qwen-AgentWorld [26]。底座是 Gated DeltaNet 与完整注意力的混合 [27]。
+
+「律进参数、提早闪避」对齐权重里的规则式泛化 [34]，以及时间局部性一类归纳偏置 [33]。后继特征把未来占用编进现在的向量 [35][36]。多领域上游表征对下游策略的样本收益见 [41]。先世界、后策略的顺序对齐 Dreamer 和 Internalizing the Future [38][39]。评测同时报排序和保真度 [28][29]，用命令重命名（`rm`→`zaq`）[30]、世界模型恢复度 [31][32] 和 VoE [40]。辅助损失权重可用梯度余弦调度 [37]。stdout 里与控制无关的噪声用控制内生状态来滤 [42]。
+
+分组索引和 HTML 下载仍在 [`refs/README.md`](./refs/README.md)。刷新：`python3 refs/fetch_html_text.py`。不要提交 `refs/pdfs/`。
+
+## 论文链接
+
+[1]–[42] 对应上一节。[43] 起为检索中读过、最终方案未直接引用的篇目。
+
+[1] [A Path Towards Autonomous Machine Intelligence (LeCun, JEPA)](https://consensus.app/papers/details/376c7ec2fb015a48bacc8b62901a860a/)
+[2] [V-JEPA 2](https://arxiv.org/abs/2506.09985)
+[3] [Intuitive physics understanding emerges from self-supervised pretraining on natural videos](https://arxiv.org/abs/2502.11831)
+[4] [When does Self-Prediction help? Understanding Auxiliary Tasks in RL](https://arxiv.org/abs/2406.17718)
+[5] [Understanding Self-Predictive Learning for RL](https://arxiv.org/abs/2212.03319)
+[6] [Next-Latent Prediction Transformers Learn Compact World Models (NextLat)](https://arxiv.org/abs/2511.05963)
+[7] [Textual Belief States for World Models: Identifiable Representation Learning Under Strict Mediation](https://arxiv.org/abs/2606.27681)
+[8] [RWML](https://arxiv.org/abs/2602.05842)
+[9] [Error Bounds of Imitating Policies and Environments](https://arxiv.org/abs/2010.11876)（期刊版 [TPAMI](https://doi.org/10.1109/tpami.2021.3096966)）
+[10] [The Value Equivalence Principle](https://arxiv.org/abs/2011.03506)
+[11] [ω-EVA](https://arxiv.org/abs/2606.09457)
+[12] [Imagination-Augmented Agents (I2A)](https://arxiv.org/abs/1707.06203)
+[13] [Coconut: Training Large Language Models to Reason in a Continuous Latent Space](https://arxiv.org/abs/2412.06769)
+[14] [Learning Action Representations for RL (Chandak)](https://arxiv.org/abs/1902.00183)
+[15] [In-trajectory negatives for dynamics (contrastive WM)](https://arxiv.org/abs/2606.07770)
+[16] [Ranking noise-contrastive estimation for transitions](https://arxiv.org/abs/2311.01388)
+[17] [R-NCE](https://arxiv.org/abs/2309.05803)
+[18] [Layer Swapping for Zero-Shot Cross-Lingual Transfer](https://arxiv.org/abs/2410.01335)
+[19] [The Unreasonable Effectiveness of Model Merging for Cross-Lingual Transfer](https://arxiv.org/abs/2505.18356)
+[20] [Rethinking the Multilingual Reasoning Gap with Layer Swap](https://arxiv.org/abs/2605.26735)
+[21] [The Remarkable Robustness of LLMs: Stages of Inference?](https://arxiv.org/abs/2406.19384)
+[22] [Model stitching](https://arxiv.org/abs/2106.07682)
+[23] [Revisiting Model Stitching in the Foundation Model Era](https://arxiv.org/abs/2603.12433)
+[24] [Fine-Tuning can Distort Pretrained Features and Underperform OOD (LP-FT)](https://arxiv.org/abs/2202.10054)
+[25] [Parameter-Efficient Tuning Makes a Good Classification Head](https://arxiv.org/abs/2210.16771)
+[26] [Qwen-AgentWorld](https://arxiv.org/abs/2606.24597)
+[27] [Gated Delta Networks](https://arxiv.org/abs/2412.06464)
+[28] [PatchWorld: Gradient-Free Optimization of Executable World Models](https://arxiv.org/abs/2605.30880)
+[29] [OneLife](https://arxiv.org/abs/2510.12088)
+[30] [Baba in Wonderland / Alice](https://arxiv.org/abs/2605.16725)
+[31] [What Has a Foundation Model Found? Using Inductive Bias to Probe for World Models](https://arxiv.org/abs/2507.06952)
+[32] [Evaluating the World Model Implicit in a Generative Model](https://arxiv.org/abs/2406.03689)
+[33] [From Kepler to Newton: Inductive Biases Guide Learned World Models in Transformers](https://arxiv.org/abs/2602.06923)
+[34] [Transformers generalize differently from information stored in context vs in weights](https://arxiv.org/abs/2210.05675)
+[35] [Does Zero-Shot Reinforcement Learning Exist? (Forward-Backward)](https://arxiv.org/abs/2209.14935)
+[36] [Which Features are Best for Successor Features?](https://arxiv.org/abs/2502.10790)
+[37] [Adapting Auxiliary Losses Using Gradient Similarity](https://arxiv.org/abs/1812.02224)
+[38] [DreamerV3](https://arxiv.org/abs/2301.04104)
+[39] [Internalizing the Future](https://arxiv.org/abs/2606.27483)
+[40] [IntPhys 2](https://arxiv.org/abs/2506.09849)
+[41] [Provable Benefit of Multitask Representation Learning in RL](https://arxiv.org/abs/2206.05900)
+[42] [Guaranteed Discovery of Control-Endogenous Latent States (AC-State)](https://arxiv.org/abs/2207.08229)
+
+[43] [Deep RL in Large Discrete Action Spaces](https://arxiv.org/abs/1512.07679)
+[44] [Physics-Informed Neural Networks (PINNs)](https://arxiv.org/abs/1711.10561)
+[45] [World Models (Ha & Schmidhuber)](https://arxiv.org/abs/1803.10122)
+[46] [Neural Ordinary Differential Equations](https://arxiv.org/abs/1806.07366)
+[47] [PlaNet](https://arxiv.org/abs/1811.04551)
+[48] [The Natural Language of Actions (Act2Vec)](https://arxiv.org/abs/1902.01119)
+[49] [Hamiltonian Neural Networks](https://arxiv.org/abs/1906.01563)
+[50] [SAVE](https://arxiv.org/abs/1912.02807)
+[51] [Graph Network Simulator (GNS)](https://arxiv.org/abs/2002.09405)
+[52] [Lagrangian Neural Networks](https://arxiv.org/abs/2003.04630)
+[53] [Understanding and Improving Information Transfer in MTL](https://arxiv.org/abs/2005.00944)
+[54] [Active ICP](https://arxiv.org/abs/2006.05690)
+[55] [FLAMBE](https://arxiv.org/abs/2006.10814)
+[56] [Active World Model Learning with Progress Curiosity (γ-Progress)](https://arxiv.org/abs/2007.07853)
+[57] [Jointly-Learned State-Action Embedding](https://arxiv.org/abs/2010.04444)
+[58] [Generalization to New Actions in RL](https://arxiv.org/abs/2011.01928)
+[59] [arXiv:2105.01136](https://arxiv.org/abs/2105.01136)
+[60] [arXiv:2106.04379](https://arxiv.org/abs/2106.04379)
+[61] [Model-Advantage Optimization](https://arxiv.org/abs/2106.14080)
+[62] [The Causal-Neural Connection (Causal Hierarchy Theorem)](https://arxiv.org/abs/2107.00793)
+[63] [REP-UCB](https://arxiv.org/abs/2110.04652)
+[64] [Interventions, Where and How?](https://arxiv.org/abs/2203.02016)
+[65] [VaGraM](https://arxiv.org/abs/2204.01464)
+[66] [Data Distributional Properties Drive Emergent ICL](https://arxiv.org/abs/2205.05055)
+[67] [Provable Benefits of Representational Transfer in RL](https://arxiv.org/abs/2205.14571)
+[68] [Deciding What to Model](https://arxiv.org/abs/2206.02072)
+[69] [LST side-tuning](https://arxiv.org/abs/2206.06522)
+[70] [PAC Reinforcement Learning for Predictive State Representations](https://arxiv.org/abs/2207.05738)
+[71] [SPEDER](https://arxiv.org/abs/2208.09515)
+[72] [On the Power of Pre-training for Generalization in RL](https://arxiv.org/abs/2210.10464)
+[73] [Task Arithmetic](https://arxiv.org/abs/2212.04089)
+[74] [TraceFixer](https://arxiv.org/abs/2304.12743)
+[75] [CodeExecutor](https://arxiv.org/abs/2305.05383)
+[76] [LIMA](https://arxiv.org/abs/2305.11206)
+[77] [RAP](https://arxiv.org/abs/2305.14992)
+[78] [UniPi](https://arxiv.org/abs/2305.16309)
+[79] [Nonparametric Identifiability of Causal Representations from Unknown Interventions](https://arxiv.org/abs/2306.00542)
+[80] [Birth of a Transformer](https://arxiv.org/abs/2306.00802)
+[81] [TIES-Merging](https://arxiv.org/abs/2306.01708)
+[82] [For SALE](https://arxiv.org/abs/2306.02451)
+[83] [Learning World Models with Identifiable Factorization (IFactor)](https://arxiv.org/abs/2306.06561)
+[84] [Pretraining task diversity and the emergence of non-Bayesian ICL](https://arxiv.org/abs/2306.15063)
+[85] [MPDP: Theoretically Guaranteed Policy Improvement Distilled from Model-Based Planning](https://arxiv.org/abs/2307.12933)
+[86] [Chat Vector](https://arxiv.org/abs/2310.04799)
+[87] [The Expressive Power of Transformers with CoT](https://arxiv.org/abs/2310.07923)
+[88] [O-LoRA](https://arxiv.org/abs/2310.14152)
+[89] [General Identifiability and Achievability for CRL](https://arxiv.org/abs/2310.15450)
+[90] [Implicit CoT via Knowledge Distillation](https://arxiv.org/abs/2311.01460)
+[91] [Identifying Linearly-Mixed Causal Representations from Multi-Node Interventions](https://arxiv.org/abs/2311.02695)
+[92] [DARE](https://arxiv.org/abs/2311.03099)
+[93] [The Transient Nature of Emergent ICL](https://arxiv.org/abs/2311.08360)
+[94] [PhysGaussian](https://arxiv.org/abs/2311.12198)
+[95] [The mechanistic basis of data dependence and abrupt learning in an in-context classification task (Reddy)](https://arxiv.org/abs/2312.03002)
+[96] [Bridging State and History Representations](https://arxiv.org/abs/2401.08898)
+[97] [Score-based Causal Representation Learning](https://arxiv.org/abs/2402.00849)
+[98] [Chain of Thought Empowers Transformers to Solve Inherently Serial Problems](https://arxiv.org/abs/2402.12875)
+[99] [The Illusion of State in State-Space Models](https://arxiv.org/abs/2404.08819)
+[100] [CAASL](https://arxiv.org/abs/2405.16718)
+[101] [Dual Process Learning: Controlling ICL vs IWL with Weight Forgetting](https://arxiv.org/abs/2406.00053)
+[102] [SemCoder](https://arxiv.org/abs/2406.01006)
+[103] [Linear Causal Representation Learning from Unknown Multi-node Interventions](https://arxiv.org/abs/2406.05937)
+[104] [Amortized Planning with Large-Scale Transformers](https://arxiv.org/abs/2406.11907)
+[105] [An Optimal Tightness Bound for the Simulation Lemma](https://arxiv.org/abs/2406.16249)
+[106] [The Central Role of the Loss Function in RL](https://arxiv.org/abs/2409.12799)
+[107] [NeuMA](https://arxiv.org/abs/2410.08257)
+[108] [Toward Understanding In-context vs. In-weight Learning](https://arxiv.org/abs/2410.23042)
+[109] [Unlocking State-Tracking in Linear RNNs Through Negative Eigenvalues](https://arxiv.org/abs/2411.12537)
+[110] [Proto Successor Measure](https://arxiv.org/abs/2411.19418)
+[111] [Differential learning kinetics](https://arxiv.org/abs/2412.00104)
+[112] [MaxInfoRL](https://arxiv.org/abs/2412.12098)
+[113] [Cosmos](https://arxiv.org/abs/2501.03575)
+[114] [TATR](https://arxiv.org/abs/2501.15065)
+[115] [DeltaProduct](https://arxiv.org/abs/2502.10297)
+[116] [LATA](https://arxiv.org/abs/2502.20186)
+[117] [CODI](https://arxiv.org/abs/2502.21074)
+[118] [Log-depth transformers](https://arxiv.org/abs/2503.03961)
+[119] [What I cannot execute, I do not understand (Execution Tuning)](https://arxiv.org/abs/2503.05703)
+[120] [AGLO](https://arxiv.org/abs/2503.08867)
+[121] [TheoryCoder](https://arxiv.org/abs/2503.20124)
+[122] [CodeARC](https://arxiv.org/abs/2503.23145)
+[123] [CAT Merging](https://arxiv.org/abs/2505.06977)
+[124] [PoE-World](https://arxiv.org/abs/2505.10819)
+[125] [SLiCEs](https://arxiv.org/abs/2505.17761)
+[126] [ShIOEnv](https://arxiv.org/abs/2505.18374)
+[127] [Looping / padding for serial computation](https://arxiv.org/abs/2505.18948)
+[128] [Calibrated Value-Aware Model Learning](https://arxiv.org/abs/2505.22772)
+[129] [DyMo](https://arxiv.org/abs/2506.02918)
+[130] [PTS-BE](https://arxiv.org/abs/2507.02639)
+[131] [SIM-CoT](https://arxiv.org/abs/2509.20317)
+[132] [Dyna-Mind](https://arxiv.org/abs/2510.09577)
+[133] [SPA](https://arxiv.org/abs/2510.15047)
+[134] [LED-WM](https://arxiv.org/abs/2511.22904)
+[135] [Spectral Representation-based RL](https://arxiv.org/abs/2512.15036)
+[136] [From Shortcut to Induction Head](https://arxiv.org/abs/2512.18634)
+[137] [Ortho-LoRA](https://arxiv.org/abs/2601.09684)
+[138] [Demystifying Mergeability](https://arxiv.org/abs/2601.22285)
+[139] [Do Latent-CoT Models Think Step-by-Step?](https://arxiv.org/abs/2602.00449)
+[140] [TheoryCoder-2](https://arxiv.org/abs/2602.00929)
+[141] [arXiv:2602.02900](https://arxiv.org/abs/2602.02900)
+[142] [ProAct](https://arxiv.org/abs/2602.05327)
+[143] [Verification of the Implicit World Model in a Generative Model via Adversarial Sequences](https://arxiv.org/abs/2602.05903)
+[144] [NeSyS](https://arxiv.org/abs/2602.10480)
+[145] [Learning State-Tracking from Code Using Linear RNNs](https://arxiv.org/abs/2602.14814)
+[146] [DreamZero / World Action Model](https://arxiv.org/abs/2602.15922)
+[147] [Causality is Key for Interpretability Claims to Generalise](https://arxiv.org/abs/2602.16698)
+[148] [arXiv:2603.02862](https://arxiv.org/abs/2603.02862)
+[149] [Phys4D](https://arxiv.org/abs/2603.03485)
+[150] [Why Are Linear RNNs More Parallelizable?](https://arxiv.org/abs/2603.03612)
+[151] [M²RNN](https://arxiv.org/abs/2603.14360)
+[152] [Beyond identifiability: Learning causal representations with few environments and finite samples](https://arxiv.org/abs/2603.25796)
+[153] [Self-Execution Simulation Improves Coding Models](https://arxiv.org/abs/2604.03253)
+[154] [The Depth Ceiling](https://arxiv.org/abs/2604.06427)
+[155] [Outcome-Predictive State Representations (OPSR)](https://arxiv.org/abs/2604.07016)
+[156] [Distinct mechanisms underlying ICL](https://arxiv.org/abs/2604.12151)
+[157] [Latent Planning Emerges with Scale](https://arxiv.org/abs/2604.12493)
+[158] [Curiosity-Critic](https://arxiv.org/abs/2604.18701)
+[159] [Physically Native World Models](https://arxiv.org/abs/2605.00412)
+[160] [NSI](https://arxiv.org/abs/2605.01293)
+[161] [Where's the Plan?](https://arxiv.org/abs/2605.07984)
+[162] [Latent Geometry Beyond Search](https://arxiv.org/abs/2605.08732)
+[163] [DeformMaster](https://arxiv.org/abs/2605.09586)
+[164] [StepCodeReasoner](https://arxiv.org/abs/2605.11922)
+[165] [PriorZero](https://arxiv.org/abs/2605.12289)
+[166] [PhyWorld](https://arxiv.org/abs/2605.19242)
+[167] [ECHO](https://arxiv.org/abs/2605.24517)
+[168] [RL vs SFT circuits](https://arxiv.org/abs/2605.28860)
+[169] [Policy-Aware Simulator Learning](https://arxiv.org/abs/2605.29032)
+[170] [YoCausal](https://arxiv.org/abs/2605.30346)
+[171] [COMAP](https://arxiv.org/abs/2606.02372)
+[172] [PaW](https://arxiv.org/abs/2606.02388)
+[173] [Mind-Studio](https://arxiv.org/abs/2606.16070)
+[174] [Can In-Context Learning Support Intrinsic Curiosity?](https://arxiv.org/abs/2606.19476)
+[175] [OPINE-World](https://arxiv.org/abs/2607.01531)
+[176] [Sparse Delta Memory](https://arxiv.org/abs/2607.07386)
+[177] [Capacity–Redundancy Trade-offs in Multi-Task Learning](https://arxiv.org/abs/2607.16554)
+[178] [PSG-JEPA](https://arxiv.org/abs/2608.06799)
+[179] [X-VoE](https://doi.org/10.1109/iccv51070.2023.00369)
+[180] [Piloto 2022, Violation of Expectation](https://doi.org/10.1038/s41562-022-01394-8)
+[181] [Shared sensitivity to data distribution in humans and transformers](https://doi.org/10.1038/s41562-025-02359-3)
+[182] [Jointly-Learned State-Action Embedding (CIKM)](https://doi.org/10.1145/3459637.3482357)
+[183] [Combining Functional and Automata Synthesis (Autumn/Das)](https://doi.org/10.1145/3571249)
+[184] [TRACED: Execution-Aware Pre-Training for Source Code](https://doi.org/10.1145/3597503.3608140)
+[185] [Active Inference, Curiosity and Insight (Friston)](https://doi.org/10.1162/neco_a_00999)
+[186] [The Expressive Power of Transformers (TACL, Merrill & Sabharwal)](https://doi.org/10.1162/tacl_a_00493)
+[187] [Spectral Learning of PSRs with Insufficient Statistics](https://doi.org/10.1609/aaai.v29i1.9635)
+[188] [Control-Oriented MBRL with Implicit Differentiation](https://doi.org/10.1609/aaai.v36i7.20758)
+[189] [Towards Effectively Leveraging Execution Traces for Program Repair](https://doi.org/10.18653/v1/2025.knowledgenlp-1.17)
+[190] [Learning and exploration in action-perception loops (Little & Sommer)](https://doi.org/10.3389/fncir.2013.00037)
+[191] [BMAS](https://doi.org/10.3390/a17020060)
+[192] [Language Representations for Generalization in RL](https://consensus.app/papers/details/10901a6c273b5bd699c3e1a3e69b78c1/)
+[193] [Iterative VAML (Farahmand 2018)](https://consensus.app/papers/details/14e6dd2e07ee51108dfbdf5849a185c5/)
+[194] [Fixed-Point RNNs](https://consensus.app/papers/details/22e1ea9b37195e2aadfa03fd27931301/)
+[195] [Value-Aware Loss Function for MBRL (Farahmand 2017)](https://consensus.app/papers/details/b0f6ce8be2c65cad9395b655aa4342f0/)
+[196] [Decision-Aware Model Learning for Actor-Critic: When Theory Does Not Meet Practice](https://consensus.app/papers/details/df54c74ed6165977957689b47d7bd7dd/)
+[197] [MDP homomorphisms (van der Pol)](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/)
