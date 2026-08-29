@@ -367,6 +367,7 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
 ## T. 架构硬约束：不写 CoT 就想追踪 OS 状态，得看底座是什么
 
 这是「潜意识提前躲」这条路上最容易被忽略、但**最硬**的一条限制。
+**2026-08-29：** 下面仍是文献。Grazzi / Merrill 的实验条件在 BIV 训练配方里不成立，**不要**做成开训前的 Stage 0。
 
 - **坏消息：普通 Transformer 和普通 SSM 都做不到。**
   常数深度 Transformer 的表达力上界是 $\mathsf{TC}^0$（[Merrill & Sabharwal 2021](https://doi.org/10.1162/tacl_a_00493)），
