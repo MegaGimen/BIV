@@ -483,6 +483,50 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
   → 把这条和 S 组放在一起看结论很干净：**执行动力学放进上下文效果有限，放进权重才有跨任务的收益。**
   这正是用户「把律编码进参数」的经验依据。
 
+## X. 嫁接：从 Instruct 搬一段层过来当 token 头的初始值，不是 merge
+
+这组回答的问题不是「WM 和 agent 的目标该怎么共处」——那件事已经交给 K-draft/JEPA/selector/token 头处理了。
+这组回答的是更窄的一件事：**Stage 2 的草稿头/token 头要不要随机初始化**。
+
+用户 2026-08-29 指出的关键事实，已经核对：`Qwen-AgentWorld-35B-A3B` 和 `Qwen3.5-35B-A3B`
+（我们的 agent/Instruct checkpoint）**同源**——都是 `Qwen3.5-35B-A3B-Base` 往下的两条后训练路径。
+直接查了 hub 上两边的 `config.json` / `tokenizer_config.json`：`hidden_size=2048`、`num_hidden_layers=40`，
+`layer_types` 逐位置相同（Gated DeltaNet linear-attention + full-attention，同样每 4 层一次 full attention）、
+`vocab_size=248320`、`tie_word_embeddings=false`（LM head 是独立张量，不和输入 embedding 共享，嫁接对象明确）、
+`added_tokens_decoder` / special tokens / chat_template 骨架几乎逐字相同（只有 `model_max_length` 和几处 jinja
+分支——比如是否保留 `preserve_thinking`、参数序列化的判断顺序——不同）。这比下面几篇 Layer Swapping 论文的前提更干净：
+不仅同 Base，连词表和大部分模板都没变。
+
+- **Layer Swapping for Zero-Shot Cross-Lingual Transfer** ([2410.01335](https://arxiv.org/abs/2410.01335)) ——
+  同源两专家（数学 vs 目标语言微调），直接把数学专家的顶层+底层**换成**语言专家的对应层，不做向量加减，
+  比模型汤 / DARE 在 MGSM 上平均高 10 个点。
+- **The Unreasonable Effectiveness of Model Merging for Cross-Lingual Transfer** ([2505.18356](https://arxiv.org/abs/2505.18356)) ——
+  解释为什么换层赢过任务向量加减：数学能力和语言能力依赖的参数子集基本不重叠；
+  还发现「训完再把没用的更新还原」比「一开始就冻住不训」效果更好。
+- **Rethinking the Multilingual Reasoning Gap with Layer Swap** ([2605.26735](https://arxiv.org/abs/2605.26735)) ——
+  权重级分析：微调更新在**中间层**高度一致（语言无关的推理核心），在**外层**分歧大（语言特定）；
+  只换中间层就能补上大部分推理差距，同时保留目标语言的表达层。
+- **The Remarkable Robustness of LLMs: Stages of Inference?** ([2406.19384](https://arxiv.org/abs/2406.19384)) ——
+  删层/换邻层实验：模型对动**中间层**极其稳健（72–95% 准确率不掉），对动**最早**和**最后**几层最敏感；
+  提出四段划分 detokenization → feature engineering → prediction ensembling → residual sharpening，
+  后两段负责「把内部状态收敛成具体输出」——对应我们要嫁接的「怎么把状态写成命令」这一段。
+- **Revisiting Model Stitching in the Foundation Model Era** ([2603.12433](https://arxiv.org/abs/2603.12433)) ——
+  异构模型才需要拼接层；拼接层要用「目标模型倒数第二层的特征匹配损失」单独训，而不是端到端任务损失，
+  否则在浅拼接点会失败。**我们大概率不需要这一步**（同源、张量形状逐一相同），但接上之前应该照它的协议测一下，不要假设能直接接。
+- **Fine-Tuning can Distort Pretrained Features and Underperform OOD**（LP-FT，[2202.10054](https://arxiv.org/abs/2202.10054)） ——
+  头没配好就整体微调，头的噪声梯度会反向污染主干已经学好的特征；正确顺序是先只训头（或拼接点），
+  等头不再失配，再解冻主干一起训。直接决定 Stage 2 的训练顺序。
+- **Parameter-Efficient Tuning Makes a Good Classification Head** ([2210.16771](https://arxiv.org/abs/2210.16771)) ——
+  用已经训过的头替换随机头本身就能稳定提升，支持「别随机初始化 token 头」这个直觉本身是对的。
+
+→ **结论：层替换/头嫁接解决的是初始化问题，不是目标冲突问题。**
+目标冲突（WM 的 \(P(o\mid h,a)\) vs agent 的 \(P(a\mid h)\)）仍然要靠 K-draft + JEPA + argmax + token 头架构处理；
+嫁接只是让 Stage 2 的 token 头一开始就会写话，不用从零学「怎么把动作向量变成一句通顺命令」，
+预期能减少 Stage 2 需要的数据/步数（省的是这笔钱，不是省掉整个 Stage 2）。
+**老实的边界**：Layer Swapping 论文验证的是两个**平行**目标（数学 vs 语言）之间换层；
+我们这两个目标是**相冲**的（这正是 Chat Vector merge 失败的原因）。层替换在目标相冲时是否依然有效，
+**没有人验证过**——这是 Stage “−1” 那个零训练 sanity check 要自己测的地方，不是抄论文结论。
+
 ## V. 把上面这些串成一条链（每段可挂定理，缺的地方明说）
 
 这是把 I–U 拼起来后能写出的算法骨架。**它不是「突破性堆栈」，是一张标注了哪里有砖、哪里是空的图。**
