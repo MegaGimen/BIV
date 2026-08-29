@@ -1,253 +1,153 @@
 This file provides guidance to AI coding agents working with this repository.
 
-## Project Overview
+## 给下一个 agent 的入口
 
-This repository is **BIV** (Brain In a Vat / 缸中之脑): a Cartesian-demon experiment **on top of** [nanobot](https://github.com/HKUDS/nanobot).
+当前主线在分支 **`Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。
 
-- **Runtime product:** Agent A believes it uses real tools; Agent B (Demon) intercepts world-touching tools and returns a coherent simulated world (see root `README.md`, `cartesian/`).
-- **Research / training track (`train/`):** raise **general world understanding** (OS + code environments) via real next-observation SFT, hoping that transfers **indirectly** to agent console / coding tool-use — while guarding against catastrophic forgetting into an observation-only model. Runtime nanobot is largely upstream; BIV adds the Cartesian layer + world-model SFT scaffold.
+读完下面四块就能动手，不必先翻思想日志：
 
-Upstream nanobot remains a lightweight Python agent framework (channels → bus → agent loop → LLM → tools → memory) with a React/TypeScript WebUI. Prefer changing `cartesian/` and `train/` for BIV-specific behavior; touch `nanobot/` only when necessary for forks or bugs.
+1. **目标与叙事** — 两个研究问题、用哪个 checkpoint、什么叫成功。
+2. **模型架构** — 切鱼后的拼合主干、草稿 / JEPA / 线性层 \(W\) / `lm_head` 怎么接、每个 Stage 跑哪一段。
+3. **Stage + Step** — 从切回合到评测的走法。
+4. **思路与论文** — 为什么长这样、挂哪些文献、哪些路已经走过。全文索引在 [`refs/README.md`](./refs/README.md)。
 
-## How to talk to the user (always)
+运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。
 
-The user asked for this explicitly. Do not write telegram-style or paper-abstract answers.
+---
 
-- **North star when discussing train/eval/papers:** 靠提升世界理解来提升 agent。手段不限（共训、后续 agent 阶段、RL、当模拟器、改 mix 都可），配方不神圣。不要把「必须纯观察 SFT」讲成比这个目的更硬的约束；也不要把「只把政策训狠、不再谈世界」说成同一条假设。
-- **Language:** 简体中文 unless the user writes in another language.
-- **Length:** Prefer a short direct answer first, then **enough detail** that someone who did not read the papers/code can follow. If the topic is a comparison, a mechanism, or a decision, write **several paragraphs or a worked example**, not three bullets with jargon.
-- **Words:** Use everyday words. If you must use \(P(o\mid h,a)\), Terminus, SFT, LoRA, **immediately say in one sentence what that means in this project**. Do not stack paper titles as if they were an explanation.
-- **Structure for “有没有类似研究 / 这是不是 X”:** (1) 先说结论；(2) 用一个具体类比或本仓库里的例子；(3) 再分条讲别人怎么训、怎么测、和我们差在哪；(4) 最后说这对我们下一步意味着什么。
-- **Forbidden:** 只丢 arXiv 号和表格就结束；把用户没说过的词（如「末尾贴补」）套到他们正在做的流程上；把「可发论文的故事」讲成和用户目标相反的路线。
-- **Interpret intent; do not over-follow wording.** Read what they are trying to get done, not every quantifier as a hard constraint. Example: 「哪篇论文」/「哪个」usually means **which papers (plural)** — list the useful ones, do **not** collapse to a single pick just because they said 哪篇. Same for similar surface wording (一篇、一个、这个) when the natural answer is several. Do not invent extra agendas; do not treat grammar as a lock.
-- **Do not answer questions the user did not ask.** Stay inside the actual intent. Do not add extra framings, dichotomies, “其实要分清两件事”、或他们没要求的下一步建议。Example: user asked whether similar world-model papers exist — list and explain those papers; do **not** volunteer an unasked split of the problem. Extra structure that “helps” often confuses. If something is optional, omit it until they ask.
-- **Do not invent, extremize, then negate the user’s idea.** Never write “这不是 XXX” / “你搞错了，这不是 XXX” when the user did not say it was XXX. Do not put words in their mouth so you can knock them down. If a clarification is needed, state the fact; do not frame it as correcting a claim they never made.
+## 仓库是什么
 
-## Active research thread (pick up here — 2026-08)
+**BIV**（Brain In a Vat / 缸中之脑）叠在 [nanobot](https://github.com/HKUDS/nanobot) 上。
 
-Branch for this thread: **`Qwen3.5-35B-A3B`**. Paper dumps: [`refs/`](./refs/) (HTML text only, no PDFs). Merge code: [`merge/merge.py`](./merge/merge.py). Harbor / TB2.1 eval: `train/eval/`, `merge/eval.py`. The Muse 30B LoRA track below is a **separate** checkpoint line; do not mix controls.
+- **运行时：** Agent A 以为在用真工具；Agent B（Demon）截获碰世界的工具，按 Matrix Law 返回自洽的假世界。见根目录 `README.md`、`cartesian/`。
+- **研究 / 训练（`train/`）：** 用真实环境转移提高对 OS 和代码世界的理解，再看这套理解会不会转到控制台 / 编码工具 agent。改 BIV 行为优先动 `cartesian/` 和 `train/`；上游 `nanobot/` 只在分叉或修 bug 时动。
 
-**User goal (do not substitute):** put **world laws into parameters** by watching the world (Newton: discover \(G=mg\) from falling apples, **not** fit the trajectory, **not** be handed the formula). Then have that knowledge available **before** the event finishes (guillotine raised → dodge, no need to re-solve physics in CoT). Then grow **acting** on top of that encoding, without the world-model objective and the agent objective fighting over the same assistant tokens.
+上游 nanobot 仍是轻量 Python agent（channels → bus → agent loop → LLM → tools → memory）加 React/TypeScript WebUI。
 
-Two questions the user treats as the research:
+## 怎么和用户说话（始终）
 
-1. From observation, can an AI master underlying laws? Answer they accepted: **yes, but pure spectating is not enough** — need **invariants** and **interventions** (`do(a)` on the same history, not prompt paraphrase).
-2. Can mastered laws be encoded “subconsciously” so the model flinches early? Answer they accepted: **yes in principle** — compile System-2 mental simulation into System-1 / successor-style features; Qwen Table 9 Postfix CoT is the expensive explicit form, not the target.
+用户明确要求过。不要电报体、不要论文摘要体。
 
-**Rejected (do not revive as the main plan):**
+- **讨论训练 / 评测 / 论文时的北极星：** 靠提升世界理解来提升 agent。手段不限（共训、后续 agent 阶段、RL、当模拟器、改 mix 都可），配方不神圣。
+- **语言：** 用户用中文就简体中文。
+- **篇幅：** 先给短结论，再写够让没读过论文和代码的人跟得上。比较、机制、决策写成连贯段落或一个算过的例子，不要三行术语子弹当全文。
+- **用词：** 日常话。若必须出现 \(P(o\mid h,a)\)、Terminus、SFT、LoRA，立刻用一句话说清在本项目里是什么。不要把论文名叠成解释。
+- **「有没有类似研究 / 这是不是 X」：** (1) 结论；(2) 一个类比或本仓库例子；(3) 别人怎么训、怎么测、和我们差在哪；(4) 若用户问了下一步，再写意味着什么。
+- **按意图读，不要逐字死扣。** 「哪篇论文 / 哪个」通常是「哪些」。不要发明用户没问的议程。
+- **没问的不要答。** 不要自行「分清两件事」或塞没要求的建议。
+- **不要先把用户的想法极端化再否定。** 需要澄清时直接陈述事实。
 
-- **Chat Vector merge** \(\theta_{\text{AgentWorld}} + \lambda(\theta_{\text{Instruct}}-\theta_{\text{Base}})\) on language tensors (`merge/merge.py`). TB2.1 was ~flat vs Instruct. Task arithmetic assumes a shared Base tangent space and parallel same-family objectives (code/medical/law). After CPT→next-state SFT→RL, AgentWorld has drifted; assistant slot emits **observations** \(P(o\mid h,a)\), Instruct emits **actions** \(P(a\mid h)\). Adding the Instruct−Base vector is a hard collision. DARE/λ only scale that collision. Copying Instruct tokenizer onto AgentWorld weights is a second glue collision.
-- **Small (5k–10k) agent SFT on AgentWorld** to “recover format.” That tests format glue, **not** “world as foundation.” It cannot buy back Instruct-scale general instruction following (user wants TB format via **system prompt**, not task-specific SFT). Same data on Instruct is a required control if this is ever run.
-- **Full-parameter agent training on AgentWorld** as the cheap reverse of Qwen Table 9. User judged expected effect poor (retraining a general agent from a simulator). Qwen §6.2 Table 9 is the **opposite order**: start from Qwen3.5-35B-A3B-**SFT** (already an agent), LWM RL warm-up, eval TB2.1 with **no** extra agent FT. Released `Qwen-AgentWorld-35B-A3B` is the **simulator** line (Base→CPT→SFT→RL).
-- **Hardcoded OS tracker as \(M_0\), LLM as semantic residual.** That is a hybrid **simulator** (laws live in the script). It does **not** encode laws into LLM weights. Fine as Demon/runtime engineering; not the training claim.
-- **Grow the agent in the orthogonal complement of WM singular vectors / “idle dimensions.”** Superstructure must **read** the substrate (English→agent works because they share representations). Orthogonal **updates** can protect WM; orthogonal **features** dump the policy into leftover junk dims.
-- Treat LATA as “layers 12–28 = physics, 29–head = policy.” LATA computes **per-layer cosine** between task and instruction vectors; layer indices are measured, not assumed. Qwen3.5-35B-A3B is a 40-layer Gated-DeltaNet + attention hybrid — do not cargo-cult dense-Transformer layer myths.
-- “100% linear decode,” “symplectic manifold on Transformers,” “hidden state collapses toward OOM” as if they were training rules. Metaphors only.
-- **Scoring head \(\psi(h,a,o)\) as the world interface fed to \(\pi\).** Scoring needs the observation \(o\) as an input. At decision time the candidate command has not run, so \(o\) is unknown. That interface cannot peek at a future it has to be handed. Abandoned 2026-08; replaced by JEPA-style \(\mathrm{Pred}(c_t,u)\to\hat z\) (observation is the training target, not an input).
-- **Soft-mixing K action vectors then decoding tokens.** Shell commands do not interpolate. The scorer may look at every branch; the token head reads **one** winning action vector.
-- **Stage 0 as a Gated-DeltaNet eigenvalue go/no-go before 切鱼.** Dropped 2026-08-29. Grazzi et al. ([2411.12537](https://arxiv.org/abs/2411.12537)) study **linear RNNs as the model**, on **parity / modular arithmetic / \(S_5\)**, and **change** the transition matrix so eigenvalues may lie in \([-1,1]\), then train those modified Mamba/DeltaNet. Merrill ([2603.03612](https://arxiv.org/abs/2603.03612)) classifies LRNN circuit complexity. Those conditions do not hold here: we do not train GDN on parity, we do not edit \(\alpha_t\), \(T^W\) is a GDN+attention **hybrid**, and Stage 1/2 never require the recurrence itself to implement a parity automaton. T-group stays literature, not a training step.
+---
 
-**What “law in parameters” is not:** next-observation CE getting lower (that is appearance fitting, like pixels). A law must **extrapolate** under intervention and stay stable across prompt/surface change (cwd after `cd`, file gone after `rm`, permission denied stays denied). Eval for question 2 is **VoE / raised-blade**: truncated trajectory, observation of the hit not yet in context — does the internal state or the next **action** already treat the file as gone? If a shuffled-\(o\) twin also “dodges,” it is not the law.
+## 当前研究：目标与叙事
 
-**Theory status (ignore data/GPU; updated 2026-08 after the `refs/` search round):** **not** enough to claim the two questions are solved, but the gap list below is now much shorter. The written chain lives in [`refs/README.md`](./refs/README.md) §V; what is still missing is §O.
+**把世界的律写进参数。** 类比牛顿：看苹果落地，自己发现 \(G=mg\)，不是去拟合那条轨迹，也不是有人把公式塞进提示词。律进参数之后，铡刀举起来就该侧身——观察还没写进上下文，内部状态或下一步动作已经按「文件没了」来对待，不必在 CoT 里把物理重算一遍。然后在这套编码上长「会做事」，世界目标和 agent 目标不要抢同一张嘴（助手位上的同一套 token）。
 
-Superseded — **do not restate these as open**:
+用户当成研究的两问：
 
-- ~~CITRIS-style identifiability wants **known intervention targets**~~ → unknown multi-node identifiability exists ([2406.05937](https://arxiv.org/abs/2406.05937), [2603.25796](https://arxiv.org/abs/2603.25796)), and ShIOEnv's irreducibility signal estimates which parts of a shell command actually mattered.
-- ~~PSR leaves **which tests** unsolved~~ → [PAC RL for PSRs](https://arxiv.org/abs/2207.05738) gives polynomial sample complexity **not** depending on observation-space size; [textual belief states under strict mediation](https://arxiv.org/abs/2606.27681) does it for text environments directly.
-- ~~Successor features assume \(\phi\) is given (circular)~~ → [Forward-Backward](https://arxiv.org/abs/2209.14935) learns base and successor features from one criterion; [Ollivier 2025](https://arxiv.org/abs/2502.10790) gives non-tautological optimal base features.
+1. **从观察里能不能掌握底下的律？** 接受的答案：能，但只当观众不够，需要不变性和干预（同一段历史上的 `do(a)`，不是换一句 prompt）。
+2. **掌握的律能不能编成「潜意识」，让模型提早闪避？** 接受的答案：原则上能——把 System-2 的心智模拟编进 System-1 / 后继特征一类的东西里。Qwen-AgentWorld 论文 Table 9 的 Postfix CoT 是昂贵的显式形式，不是我们要的形态。
 
-Still open:
+**成功怎么量：** 同一套 Harbor / Terminal-Bench 2.1 脚手架，Stage 2 之后比之前高；再加「把 `rm` 改成 `zaq` 是否还跟得上转移」和「截断轨迹、命中观察还没进上下文时是否已经当文件没了」。世界侧同时报 \(\hat z\) 的**排序**和**表面保真度**（二者可能负相关）。对照：同一批命令行打在 Instruct 底座上，看世界主干有没有帮忙。打乱观察的孪生集用来磨因果，不是开训的前提。
 
-- **Composition.** Self-prediction ⇒ spectral decomposition of the transition operator ([2212.03319](https://arxiv.org/abs/2212.03319)) ⇒ low-rank-MDP \(\phi\) ⇒ downstream policy sample-complexity bound ([2206.05900](https://arxiv.org/abs/2206.05900)) — every link has a theorem, **nobody has proved the chain end-to-end**, least of all with free-text actions and unbounded string observations.
-- **Free-text actions.** Action-representation results ([1902.00183](https://arxiv.org/abs/1902.00183), [2010.04444](https://arxiv.org/abs/2010.04444)) require embeddability; nobody has shown bash commands are embeddable at shell scale.
-- **Real shell.** Strict mediation, AC-State, and epistemic/aleatoric separation are all verified on TextWorld, low-dim control, or gridworlds.
-- **We do not choose `do(a)`.** Our corpus is offline; the Causal Hierarchy Theorem ([2107.00793](https://arxiv.org/abs/2107.00793)) says observation alone cannot reach the interventional layer, and [2606.19476](https://arxiv.org/abs/2606.19476) proves in-context prediction error cannot estimate learning progress without bias in general MDPs.
+**本线用的三个同源 checkpoint**（同一 Base、同一套 40 层盒子、词表一致）：
 
-**Algorithm shape if asked to implement (do not volunteer this as a “breakthrough stack”):** **Stage Data** parse \((h,a,o)\). **Stage −1** measure \(\ell\), 切鱼. **Stage 1** full spliced backbone + JEPA **after** it. **Stage 2** draft on that \(c_t\), JEPA on the action vectors, \(W(u_i)\) into Instruct `lm_head`. **Stage Eval** TB2.1 / `zaq` / VoE. `lm_head` does not read \(h_{39}\). No Stage 0. Details: Training procedure (Stage / Step) below.
+| 角色 | Hub 名 | 在本实验里干什么 |
+|------|--------|------------------|
+| 世界底座 | `Qwen/Qwen-AgentWorld-35B-A3B` | 切鱼的前半层；已经走过 CPT → 下一状态 SFT → RL 的模拟器线 |
+| 写命令 | `Qwen/Qwen3.5-35B-A3B`（Instruct） | 切鱼的后半层 + 原来的 `lm_head` |
+| 量切点 | `Qwen/Qwen3.5-35B-A3B-Base` | 逐层看两条后训练相对 Base 差在哪，用来定 \(\ell\) |
 
-**Paper shelf:** [`refs/README.md`](./refs/README.md) groups A–X (201 HTML dumps + recorded URLs). Section **V** is the assembled algorithm chain (each step hung on a theorem, holes marked); section **O** is what is still genuinely missing. A–H = merge failure, world-first ordering, physics WM. **I–T = the 2026-08 gap-closing round**: I 预测准≠学到律, J 未知多点干预可识别性, K 文本显式状态 z（strict mediation）, L 世界理解→agent 的定理链（低秩 MDP / 多任务表征迁移 / 自预测=谱分解 / T→π 编译）, M 辅助任务何时帮何时伤, N 评测（VoE / 反事实 / 探针≠因果）, P 自由文本动作的动作表征, Q 文本域可执行世界模型（含 PatchWorld 的保真度↔效用权衡实证）, R 谁来选 do(a)（主动干预 / 学习进度好奇心）, S 律进权重 vs 留上下文 + 多样性阈值, T 架构表达力硬约束（TC⁰ / Gated DeltaNet 是 PNC¹-complete）, U objective mismatch 的正式文献, W 代码域执行感知预训练经验先例, **X 嫁接：切鱼 backbone + 线性 \(W\) 进 Instruct `lm_head`，不是 merge**, O 仍缺的洞. Refresh: `python3 refs/fetch_html_text.py`. Do not commit `refs/pdfs/`.
+层数 40，`hidden_size=2048`，`vocab_size=248320`，`tie_word_embeddings=false`（`lm_head` 是独立张量）。层类型是 Gated DeltaNet 线性注意和完整注意力的混合，大约每 4 层一次 full attention。论文 HTML 在 `refs/`（只提交文本，不提交 PDF）。评测入口：`train/eval/`、`merge/eval.py`。
 
-**Three findings that should change our experiment design (not just reading):**
-1. **保真度和效用可能负相关。** [PatchWorld](https://arxiv.org/abs/2605.30880) 在 7 个 AgentGym 文本环境上测出「提高观察保真度会削弱动作可判别的动力学」。所以 `eval_wm.py` 的下一观察指标和 agent 指标必须**同时**报，不能只看 CE 下降。
-2. **决定「学到律」还是「背轨迹」的是数据多样性阈值，不是 token 数。** [2306.15063](https://arxiv.org/abs/2306.15063) / [2412.00104](https://arxiv.org/abs/2412.00104) / [2512.18634](https://arxiv.org/abs/2512.18634) 给出阈值和 memorization scaling law；[2210.05675](https://arxiv.org/abs/2210.05675) 表明权重里的泛化才是规则式的。配比按环境多样性调。
-3. **「世界模型目标 vs agent 目标冲突」在 MBRL 里叫 objective mismatch，有界。** 逐 token 拟合观察等于对环境做行为克隆，误差随规划步长**复利**增长（[1911.11868](https://arxiv.org/abs/2010.11876)）；[价值等价原理](https://arxiv.org/abs/2011.03506)说明逐状态预测得准既难又常常不必要。但换什么损失才对**尚无定论**——[2505.22772](https://arxiv.org/abs/2505.22772) 证明含 MuZero loss 在内的价值感知损失是未校准代理损失，[Lovatto 2020] 记录了 MLE 反而打赢的情况。
-4. **代码域已有最接近的经验先例（W 组）。** TRACED / SemCoder / Execution Tuning / StepCodeReasoner 都是「学执行动力学 → 下游任务变强」，其中 StepCodeReasoner 明确显示执行建模**同时**改善代码推理和代码生成；Execution Tuning 发现长执行（14k 步）上维护**动态 scratchpad（状态）**优于累积历史。反面：把轨迹塞进 prompt 收益有限且随复杂度衰减——支持「进权重而非进上下文」。
-5. **T 组不改训练步骤。** Grazzi / Merrill 的对象是线性 RNN 本身（改 \(A\) 的谱、证复杂度、在 parity 上训）。我们的底座是混合层，训练是 JEPA + 出字，不是「先查遗忘门再开训」。那组论文留在 [`refs/README.md`](./refs/README.md) §T，**不要**做成 Stage 0。
+贯穿例子：日志里 `rm a.txt` 成功之后，下一条命令是 `git checkout a.txt`。
 
-**Two of H's three "gaps" are now closed by literature** — do not re-state them as open: (a) CITRIS needing *known* intervention targets is superseded by unknown multi-node identifiability ([2406.05937](https://arxiv.org/abs/2406.05937), [2603.25796](https://arxiv.org/abs/2603.25796)) plus ShIOEnv's shell irreducibility signal as a target estimator; (b) "SF assumes φ is given" is superseded by Forward-Backward ([2209.14935](https://arxiv.org/abs/2209.14935)) and Ollivier's optimal base features ([2502.10790](https://arxiv.org/abs/2502.10790)). **Still genuinely open:** free-text action spaces, unbounded real-shell observations, the end-to-end composition, and the fact that our corpus is offline so nobody chooses `do(a)` (CHT wall).
+---
 
-**If the user asks whether current theory is enough:** answer **no, composition still missing** (see above). Do not reopen merge-λ / DARE as the scientific next step unless they explicitly want another merge diagnostic (e.g. **measured** per-layer cosine, not guessed layer ranges).
+## 模型架构
 
-## BIV Runtime (Cartesian layer)
+先有一条拼好的 40 层主干，再在主干**后面**接草稿、JEPA、打分和线性层。切点只决定前半用谁的权重、后半用谁的权重，中间不夹 JEPA。
 
-| Role | Location | Job |
-|------|----------|-----|
-| Agent A | nanobot loop + configured provider | Plans, tool calls, user chat |
-| Agent B (Demon) | `cartesian/demon.py` | Fabricates tool results under Matrix Law |
-| Proxies | `cartesian/tool_proxies.py` | Route `exec` / FS / web tools to B; keep `create_goal` / `update_goal` real; drop escape tools |
+### 出厂 Qwen3.5（还没切、还没 JEPA）
 
-- Dashboard + API: `cartesian-dashboard/`, `cartesian/server.py`
-- Matrix Law prompt: `data/global_demon_prompt.txt` (runtime only; **not** used as SFT supervision in `train/`)
-- Live demo notes: root `README.md`
-
-## World-model training (`train/`) — goals & hypothesis
-
-### Research goals (optimize methods around these)
-
-**North star (user, non-negotiable):** raise **agent** ability **by raising world understanding**. Every method, mix, paper, and eval exists to serve that. Do **not** treat a training recipe as sacred (pure observation-SFT, a particular anti-forget ratio, “must not look like policy SFT”). If co-training, a later agent stage, RL, using the world model as a simulator, or a different loss mix makes the agent stronger **because** it understands OS/code worlds better, it is in play. “By any means” applies to **methods**; the **claim** stays world-understanding → agent, not “we trained the policy harder and stopped talking about the world.”
-
-1. **Primary — world understanding → agent gain:** improve the model’s **general understanding of the world**, including **OS** and **code/repo environments**, by fitting real environment transitions; test whether that capacity **transfers** to better console / coding **tool-use agent** performance (same scaffold vs base). Agent metrics going up is the only success that counts.
-2. **Constraint — anti-forgetting:** avoid catastrophic forgetting into a model that **only** emits / completes tool **observations** (env-simulator shell) and loses agentic coding / tool-*selection* skill. Anti-forgetting is a **tool** so the agent can still act (and thus the hypothesis can be tested), not a second paper story and not a reason to drop world-understanding as the cause.
-
-**Analogy (GPT):** next-token prediction on text → emergent skills.  
-**Here:** next-observation / world-dynamics learning on real multi-domain tool I/O → hoped-for **transfer** to agent benchmarks. Do not refuse a method because it is not “observation tokens only”; do not substitute a pure-policy run and still call it this hypothesis.
-
-### Objective (settled 2026-08-29): JEPA latents, K drafts, argmax, then tokens
-
-The world-model interface stays **exactly** \(P(o \mid h, a)\) — 统一到 `context + action → observation`，但观察侧预测的是 **embedding**，不是 stdout token。**Do not** partition commands into read-only vs world-changing; that partition is a rejected prior (the user cut it explicitly).
-
-Worked example used throughout: after `rm a.txt` succeeds, the logged next command is `git checkout a.txt`.
-
-**Three heads** (after the shared trunk):
-
-1. **JEPA head** — \(\hat z = \mathrm{Pred}(c_t, u)\). Input is current environment vector \(c_t\) plus an **action vector**. Output is the predicted next-environment vector. Never emits text.
-2. **Draft head** — from \(c_t\), emits K action vectors \(u_1,\ldots,u_K\). These are not tokens yet.
-3. **Token head** — the only mouth. Reads **one** winning action vector \(u_i\) through linear \(W\), then Instruct `lm_head` writes command tokens (e.g. `git checkout a.txt`). Observation tokens stay masked. `lm_head` does **not** read residual \(h_{39}\).
-
-**Selector:** looks at every pair \((u_k, \hat z_k)\) (and \(c_t\)), produces scores \(s[1..K]\), **argmax** \(i\), passes \(u_i\) to the token head. Attention may be used **to compute scores**. Do not fuse the K action vectors into one soup and decode that — shell strings do not interpolate. Do not gate **before** JEPA (that would skip looking at other futures).
-
-**Why the two objectives stop fighting** (世界模型和 agent 抢同一张嘴):
-
-1. **Separate output organs.** Observation loss lands on the JEPA head; command-token CE lands on the LM head. They meet only in the trunk. The LM head is never trained to emit observations, so collapse into an env-simulator shell is architectural, not a mix-ratio knob. This is the same “English substrate → agent superstructure” relation the user asked for.
-2. **JEPA does not choose the command.** It answers “if this action vector were executed, what would the environment look like.” The draft head proposes; the selector picks; the token head writes. Peeking at the future is the K predicted \(\hat z_k\), not a score that required the real future \(o\) as an input.
-3. **Shared action-vector space, not a shared softmax.** Stage 1 action vectors are trunk encodings of **logged command tokens**. Stage 2 drafts start off-distribution (trained from scratch). Alignment is a **draft-head loss** pulling some \(u_k\) toward those command encodings — the action vectors JEPA already takes as **input**. Drafts are not pulled toward JEPA’s **output** (environment vectors). Using the selector together with JEPA does not replace that matching loss.
-4. **Token CE must not train JEPA.** That would twist “what the environment will be” into “whatever makes the command string easy to write.”
-5. **Head separation kills the hard collision; a milder shared-trunk tension remains.** Splitting JEPA vs token head already removes the “one softmax, two label distributions” deadlock. The spliced backbone still gets gradient from world loss and (via draft) command CE. 切鱼 + \(W\) is initialization, not a second conflict-solver. After the splice, **JEPA / draft hang off the end of the full backbone**, not between the two halves and not “before the cut.” Stage 2 **write** is \(u_i \to W \to\) `lm_head`; `lm_head` does not read residual \(h_{39}\).
-
-**Backbone cut (“切鱼”, settled 2026-08-29).** The knife is on the **original Qwen3.5 residual pipe**, not on JEPA. JEPA is a side head. Do not insert JEPA between the two halves.
-
-Released Qwen3.5 (Instruct or AgentWorld — same boxes, no JEPA):
+Instruct 和 AgentWorld 是同一套盒子：
 
 \[
-\text{token} \to \mathrm{emb} \to L_0 \to \cdots \to L_{39} \to h_{39} \to \texttt{lm\_head} \to \text{next token}
+\text{token} \;\to\; \mathrm{emb} \;\to\; L_0 \;\to\; \cdots \;\to\; L_{39} \;\to\; h_{39} \;\to\; \texttt{lm\_head} \;\to\; \text{下一个 token}
 \]
 
-Cut \(\ell\) (measured vs Base, not random) between \(L_{\ell-1}\) and \(L_\ell\). Take off `lm_head`, paste Instruct’s \(L_\ell \ldots L_{39}\) into that slot, put **Instruct’s** `lm_head` back on the end of the pipe (do **not** reset it). Prefix stays AgentWorld.
+残差流一路走到第 39 层，`lm_head` 是 \(2048 \times 248320\) 的表（约 \(5\times 10^8\) 参数），本来吃的就是 \(h_{39}\)。
 
-| Block | Boxes | Weights | Role |
-|------|--------|---------|------|
-| 拼合主干 | \(\mathrm{emb}+L_0..L_{39}\) after 切鱼 | AgentWorld prefix + Instruct suffix | encodes \(h\to c_t\), \(a\to u^\star\), \(o\to z^\star\). JEPA/草稿 **after** this net |
-| 前半来源 \(T^W\) | \(\mathrm{emb}+L_0..L_{\ell-1}\) | AgentWorld | world half of the splice |
-| 后半来源 \(T^\pi\) | \(L_\ell..L_{39}\) | Instruct, whole-layer copy | writing-style half of the splice; **not** the Stage 2 mouth |
-| `lm_head` | vocab readout | Instruct, **not** reset | Stage 2 mouth, via \(W(u_i)\), **not** via \(h_{39}\) |
-| 线性层 \(W\) | \(2048\times 2048\) | new | \(u_i \mapsto\) space Instruct `lm_head` was trained on |
-| JEPA / 草稿 / 打分 | not in Qwen3.5 | new | **after** the spliced backbone; not between the halves |
+### Stage −1 之后：切鱼得到的拼合主干
 
-Why AgentWorld in front and Instruct in back: prefix is “what the world is now”; suffix is “how hidden state is shaped for writing.” The mouth is still \(W\) + Instruct `lm_head` on the **action vector**, not \(h_{39}\). The other splice order puts an observation-generator at the end of the pipe.
+在 \(L_{\ell-1}\) 和 \(L_\ell\) 之间下刀。\(\ell\) 相对 Base **量出来**，不是猜层号。摘掉当时的 `lm_head`，把 Instruct 的 \(L_\ell \ldots L_{39}\) 整层贴进这个槽，再把 **Instruct 的 `lm_head` 接回末端（不重置）**。前半 \(\mathrm{emb}+L_0\ldots L_{\ell-1}\) 留 AgentWorld。
 
-**Two forward paths** (do not fuse them):
+切完之后，直筒仍是：
 
-1. **编码** — history / command / observation through the **full spliced** backbone. Stage 1 does not run `lm_head`. \(c_t, u^\star, z^\star\) are taken **after** \(L_{39}\), then JEPA.
-2. **出字** — Stage 2 only. Backbone → \(c_t\) → draft \(u_k\) → JEPA(\(c_t, u_k\)) → argmax \(u_i\) → \(W\) → Instruct `lm_head`. `lm_head` eats **\(W(u_i)\)**, not \(h_{39}\). Not \(s[i]\), not \(\hat z\).
+\[
+\text{token} \;\to\; \underbrace{\mathrm{emb}+L_0\ldots L_{\ell-1}}_{\text{AgentWorld}} \;\to\; \underbrace{L_\ell\ldots L_{39}}_{\text{Instruct}} \;\to\; h_{39} \;\to\; \texttt{lm\_head}
+\]
 
-**Linear \(W\), not a reset `lm_head`.** Instruct `lm_head` is \(\sim 2048\times 248320\) (\(\sim 5\times 10^8\) params) trained on \(h_{39}\). \(u_i\) is a draft action vector — different distribution. Resetting the table throws away command-writing geometry and trains half a billion parameters from scratch. \(W\) is \(\sim 2048\times 2048\) (\(\sim 4\times 10^6\)): map \(u_i\) to the doorway that table already knows. Freeze the spliced backbone and `lm_head` first, train \(W\) (+ draft); then small-step `lm_head` / LoRA. Stitching literature is this affine at the doorway, not a new softmax.
+前半负责「现在世界怎样」，后半负责「隐藏状态按会写话的方式收束」。反过来贴会把观察生成器放到管子末端。
 
-**Stage 1**
+| 名字 | 盒子 | 权重从哪来 | 干什么 |
+|------|------|------------|--------|
+| 拼合主干 | \(\mathrm{emb}+L_0\ldots L_{39}\) | 前半 AgentWorld，后半 Instruct | 把历史 / 命令 / 观察编成向量。草稿和 JEPA 接在它**后面** |
+| \(T^W\) | \(\mathrm{emb}+L_0\ldots L_{\ell-1}\) | AgentWorld | 切鱼的世界半边 |
+| \(T^\pi\) | \(L_\ell\ldots L_{39}\) | Instruct 整层拷贝 | 切鱼的写话半边；Stage 2 出字时嘴巴不读这里吐出的 \(h_{39}\) |
+| `lm_head` | 词表读出 | Instruct，保留 | Stage 2 的嘴；经 \(W\) 吃动作向量 |
+| 线性层 \(W\) | \(2048\times 2048\)（约 \(4\times 10^6\) 参数） | 新建 | 把动作向量映到 Instruct `lm_head` 熟悉的门口 |
+| 草稿头 | 新模块 | 新建 | 从 \(c_t\) 吐 \(K\) 个动作向量 \(u_1\ldots u_K\)，还不是字 |
+| JEPA | \(\hat z=\mathrm{Pred}(c_t,u)\) | 新建 | 输入当前环境向量 + 一个动作向量，输出预测的下一环境向量，永不吐字 |
+| 打分器 | 新模块 | 新建 | 看每对 \((u_k,\hat z_k)\) 和 \(c_t\)，打分后 \(\arg\max\)，只交出一个 \(u_i\) |
 
-- 历史过**拼合主干** → \(c_t\)
-- 真命令过拼合主干 → \(u^\star\)
-- \(\mathrm{JEPA}(c_t, u^\star)\) 对齐 \(z^\star=\) 拼合主干(真观察)
-- **Updates:** backbone LoRA + JEPA. **Not run:** draft, scorer, \(W\), `lm_head`
+### 拼合主干后面接什么
 
-**Stage 2**
+从 \(L_{39}\) 取出的表示记作编码结果：历史 → \(c_t\)（现在怎样），真命令 token → \(u^\star\)（做了什么），真观察 → \(z^\star\)（变成怎样）。这三路都走**完整的 40 层拼合主干**，不是只走到切点。
 
-- 历史过拼合主干 → \(c_t\) → 草稿 → \(u_1..u_K\)
-- \(\mathrm{JEPA}(c_t, u_k)\) → \(\hat z_k\) (environment vector, not stdout)
-- 打分器 → \(i=\arg\max\) → \(u_i \xrightarrow{W}\) Instruct `lm_head`
-- Draft loss: some \(u_k\) near \(u^\star\). Token CE on `lm_head` only. JEPA only on real \((c_t,u^\star,z^\star)\), smaller LR
-- **Updates:** draft, scorer, \(W\); then `lm_head` lightly; backbone LoRA. LP-FT: do not jointly train a random/mismatched readout with the trunk from step 0
+**JEPA** 接在这些向量之后。它回答：若执行这个动作向量，下一状态的嵌入该是什么。观察 \(o\) 只当训练目标（对 \(z^\star\) 做 stop-grad / EMA 一类处理），不进预测器输入。
 
-**Worked example (Stage 2, after `rm a.txt`):** spliced backbone → \(c_t\) ≈ file gone; drafts ≈ restore / cat / keep deleting; JEPA three \(\hat z_k\); scorer picks restore; \(W(\,u_i\,)\) into Instruct `lm_head` writes `git checkout a.txt`.
+**草稿头** 只从 \(c_t\) 提出 \(K\) 个候选动作向量。shell 命令不能插值，所以打分器可以看所有分支，但后面只解码**一个**赢家 \(u_i\)，不把 \(K\) 个向量搅成汤。不要在 JEPA 之前先把分支门掉，否则没看见别的未来。
 
-| Item | Choice |
-|------|--------|
-| Intended trunk for this architecture | **Qwen-AgentWorld-35B-A3B** on branch `Qwen3.5-35B-A3B`. Muse-Glimmer-30B LoRA (`Muse`) is a **separate** checkpoint line; do not mix controls. |
-| Token head init | Cut backbone at \(\ell\): AgentWorld prefix + Instruct suffix + Instruct `lm_head` (**no reset**). JEPA/draft/scorer **after** that net. New \(W\): \(u_i\to\) `lm_head`. |
-| Stage −1 | Measure \(\ell\); splice; zero-train **pipe** eval (token→\(h_{39}\)→`lm_head`, not \(u_i\to W\)) |
-| Stage 1 — world | Spliced-backbone LoRA + JEPA. Draft / scorer / \(W\) / `lm_head` unused |
-| Stage 2 — agent | Step 1: freeze backbone/`lm_head`, train \(W\)+draft+scorer. Step 2: light `lm_head` then backbone LoRA; JEPA on real \((u^\star,o)\) only, smaller LR. LP-FT ([2202.10054](https://arxiv.org/abs/2202.10054)). |
-| Legacy path (still in tree) | Unsloth LoRA on **observation** tokens (`labels=-100` elsewhere) — the single-head collision; keep only as a baseline |
-| Labels | **Real** sandbox / execution-grounded tool outputs only |
-| Task system prompt | Short WM role in `train/src/biv_wm/formatting.py` (`DEFAULT_WM_SYSTEM`) — **not** Matrix Law |
-| Not the claim | Matrix Law / `data/global_demon_prompt.txt`; a run whose agent gain is fully explained by extra policy SFT/RL with **no** world-understanding cause |
+**出字** 是另一条路，不要和「\(h_{39}\) 进 `lm_head`」合成一条：
 
-**Training procedure (Stage / Step, settled 2026-08-29).** This is the walk. Do not fuse Stage 1’s world loss onto `lm_head`. No Stage 0 (rejected).
+\[
+u_i \;\xrightarrow{W}\; \texttt{Instruct lm\_head} \;\to\; \text{命令 token}
+\]
 
-**Stage Data — make turns, not chat SFT**
+`lm_head` 吃的是 \(W(u_i)\)，不是残差流末端的 \(h_{39}\)，不是分数 \(s[i]\)，不是环境向量 \(\hat z\)。\(W\) 大约四百万参数，用来对齐「草稿向量」和「这张表当初在 \(h_{39}\) 上学会的门口」。先冻主干和 `lm_head` 只训 \(W\) 和草稿，再小步解开 `lm_head`（LP-FT 顺序）。
 
-- **Step 1.** From raw trajectories, pair each command with the sandbox observation that followed. One atom is \((h, a, o)\): history before the command, the logged command, the real next observation.
-- **Step 2.** Do **not** wrap this as user-prompt / assistant-completes-observation. \(h\) = context, \(a\) = action, \(o\) = target. No fourth field. Shuffled-\(o\) copies of the same atoms are a control arm, not the main set.
+世界损失打在 JEPA 上；命令的 token 交叉熵打在 `lm_head` 上。两套标签不再抢同一个 softmax。主干仍可能同时接到两路梯度，那是普通的共享主干，用切鱼解决不了，也不需要再解决一次。命令交叉熵不准回流去拧 JEPA，否则「环境会变成什么样」会被拧成「怎样写命令更顺」。
 
-**Stage −1 — 切鱼 (weights only; no JEPA yet)**
+Stage 1 的 \(u^\star\) 是主干对**日志里那串命令 token** 的编码。Stage 2 草稿一开始不在这个分布上，要另加损失把某个 \(u_k\) 拉近这些编码——拉的是 JEPA 已经当作**输入**的动作向量，不是拉向 JEPA 的**输出**（环境向量）。
 
-- **Step 1.** Measure per-layer change of AgentWorld vs Instruct relative to Base. Pick cut \(\ell\) from that measurement, not at random.
-- **Step 2.** Splice the original 40-layer pipe: AgentWorld \(\mathrm{emb}+L_0..L_{\ell-1}\) stay; paste Instruct \(L_\ell..L_{39}\); put Instruct `lm_head` back (**do not reset**). JEPA / draft / scorer / \(W\) are **not** inserted between the halves.
-- **Step 3.** Zero-train Harbor / TB2.1 subsample on the **residual pipe** (token → \(T^W\) → \(T^\pi\) → \(h_{39}\) → `lm_head`). This asks whether the spliced fish still writes like an LM. \(W\) does not exist yet; a bad number here is not “reset `lm_head`.”
+### 每个 Stage 实际接通的图
 
-**Stage 1 — world (spliced backbone + JEPA after it)**
+**Stage −1（只有切鱼）。** 直筒：token → 拼合 40 层 → \(h_{39}\) → Instruct `lm_head`。没有草稿、JEPA、\(W\)。这时 `lm_head` 仍按出厂方式吃 \(h_{39}\)，用来看拼好的鱼还会不会当语言模型说话。
 
-- **Step 1.** After Stage −1’s splice, attach JEPA (and later draft) **after** the full backbone, not at the cut and not between the halves. Draft, scorer, \(W\), `lm_head` unused in this stage.
-- **Step 2.** Forward on each \((h,a,o)\) through the **spliced** 40 layers: \(h \to c_t\), \(a \to u^\star\), \(o \to z^\star\). \(o\) is the target only (stop-grad / EMA-style); it is not a predictor input.
-- **Step 3.** Loss: \(\mathrm{Pred}(c_t, u^\star)\) aligns \(z^\star\). Update backbone LoRA + JEPA only. Observation tokens never enter `lm_head`.
+**Stage 1（世界）。** 拼合 40 层照跑，取出 \(c_t,u^\star,z^\star\)，只跑 JEPA。草稿、打分、\(W\)、`lm_head` 断开。更新：主干 LoRA + JEPA。
 
-**Stage 2 — act (draft, JEPA on those vectors, \(W\), original token layer)**
-
-- **Step 1 (doorway, LP-FT).** Freeze the spliced backbone and Instruct `lm_head`. Add draft head, scorer, and new \(W\) (\(2048\times 2048\)). Forward: backbone → \(c_t\) → \(K\) vectors \(u_k\); JEPA(\(c_t, u_k\)) → \(\hat z_k\); scorer → \(\arg\max i\); **\(W(u_i)\)** into frozen `lm_head` → command tokens. Losses: some \(u_k\) toward \(u^\star\); token CE on `lm_head` **outputs** only (gradient into \(W\) / draft, **not** into JEPA). Optional small JEPA loss on the **real** pair \((c_t, u^\star, z^\star)\) only. \(W\) maps the **action vector**, not \(\hat z\).
-- **Step 2 (mouth + trunk).** Unfreeze `lm_head` with a small LR (or LoRA). Then backbone LoRA; JEPA still only on real pairs, smaller LR. Token CE must not train JEPA. Still argmax **one** \(u_i\); do not mix the \(K\) vectors.
-
-**Stage Eval — report (same scaffold)**
-
-- **Step 1.** TB2.1 / Harbor **before vs after Stage 2** (headline).
-- **Step 2.** Rename probe: `rm` → `zaq` in the corpus; JEPA / selector still track the transition ⇒ rule; collapse ⇒ lexical pretrained semantics.
-- **Step 3.** Raised-blade / VoE: truncate so \(o_t\) is not in context; does \(c_t\) / \(\hat z\) / the chosen next command already treat the file as gone? If a shuffled-\(o\) twin also “dodges,” it is not the law.
-- **Step 4.** Parallel control, not a later stage: Instruct + the **same** Stage 2 command rows (“did the world substrate help”). Report ranking and fidelity of \(\hat z\) separately.
-
-**Worked through `rm a.txt` then `git checkout a.txt`:** Stage Data yields two atoms. Stage −1 does not use them. Stage 1 on the delete atom: full spliced backbone → \(c_t\) ≈ file present, \(u^\star\) ≈ rm, \(z^\star\) ≈ gone; JEPA after the backbone. Stage 2 on the restore atom: \(c_t\) ≈ gone; drafts restore / cat / delete more; JEPA three futures; scorer picks restore; \(W(u_i)\) writes `git checkout a.txt`. Stage Eval Step 3 hides the delete observation and asks whether the restore is already chosen.
-
-**Eval scope (user, 2026-08): before-vs-after is enough.** AgentWorld itself did not ablate training methods; do **not** gate the experiment on a full method-comparison matrix. Same scaffold, TB2.1 / Harbor, **base checkpoint vs after Stage 2**. Three numbers to report:
-
-1. **TB2.1 before vs after** — the headline.
-2. **Consistent-renaming probe** (`rm` → `zaq` across the corpus): JEPA / selector still track the transition ⇒ learned the rule; collapse ⇒ only pretrained lexical semantics.
-3. **Raised-blade / VoE probe:** truncate so \(o_t\) is *not* in context; does \(c_t\) / \(\hat z\) / the chosen next command already treat the file as gone? This answers question 2. If a shuffled-\(o\) twin also “dodges,” it is not the law.
-
-World-model metrics must report **ranking** (real next-env latent above same-trajectory alternatives) and **fidelity** separately, plus the sign of their correlation — fidelity↑ can mean utility↓ ([PatchWorld](https://arxiv.org/abs/2605.30880)).
-
-Shuffled-\(o\) twins remain **available** sharpening controls, not preconditions for reporting.
-
-**Honest boundary:** dropping the command partition also drops known intervention targets, so **question 1 (law discovery) cannot be claimed as identifiability** — it degrades to an empirical claim (“extrapolates to held-out (precondition × command) combinations”). The end-to-end composition proposition is still unproven; that hole predates this design. The K-draft + JEPA + argmax + token-head stack is **assembled here** (parts from JEPA / ω-EVA / I2A / Coconut); nobody has run it on shell corpora.
-
-### Architecture diagram
+**Stage 2（出字）。** 拼合 40 层 → \(c_t\) → 草稿 → \(K\) 个 \(u_k\) → 对每个 \(k\) 跑 JEPA(\(c_t,u_k\)) → 打分选出 \(u_i\) → \(W\) → Instruct `lm_head`。Step 1 冻主干和 `lm_head`；Step 2 小步解开。
 
 ```mermaid
 flowchart TD
-    subgraph sg_pipe["拼合 backbone，JEPA 不插在切点"]
-        TOK["token"] --> TW["AgentWorld 前半"]
-        TW --> TP["Instruct 后半"]
-        TP --> H39["h_39"]
+    subgraph sg_pipe["拼合主干（切鱼之后）"]
+        TOK["token"] --> AW["AgentWorld 前半<br/>emb + L0 … L_{ℓ-1}"]
+        AW --> INS["Instruct 后半<br/>L_ℓ … L39"]
+        INS --> H39["h_39"]
     end
 
-    H39 --> CT["c_t / u* / z*"]
+    H39 --> CT["编码结果 c_t / u* / z*"]
 
-    subgraph sg_s1["Stage 1：backbone 之后"]
-        CT --> JEPA1["JEPA(c_t, u*)"]
+    subgraph sg_s1["Stage 1：只开 JEPA"]
+        CT --> JEPA1["JEPA(c_t, u*) → 对齐 z*"]
     end
 
     subgraph sg_s2["Stage 2：草稿 → JEPA → W → 原 lm_head"]
-        CT --> DRAFT["草稿 → u_k"]
-        DRAFT --> JEPA2["JEPA(c_t, u_k)"]
-        JEPA2 --> ARG["argmax → u_i"]
-        ARG --> LIN["线性 W"]
+        CT --> DRAFT["草稿 → u_1 … u_K"]
+        DRAFT --> JEPA2["JEPA(c_t, u_k) → ẑ_k"]
+        JEPA2 --> SC["打分 argmax → u_i"]
+        SC --> LIN["线性 W 2048×2048"]
         LIN --> LMH["Instruct lm_head"]
         LMH --> CMD["命令 token"]
     end
@@ -255,299 +155,179 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    SD["Stage Data 切回合"]
-    SD --> SM["Stage −1 切鱼"]
+    SD["Stage Data"] --> SM["Stage −1 切鱼"]
     SM --> S1["Stage 1 JEPA"]
     S1 --> S2["Stage 2 Step1 门口 / Step2 嘴巴"]
-    S2 --> EV["Stage Eval TB / zaq / VoE"]
+    S2 --> EV["Stage Eval"]
 ```
 
-**How to read it.** Splice first. JEPA/draft sit **after** that backbone, not before the cut. Write path is still \(u_i \to W \to\) `lm_head` (action vector, not \(\hat z\), not \(h_{39}\)). Walk: Stage Data → −1 → 1 → 2 → Eval. No Stage 0.
+---
 
-### What each design choice is hung on
+## 训练全过程（Stage / Step）
 
-| Design | Why | Hung on |
+顺序就是实验。世界损失不要打到 `lm_head` 上。
+
+**Stage Data — 切成回合**
+
+- **Step 1.** 从原始轨迹里，把每一条命令和它后面那次沙箱观察配成一对。训练原子是 \((h, a, o)\)：发命令前的历史、这条真命令、真打回来的下一观察。
+- **Step 2.** 按「上下文 / 动作 / 下一状态」来用，不要再做成 user 提问、assistant 把观察写全。打乱 \(o\) 的拷贝当对照臂，不当主集。
+
+**Stage −1 — 切鱼**
+
+- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)。
+- **Step 2.** 前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。
+- **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。只问拼好的鱼还会不会写话。这时还没有 \(W\)；这里的分数不能当成该把 `lm_head` 扔掉。
+
+**Stage 1 — 世界**
+
+- **Step 1.** 在拼合主干后面接上 JEPA。本阶段不开草稿、打分、\(W\)、`lm_head`。
+- **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。
+- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA。
+
+**Stage 2 — 出字**
+
+- **Step 1（门口）。** 冻住拼合主干和 Instruct `lm_head`。加上草稿、打分和 \(W\)。前向：主干 → \(c_t\) → \(K\) 个 \(u_k\) → JEPA(\(c_t,u_k\)) → \(\arg\max\) 得到 \(u_i\) → \(W(u_i)\) → `lm_head`。损失：部分 \(u_k\) 靠近 \(u^\star\)；token 交叉熵只从 `lm_head` 回到 \(W\) / 草稿。真配对 \((c_t,u^\star,z^\star)\) 上可留一小截 JEPA。\(W\) 映的是动作向量。
+- **Step 2（嘴巴和主干）。** `lm_head` 用很小的学习率或 LoRA 解开，再开主干 LoRA；JEPA 仍只在真配对上、更小学习率。交叉熵仍然不训 JEPA。始终只选一个 \(u_i\)。
+
+**Stage Eval — 同一套脚手架**
+
+- **Step 1.** TB2.1 / Harbor：Stage 2 之前对之后（头条）。
+- **Step 2.** 语料里 `rm` 改成 `zaq`：还能跟上转移才像律。
+- **Step 3.** 截断轨迹，命中观察不在上下文里：\(c_t\) / \(\hat z\) / 下一步命令是否已经当文件没了。打乱 \(o\) 的孪生若同样会躲，就不是律。
+- **Step 4.** 对照臂（并行，不是后一个 Stage）：同一批命令行打在 Instruct 上。排序和保真度分开报。
+
+**用例子串一遍。** Stage Data 切出删除回合和恢复回合。Stage −1 不用这两条。Stage 1 吃删除：主干编出「文件还在」和 `rm a.txt`，JEPA 对齐「没了」。Stage 2 吃恢复：主干给出「已经没了」，草稿给出恢复 / 再删 / 去 cat，JEPA 看三条未来，选中恢复，\(W(u_i)\) 写出 `git checkout a.txt`。Stage Eval Step 3 把删除成功的观察藏起来，问恢复是不是已经被选中。
+
+问 1（发现律）在当前设定下是经验外推（held-out 的「前提 × 命令」组合），不是可识别性定理。端到端组合命题仍未证。K 草稿 + JEPA + argmax + token 头是在本仓库拼起来的，没有人在真实 shell 语料上跑过这一整叠。
+
+---
+
+## 数据怎么对应到 Stage
+
+仓库里已经接好的三份原料：SWE-Hero（代码沙箱工具 I/O，`wm_code`）、ISETrace（真实 OS 工具 I/O，`wm_os`）、SWE-Zero（整段 agent 路径，`anti_forget`，按 `instance_id` 相对 Hero 去重）。`prepare_data.py --all` 写到 `data/processed/mix_v1/`。默认一条轨迹一行。标签始终是沙箱真实 I/O，不是 Matrix Law（`data/global_demon_prompt.txt` 只给运行时 Demon 用）。
+
+三份都能切出 \((h,a,o)\)。Stage 1 用带真观察的回合，经拼合主干编码后只训 JEPA。Stage 2 用同一类回合里的**命令字符串**当嘴巴目标，并在真 \((c_t,u^\star,z^\star)\) 上保留较小的 JEPA。Zero 补写命令的面。Terminal 域语料仍可选。Muse 线上的 1:1:0.35 mix 属于另一条 checkpoint，不要直接当成本线配方。
+
+系统提示若还要用短世界角色，见 `train/src/biv_wm/formatting.py` 的 `DEFAULT_WM_SYSTEM`。
+
+---
+
+## 思路与论文
+
+详细分组、HTML 下载和定理链在 [`refs/README.md`](./refs/README.md)（A–X 组）。刷新：`python3 refs/fetch_html_text.py`。不要提交 `refs/pdfs/`。下面只保留「为什么长这样」和查阅入口，让主文保持能走。
+
+当前理论**不够**宣称两问已解决；缺口在组合命题（自由文本动作、无界字符串观察、离线语料里没有我们选的 `do(a)`）。用户若问理论够不够，答：**不够，组合仍缺**。不要把 merge-λ / DARE 再当成科学下一步，除非用户明确要做另一轮 merge 诊断（例如**量出来的**逐层余弦）。
+
+### 这套架构各自挂在哪
+
+| 我们在做的选择 | 用意 | 文献 |
 |---|---|---|
-| Predict next **latent**, not stdout tokens | Pixel/token reconstruction spends capacity on unpredictable detail; JEPA predicts embeddings so the law is not the wording | [V-JEPA 2](https://arxiv.org/abs/2506.09985), [A Path Towards Autonomous Machine Intelligence](https://consensus.app/papers/details/376c7ec2fb015a48bacc8b62901a860a/?utm_source=unknown) |
-| Observation loss **not** on the assistant slot | Pure WM-SFT twists the assistant slot into an observation generator and wipes IF/math/code; token-level next-state prediction collapses into chasing literal wording, embedding-space alignment is stable | [RWML 2602.05842](https://arxiv.org/abs/2602.05842) |
-| Propose in vectors, imagine in latents, write tokens last | ω-EVA: policy proposes an action, frozen WM predicts that proposal’s latent future, refiner rewrites using current / future / proposal — all without decoding video. We keep the loop; for shell we **argmax one** \(u_i\) instead of mixing command vectors | [ω-EVA](https://arxiv.org/abs/2606.09457) |
-| K imagined trajectories scored, then act | I2A encodes each imagined rollout and concatenates into the policy; we score then pick one action vector | [I2A](https://arxiv.org/abs/1707.06203) |
-| Hidden state → tokens only at the end | Coconut reasons in continuous space then decodes; same “no words until the mouth” constraint | [Coconut](https://arxiv.org/abs/2412.06769) |
-| Two objectives as two parts of one pass, not slot rivals | Joint tool-call + next-state in one generation; policy RL + auxiliary next-observation loss with \(\lambda\) schedule | [DyMo 2506.02918](https://arxiv.org/abs/2506.02918), [PaW 2606.02388](https://arxiv.org/abs/2606.02388) |
-| Observation CE not the main loss | Per-token observation fitting = behaviour cloning the environment, error **compounds** with horizon; value equivalence says per-state accuracy is both hard and often unnecessary | [2010.11876](https://arxiv.org/abs/2010.11876), [2011.03506](https://arxiv.org/abs/2011.03506) |
-| Latent self-prediction, not observation reconstruction, as the auxiliary | Learning-dynamics analysis: latent self-prediction is a good auxiliary; observation reconstruction *hurts* as an auxiliary | [2406.17718](https://arxiv.org/abs/2406.17718) |
-| State = a bundle of checkable future predictions | A PSR **test** is already (action seq, observation seq) — never “a read-only command”; PSR has polynomial sample complexity under function approximation; spectral criterion for choosing tests | [2207.05738](https://arxiv.org/abs/2207.05738), [AAAI 2015](https://doi.org/10.1609/aaai.v29i1.9635), [OPSR 2604.07016](https://arxiv.org/abs/2604.07016) |
-| Prediction may read only \(z\) and \(a\) (strict mediation) | Forbid looking back at history and the model is forced to build state; text-domain identifiability + fGRPO enforces mediation; next-latent prediction provably converges to belief state | [2606.27681](https://arxiv.org/abs/2606.27681), [NextLat 2511.05963](https://arxiv.org/abs/2511.05963) |
-| Filter uncontrollable noise (timestamps, PIDs, CI jitter) | Multi-step inverse models **guarantee** discovery of control-endogenous latent state; when exogenous components are action-independent, regret depends only on the exogenous space, with a matching lower bound | [AC-State 2207.08229](https://arxiv.org/abs/2207.08229), [2603.02862](https://arxiv.org/abs/2603.02862) |
-| **Negatives sampled within the same trajectory** | Cross-trajectory negatives make contrastive predictive objectives encode slow trajectory fingerprints instead of dynamics, and more/longer trajectories do **not** fix it | [2606.07770](https://arxiv.org/abs/2606.07770) |
-| Ranking-form transition loss | Local transition policy + globally decomposable energy, cooperative not adversarial, with consistency proof; offline conditional energy transition model separates in-support error from truncation risk; Ranking-NCE is asymptotically consistent while the IBC objective is biased even at population level | [2311.01388](https://arxiv.org/abs/2311.01388), [MC-ETM 2602.02900](https://arxiv.org/abs/2602.02900), [R-NCE 2309.05803](https://arxiv.org/abs/2309.05803) |
-| Command taxonomy **measured**, not declared | Learned state-specific action masks explicitly drop minimal-influence actions and merge behaviourally identical ones; learned dynamics infer which state-action pairs land in the same state | [BMAS](https://doi.org/10.3390/a17020060), [2209.06356](https://arxiv.org/abs/2209.06356) |
-| Legitimacy of the state abstraction | **Sufficient conditions** for learning a Markov abstract state, proved; practical recipe is inverse model + temporal contrastive, no reward needed, offline-compatible | [2106.04379](https://arxiv.org/abs/2106.04379) |
-| Stage 2 prefers small-step RL over heavy SFT | Mechanistically SFT rewires circuits fast and forgets more; RL stays near the original policy and preserves the base; RL-learned world models also forget less | [2605.28860](https://arxiv.org/abs/2605.28860), [RWML](https://arxiv.org/abs/2602.05842) |
-| How to set auxiliary loss weight | Gradient cosine similarity schedules it with a **guarantee** of convergence to the main task's critical point — beats hand-picked \(\lambda\) | [1812.02224](https://arxiv.org/abs/1812.02224) |
-| Where the “flinch” comes from | Successor features compile future occupancy into features; Forward-Backward learns base **and** successor features from one criterion, so \(\phi\) need not be given | [FB 2209.14935](https://arxiv.org/abs/2209.14935), [2502.10790](https://arxiv.org/abs/2502.10790) |
-| Report ranking and fidelity separately | In a stochastic one-life environment, state **ranking** and state **fidelity** are different things and ranking is where the law lives; raising observation fidelity *weakens* action-discriminative dynamics | [OneLife 2510.12088](https://arxiv.org/abs/2510.12088), [PatchWorld 2605.30880](https://arxiv.org/abs/2605.30880) |
-| VoE probe scoring | Classic surprise scores are ad hoc; likelihood-ratio theory gives two better-founded scores | N group ([IntPhys 2 2506.09849](https://arxiv.org/abs/2506.09849) et al.) |
-| T-group (LRNN expressivity) is **not** a training step | Grazzi/Merrill need “the model is the linear RNN” + “task is one-pass parity/\(S_5\)” + “intervention is \(A\)’s spectrum.” Our hybrid + JEPA/\(W\) recipe does not instantiate that | [2411.12537](https://arxiv.org/abs/2411.12537), [2603.03612](https://arxiv.org/abs/2603.03612) |
-| Report only before vs after | The official LWM did not ablate training methods either | [Qwen-AgentWorld 2606.24597](https://arxiv.org/abs/2606.24597) §6.2 |
-| 切鱼: AgentWorld prefix + Instruct suffix at measured \(\ell\) | Same-Base siblings; copy whole layers; residual \(h_{\ell-1}\) still feeds the tail. Knife on the backbone, not on JEPA | [Layer Swapping 2410.01335](https://arxiv.org/abs/2410.01335), [2505.18356](https://arxiv.org/abs/2505.18356), [2605.26735](https://arxiv.org/abs/2605.26735) |
-| \(u_i \to W \to\) Instruct `lm_head`; do not reset `lm_head` | `lm_head` is \(\sim 5\times 10^8\) params on \(h_{39}\); \(u_i\) is a draft vector. Affine stitch at the doorway is cheap; resetting the table retrains writing from scratch. Layer-swap papers never fed \(u_i\) to `lm_head` | [Model stitching](https://arxiv.org/abs/2106.07682), [VFM stitching](https://arxiv.org/abs/2603.12433), LP-FT [2202.10054](https://arxiv.org/abs/2202.10054) |
+| 预测下一**潜向量**，不是 stdout token | 像素 / 逐字重建把容量花在不可预测的细节上；律不在用词里 | [V-JEPA 2](https://arxiv.org/abs/2506.09985)，[A Path Towards Autonomous Machine Intelligence](https://consensus.app/papers/details/376c7ec2fb015a48bacc8b62901a860a/?utm_source=unknown) |
+| 观察损失打在 JEPA，命令损失打在 `lm_head` | 纯观察 token SFT 会把助手位拧成环境模拟器 | [RWML 2602.05842](https://arxiv.org/abs/2602.05842) |
+| 向量里提案、潜空间里想象、最后才写成字 | ω-EVA 的提案→潜未来→改写；shell 上对命令向量做 argmax 而不是混合 | [ω-EVA](https://arxiv.org/abs/2606.09457) |
+| 先给 K 条想象未来打分再动 | I2A 编码想象轨迹再交给策略 | [I2A](https://arxiv.org/abs/1707.06203) |
+| 连续空间里想完再解码 | Coconut：字只在最后出现 | [Coconut](https://arxiv.org/abs/2412.06769) |
+| 观察 CE 不当主损失 | 逐 token 拟合观察 = 模仿环境，误差随规划步长复利 | [2010.11876](https://arxiv.org/abs/2010.11876)，[2011.03506](https://arxiv.org/abs/2011.03506) |
+| 潜自预测当辅助，观察重建当辅助会伤 | 学习动力学分析 | [2406.17718](https://arxiv.org/abs/2406.17718) |
+| 同轨迹内采负例 | 跨轨迹负例容易学成轨迹指纹而不是动力学 | [2606.07770](https://arxiv.org/abs/2606.07770) |
+| 排序形式的转移损失 | Ranking-NCE 等；IBC 在总体水平上仍有偏 | [2311.01388](https://arxiv.org/abs/2311.01388)，[R-NCE](https://arxiv.org/abs/2309.05803) |
+| 保真度和效用分开报 | 提高观察保真度可能削弱动作可分的动力学 | [PatchWorld](https://arxiv.org/abs/2605.30880)，[OneLife](https://arxiv.org/abs/2510.12088) |
+| 切鱼：量 \(\ell\)，前 AgentWorld 后 Instruct | 同源整层替换；残差流仍喂后半截 | [Layer Swapping](https://arxiv.org/abs/2410.01335)，[2505.18356](https://arxiv.org/abs/2505.18356)，[2605.26735](https://arxiv.org/abs/2605.26735) |
+| \(u_i\to W\to\) Instruct `lm_head`，保留原表 | 门口仿射对齐；重置半个十亿参数的表等于从零学写命令 | [Model stitching](https://arxiv.org/abs/2106.07682)，[VFM stitching](https://arxiv.org/abs/2603.12433)，LP-FT [2202.10054](https://arxiv.org/abs/2202.10054) |
+| 评测只报训练前后即可 | AgentWorld 官方也没有训法消融矩阵 | [Qwen-AgentWorld](https://arxiv.org/abs/2606.24597) §6.2 |
+| 辅助损失权重可用梯度余弦调度 | 有收敛到主任务临界点的保证 | [1812.02224](https://arxiv.org/abs/1812.02224) |
+| 「闪避」来自后继特征一类编译 | Forward-Backward 同时学基础特征和后继特征 | [FB](https://arxiv.org/abs/2209.14935)，[2502.10790](https://arxiv.org/abs/2502.10790) |
 
-**Three things that must stay stated, not quietly dropped:**
+书架分组（细节在 `refs/README.md`）：A–H 合并失败与世界优先；I 预测准≠学到律；J 未知多点干预；K 文本显式状态；L 世界理解→agent 的定理链；M 辅助任务何时帮；N 评测（VoE / 反事实）；P 自由文本动作；Q 文本域可执行世界模型；R 谁选 `do(a)`；S 律进权重 vs 进上下文；T 架构表达力（文献，**不是**开训步骤）；U objective mismatch；W 代码域执行感知预训练；**X 切鱼 + \(W\)**；O 仍缺的洞；V 把 I–U 串成链。
 
-1. **The K-draft + JEPA + argmax + token-head shape is assembled here, not taken from a paper.** Parts come from JEPA (latent next-state), ω-EVA (proposal-conditioned latent consequence), I2A (score imagined futures then act), Coconut (decode tokens last). Nobody has run this composition on real shell corpora, and the end-to-end composition proposition is unproven. That risk is ours. The previous scoring-head \(\psi(h,a,o)\) design is **rejected** (needs \(o\) at decision time).
-2. **[ECHO 2605.24517](https://arxiv.org/abs/2605.24517) is counter-evidence, on our own benchmark.** It is exactly “GRPO on action tokens, extra CE on observation tokens, one forward pass two masks”, and doubles TB2.1 pass@1. So observation-token CE **does** work as a dense **on-policy auxiliary**. Our claimed dividing line — offline + main loss + long-horizon generation ⇒ compounding error; on-policy + auxiliary ⇒ it is supplying gradient to failed rollouts, unrelated to fidelity — is plausible but **unproven**, and is worth a head-to-head.
-3. **PaW runs the opposite order** (WM auxiliary on an agent base; we grow an agent on a WM base). Its \(\lambda\) schedule is reusable; its experimental conclusions are not transferable as-is.
+设计时需要记住的三件事实：这一整叠是在本仓库组装的，零件来自 JEPA / ω-EVA / I2A / Coconut。ECHO（[2605.24517](https://arxiv.org/abs/2605.24517)）在 TB2.1 上用「动作 GRPO + 观察 token CE」也能涨，说明观察 token CE 作为**在线**辅助可以有效，和我们「离线主损失会复利」的分界还没有对打过。PaW 的顺序相反（在 agent 底座上挂世界辅助），\(\lambda\) 日程可以借鉴，实验结论不能原样搬。
 
-**New in this round — URLs recorded here, HTML dumps not fetched** (user, 2026-08: recording the URL is enough; do not re-run `fetch_html_text.py` for these unless asked):
+本轮只记 URL、未拉 HTML 的篇目（用户 2026-08：记下链接即可，除非再要求不要跑 `fetch_html_text.py`）：[2606.07770](https://arxiv.org/abs/2606.07770)、[2106.04379](https://arxiv.org/abs/2106.04379)、[2603.02862](https://arxiv.org/abs/2603.02862)、[2311.01388](https://arxiv.org/abs/2311.01388)、[2602.02900](https://arxiv.org/abs/2602.02900)、[2309.05803](https://arxiv.org/abs/2309.05803)、[BMAS](https://doi.org/10.3390/a17020060)、van der Pol 同态（[consensus](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/)，**不要猜 arXiv 号**）、[2105.01136](https://arxiv.org/abs/2105.01136)、[ω-EVA](https://arxiv.org/abs/2606.09457)、[Coconut](https://arxiv.org/abs/2412.06769)、[V-JEPA 2](https://arxiv.org/abs/2506.09985)、[I2A](https://arxiv.org/abs/1707.06203)。
 
-| Paper | URL | What we use it for |
-|---|---|---|
-| Contrast encodes inductive bias: separating slow noise from dynamics | [arXiv:2606.07770](https://arxiv.org/abs/2606.07770) | Cross-trajectory negatives encode slow trajectory fingerprints, not dynamics ⇒ **sample negatives within one trajectory** |
-| Learning Markov State Abstractions for Deep RL | [arXiv:2106.04379](https://arxiv.org/abs/2106.04379) | Proved **sufficient conditions** for a Markov abstract state; inverse model + temporal contrastive, no reward, offline-OK |
-| Learning in MDPs with Exogenous Dynamics | [arXiv:2603.02862](https://arxiv.org/abs/2603.02862) | Action-independent components ⇒ regret depends only on exogenous space, with matching lower bound |
-| Time-series Generation by Contrastive Imitation | [arXiv:2311.01388](https://arxiv.org/abs/2311.01388) | Local transition policy + globally decomposable energy, cooperative, consistency proof |
-| MC-ETM: Manifold-Constrained Energy-Based Transition Models | [arXiv:2602.02900](https://arxiv.org/abs/2602.02900) | Offline conditional energy transition model; separates in-support error from truncation risk |
-| Revisiting Energy Based Models as Policies (R-NCE) | [arXiv:2309.05803](https://arxiv.org/abs/2309.05803) | Ranking-NCE asymptotically consistent; **IBC objective biased even at population level** |
-| Learning State-Specific Action Masks for RL (BMAS) | [doi:10.3390/a17020060](https://doi.org/10.3390/a17020060) | Learned action masks drop minimal-influence actions + merge behaviourally identical ones ⇒ the command taxonomy becomes a **measurement** |
-| Plannable Approximations to MDP Homomorphisms (van der Pol) | [consensus](https://consensus.app/papers/details/1cfe004e0ff557c79871865825e0a21c/), [doi:10.65109/daie3353](https://doi.org/10.65109/daie3353) | Contrastive action-equivariance loss ⇒ deterministic-MDP homomorphism when the loss is zero. **arXiv ID unverified — do not guess one** |
-| Learning Good State and Action Representations via Tensor Decomposition | [arXiv:2105.01136](https://arxiv.org/abs/2105.01136) | JMLR error bounds for learning state **and action** representations / best discrete MDP abstraction |
-| ω-EVA: Envision, Verify, and Act with Latent Interactive World Models | [arXiv:2606.09457](https://arxiv.org/abs/2606.09457) | Propose action → latent future → tri-branch refiner. Source of Stage 2 loop; we argmax instead of mixing command vectors |
-| Training LLMs to Reason in a Continuous Latent Space (Coconut) | [arXiv:2412.06769](https://arxiv.org/abs/2412.06769) | Continuous thoughts, tokens only at the end |
-| V-JEPA 2 | [arXiv:2506.09985](https://arxiv.org/abs/2506.09985) | Action-conditioned latent prediction + planning without pixel generation |
-| Imagination-Augmented Agents (I2A) | [arXiv:1707.06203](https://arxiv.org/abs/1707.06203) | Encode imagined trajectories, aggregate, then policy |
+仍缺：组合本身；真实 shell 无界 stdout；保真度–效用负相关在参数式世界模型上有多强；离线语料没有我们选的 `do(a)`（因果层级定理）。已有文献补上、不必再当「开放缺口」复述的：未知干预目标的可识别性、PSR 测什么、后继特征假定 \(\phi\) 给定。
 
-Detailed runbook: [`train/README.md`](./train/README.md).
+### 已经走过、不要当主方案重开
 
-### Pilot vs full-scale (prefer pilot to screen the hypothesis)
+给后来者查的，不是主叙事。一行一件：
 
-Single-GPU full corpus @ 8k × 2 epochs can be **months** of wall-clock. To **falsify/screen** the causal story cheaply, use pilot configs **before** burning a full run:
+| 走过的路 | 一句话 |
+|----------|--------|
+| Chat Vector：\(\theta_{\mathrm{AW}}+\lambda(\theta_{\mathrm{Inst}}-\theta_{\mathrm{Base}})\)（`merge/merge.py`） | TB2.1 几乎走平；两条后训练目标不在同一切空间 |
+| 在 AgentWorld 上做 5k–10k agent SFT「找回格式」 | 测的是格式胶水；TB 格式走 system prompt |
+| 在 AgentWorld 上全参数重训通用 agent | 预期差；Qwen Table 9 是相反顺序（先有 agent 再 LWM 热身） |
+| 写死 OS 跟踪器当 \(M_0\)、LLM 当残差 | 律在脚本里，进不了权重；运行时 Demon 可以，不是训练主张 |
+| 把策略塞进 WM 奇异向量的正交补 | 超结构必须能读底座；正交特征会把政策丢进垃圾维 |
+| 把 LATA 当成「12–28 层物理、29 以后政策」 | LATA 量的是逐层余弦，层号不是设定；本模型是 40 层混合 |
+| 打分头 \(\psi(h,a,o)\) 当世界接口 | 决策时还没有 \(o\)；已换成 JEPA |
+| 把 K 个动作向量软混合再解码 | shell 字符串不能插值；只解码赢家 |
+| Stage 0：开训前查 Gated DeltaNet 特征值是否为负 | Grazzi/Merrill 的对象是线性 RNN + parity；条件在本配方不成立 |
 
-| | Full (`configs/default.yaml`) | Pilot (`configs/pilot.yaml`) |
-|--|--|--|
-| `max_seq_length` | 8192 | **8192 (do not shorten)** |
-| Data | full ready set | **deterministic ~half sample** (`max_train_samples: 320000`, eval 16000) |
-| Epochs | 2 | **1** |
-| Packing | optional | `true` when building from text |
-| Output adapters | `outputs/wm_sft/` | `outputs/wm_sft_pilot/` |
-| Control twin | `control_shuffled.yaml` | `pilot_shuffled.yaml` |
+「律进参数」的判据也不是下一观察交叉熵变低（那是外貌拟合）。律要在干预下外推，并在换表面说法时仍稳（`cd` 后 cwd、`rm` 后文件没了、拒绝保持拒绝）。
 
-**Why keep 8k and sample rows instead of truncating sequences:** left-truncating 8k→4k often chops the **end** of ChatML (assistant observation / late history), which hurts exactly \(P(o\mid h,a)\). Prefer **fewer full-length rows**.
+---
 
-**Subset seeding:** `shuffle(seed).select(range(N))` with `train.seed` (default **42**) for train; eval uses **seed+1**. Same config + same JSONL ⇒ reproducible subset. Seed also flows to `SFTConfig` and LoRA `random_state`.
+## BIV 运行时（Cartesian）
 
-**Pilot validates** the real-vs-shuffled causal structure at reduced cost. It does **not** by itself claim full-corpus / 2-epoch 9B transfer — confirm with full config if pilot succeeds.
+| 角色 | 位置 | 工作 |
+|------|------|------|
+| Agent A | nanobot 循环 + 配置的 provider | 规划、工具、用户对话 |
+| Agent B（Demon） | `cartesian/demon.py` | 在 Matrix Law 下伪造工具结果 |
+| 代理 | `cartesian/tool_proxies.py` | `exec` / FS / web 交给 B；`create_goal` / `update_goal` 保持真；丢掉逃生工具 |
 
-### Dataset cache (shared; reuse across `output_dir`)
+- 仪表盘 + API：`cartesian-dashboard/`、`cartesian/server.py`
+- Matrix Law 提示：`data/global_demon_prompt.txt`（仅运行时）
+- 现场说明：根目录 `README.md`
 
-- Shared root: `data.ds_cache_dir` → `outputs/ds_cache/` (content-addressed; **not** tied to `train.output_dir`).
-- Also reads legacy `outputs/wm_sft/ds_cache` etc.
-- Same source files + same seq: pilot **subsets** a full ready cache (no re-tokenize / re-mask when possible).
-- Format runs **before** subset so HF map caches from full format can hit.
-- `packing` applies only when tokenizing from text; pretokenized cache reuse ignores packing.
-- Resume: `python scripts/train_sft.py --config … --resume` (or `--resume-from`).
+## 世界模型训练操作（`train/`，含另一条 Muse 线）
 
-### Training commands (GPU host)
+北极星仍是：agent 变强，原因是世界理解变好。约束是不要忘成只会补全观察的模拟器壳。详细 runbook：[`train/README.md`](./train/README.md)。
+
+旧 9B 线可用 `configs/pilot.yaml` 先筛（保持 8k，少采样行，不要截断序列把观察切掉）。缓存根：`outputs/ds_cache/`。GPU 上再跑 `train_sft.py` / `swift` / `axolotl`；`prepare_data.py` 等可在 CPU。
 
 ```bash
 cd train
 python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip && pip install -r requirements.txt
-# Optional Qwen3.5 fast kernels (match nvcc to torch.version.cuda; see train/README.md §2b)
-
-# Data: streams one SWE-Hero trajectory at a time (avoid full-corpus to_list OOM)
-# Default: ModelScope `nv-community/SWE-Hero-openhands-trajectories`
 python scripts/prepare_data.py --swe-hero --out-dir data/processed --eval-ratio 0.05
-# HF fallback: --swe-hero-source huggingface  (optional: export HF_ENDPOINT=https://hf-mirror.com)
-
-huggingface-cli login   # or: hf auth login
-
-# Preferred first: hypothesis screen
 python scripts/train_sft.py --config configs/pilot.yaml
-python scripts/train_sft.py --config configs/pilot_shuffled.yaml
-
-# Full-scale (slow)
-python scripts/train_sft.py --config configs/default.yaml
-python scripts/train_sft.py --config configs/control_shuffled.yaml
-
-# World-model held-out metrics
 python scripts/eval_wm.py --config configs/pilot.yaml
 ```
 
-- Do **not** run `train_sft.py` / `swift sft` / `axolotl train` on CPU-only app servers; `prepare_data.py` / `prepare_model.py` / `tokenize_data.py` / `stat.py` / `smoke_cpu.py` are OK without GPU.
-- Disk: `~/.cache/huggingface/datasets` (tokenize/map Arrow) + `outputs/ds_cache/` can be large; clear HF caches if root fills. Keep `hub/` model weights if possible.
-- VRAM: L20-class (~46GB) can use larger micro-batch (e.g. 8×accum 2, eff≈16). Keep **effective batch** stable if comparing runs; raising only micro-batch with fixed eff batch barely changes optimization.
-- Checkpoints: every `save_steps` (default 35) + forced save/eval each epoch; `save_total_limit: 3`.
-
-### Data
-
-Two **roles**, one shared LoRA (when mix is enabled). Do **not** confuse them.
-
-#### A. Primary — multi-domain environment understanding (WM)
-
-Learn \(P(o\mid h,a)\) from **real** \((a,o)\) in OS + code worlds:
-
-| Domain | Corpus (intent) | Status |
-|--------|-----------------|--------|
-| **Code / SWE tool I/O** | **SWE-Hero** OpenHands trajectories — execution-grounded | **Wired** (`--wm-code`; hub cache reuse) |
-| **OS / desktop agent** | **ISETrace** real OS tool I/O | **Wired** (`--wm-os` → `adapters/normalize.py`) |
-| **Terminal** (optional) | Shell / Terminal-domain env trajectories | Optional later |
-
-`prepare_data.py --all` writes `data/processed/mix_v1/{wm_code,wm_os,anti_forget}/`, prints **per-file JSONL line counts**, fingerprints for cache hits, and `mix_manifest.json` for Axolotl. Default: **one traj → one row** (no prefix expansion). Hub loaders prefer existing HF/ModelScope snapshots.
-
-#### B. Auxiliary — anti-forgetting (regularizer only)
-
-Small mix of **native agentic coding** trajectories (not the hypothesis channel):
-
-| Prefer | Status |
-|--------|--------|
-| [SWE-Zero](https://huggingface.co/datasets/nvidia/SWE-Zero-openhands-trajectories) | **Wired** (`--anti-forget`; `instance_id` banned vs Hero) |
-| Nebius OpenHands / Instruct replay | Optional later |
-
-Train mix ratios live in `configs/trl/muse_glimmer_30b_lora.yaml` → `biv_mix`
-(default **code:os:anti = 1:1:0.35** via `anti_to_os`). `tokenize_data.py` samples
-then builds HF `messages`+lengths caches; `stat.py` reports length distributions;
-train applies `--max-length` (CLI required) with struct-right prep.
-
-**Stage 1 / Stage 2 use the same files, different labels** (with 切鱼 / \(W\), 2026-08-29). Hero and ISETrace rows are already \((h,a,o)\) turns. Stage 1: encode logged command \(a\to u^\star\) and observation \(o\to z^\star\) through the **spliced backbone**, then JEPA; **no** command-token CE. Stage 2: the **same** logged next command is the mouth target (draft some \(u_k\) toward \(u^\star\); token CE on Instruct `lm_head` via \(W\)), plus a smaller JEPA loss on real \((c_t,u^\star,z^\star)\). SWE-Zero is extra command-writing coverage with Hero `instance_id` banned — not the rejected 5k–10k “format glue,” not a stand-in for Instruct-scale IF. Instruct + the **same** Stage 2 command rows is the required control. Shuffled-\(o\) twin stays on A.
-
-### Train Muse Glimmer-30B (branch `Muse`; TRL + PEFT LoRA)
+**Muse Glimmer-30B**（分支 `Muse`，TRL + PEFT LoRA；与 Qwen3.5-35B 本线分开）：
 
 ```bash
 cd train
 pip install -r requirements-muse.txt
-# Default: ModelScope meta-models/Muse-Glimmer-30B
 python scripts/prepare_model.py
 python scripts/tokenize_data.py
 CUDA_VISIBLE_DEVICES=0 bash scripts/trainmodel.sh --max-length 8192 --choice 1
-# Multi-GPU DDP: CUDA_VISIBLE_DEVICES=0,1,2,3 …
-# QLoRA: QLORA=1 … ; long context: PARALLEL=fsdp2 …
-# HF twin if needed: python scripts/prepare_model.py --source huggingface
 ```
 
-Other bases: checkout `Kimi-Dev-72B/msswift` (Kimi) or `main` (Coder-Next) /
-`Qwen3-Coder-30B-A3B` / `GLM-4.7-Flash`.
-Legacy Unsloth **Qwen3.5-9B**: `python scripts/train_sft.py --config configs/default.yaml`.
+数据 TODO：Nebius / Terminal 域；anti_forget 的 Coder-XML 渲染检查；OS held-out 面板。
 
-### Future TODO (training data)
+旧假设评测协议（Muse / 9B LoRA 线）：held-out 下一观察指标；同一脚手架上 base vs 真 I/O LoRA vs 打乱 LoRA；打乱若同样涨则拒绝「世界理解→迁移」；agent 指标相对 base 不崩。
 
-- [ ] Optional Nebius trajectories + Terminal-domain env corpus
-- [ ] Stronger Coder-XML render check for anti_forget under Axolotl chat_template
-- [ ] eval_wm cross-domain OS held-out panel
-
-### Evaluation protocol (hypothesis)
-
-1. **World understanding:** held-out next-obs metrics on **code-env** (and later **OS**) — CE / token-F1 / `isError` (`scripts/eval_wm.py`); prefer cross-domain held-out when OS corpus lands.
-2. **Agent transfer (goal 1):** same scaffold — Terminal-Bench / Harbor / SWE-style — base vs real-I/O LoRA vs shuffled LoRA (console + coding tools).
-3. **Causal check:** if shuffled rises as much as real I/O on agent metrics, reject the “world understanding → transfer” story.
-4. **Anti-forgetting (goal 2):** agent metrics must not collapse vs base; optional general-capability spot-checks if useful.
-5. **Order:** pilot real vs pilot shuffled first; full-scale only if the gap supports the story. Report **both** WM and agent metrics — do not pick only one train path at eval time.
-
-### Related literature (reference — not fully reimplemented)
-
-Current `train/` supports **multi-domain WM prepare + anti-forget mix** and **Qwen3-Coder-Next Axolotl QLoRA**. Full CPT→RL stacks remain future. Active Qwen-AgentWorld / law-encoding thread and paper dumps: **Active research thread** above and [`refs/README.md`](./refs/README.md).
-
-| Work | Links | Relevance to our goals |
-|------|-------|------------------------|
-| Qwen-AgentWorld | [GitHub](https://github.com/QwenLM/Qwen-AgentWorld), [arXiv:2606.24597](https://arxiv.org/abs/2606.24597) | Native multi-domain LWM (Terminal/SWE/OS/…); CPT→SFT next-state→RL; LWM warm-up transfers to agent benches — closest framing to goal 1 |
-| PaW | [arXiv:2606.02388](https://arxiv.org/abs/2606.02388) | Policy + world-model co-training / loss balancing — in play if it keeps the model able to act while learning the world |
-| RWML | [arXiv:2602.05842](https://arxiv.org/abs/2602.05842) | Warns pure WM-token SFT can hurt retention; motivates anti-forget checks |
-| DyMo + SVS | [arXiv:2506.02918](https://arxiv.org/abs/2506.02918) | Joint tool-call + next-state — in play; not “optional later” just because it is not obs-only SFT |
-| RAP | [EMNLP 2023](https://aclanthology.org/2023.emnlp-main.507/), [arXiv:2305.14992](https://arxiv.org/abs/2305.14992) | Same LM as agent + WM; planning over predicted states |
-| Word2World | [GitHub](https://github.com/X1AOX1A/Word2World) | WM fidelity vs agent utility |
-| WorldCoder | [GitHub](https://github.com/haotang1995/WorldCoder), [arXiv:2402.12275](https://arxiv.org/abs/2402.12275) | Code as explicit transition law |
-| TerminalTraj | [arXiv:2602.01244](https://arxiv.org/abs/2602.01244) | Docker-grounded terminal trajectories |
-| SWE-Zero → SWE-Hero | [arXiv:2604.01496](https://arxiv.org/abs/2604.01496) | Hero = current code-env WM corpus; Zero = candidate anti-forget OpenHands mix (not Hero replay) |
-| Survey / index | [awesome-world-model-evolution](https://github.com/OpenRaiser/awesome-world-model-evolution) | Broader WM taxonomy |
-
-**Design stance:** first-class object = **environment / world consistency** across OS + code tool turns so the **agent** gets better; agent console/coding uplift = **the** success metric; methods (mix, co-train, extra stage, RL, simulator) are interchangeable if they serve that causal story. Anti-forget mix = keep the model able to **act**, not a rival objective. Runtime Matrix Law ≠ SFT labels (labels stay real I/O). Screen with **pilot (sample rows, keep 8k)**; full-scale only if justified.
-
-## Development Commands (upstream nanobot)
+## 上游 nanobot 开发命令
 
 ```bash
-# Python: run single test / lint
 pytest tests/test_openai_api.py::test_function -v
 ruff check nanobot/
-
-# Strict type checking (matches CI)
 uv sync --all-extras --dev
 uv run --no-sync python -m scripts.install_channel_dependencies --all-channels
 uv run --no-sync basedpyright
-
-# WebUI: dev server (proxies API/WS to gateway :8765), build, test
 cd webui && bun run dev
-cd webui && bun run build
-cd webui && bun run test
-
-# Gateway / BIV
 nanobot gateway
 ./start-biv.sh
 ```
 
-## High-Level Architecture (nanobot runtime)
+消息经 `nanobot/bus/queue.py` 的异步总线：Channels 发 `InboundMessage` → `AgentLoop` → `AgentRunner`（LLM ↔ 工具）→ `OutboundMessage`。BIV 里碰现实的工具在返回 A 之前被 Demon 代理替换。
 
-### Core Data Flow
+子系统：`nanobot/agent/`、`providers/`、`channels/`、`agent/tools/`、`agent/memory.py`、`session/`、`config/`（常见 `~/.nanobot/config.json`；BIV 还有 `config/cartesian.json`）、`webui/`、`cartesian-dashboard/`、`nanobot/api/server.py`、`cartesian/`、`train/`。
 
-Messages flow through an async `MessageBus` (`nanobot/bus/queue.py`) that decouples chat channels from the agent core:
+入口：`nanobot/cli/commands.py`、`nanobot/nanobot.py`、`./start-biv.sh`、以及 `train/scripts/` 下的 prepare / tokenize / train。
 
-1. **Channels** (`nanobot/channels/`) publish `InboundMessage` events to the bus.
-2. **`AgentLoop`** (`nanobot/agent/loop.py`) consumes inbound messages and coordinates the turn.
-3. **`AgentRunner`** (`nanobot/agent/runner.py`) runs the LLM ↔ tool loop and streams responses.
-4. Responses are published as `OutboundMessage` events back to the channel.
+项目笔记：`.agent/design.md`、`.agent/security.md`、`.agent/gotchas.md`、`train/README.md`、`refs/README.md`、`merge/merge.py`。贡献见 `CONTRIBUTING.md`。
 
-In BIV, tool execution for reality-touching tools is replaced by Demon proxies before results return to A.
+代码风格：Python 3.11+，运行时全 asyncio；行宽 100；ruff E,F,I,N,W（忽略 E501）；pytest `asyncio_mode = auto`。`train/` 自备 venv。
 
-### Key Subsystems
-
-- **Agent Loop** (`nanobot/agent/loop.py`, `runner.py`)
-- **LLM Providers** (`nanobot/providers/`)
-- **Channels** (`nanobot/channels/`)
-- **Tools** (`nanobot/agent/tools/`) — FS, shell/sandbox, web, MCP, cron, subagents, long tasks, etc.
-- **Memory / sessions** (`nanobot/agent/memory.py`, `nanobot/session/`)
-- **Config** (`nanobot/config/schema.py`, `loader.py`) — typically `~/.nanobot/config.json`; BIV also uses `config/cartesian.json`
-- **WebUI** (`webui/`), **Cartesian dashboard** (`cartesian-dashboard/`)
-- **API** (`nanobot/api/server.py`, `cartesian/server.py`)
-- **Cartesian / Demon** (`cartesian/`)
-- **World-model SFT** (`train/`)
-
-### Entry Points
-
-- **CLI**: `nanobot/cli/commands.py`
-- **Python SDK**: `nanobot/nanobot.py`
-- **BIV start**: `./start-biv.sh`
-- **WM prepare / model / tokenize / train**: `train/scripts/prepare_data.py`, `train/scripts/prepare_model.py`, `train/scripts/tokenize_data.py`, `train/scripts/stat.py`, `train/scripts/trainmodel.sh`, `train/scripts/train_sft.py`
-
-## Project-Specific Notes
-
-- Architecture constraints: [`.agent/design.md`](.agent/design.md)
-- Security boundaries: [`.agent/security.md`](.agent/security.md)
-- Common gotchas: [`.agent/gotchas.md`](.agent/gotchas.md)
-- Training runbook: [`train/README.md`](./train/README.md)
-- Research paper shelf + grouping: [`refs/README.md`](./refs/README.md)
-- Chat Vector merge (AgentWorld + Instruct): [`merge/merge.py`](./merge/merge.py)
-
-## Contribution Flow
-
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution flow and PR guidelines.
-
-## Code Style
-
-- Python 3.11+, asyncio throughout (runtime).
-- Line length: 100.
-- Linting: `ruff` with rules E, F, I, N, W (E501 ignored).
-- pytest with `asyncio_mode = "auto"`.
-- `train/` uses its own venv + `requirements.txt` (Unsloth/TRL); do not assume the app `.venv` has training deps.
-
-## Common File Locations
-
-- Config schema: `nanobot/config/schema.py`
-- Provider base: `nanobot/providers/base.py`
-- Channel base: `nanobot/channels/base.py`
-- Tool registry: `nanobot/agent/tools/registry.py`
-- Demon / proxies: `cartesian/demon.py`, `cartesian/tool_proxies.py`
-- WM data + metrics: `train/src/biv_wm/`
-- WM configs: `train/configs/trl/muse_glimmer_30b_lora.yaml` (Muse), `train/configs/default.yaml` / `control_shuffled.yaml` (legacy 9B)
-- Paper HTML dumps: `refs/papers/`, index `refs/README.md`
-- Chat Vector merge: `merge/merge.py`, eval serve `merge/eval.py`
-- WebUI proxy: `webui/vite.config.ts`
-- Tests mirror the `nanobot/` package structure.
+常见路径：`nanobot/config/schema.py`、`providers/base.py`、`channels/base.py`、`agent/tools/registry.py`、`cartesian/demon.py`、`cartesian/tool_proxies.py`、`train/src/biv_wm/`、`train/configs/trl/muse_glimmer_30b_lora.yaml`（Muse）、`refs/papers/`、`merge/merge.py`、`webui/vite.config.ts`。测试目录镜像 `nanobot/` 包结构。
