@@ -160,6 +160,14 @@ flowchart LR
     S2 --> EV["Stage Eval"]
 ```
 
+### 训练栈（怎么训，和 Muse 的差别）
+
+盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿，**不是**我们 Stage 2 的草稿）。AgentWorld 的 `language_model_only=true`。
+
+**Muse Glimmer-30B**（另一条线）是：一个 dense CausalLM + TRL `SFTTrainer` + PEFT LoRA，损失打在助手位观察 token 上，FSDP wrap `MuseGlimmerTextDecoderLayer`，LoRA 打 `q/k/v/o/gate/up/down/output_gate_proj`。本线 Stage −1/1/2 分别是切鱼、JEPA、草稿→\(W\)→原 `lm_head`，要用自定义循环。
+
+本线要新写的：切鱼脚本（流式 safetensors，抄 `merge/merge.py` 的 TensorStore）；自定义训练循环（隐藏状态进 JEPA / 草稿 / \(W\)）；FSDP wrap `Qwen3_5MoeDecoderLayer`。能复用的：`merge/output/cache` 里的三个 checkpoint、`prepare_data.py` 的 \((h,a,o)\)、PEFT LoRA + Accelerate FSDP2 骨架、冻 ViT。LoRA 打哪些叶子、切点 \(\ell\)、MTP/ViT 是否同名同形状，由 `merge/probe.py` 在 GPU 机上量。
+
 ---
 
 ## 训练全过程（Stage / Step）
@@ -173,7 +181,7 @@ flowchart LR
 
 **Stage −1 — 切鱼**
 
-- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)。
+- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)（`python merge/probe.py`）。
 - **Step 2.** 前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。
 - **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。这时还没有 \(W\)。
 
