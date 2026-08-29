@@ -558,10 +558,9 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
    挂 L 组：[MPDP](https://arxiv.org/abs/2307.12933) 的单调改进保证、[SAVE](https://arxiv.org/abs/1912.02807)、
    LLM 侧的 [Internalizing the Future](https://arxiv.org/abs/2606.27483)（WM-AMT → FE-SFT → FC-RL，并点名 format-capability gap）。
    训 π 时冻结 z 的转移。
-8. **架构：确认底座能在一次前向里追踪状态。** 挂 T 组：Gated DeltaNet 是 $\mathsf{PNC}^1$-complete，
-   前提是特征值范围覆盖负值（[2411.12537](https://arxiv.org/abs/2411.12537)、[2603.03612](https://arxiv.org/abs/2603.03612)）；
-   用 [REPL 状态追踪协议](https://arxiv.org/abs/2602.14814)去实测。
-   *缺*：没人在 Qwen3.5-35B-A3B 的实际权重上查过特征值范围。
+8. **架构（文献，不是训练步骤）。** T 组仍描述纯线性 RNN 的表达力：Grazzi 改 \(A\) 的谱再在 parity 上训；Merrill 做复杂度分级。
+   **不要**做成 BIV 的 Stage 0。我们的 \(T^W\) 是 GDN+attention 混合，Stage 1/2 不实例化「模型=线性 RNN、任务=一次前向 parity、干预=改特征值」。
+   *缺*：T 组自己的定理对象与我们的训练配方不对齐；那不是实验缺口，是不应开训前去查谱。
 9. **评测：三件事必须同时报。** (a) 观察保真度；(b) agent 指标；(c) 二者的**相关方向**
    （[PatchWorld](https://arxiv.org/abs/2605.30880) 测出可能是负的）。
    律的判据用 Q 组的**一致重命名**（`rm`→`zaq` 仍能预测「文件没了」）和 I 组的**世界模型恢复度**，
@@ -587,10 +586,9 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
    但全部在低维 SCM / 网格世界上；而且 [2606.19476](https://arxiv.org/abs/2606.19476) 证明在一般 MDP 上
    基于 in-context 预测误差的学习进度估计**必然有偏**。
    要在 shell 上做主动干预，得先把它降成非时序的实验设计问题。
-5. **底座的表达力是「可能」，不是「已经」。** T 组只说明 Gated DeltaNet 混合架构**在原理上**可能在一次前向里追踪状态
-   （$\mathsf{PNC}^1$-complete，前提是特征值范围覆盖负值），
-   但没人验过 Qwen3.5-35B-A3B 的实际权重是否落在那个范围，也没人在真实 shell 长度上测过。
-   [2602.14814](https://arxiv.org/abs/2602.14814) 的 REPL 协议是现成的测法，但它只在合成置换任务上跑过。
+5. **T 组不要当成开训许可证。** Grazzi / Merrill 的条件（模型是线性 RNN、任务是 parity/\(S_5\)、干预是改 \(A\)）
+   在 BIV 的 JEPA+切鱼配方里**不成立**（2026-08-29 已从训练流程去掉 Stage 0）。
+   混合层能不能在真实 shell 上跟踪状态，是训完用 VoE 测的现象，不是先查遗忘门。
 
 ## 检索词
 
