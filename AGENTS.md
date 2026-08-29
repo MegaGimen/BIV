@@ -170,7 +170,7 @@ Replace = for every tensor that belongs to \(L_\ell..L_{39}\) and for `lm_head`,
 |------|--------|
 | Intended trunk for this architecture | **Qwen-AgentWorld-35B-A3B** on branch `Qwen3.5-35B-A3B`. Muse-Glimmer-30B LoRA (`Muse`) is a **separate** checkpoint line; do not mix controls. |
 | Stage 0 (cheap gate) | Gated DeltaNet eigenvalue range must cover negatives ([2603.03612](https://arxiv.org/abs/2603.03612)). Minutes; if it fails, latent state-tracking on this checkpoint is hopeless. |
-| Token head init | Cut \(\ell\): copy Instruct layers \([\ell,40)\) + `lm_head` onto AgentWorld as \(T^\pi\). \(T^W=[0,\ell)\) stays AgentWorld. Draft head is new, not copied. No stitch adapter unless Stage −1 fails. |
+| Token head init | Knife at \(\ell\) on the **original** Qwen3.5 pipe. 主干 \(T^W\) = AgentWorld \(\mathrm{emb}+L_0..L_{\ell-1}\). token 头 = copy Instruct \(L_\ell..L_{39}+\texttt{lm\_head}\). Draft/JEPA/scorer are new, not copied. |
 | Stage “−1” (pre-Stage-1, cheap gate) | Measure per-layer change of AgentWorld vs Instruct relative to Base; pick \(\ell\) so the token path is the trailing block where Instruct diverged. Zero-train Harbor/TB2.1 subsample on the copied checkpoint before Stage 1/2. |
 | Stage 1 — world | \(T^W\) LoRA + JEPA. \(T^\pi\) / `lm_head` / draft / selector unused |
 | Stage 2 — agent | Draft + selector + \(T^\pi\)+`lm_head` (Instruct init); \(T^W\) LoRA continues; JEPA on real \((u^\star,o)\) only, smaller LR. LP-FT: freeze \(T^W\), adapt draft/\(T^\pi\)/`lm_head` first, then unfreeze \(T^W\) LoRA ([2202.10054](https://arxiv.org/abs/2202.10054)). |
@@ -256,7 +256,7 @@ flowchart LR
     S2 --> E3["③ 截断轨迹 / VoE"]
 ```
 
-**How to read it.** Left/top diagram is released Qwen3.5: one pipe, no JEPA. The knife at \(\ell\) splits that pipe. Prefix = the **主干** in 「历史过主干 → \(h_t\) → \(c_t\)」and 「真命令过主干 → \(u^\star\)」(AgentWorld weights). Suffix + `lm_head` = the **token 头** that decodes \(u_i\) (Instruct tensors copied in). JEPA / draft / scorer are new boxes grafted *onto* the prefix, not replacements of Qwen layers. Stage 1 does not run the suffix. Stage 2 still computes \(c_t\) from the prefix only.
+**Cut vs \(u_i\) (2026-08-29).** Layer-swap papers copy suffix layers and keep feeding them the **residual stream** \(h_{\ell-1}\) of a token sequence (sibling model, same base, often zero-shot). They do **not** replace that \(h\) with a draft action vector \(u_i\). Feeding \(u_i\) alone into \(T^\pi\) is an extra interface change; a frozen Instruct suffix will look broken until the cut is aligned (stitch / keep history residual through the tail). Do not read that breakage as “the copy failed,” and do not reset \(T^\pi\) by default — resetting throws away the decoder the copy was for. See refs/README.md §X.
 
 ### What each design choice is hung on
 
