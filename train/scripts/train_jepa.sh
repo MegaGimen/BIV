@@ -57,10 +57,26 @@ if ! [[ "$MAX_LENGTH" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+case "$CONFIG" in
+  /*) ;;
+  *) CONFIG="$ROOT/$CONFIG" ;;
+esac
+if [[ ! -f "$CONFIG" ]]; then
+  echo "ERROR: config not found: $CONFIG"
+  exit 1
+fi
+
 NGPU="$(python - <<'PY'
-import os
-xs=[x for x in os.environ.get("CUDA_VISIBLE_DEVICES","").split(",") if x.strip()]
-print(len(xs) if xs else 1)
+import os, shutil, subprocess
+xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+if xs:
+    print(len(xs))
+elif shutil.which("nvidia-smi"):
+    out = subprocess.check_output(["nvidia-smi", "-L"], text=True)
+    n = sum(1 for line in out.splitlines() if line.strip().startswith("GPU"))
+    print(n if n else 1)
+else:
+    print(1)
 PY
 )"
 

@@ -382,7 +382,13 @@ def main() -> None:
     from torch.utils.data import DataLoader
     from biv_wm.jepa import JEPAPred, cosine_align_loss
 
-    cfg_path = args.config if args.config.is_absolute() else (ROOT / args.config)
+    cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
+    if not cfg_path.is_file():
+        alt = ROOT / args.config
+        if alt.is_file():
+            cfg_path = alt
+    if not cfg_path.is_file():
+        raise SystemExit(f"config not found: {args.config} (tried {TRAIN / args.config})")
     cfg = _load_yaml(cfg_path)
     tcfg = cfg.get("train") or {}
     accum = int(tcfg.get("grad_accum") or 8)
