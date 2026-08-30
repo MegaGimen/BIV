@@ -458,14 +458,12 @@ def main() -> None:
     model = get_peft_model(model, lora)
     if is_main and hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
-    for name, p in model.named_parameters():
-        if "lm_head" in name:
-            p.requires_grad = False
+    from biv_wm.arch import install_hidden_only_forward, log_train_architecture
+
+    install_hidden_only_forward(model)
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa = JEPAPred(dim=hidden, hidden=int(tcfg.get("jepa_hidden") or hidden * 2))
     if is_main:
-        from biv_wm.arch import log_train_architecture
-
         log_train_architecture(
             model=model,
             extra={"jepa": jepa},
@@ -604,6 +602,8 @@ def main() -> None:
             "steps": step,
             "max_length": max_length,
             "cp_size": cp_size,
+            "lm_head": "detached_at_runtime",
+            "reload_lm_head_from": str(model_dir),
             "tensorboard": str(tb_dir),
             "cut_meta": str(model_dir / "cut_meta.json"),
         },

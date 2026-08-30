@@ -66,6 +66,47 @@ def language_model(model: Any) -> Any | None:
     )
 
 
+def detach_lm_head(model: Any) -> bool:
+    """Remove lm_head from the live CausalLM. Disk checkpoint is unchanged."""
+    m = unwrap_base(model)
+    head = getattr(m, "lm_head", None)
+    if head is None:
+        return False
+    m.lm_head = None
+    del head
+    return True
+
+
+def install_hidden_only_forward(model: Any) -> None:
+    """CausalLM.forward → language_model only (no token logits). Call via wrapped model()."""
+    import inspect
+
+    m = unwrap_base(model)
+    inner = language_model(model)
+    if inner is None:
+        raise RuntimeError("no language_model; cannot strip lm_head path")
+    allowed = set(inspect.signature(inner.forward).parameters)
+    allowed.discard("self")
+
+    def _fwd(*args, **kwargs):
+        kwargs.pop("labels", None)
+        kwargs.pop("logits_to_keep", None)
+        kwargs["output_hidden_states"] = True
+        kwargs["use_cache"] = False
+        kwargs["return_dict"] = True
+        if args:
+            # transformers sometimes passes input_ids positional
+            if "input_ids" in allowed and "input_ids" not in kwargs:
+                kwargs["input_ids"] = args[0]
+            if len(args) > 1 and "attention_mask" in allowed and "attention_mask" not in kwargs:
+                kwargs["attention_mask"] = args[1]
+        filt = {k: v for k, v in kwargs.items() if k in allowed}
+        return inner(**filt)
+
+    m.forward = _fwd
+    detach_lm_head(model)
+
+
 def lm_head_module(model: Any) -> Any | None:
     m = unwrap_base(model)
     return getattr(m, "lm_head", None)
@@ -133,15 +174,8 @@ def log_train_architecture(
             dump_tree(mod, log, prefix="    ")
     else:
         log("  (none)")
-    head = lm_head_module(model)
-    if head is not None:
-        frozen = not any(p.requires_grad for p in head.parameters())
-        shape = ""
-        w = getattr(head, "weight", None)
-        if w is not None:
-            shape = f"  {tuple(w.shape)}"
-        log(
-            f"unused this stage: lm_head  {type(head).__name__}{shape}  "
-            f"frozen={frozen}  (HF CausalLM leftover; not wired to JEPA, no token loss)"
-        )
+    if lm_head_module(model) is not None:
+        log("ERROR: lm_head still attached; Stage 1 must detach it")
+    else:
+        log("lm_head: detached this stage (reload from stage1_cut for Stage 2)")
     log("=== end architecture ===")

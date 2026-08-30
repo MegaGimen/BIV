@@ -170,7 +170,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。**Stage 1 读的就是这份切好的主干**，不是出厂 AgentWorld 或 Instruct。HF 盒子上仍带着 `lm_head`，Stage 1 **冻住、不进前向、不接到 JEPA**（世界路径是 hidden → JEPA，不出 token）。训练脚本启动时必须打架构：切点前的解码器块合成一行 `block *n`，切点后到 \(L_{39}\) 同样一行 `block *n`，主干后面的世界模块（JEPA，以及以后的草稿 / 打分 / \(W\)）逐个打印；`lm_head` 标成 unused。Stage 2 同样打架构。入口 `biv_wm.arch.log_train_architecture`。Stage 1 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536，和 Muse 一样把一条序列拆到四张卡）。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子（专家 3D `gate/up/down` 不套 Muse 那套名字）。FSDP wrap `Qwen3_5MoeDecoderLayer`。
+切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。**Stage 1 读的就是这份切好的主干**。磁盘 checkpoint 仍带 Instruct `lm_head`；**训练时从活模块摘掉**，`forward` 只跑 `language_model`，不算词表。Stage 2 必须先从 `stage1_cut` 把主干（含 `lm_head`）接回目标图，再挂草稿 / \(W\)。启动时打印架构：切点前后各一行 `block *n`，主干后世界模块全打，确认 `lm_head: detached`（Stage 1）或已接回（Stage 2）。入口 `biv_wm.arch.log_train_architecture`。Stage 1 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536）。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。
 
 ---
 
@@ -191,11 +191,13 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 **Stage 1 — 世界**
 
-- **Step 1.** 在拼合主干后面接上 JEPA。本阶段不开草稿、打分、\(W\)、`lm_head`。读 `train/outputs/stage1_cut/`。启动时打印架构（切点前后各一行 `*n`，主干后全打）。
+- **Step 1.** 在拼合主干后面接上 JEPA。读 `train/outputs/stage1_cut/`。**训练时从活模块上摘掉 `lm_head`**，`forward` 只跑 `language_model → hidden → JEPA`，不算词表 logits。磁盘上的 `stage1_cut` 仍带 Instruct `lm_head`，给 Stage 2 用。启动时打印架构（切点前后各一行 `*n`，主干后全打，确认 `lm_head: detached`）。
 - **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
 - **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（65536，4 卡切序列）。
 
 **Stage 2 — 出字**
+
+先把主干调到目标状态再训：从 **`stage1_cut`（带 Instruct `lm_head`）** 加载，再挂 Stage 1 的 LoRA / JEPA，然后接草稿、打分、\(W\)。不要拿 Stage 1 现场已经摘掉 `lm_head` 的对象当起点。调好图、打印架构确认 `lm_head` 已接回之后再开 Step 1。
 
 - **Step 1（门口）。** 冻住拼合主干和 Instruct `lm_head`。加上草稿、打分和 \(W\)。启动时同样打印架构（切点前后 `*n`，主干后草稿 / JEPA / 打分 / \(W\) 全打）。前向：主干 → \(c_t\) → \(K\) 个 \(u_k\) → JEPA(\(c_t,u_k\)) → \(\arg\max\) 得到 \(u_i\) → \(W(u_i)\) → `lm_head`。损失：部分 \(u_k\) 靠近 \(u^\star\)；token 交叉熵只从 `lm_head` 回到 \(W\) / 草稿。真配对 \((c_t,u^\star,z^\star)\) 上可留一小截 JEPA。\(W\) 映的是动作向量。
 - **Step 2（嘴巴和主干）。** `lm_head` 用很小的学习率或 LoRA 解开，再开主干 LoRA；JEPA 仍只在真配对上、更小学习率。交叉熵仍然不训 JEPA。始终只选一个 \(u_i\)。
