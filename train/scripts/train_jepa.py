@@ -491,17 +491,18 @@ def main() -> None:
         num_workers=0,
     )
 
-    # FSDP2: only one nn.Module. JEPA is a small MLP, replicate it on each rank.
-    model = accelerator.prepare(model)
-    jepa = jepa.to(device=accelerator.device, dtype=dtype)
+    # FSDP2: one model + its optimizer in the same prepare(). JEPA is a small
+    # MLP on each rank, separate optimizer (not an FSDP module).
     opt = torch.optim.AdamW(
-        [
-            {
-                "params": [p for p in model.parameters() if p.requires_grad],
-                "lr": float(tcfg.get("lr") or 2e-4),
-            },
-            {"params": list(jepa.parameters()), "lr": float(tcfg.get("jepa_lr") or 1e-3)},
-        ],
+        [p for p in model.parameters() if p.requires_grad],
+        lr=float(tcfg.get("lr") or 2e-4),
+        weight_decay=0.01,
+    )
+    model, opt = accelerator.prepare(model, opt)
+    jepa = jepa.to(device=accelerator.device, dtype=dtype)
+    opt_jepa = torch.optim.AdamW(
+        list(jepa.parameters()),
+        lr=float(tcfg.get("jepa_lr") or 1e-3),
         weight_decay=0.01,
     )
 
@@ -526,6 +527,7 @@ def main() -> None:
     jepa.train()
     step = 0
     opt.zero_grad(set_to_none=True)
+    opt_jepa.zero_grad(set_to_none=True)
     running = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
@@ -554,7 +556,9 @@ def main() -> None:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
                         opt.step()
+                        opt_jepa.step()
                         opt.zero_grad(set_to_none=True)
+                        opt_jepa.zero_grad(set_to_none=True)
                         step += 1
                         if step % log_every == 0 and is_main:
                             avg = running / max(n_loss, 1)
@@ -566,7 +570,7 @@ def main() -> None:
                             if writer is not None:
                                 writer.add_scalar("train/loss", avg, step)
                                 writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
-                                writer.add_scalar("train/lr_jepa", opt.param_groups[1]["lr"], step)
+                                writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
                                 writer.add_scalar("train/len_h", run_h / denom, step)
                                 writer.add_scalar("train/len_a", run_a / denom, step)
                                 writer.add_scalar("train/len_o", run_o / denom, step)

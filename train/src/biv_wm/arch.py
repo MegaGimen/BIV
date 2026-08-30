@@ -126,6 +126,13 @@ def log_train_architecture(
     norm = getattr(lm, "norm", None)
     if norm is not None:
         log(f"  norm  {type(norm).__name__}")
+    log("world path after backbone (no tokens):")
+    if extra:
+        for name, mod in extra.items():
+            log(f"  {name}")
+            dump_tree(mod, log, prefix="    ")
+    else:
+        log("  (none)")
     head = lm_head_module(model)
     if head is not None:
         frozen = not any(p.requires_grad for p in head.parameters())
@@ -133,12 +140,8 @@ def log_train_architecture(
         w = getattr(head, "weight", None)
         if w is not None:
             shape = f"  {tuple(w.shape)}"
-        log(f"  lm_head  {type(head).__name__}{shape}  frozen={frozen}")
-    log("after backbone:")
-    if not extra:
-        log("  (none)")
-        return
-    for name, mod in extra.items():
-        log(f"  {name}")
-        dump_tree(mod, log, prefix="    ")
+        log(
+            f"unused this stage: lm_head  {type(head).__name__}{shape}  "
+            f"frozen={frozen}  (HF CausalLM leftover; not wired to JEPA, no token loss)"
+        )
     log("=== end architecture ===")
