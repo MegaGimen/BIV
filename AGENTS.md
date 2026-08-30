@@ -166,11 +166,11 @@ flowchart LR
 
 Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-切鱼与框架可行性：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`）。权重比对结束后，`report.json` 里的 **`recommended_cut`** 就是切点 \(\ell\)：只在 4 层一组的边界（4, 8, …, 36）上，取「后半 Instruct/AgentWorld 相对 Base 位移比的均值 − 前半」最大的那一档。2026-08-30 那次 probe 上是 **\(\ell=12\)**（8 和 16 接近）。不必手算；`cut_stage1.py` 会读这份报告。
+切鱼与框架可行性：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`）。权重比对结束后，`report.json` 里的 **`recommended_cut`** 就是切点 \(\ell\)：只在 4 层一组的边界（4, 8, …, 36）上，取「后半 Instruct/AgentWorld 相对 Base 位移比的均值 − 前半」最大的那一档。2026-08-30 那次 probe 上是 **\(\ell=12\)**（8 和 16 接近）。不必手算；`cut_stage1.py` 会读这份报告。改得狠度（Layer Swapping 行均值绝对差，相对 Base，文本柱而不是颜色图）：`python train/scripts/compare.py`（同样读 `merge/output/cache`；Base 缺权重会删残目录再下）。
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。**Stage 1 读的就是这份切好的主干**。磁盘 checkpoint 仍带 Instruct `lm_head`；**训练时从活模块摘掉**，`forward` 只跑 `language_model`，不算词表。Stage 2 必须先从 `stage1_cut` 把主干（含 `lm_head`）接回目标图，再挂草稿 / \(W\)。启动时打印架构：切点前后各一行 `block *n`，主干后世界模块全打，确认 `lm_head: detached`（Stage 1）或已接回（Stage 2）。入口 `biv_wm.arch.log_train_architecture`。Stage 1 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536）。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。
+切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。**Stage 1 读的就是这份切好的主干**。磁盘 checkpoint 仍带 Instruct `lm_head`；**训练时从活模块摘掉**，`forward` 只跑 `language_model`。Stage 1 **只训切点前 AgentWorld LoRA + JEPA**，切点后 Instruct 层和末层 norm **冻住**。Stage 2 必须先从 `stage1_cut` 把主干（含 `lm_head`）接回目标图，再挂草稿 / \(W\)。启动时打印架构：切点前后各一行 `block *n`，主干后世界模块全打，确认 `lm_head: detached`（Stage 1）或已接回（Stage 2）。入口 `biv_wm.arch.log_train_architecture`。Stage 1 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536）。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。
 
 ---
 
@@ -242,6 +242,9 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 **本线（Qwen3.5-35B 切鱼 + JEPA）**，GPU 机上三个 checkpoint 已在 `merge/output/cache`、mix JSONL 已有的话：
 
 ```bash
+# 相对 Base 的行-MAV 文本表（Layer Swapping；缺 Base 会自动下）
+python train/scripts/compare.py
+
 # 若还没有 probe 报告（定 ℓ）
 python train/scripts/probe.py
 

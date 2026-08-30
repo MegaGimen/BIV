@@ -47,6 +47,17 @@ def has_config(path: Path) -> bool:
     )
 
 
+def checkpoint_ready(path: Path) -> bool:
+    """True only if config *and* at least one ``*.safetensors`` shard exist.
+
+    A leftover ``config.json`` (or index without shards) after deleting
+    weights is not a cache hit; callers should re-download.
+    """
+    if not has_config(path):
+        return False
+    return any(path.glob("*.safetensors"))
+
+
 def sanitize(model_id: str) -> str:
     return model_id.strip().replace("/", "--").replace(" ", "_")
 
@@ -61,10 +72,10 @@ def cache_path(spec: str, cache_dir: Path) -> Path:
 def existing_or_spec(spec: str, cache_dir: Path) -> str:
     """Local dir if already downloaded; otherwise the hub id / given spec."""
     p = Path(spec).expanduser()
-    if has_config(p):
+    if checkpoint_ready(p):
         return str(p.resolve())
     dest = cache_dir / sanitize(spec)
-    if has_config(dest):
+    if checkpoint_ready(dest):
         return str(dest.resolve())
     return spec
 
@@ -77,9 +88,12 @@ def resolve_model(
     role: str,
     force: bool = False,
 ) -> Path:
-    """Return a local dir with config.json; download into cache_dir if needed."""
+    """Return a local dir with config + weights; download into cache_dir if needed.
+
+    Leftover ``config.json`` without ``*.safetensors`` is treated as missing.
+    """
     p = Path(spec).expanduser()
-    if has_config(p):
+    if checkpoint_ready(p):
         if force:
             log(f"[{role}] --force ignored for local path {p.resolve()}")
         log(f"[{role}] local checkpoint: {p.resolve()}")
@@ -89,9 +103,13 @@ def resolve_model(
     if force and dest.exists():
         log(f"[{role}] --force: removing {dest}")
         shutil.rmtree(dest)
-    elif has_config(dest):
+    elif checkpoint_ready(dest):
         log(f"[{role}] reusing cache: {dest}")
         return dest.resolve()
+    elif dest.exists() and not checkpoint_ready(dest):
+        log(f"[{role}] incomplete cache (config without weights): {dest}")
+        log(f"[{role}] removing and re-downloading")
+        shutil.rmtree(dest)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     src = source.strip().lower()
@@ -114,6 +132,8 @@ def resolve_model(
             out = dest
         if not has_config(out):
             raise SystemExit(f"[{role}] download finished but no config.json under {out}")
+        if not checkpoint_ready(out):
+            raise SystemExit(f"[{role}] download finished but no *.safetensors under {out}")
         return out.resolve()
 
     if src in {"huggingface", "hf"}:
@@ -130,6 +150,8 @@ def resolve_model(
         out = Path(local)
         if not has_config(out):
             raise SystemExit(f"[{role}] download finished but no config.json under {out}")
+        if not checkpoint_ready(out):
+            raise SystemExit(f"[{role}] download finished but no *.safetensors under {out}")
         return out.resolve()
 
     raise SystemExit(f"Unknown --source {source!r} (modelscope | huggingface)")

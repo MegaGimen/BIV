@@ -25,7 +25,7 @@ train/
 │   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
-│   ├── probe.py / cut_stage1.py / train_jepa.py  # this branch: ℓ → cut → JEPA
+│   ├── probe.py / compare.py / cut_stage1.py / train_jepa.py
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + HF cache
@@ -51,6 +51,8 @@ Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent me
 ### Qwen3.5-35B JEPA (this branch)
 
 ```bash
+# 相对 Base 的行-MAV 文本表；缺权重会自动下
+python train/scripts/compare.py
 # ℓ from probe (already run: 12). Recompute: python train/scripts/probe.py
 python train/scripts/cut_stage1.py --print-cut
 python train/scripts/cut_stage1.py          # CPU, ~70GB → train/outputs/stage1_cut/
