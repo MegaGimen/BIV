@@ -10,6 +10,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from biv_wm.arch import collapse_block
 from biv_wm.cut import pick_cut, tensor_source
 from biv_wm.hao import split_hao
 
@@ -58,10 +59,19 @@ def test_split_hao() -> None:
     assert split_hao([{"role": "user", "content": "x"}]) is None
 
 
+def test_collapse_block() -> None:
+    gdn = "Dec(linear_attn)"
+    full = "Dec(self_attn)"
+    unit = [gdn, gdn, gdn, full]
+    assert collapse_block(unit * 3) == f"[{gdn}*3 + {full}] *3"
+    assert collapse_block(unit * 7) == f"[{gdn}*3 + {full}] *7"
+
+
 def main() -> None:
     test_pick_cut_step_at_12()
     test_tensor_source()
     test_split_hao()
+    test_collapse_block()
     print("ok", flush=True)
 
 

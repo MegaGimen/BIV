@@ -463,6 +463,15 @@ def main() -> None:
             p.requires_grad = False
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa = JEPAPred(dim=hidden, hidden=int(tcfg.get("jepa_hidden") or hidden * 2))
+    if is_main:
+        from biv_wm.arch import log_train_architecture
+
+        log_train_architecture(
+            model=model,
+            extra={"jepa": jepa},
+            model_dir=model_dir,
+            log=log,
+        )
 
     train_rows = load_rows(mix_dir, sources, "train", tcfg.get("max_train_samples"))
     if not train_rows:
