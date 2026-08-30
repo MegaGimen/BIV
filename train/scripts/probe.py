@@ -15,7 +15,13 @@ GPU host::
     python train/scripts/probe.py --skip-forward   # disk stats only
     python train/scripts/probe.py --cut 36         # copy Instruct L36..L39 + lm_head onto AgentWorld
 
-Send back train/outputs/probe/report.json and summary.txt.
+Writes train/outputs/probe/report.json (includes recommended_cut ℓ) and summary.txt.
+
+Then cut the Stage 1 checkpoint and train JEPA::
+
+    python train/scripts/cut_stage1.py             # CPU; reads recommended_cut
+    python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml
+
 """
 
 from __future__ import annotations
@@ -32,9 +38,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 _MERGE_DIR = ROOT / "merge"
+_SRC = ROOT / "train" / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 if str(_MERGE_DIR) not in sys.path:
     sys.path.insert(0, str(_MERGE_DIR))
 
+from biv_wm.cut import pick_cut  # noqa: E402
 from download import (  # noqa: E402
     DEFAULT_AGENT,
     DEFAULT_BASE,
@@ -538,7 +548,7 @@ def try_meta_tree(model_dir: Path) -> dict[str, Any]:
 
 
 def cut_hints(per_layer: list[dict[str, Any]]) -> dict[str, Any]:
-    """Heuristic only — ℓ is chosen after reading the curve, not here."""
+    """Per-layer ranking for inspection. Operational ℓ is recommended_cut / pick_cut."""
     if not per_layer:
         return {}
     ranked = []
@@ -562,7 +572,10 @@ def cut_hints(per_layer: list[dict[str, Any]]) -> dict[str, Any]:
         key=lambda r: r["cos_aw_instruct"],
     )
     return {
-        "note": "High Instruct/AW delta ratio at the tail suggests where Instruct specialized for writing; high cosine(delta) in the middle suggests a shared core. Pick ℓ from the curve, do not trust a single argmax.",
+        "note": (
+            "Operational ℓ is report['recommended_cut'] (pick_cut: max tail−front "
+            "mean Instruct/AW δ-ratio on 4-layer GDN+attn boundaries). Rankings below are inspection only."
+        ),
         "highest_instruct_delta_ratio": by_ratio[:8],
         "lowest_weight_cosine": by_low_cos[:8],
         "full_attention_layers": sorted(FULL_ATTN_LAYERS),
@@ -611,7 +624,24 @@ def write_summary(report: dict[str, Any], path: Path) -> None:
     a(f"layers copyable Instruct→AW: {sum(1 for r in swap if r.get('ok'))}/40  failing={len(bad)}")
     for r in bad[:10]:
         a(f"  fail L{r.get('layer')}: {r}")
+    rec = report.get("recommended_cut") or {}
     a("")
+    if rec.get("ell") is not None:
+        a(
+            f"recommended_cut ℓ={rec.get('ell')}  gap={_fmt(rec.get('gap'))}  "
+            f"mean_front={_fmt(rec.get('mean_front'))}  mean_back={_fmt(rec.get('mean_back'))}"
+        )
+        a("cut rule: " + str(rec.get("rule") or ""))
+        for row in rec.get("candidates") or []:
+            mark = " <==" if int(row.get("ell", -1)) == int(rec.get("ell")) else ""
+            a(
+                f"  candidate ℓ={row.get('ell'):2d}  gap={_fmt(row.get('gap'))}  "
+                f"front={_fmt(row.get('mean_front'))}  back={_fmt(row.get('mean_back'))}{mark}"
+            )
+    elif rec.get("error"):
+        a(f"recommended_cut error: {rec.get('error')}")
+    else:
+        a("recommended_cut: (run probe without --skip-weights)")
     hints = report.get("cut_hints") or {}
     a("cut hints: " + (hints.get("note") or ""))
     a("highest Instruct/AW delta ratio: " + json.dumps(hints.get("highest_instruct_delta_ratio"), ensure_ascii=False))
@@ -1071,9 +1101,17 @@ def main() -> None:
             layer_types=lt if isinstance(lt, list) else None,
         )
         report["cut_hints"] = cut_hints(report["weights"].get("per_layer") or [])
+        try:
+            report["recommended_cut"] = pick_cut(report["weights"].get("per_layer") or [])
+            rec = report["recommended_cut"]
+            log(f"recommended_cut ℓ={rec['ell']} gap={rec['gap']:.6f}")
+        except Exception as e:
+            report["recommended_cut"] = {"error": str(e)}
+            log(f"recommended_cut failed: {e}")
     else:
         report["weights"] = None
         report["cut_hints"] = None
+        report["recommended_cut"] = None
 
     if args.meta:
         log("meta-device module tree (Instruct)")

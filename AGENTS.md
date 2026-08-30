@@ -166,11 +166,11 @@ flowchart LR
 
 Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-切鱼与框架可行性：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`）。
+切鱼与框架可行性：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`）。权重比对结束后，`report.json` 里的 **`recommended_cut`** 就是切点 \(\ell\)：只在 4 层一组的边界（4, 8, …, 36）上，取「后半 Instruct/AgentWorld 相对 Base 位移比的均值 − 前半」最大的那一档。2026-08-30 那次 probe 上是 **\(\ell=12\)**（8 和 16 接近）。不必手算；`cut_stage1.py` 会读这份报告。
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-本线要新写切鱼脚本和 JEPA / 草稿 / \(W\) 的循环。数据仍用 `prepare_data.py` 的 \((h,a,o)\)。LoRA 叶子名、切点 \(\ell\)、ViT/MTP、以及在 Transformers 里拷层后能否前向，由 probe 在 GPU 机上量。
+切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。Stage 1 JEPA：`python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml`。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子（专家 3D `gate/up/down` 不套 Muse 那套名字）。FSDP wrap `Qwen3_5MoeDecoderLayer`（`train/configs/accelerate/qwen35_moe_fsdp2.yaml`）。
 
 ---
 
@@ -185,15 +185,15 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 **Stage −1 — 切鱼**
 
-- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化，由此定 \(\ell\)（`python train/scripts/probe.py`）。
-- **Step 2.** 前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。
+- **Step 1.** 相对 Base，逐层量 AgentWorld 和 Instruct 的变化。`python train/scripts/probe.py` 把 \(\ell\) 写进 `recommended_cut`（规则见上；这组数据上 \(\ell=12\)）。只看切点可以：`python train/scripts/cut_stage1.py --print-cut`。
+- **Step 2.** `python train/scripts/cut_stage1.py`：前半留 AgentWorld，后半贴 Instruct 整层，Instruct `lm_head` 接回。草稿 / JEPA / 打分 / \(W\) 不插进两截之间。可用 `--cut 12` 覆盖自动 \(\ell\)。
 - **Step 3.** 零训练，Harbor / TB2.1 抽查看直筒（token → \(h_{39}\) → `lm_head`）。这时还没有 \(W\)。
 
 **Stage 1 — 世界**
 
 - **Step 1.** 在拼合主干后面接上 JEPA。本阶段不开草稿、打分、\(W\)、`lm_head`。
-- **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。
-- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA。
+- **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
+- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA：`python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml`。
 
 **Stage 2 — 出字**
 
@@ -213,7 +213,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 ## 数据怎么对应到 Stage
 
-仓库里已经接好的三份原料：SWE-Hero（代码沙箱工具 I/O，`wm_code`）、ISETrace（真实 OS 工具 I/O，`wm_os`）、SWE-Zero（整段 agent 路径，`anti_forget`，按 `instance_id` 相对 Hero 去重）。`prepare_data.py --all` 写到 `data/processed/mix_v1/`。默认一条轨迹一行。标签始终是沙箱真实 I/O。`data/global_demon_prompt.txt` 只给运行时 Demon 用。
+仓库里已经接好的三份原料：SWE-Hero（代码沙箱工具 I/O，`wm_code`）、ISETrace（真实 OS 工具 I/O，`wm_os`）、SWE-Zero（整段 agent 路径，`anti_forget`，按 `instance_id` 相对 Hero 去重）。`prepare_data.py --wm-code --wm-os` 写到 `data/processed/mix_v1/`（或你指定的 `--out-dir`，本线优先读已有的 `mix_v2`）。默认一条轨迹一行。标签始终是沙箱真实 I/O。`data/global_demon_prompt.txt` 只给运行时 Demon 用。
 
 三份都能切出 \((h,a,o)\)。Stage 1 用带真观察的回合，经拼合主干编码后只训 JEPA。Stage 2 用同一类回合里的**命令字符串**当嘴巴目标，并在真 \((c_t,u^\star,z^\star)\) 上保留较小的 JEPA。Zero 补写命令的面。Terminal 域语料仍可选。Muse 线上的 1:1:0.35 mix 属于另一条 checkpoint，不要直接当成本线配方。
 
@@ -236,6 +236,25 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 ## 世界模型训练操作（`train/`，含另一条 Muse 线）
 
 北极星仍是：agent 变强，原因是世界理解变好。同时保持模型仍能写命令、选工具。详细 runbook：[`train/README.md`](./train/README.md)。
+
+**本线（Qwen3.5-35B 切鱼 + JEPA）**，GPU 机上三个 checkpoint 已在 `merge/output/cache`、mix JSONL 已有的话：
+
+```bash
+# 若还没有 probe 报告（定 ℓ）
+python train/scripts/probe.py
+
+# 只看切点，不写 70GB
+python train/scripts/cut_stage1.py --print-cut
+
+# CPU 切出 Stage 1 主干 → train/outputs/stage1_cut/
+python train/scripts/cut_stage1.py
+
+# 若还没有 mix：不要 --all（Stage 1 不用 anti_forget）
+python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/processed/mix_v2
+
+# Stage 1 JEPA（95GB 单卡直接 python；多卡 FSDP2 的 wrap 类名在 yaml 里，循环尚未接 Accelerator）
+python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml
+```
 
 旧 9B 线可用 `configs/pilot.yaml` 先筛（保持 8k，少采样行，不要截断序列把观察切掉）。缓存根：`outputs/ds_cache/`。GPU 上再跑 `train_sft.py` / `swift` / `axolotl`；`prepare_data.py` 等可在 CPU。
 

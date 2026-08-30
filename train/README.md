@@ -16,14 +16,16 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (this branch)
-│   ├── trl/muse_glimmer_30b_lora_shuffled.yaml  # shuffled control
+│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 JEPA
+│   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
+│   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (other branch)
 │   ├── default.yaml                   # Qwen3.5-9B Unsloth (legacy)
 │   ├── swift/_legacy/                 # Kimi ms-swift (other branch)
 │   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
+│   ├── probe.py / cut_stage1.py / train_jepa.py  # this branch: ℓ → cut → JEPA
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── prepare_model.py               # step 2: download base LLM
 │   ├── tokenize_data.py               # step 3: ratio-sample + HF cache
@@ -36,14 +38,30 @@ train/
 └── outputs/
 ```
 
-## Branch note (Muse)
+## Branch note
 
-This branch fine-tunes **Meta Muse Glimmer-30B** with **TRL + PEFT + Accelerate**.
-Sister branches: `Kimi-Dev-72B/msswift`, `Kimi-Dev-72B/Axolotl`.
+Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: fish-cut AgentWorld[:ℓ]+Instruct[ℓ:] then Stage 1 JEPA
+(`train/scripts/probe.py` → `cut_stage1.py` → `train_jepa.py`). Mix JSONL is the existing
+`wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`).
 
-Claim protocol unchanged: real-I/O LoRA vs **shuffled** twin + same-scaffold agent metrics.
+Sister **Muse** branch: Meta Muse Glimmer-30B with TRL + PEFT + Accelerate. Do not mix checkpoints.
 
-## Pipeline (Muse Glimmer-30B — TRL; this branch)
+Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent metrics.
+
+### Qwen3.5-35B JEPA (this branch)
+
+```bash
+# ℓ from probe (already run: 12). Recompute: python train/scripts/probe.py
+python train/scripts/cut_stage1.py --print-cut
+python train/scripts/cut_stage1.py          # CPU, ~70GB → train/outputs/stage1_cut/
+
+# Reuse existing mix; prepare only if missing (no --all)
+python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
+
+python train/scripts/train_jepa.py --config configs/jepa/stage1.yaml
+```
+
+## Pipeline (Muse Glimmer-30B — TRL; other branch)
 
 ```bash
 cd train
