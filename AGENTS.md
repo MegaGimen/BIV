@@ -180,6 +180,30 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
   假负例：命令行观察重复极高，随机换位会撞上「碰巧也说得通」的下一观察。不在训练循环里拉沙箱重跑（成本和造正样本同一量级）。默认赌的是「去重之后，行得通的负例是少数」——这是对比学习的标准假设，不是我们独有的将就。Stage 1 现在仍只用正例余弦；若坍缩检查判定 `collapse_like`，下一步才把损失改成 \(K{+}1\) 路排序（真实 \(z^*\) 对 \(K\) 个换位后的 \(z^*\)，字符串相同的丢掉）。LLM 打分器只作为离线清洗的最后一道，不进训练循环。
 
+**Stage 1 坍缩检查（每次保存时）**
+
+这些数字**不是**再跑一遍前向。训练每条样本时已经算出了 JEPA 的猜测 \(\hat z\) 和真观察编码 \(z^*\)，主进程把它们缓存在 CPU 上；碰到 `save_steps` 时拿这一段刚训过的行做余弦统计。同一份结果出现三处：终端一行 `[jepa] collapse ...`、该 checkpoint 下的 `collapse.json`、TensorBoard 的 `collapse/*`（`paired_median`、`mismatch_median`、`mismatch_p90`、`z_self_median`、`pred_self_median`、`n`、`skipped_same_o`、`verdict`）。
+
+拿两条样本来读字段。第一条 `rm a.txt`，真观察是「文件没了」。第二条 `cat b.txt`，真观察是「Hi Cyberpunk!」。JEPA 给每一条吐一个猜测向量。
+
+| 字段 | 在问什么 |
+|------|----------|
+| `n` | 这一段拿了几条来比 |
+| `skipped_same_o` | 两条观察原文完全一样、换位时丢掉的对数 |
+| `paired_med` | 第一条的猜测，靠不靠近第一条自己的真观察。训练 loss 看的就是这个 |
+| `mismatch_med` / `mismatch_p90` | 第一条的猜测，靠不靠近第二条的真观察。90 分位看少数特别像的错配 |
+| `z_self_med` | 两条真观察编完之后彼此像不像（JEPA 不参与） |
+| `pred_self_med` | JEPA 吐出的几个猜测彼此像不像 |
+| `verdict` | 用中位数套的标签：`collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低，还没拟合；`no_mismatch_pairs`＝去掉相同文本后没有可换的负例 |
+
+怎么判：`paired_med` 高且 `mismatch_med` 也差不多那么高 → 坍缩（JEPA 在吐万能方向）。`paired_med` 高且 `mismatch_med` 明显更低 → 至少在见过的例子上分开了。
+
+**JEPA 家族怎么防坍缩，我们现在怎么做**
+
+图像/视频上的 JEPA 都承认：只把预测拉近目标，编码器可以让所有样本变成同一个向量，损失照样能降。I-JEPA 的做法是目标编码器走指数滑动平均（EMA），并且目标这条路上停梯度，预测器改不了目标 [201]。后来有工作发现单靠 EMA 挡不住整网坍成常数，于是在预测损失旁边加上 VICReg：强迫每个维度保持方差、维度之间少冗余 [202][203]。更新的一条线（LeJEPA / LeWorldModel）用 SIGReg 一类正则，把嵌入推成各向同性的高斯，宣称可以不再依赖 EMA 和学生–教师 [204][205]。这些都是**写进损失里的排斥力**，不是事后看一眼。
+
+我们 Stage 1 目前只做了其中一半。真观察 \(z^*\) 在 `torch.no_grad()` 里编码，余弦损失里也对目标 `detach`，所以预测器改不了「文件没了」那条目标向量——这对应 I-JEPA 的停梯度。可训练的是主干 LoRA 和 JEPA MLP，损失仍然只有「拉近正确项」，没有 VICReg、没有 SIGReg、没有单独的 EMA 教师、也没有 \(K{+}1\) 负例项。坍缩检查是**监测**，不改梯度。若 `verdict=collapse_like`，下一步才把损失改成排序形式，给错配一个往下压的力。
+
 **Stage 2 — 出字（Instruct 自己的 backbone + 草稿 / 打分 / \(W\)，JEPA 当冻死的顾问）**
 
 单独加载 Instruct 自己完整的 checkpoint，不读 Stage 1 产物；Stage 1 训好的 AgentWorld+JEPA 作为另一份独立权重整体加载、整体冻死，前向时被当顾问查询。两条 backbone 从不共享参数，也不需要「先接回主干再挂头」这类拼装步骤。
@@ -519,3 +543,9 @@ nanobot gateway
 [198] [A Negative Result on Cross-Model Activation Transfer in a Pythia Multi-Hop Setting](https://consensus.app/papers/details/3882637eac3059fa87366e0661f009b7/)
 [199] [The Bicameral Model: Bidirectional Hidden-State Coupling Between Parallel Language Models](https://consensus.app/papers/details/95cf6a71ffee5d18b78189605ec37f2d/)
 [200] [Latent Space Communication via K-V Cache Alignment](https://consensus.app/papers/details/798e52a7c2835eeaa12313a7cc9d83a5/)
+
+[201] [I-JEPA: Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture](https://consensus.app/papers/details/55bce9858cb654c68da164ab93faf9bb/)
+[202] [C-JEPA: Connecting Joint-Embedding Predictive Architecture with Contrastive Self-supervised Learning](https://consensus.app/papers/details/4ef0e26b71ca58e788e85bbb28f72015/)
+[203] [VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning](https://consensus.app/papers/details/ce639618c566518c98a2d7af76e0234f/)
+[204] [LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics](https://consensus.app/papers/details/9eb96593274e541c950622292cd05348/)
+[205] [LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels](https://consensus.app/papers/details/38896c0cf07758818f46cbbe31bfe177/)

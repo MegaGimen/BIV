@@ -725,12 +725,23 @@ def main() -> None:
             extra["collapse"] = stats
             emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
             if writer is not None:
+                def _sc(name: str, block: object, key: str) -> None:
+                    if isinstance(block, dict) and block.get(key) is not None:
+                        writer.add_scalar(name, float(block[key]), step_i)
+
                 paired = stats["paired"]
                 mis = stats["mismatch"]
-                if isinstance(paired, dict) and paired.get("median") is not None:
-                    writer.add_scalar("collapse/paired_median", float(paired["median"]), step_i)
-                if isinstance(mis, dict) and mis.get("median") is not None:
-                    writer.add_scalar("collapse/mismatch_median", float(mis["median"]), step_i)
+                z_self = stats["z_self"]
+                pred_self = stats["pred_self"]
+                writer.add_scalar("collapse/n", float(stats["n"]), step_i)
+                writer.add_scalar("collapse/skipped_same_o", float(stats["skipped_same_o"]), step_i)
+                _sc("collapse/paired_median", paired, "median")
+                _sc("collapse/paired_mean", paired, "mean")
+                _sc("collapse/mismatch_median", mis, "median")
+                _sc("collapse/mismatch_p90", mis, "p90")
+                _sc("collapse/z_self_median", z_self, "median")
+                _sc("collapse/pred_self_median", pred_self, "median")
+                writer.add_text("collapse/verdict", str(stats.get("verdict")), step_i)
                 writer.flush()
         if kind == "epoch-end":
             dest = out_dir / epoch_end_name(epoch_i, step_i)
