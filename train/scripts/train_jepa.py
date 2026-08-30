@@ -32,6 +32,12 @@ if str(SRC) not in sys.path:
 if str(MERGE) not in sys.path:
     sys.path.insert(0, str(MERGE))
 
+from biv_wm.ckpt import (  # noqa: E402
+    epoch_end_name,
+    rotate_rolling,
+    rolling_name,
+    write_trainer_state,
+)
 from biv_wm.hao import split_hao  # noqa: E402
 from download import resolve_model  # noqa: E402
 
@@ -353,6 +359,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-dir", type=str, default=None, help="AgentWorld hub id or local dir")
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument(
+        "--save-steps",
+        type=int,
+        default=None,
+        help="Override yaml save_steps (Muse default 25). Post-save eval locked to this.",
+    )
     p.add_argument("--max-length", type=int, default=None)
     p.add_argument("--cp-size", type=int, default=None, help="Context-parallel size (Ring Attention).")
     p.add_argument("--cache-dir", type=Path, default=None, help="Default: merge/output/cache")
@@ -371,7 +383,17 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def save_ckpt(accelerator, model, jepa, tokenizer, path: Path, extra: dict | None = None) -> None:
+def save_ckpt(
+    accelerator,
+    model,
+    jepa,
+    tokenizer,
+    path: Path,
+    extra: dict | None = None,
+    *,
+    epoch: int,
+    step: int,
+) -> None:
     accelerator.wait_for_everyone()
     if not accelerator.is_main_process:
         return
@@ -382,11 +404,45 @@ def save_ckpt(accelerator, model, jepa, tokenizer, path: Path, extra: dict | Non
     torch_mod.save(jepa.state_dict(), path / "jepa.pt")
     if tokenizer is not None:
         tokenizer.save_pretrained(path)
-    if extra:
-        (path / "train_meta.json").write_text(
-            json.dumps(extra, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+    meta = dict(extra or {})
+    write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
+    (path / "train_meta.json").write_text(
+        json.dumps({"epoch": epoch, "global_step": step, **meta}, indent=2, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
     log(f"saved {path}")
+
+
+def eval_align_loss(model, jepa, loader, device, cp_size: int, max_batches: int) -> float | None:
+    """Held-out cosine align; all ranks must step (FSDP). Returns mean loss or None."""
+    import torch
+    from biv_wm.jepa import cosine_align_loss
+
+    if loader is None or max_batches <= 0:
+        return None
+    model.eval()
+    jepa.eval()
+    total = 0.0
+    n = 0
+    try:
+        with torch.no_grad():
+            for i, batch in enumerate(loader):
+                if i >= max_batches:
+                    break
+                batch = {k: v.to(device) for k, v in batch.items()}
+                z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
+                u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
+                loss = cosine_align_loss(jepa(c, u), z)
+                total += float(loss.detach().float().item())
+                n += 1
+    finally:
+        model.train()
+        jepa.train()
+    if n == 0:
+        return None
+    return total / n
 
 
 def main() -> None:
@@ -501,18 +557,34 @@ def main() -> None:
         raise SystemExit(f"no (h,a,o) rows under {mix_dir}/{sources}/train.jsonl")
     rank_log(f"train_rows={len(train_rows)}")
 
+    eval_cap = int(tcfg.get("max_eval_samples") or tcfg.get("eval_max_samples") or 128)
+    eval_max_length = int(tcfg.get("eval_max_length") or min(8192, max_length))
+    eval_max_length = min(eval_max_length, max_length)
+    eval_rows = load_rows(mix_dir, sources, "eval", eval_cap)
+    rank_log(f"eval_rows={len(eval_rows)} eval_max_length={eval_max_length}")
+
     train_ds = HaoDataset(train_rows, tokenizer, max_length)
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
     gen = torch.Generator()
     gen.manual_seed(seed)
+    batch_size = int(tcfg.get("batch_size") or 1)
     loader = DataLoader(
         train_ds,
-        batch_size=int(tcfg.get("batch_size") or 1),
+        batch_size=batch_size,
         shuffle=True,
         generator=gen,
         collate_fn=lambda b: collate(b, pad_id, pad_multiple),
         num_workers=0,
     )
+    eval_loader = None
+    if eval_rows:
+        eval_loader = DataLoader(
+            HaoDataset(eval_rows, tokenizer, eval_max_length),
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+            num_workers=0,
+        )
 
     # FSDP2: one model + its optimizer in the same prepare(). JEPA is a small
     # MLP on each rank, separate optimizer (not an FSDP module).
@@ -531,20 +603,105 @@ def main() -> None:
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(tcfg.get("logging_steps") or 10)
-    save_every = int(tcfg.get("save_steps") or 100)
-    epochs = int(tcfg.get("num_epochs") or 1)
+    save_every = int(args.save_steps or tcfg.get("save_steps") or 25)
+    save_limit = int(tcfg.get("save_total_limit") or 3)
+    epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
-    rank_log(f"steps_per_epoch≈{steps_per_epoch} accum={accum}")
+    planned = steps_per_epoch * epochs
+    total_opt = planned if max_steps is None else min(planned, int(max_steps))
+    rank_log(
+        f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
+        f"save_steps={save_every} save_total_limit={save_limit} (eval locked to save_steps)"
+    )
+
+    ckpt_extra = {
+        "model_dir": str(model_dir),
+        "mix_dir": str(mix_dir),
+        "sources": sources,
+        "max_length": max_length,
+        "cp_size": cp_size,
+        "lm_head": "detached_at_runtime",
+        "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
+    }
+
+    def emit(msg: str) -> None:
+        if is_main:
+            try:
+                from tqdm.auto import tqdm as _tqdm
+
+                _tqdm.write(msg)
+            except Exception:
+                log(msg)
+
+    def dump_ckpt(kind: str, epoch_i: int, step_i: int, *, tok=None) -> None:
+        if kind == "epoch-end":
+            dest = out_dir / epoch_end_name(epoch_i, step_i)
+        else:
+            dest = out_dir / rolling_name(epoch_i, step_i)
+        save_ckpt(
+            accelerator,
+            model,
+            jepa,
+            tok,
+            dest,
+            extra={**ckpt_extra, "kind": kind},
+            epoch=epoch_i,
+            step=step_i,
+        )
+        if is_main:
+            emit(f"[jepa] checkpoint ({kind}) → {dest.name}")
+            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepa] {m}"))
+
+    def post_save_eval(step_i: int) -> None:
+        if eval_loader is None:
+            if is_main:
+                emit("[jepa] post-save eval skipped: no eval.jsonl rows")
+            return
+        if is_main:
+            emit(f"[jepa] post-save eval @ step {step_i}: held-out cosine align")
+        accelerator.wait_for_everyone()
+        try:
+            mean = eval_align_loss(
+                model,
+                jepa,
+                eval_loader,
+                accelerator.device,
+                cp_size,
+                eval_cap,
+            )
+        except Exception:
+            emit("[jepa] post-save eval FAILED")
+            raise
+        accelerator.wait_for_everyone()
+        if is_main and mean is not None:
+            emit(f"[jepa] post-save eval metrics: {{'eval_loss': {mean:.6f}}}")
+            if writer is not None:
+                writer.add_scalar("eval/loss", mean, step_i)
+                writer.flush()
+        elif is_main and mean is None:
+            emit("[jepa] post-save eval metrics: empty")
 
     writer = None
     tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
+    ckpt_extra["tensorboard"] = str(tb_dir)
     if is_main:
         writer = open_tb(tb_dir)
         writer.add_text("data/mix_dir", str(mix_dir), 0)
         writer.add_text("data/sources", ", ".join(sources), 0)
         writer.add_text("train/max_length", str(max_length), 0)
         writer.add_text("train/cp_size", str(cp_size), 0)
+        writer.add_text("train/epochs", str(epochs), 0)
+        writer.add_text("train/save_steps", str(save_every), 0)
+
+    try:
+        from tqdm.auto import tqdm
+    except Exception:
+        tqdm = None  # type: ignore[assignment]
+
+    pbar = None
+    if is_main and tqdm is not None:
+        pbar = tqdm(total=total_opt, desc="jepa", unit="step", dynamic_ncols=True)
 
     model.train()
     jepa.train()
@@ -554,9 +711,12 @@ def main() -> None:
     running = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
+    last_train_loss = None
+    hit_max = False
 
     try:
         for epoch in range(epochs):
+            epoch_opt = 0
             for batch in loader:
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()}
                 h_len = float(batch["h_mask"].sum(dim=1).float().mean().item())
@@ -583,15 +743,24 @@ def main() -> None:
                         opt.zero_grad(set_to_none=True)
                         opt_jepa.zero_grad(set_to_none=True)
                         step += 1
+                        epoch_opt += 1
+                        last_train_loss = running / max(n_loss, 1)
+                        if pbar is not None:
+                            pbar.update(1)
+                            pbar.set_postfix(
+                                epoch=f"{epoch + 1}/{epochs}",
+                                loss=f"{last_train_loss:.4f}",
+                                refresh=False,
+                            )
+                        is_last_in_epoch = epoch_opt >= steps_per_epoch
                         if step % log_every == 0 and is_main:
-                            avg = running / max(n_loss, 1)
                             denom = max(n_loss, 1)
-                            log(
-                                f"epoch={epoch} step={step} loss={avg:.4f} "
-                                f"len(h/a/o)={run_h/denom:.0f}/{run_a/denom:.0f}/{run_o/denom:.0f}"
+                            emit(
+                                f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
+                                f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                             )
                             if writer is not None:
-                                writer.add_scalar("train/loss", avg, step)
+                                writer.add_scalar("train/loss", last_train_loss, step)
                                 writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
                                 writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
                                 writer.add_scalar("train/len_h", run_h / denom, step)
@@ -601,38 +770,34 @@ def main() -> None:
                             running = 0.0
                             n_loss = 0
                             run_h = run_a = run_o = 0.0
-                        if step % save_every == 0:
-                            save_ckpt(
-                                accelerator, model, jepa, None, out_dir / f"step-{step}"
+                        if is_last_in_epoch:
+                            emit(
+                                f"[jepa] epoch {epoch + 1} end: force checkpoint "
+                                "+ post-save evaluate (permanent epoch ckpt)"
                             )
+                            dump_ckpt("epoch-end", epoch + 1, step, tok=tokenizer)
+                            post_save_eval(step)
+                        elif step % save_every == 0:
+                            dump_ckpt("rolling", epoch, step)
+                            post_save_eval(step)
                         if max_steps is not None and step >= max_steps:
+                            hit_max = True
                             break
-            if max_steps is not None and step >= max_steps:
+            if hit_max:
                 break
     finally:
+        if pbar is not None:
+            pbar.close()
         if writer is not None:
             writer.flush()
             writer.close()
 
-    save_ckpt(
-        accelerator,
-        model,
-        jepa,
-        tokenizer,
-        out_dir / "final",
-        extra={
-            "model_dir": str(model_dir),
-            "mix_dir": str(mix_dir),
-            "sources": sources,
-            "steps": step,
-            "max_length": max_length,
-            "cp_size": cp_size,
-            "lm_head": "detached_at_runtime",
-            "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
-            "tensorboard": str(tb_dir),
-        },
-    )
-    rank_log(f"wrote {out_dir / 'final'}")
+    if step > 0 and not hit_max:
+        rank_log(f"wrote last epoch-end under {out_dir}")
+    elif step > 0 and hit_max:
+        rank_log(f"max_steps={max_steps} stop at step={step} under {out_dir}")
+    else:
+        rank_log("no optimizer steps; nothing saved")
 
 
 if __name__ == "__main__":

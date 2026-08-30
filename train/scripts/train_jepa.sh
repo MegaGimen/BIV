@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
       CONFIG="$2"
       shift 2
       ;;
-    --model-dir|--mix-dir|--logging-dir|--max-steps)
+    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
       EXTRA+=("$1" "$2")
       shift 2
@@ -43,6 +43,7 @@ Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
   bash scripts/train_jepa.sh --max-length 65536
 
 Env: PARALLEL=single|fsdp2|fsdp2_cp|auto  CONFIG=...  MAX_LENGTH=...
+     --save-steps N  (default yaml 25; post-save eval locked to this)
 EOF
       exit 0
       ;;
