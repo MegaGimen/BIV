@@ -26,3 +26,100 @@ def cosine_align_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     p = F.normalize(pred.float(), dim=-1)
     t = F.normalize(target.float().detach(), dim=-1)
     return (1.0 - (p * t).sum(dim=-1)).mean()
+
+
+def _quantile_summary(x: torch.Tensor) -> dict[str, float | int | None]:
+    if x.numel() == 0:
+        return {"n": 0, "mean": None, "median": None, "p90": None}
+    v = x.detach().float().flatten().sort().values
+    n = int(v.numel())
+
+    def q(p: float) -> float:
+        idx = min(max(int(round((n - 1) * p)), 0), n - 1)
+        return float(v[idx])
+
+    return {"n": n, "mean": float(v.mean()), "median": q(0.5), "p90": q(0.9)}
+
+
+def collapse_stats(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    o_texts: list[str],
+) -> dict[str, object]:
+    """Collapse check on already-trained rows. No extra forward.
+
+    Paired = pred_i vs own z*_i. Mismatch = pred_i vs z*_j after dropping
+    pairs whose observation strings are character-for-character identical
+    (those are not usable as negatives). Also report z*-vs-z* and pred-vs-pred
+    so a high paired score can be told apart from "everything lives in one cone".
+    """
+    if pred.ndim == 1:
+        pred = pred.unsqueeze(0)
+    if target.ndim == 1:
+        target = target.unsqueeze(0)
+    n = int(pred.size(0))
+    if n != len(o_texts) or n != int(target.size(0)):
+        raise ValueError(f"length mismatch pred={pred.size(0)} target={target.size(0)} texts={len(o_texts)}")
+    p = F.normalize(pred.float(), dim=-1)
+    t = F.normalize(target.float(), dim=-1)
+    paired = (p * t).sum(dim=-1)
+    sim_pt = p @ t.T
+    sim_tt = t @ t.T
+    sim_pp = p @ p.T
+    mismatch = []
+    z_off = []
+    pred_off = []
+    skipped_same_o = 0
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            if o_texts[i] == o_texts[j]:
+                skipped_same_o += 1
+                continue
+            mismatch.append(sim_pt[i, j])
+            z_off.append(sim_tt[i, j])
+            pred_off.append(sim_pp[i, j])
+    mis_t = torch.stack(mismatch) if mismatch else pred.new_empty((0,))
+    z_t = torch.stack(z_off) if z_off else pred.new_empty((0,))
+    pr_t = torch.stack(pred_off) if pred_off else pred.new_empty((0,))
+    out_paired = _quantile_summary(paired)
+    out_mis = _quantile_summary(mis_t)
+    pmed = out_paired["median"]
+    mmed = out_mis["median"]
+    if out_mis["n"] == 0:
+        verdict = "no_mismatch_pairs"
+    elif pmed is None or mmed is None:
+        verdict = "unclear"
+    elif float(pmed) - float(mmed) >= 0.2:
+        verdict = "paired_ahead"
+    elif float(pmed) > 0.7 and float(pmed) - float(mmed) < 0.05:
+        verdict = "collapse_like"
+    else:
+        verdict = "unclear"
+    return {
+        "n": n,
+        "skipped_same_o": skipped_same_o,
+        "paired": out_paired,
+        "mismatch": out_mis,
+        "z_self": _quantile_summary(z_t),
+        "pred_self": _quantile_summary(pr_t),
+        "verdict": verdict,
+    }
+
+
+def format_collapse_line(stats: dict[str, object]) -> str:
+    def _cell(block: object, key: str) -> str:
+        if not isinstance(block, dict):
+            return "na"
+        v = block.get(key)
+        return "na" if v is None else f"{float(v):.3f}"
+
+    paired = stats.get("paired")
+    mis = stats.get("mismatch")
+    return (
+        f"n={stats.get('n')} skipped_same_o={stats.get('skipped_same_o')} "
+        f"paired_med={_cell(paired, 'median')} mismatch_med={_cell(mis, 'median')} "
+        f"mismatch_p90={_cell(mis, 'p90')} z_self_med={_cell(stats.get('z_self'), 'median')} "
+        f"pred_self_med={_cell(stats.get('pred_self'), 'median')} verdict={stats.get('verdict')}"
+    )

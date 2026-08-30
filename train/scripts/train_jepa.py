@@ -10,6 +10,7 @@ Encodes (h, a, o) from mix JSONL messages, predicts ẑ = JEPA(c_t, u*) vs stop-
 4-GPU FSDP2 + Context Parallel (Muse recipe), max_length=65536.
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
+  bash scripts/train_jepa.sh --save-steps 1 --max-steps 2   # smoke the FSDP saver
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -132,12 +135,28 @@ def encode_texts(
 
 
 def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) -> list[list]:
+    """Read (h, a, o) rows for each source.
+
+    `limit`, if set, is a *global* row budget split evenly across `sources`
+    and filled by reservoir sampling (Algorithm R) within each source. This
+    keeps every source represented in a downsampled quick run instead of the
+    old behavior, which just took the first `limit` rows in file order and
+    could return zero rows from any source after the first once the budget
+    was hit (e.g. wm_os would get nothing if wm_code alone exceeded limit).
+    Reservoir sampling also avoids reading whole multi-GB files into memory
+    just to shuffle, and avoids a positional bias if a file happens to be
+    sorted/grouped (e.g. by task or time) rather than pre-shuffled.
+    """
+    per_source_limit = None if limit is None else max(1, math.ceil(limit / len(sources)))
+    rng = random.Random(42)
     rows: list[list] = []
     for src in sources:
         path = mix_dir / src / f"{split}.jsonl"
         if not path.is_file():
             log(f"skip missing {path}")
             continue
+        reservoir: list[list] = []
+        seen = 0
         with path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -148,9 +167,20 @@ def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) 
                 hao = split_hao(msgs) if isinstance(msgs, list) else None
                 if hao is None:
                     continue
-                rows.append(list(hao))
-                if limit is not None and len(rows) >= limit:
-                    return rows
+                item = list(hao)
+                if per_source_limit is None:
+                    reservoir.append(item)
+                    continue
+                seen += 1
+                if len(reservoir) < per_source_limit:
+                    reservoir.append(item)
+                else:
+                    j = rng.randrange(seen)
+                    if j < per_source_limit:
+                        reservoir[j] = item
+        suffix = f" (reservoir-sampled from {seen})" if per_source_limit is not None else ""
+        log(f"{src}: {len(reservoir)} rows{suffix}")
+        rows.extend(reservoir)
     return rows
 
 
@@ -363,7 +393,7 @@ def parse_args() -> argparse.Namespace:
         "--save-steps",
         type=int,
         default=None,
-        help="Override yaml save_steps (default 25). No eval — save only.",
+        help="Override yaml save_steps (default 25). 1 is valid (smoke the saver).",
     )
     p.add_argument("--max-length", type=int, default=None)
     p.add_argument("--cp-size", type=int, default=None, help="Context-parallel size (Ring Attention).")
@@ -383,6 +413,64 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _strip_fsdp_name(name: str) -> str:
+    out = name
+    for pfx in ("_fsdp_wrapped_module.", "module."):
+        while out.startswith(pfx):
+            out = out[len(pfx) :]
+    return out
+
+
+def _full_cpu(param):
+    """Materialize a (possibly DTensor) param on CPU. Collective if DTensor."""
+    t = param.full_tensor() if hasattr(param, "full_tensor") else param
+    t = t.detach()
+    if t.device.type != "cpu":
+        t = t.to("cpu")
+    return t.contiguous().clone()
+
+
+def gather_lora_cpu(model, *, keep: bool) -> dict:
+    """All ranks must call this: DTensor.full_tensor is a collective.
+
+    Only LoRA tensors are gathered (full 35B gather OOMs). Cloned onto CPU so
+    safetensors never sees an FSDP/DTensor storage pointer — that was the
+    ``invalid python storage`` crash from ``PeftModel.save_pretrained``.
+    """
+    out: dict[str, Any] = {}
+    for name, param in model.named_parameters():
+        if "lora_" not in name:
+            continue
+        full = _full_cpu(param)
+        if keep:
+            key = _strip_fsdp_name(name)
+            key = (
+                key.replace(".lora_A.default.", ".lora_A.")
+                .replace(".lora_B.default.", ".lora_B.")
+                .replace(".lora_embedding_A.default.", ".lora_embedding_A.")
+                .replace(".lora_embedding_B.default.", ".lora_embedding_B.")
+            )
+            out[key] = full
+        del full
+    return out
+
+
+def save_adapter(unwrapped, lora_cpu: dict, path: Path) -> None:
+    from safetensors.torch import save_file
+
+    path.mkdir(parents=True, exist_ok=True)
+    if not lora_cpu:
+        raise RuntimeError("no LoRA tensors gathered; refuse to write an empty adapter")
+    save_file(lora_cpu, str(path / "adapter_model.safetensors"))
+    adapter = getattr(unwrapped, "active_adapter", "default")
+    if isinstance(adapter, (list, tuple)):
+        adapter = adapter[0] if adapter else "default"
+    cfg_map = getattr(unwrapped, "peft_config", None) or {}
+    cfg = cfg_map.get(adapter) if isinstance(cfg_map, dict) else None
+    if cfg is not None and hasattr(cfg, "save_pretrained"):
+        cfg.save_pretrained(str(path))
+
+
 def save_ckpt(
     accelerator,
     model,
@@ -395,13 +483,15 @@ def save_ckpt(
     step: int,
 ) -> None:
     accelerator.wait_for_everyone()
+    lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
+    jepa_cpu = {k: v.detach().cpu().contiguous().clone() for k, v in jepa.state_dict().items()}
     if not accelerator.is_main_process:
         return
     path.mkdir(parents=True, exist_ok=True)
     unwrapped = accelerator.unwrap_model(model)
-    unwrapped.save_pretrained(path)
+    save_adapter(unwrapped, lora_cpu, path)
     torch_mod = __import__("torch")
-    torch_mod.save(jepa.state_dict(), path / "jepa.pt")
+    torch_mod.save(jepa_cpu, path / "jepa.pt")
     if tokenizer is not None:
         tokenizer.save_pretrained(path)
     meta = dict(extra or {})
@@ -412,6 +502,16 @@ def save_ckpt(
         encoding="utf-8",
     )
     log(f"saved {path}")
+
+
+def decode_o_texts(tokenizer, batch) -> list[str]:
+    ids = batch["o_ids"]
+    mask = batch["o_mask"]
+    out: list[str] = []
+    for i in range(ids.size(0)):
+        tok = ids[i][mask[i].bool()].tolist()
+        out.append(tokenizer.decode(tok, skip_special_tokens=True))
+    return out
 
 
 def _warmup_lambda(warmup: int):
@@ -431,7 +531,7 @@ def main() -> None:
     from peft import LoraConfig, get_peft_model
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
-    from biv_wm.jepa import JEPAPred, cosine_align_loss
+    from biv_wm.jepa import JEPAPred, collapse_stats, cosine_align_loss, format_collapse_line
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
     if not cfg_path.is_file():
@@ -572,6 +672,8 @@ def main() -> None:
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(tcfg.get("logging_steps") or 10)
     save_every = int(args.save_steps or tcfg.get("save_steps") or 25)
+    if save_every < 1:
+        raise SystemExit(f"save_steps must be >= 1, got {save_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
@@ -585,7 +687,8 @@ def main() -> None:
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
-        f"save_steps={save_every} save_total_limit={save_limit} (save only, no eval)"
+        f"save_steps={save_every} save_total_limit={save_limit} "
+        f"(FSDP LoRA gather + collapse check on save; no eval)"
     )
 
     ckpt_extra = {
@@ -597,6 +700,10 @@ def main() -> None:
         "lm_head": "detached_at_runtime",
         "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
     }
+    seen_pred: deque = deque()
+    seen_z: deque = deque()
+    seen_o: deque = deque()
+    writer = None
 
     def emit(msg: str) -> None:
         if is_main:
@@ -607,7 +714,24 @@ def main() -> None:
             except Exception:
                 log(msg)
 
-    def dump_ckpt(kind: str, epoch_i: int, step_i: int, *, tok=None) -> None:
+    def dump_ckpt(kind: str, epoch_i: int, step_i: int) -> None:
+        extra = {**ckpt_extra, "kind": kind}
+        if is_main and seen_pred:
+            stats = collapse_stats(
+                torch.stack(list(seen_pred)),
+                torch.stack(list(seen_z)),
+                list(seen_o),
+            )
+            extra["collapse"] = stats
+            emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
+            if writer is not None:
+                paired = stats["paired"]
+                mis = stats["mismatch"]
+                if isinstance(paired, dict) and paired.get("median") is not None:
+                    writer.add_scalar("collapse/paired_median", float(paired["median"]), step_i)
+                if isinstance(mis, dict) and mis.get("median") is not None:
+                    writer.add_scalar("collapse/mismatch_median", float(mis["median"]), step_i)
+                writer.flush()
         if kind == "epoch-end":
             dest = out_dir / epoch_end_name(epoch_i, step_i)
         else:
@@ -616,17 +740,24 @@ def main() -> None:
             accelerator,
             model,
             jepa,
-            tok,
+            tokenizer,
             dest,
-            extra={**ckpt_extra, "kind": kind},
+            extra=extra,
             epoch=epoch_i,
             step=step_i,
         )
         if is_main:
             emit(f"[jepa] checkpoint ({kind}) → {dest.name}")
+            if extra.get("collapse") is not None:
+                (dest / "collapse.json").write_text(
+                    json.dumps(extra["collapse"], indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
             rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepa] {m}"))
+            seen_pred.clear()
+            seen_z.clear()
+            seen_o.clear()
 
-    writer = None
     tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
     ckpt_extra["tensorboard"] = str(tb_dir)
     if is_main:
@@ -673,6 +804,12 @@ def main() -> None:
                     u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
                     pred = jepa(c, u)
                     loss = cosine_align_loss(pred, z)
+                    if is_main:
+                        texts = decode_o_texts(tokenizer, batch)
+                        for i in range(pred.size(0)):
+                            seen_pred.append(pred[i].detach().float().cpu())
+                            seen_z.append(z[i].detach().float().cpu())
+                            seen_o.append(texts[i])
                     accelerator.backward(loss)
                     running += float(loss.detach().float().item())
                     n_loss += 1
@@ -721,7 +858,7 @@ def main() -> None:
                                 f"[jepa] epoch {epoch + 1} end: force checkpoint "
                                 "(permanent epoch ckpt)"
                             )
-                            dump_ckpt("epoch-end", epoch + 1, step, tok=tokenizer)
+                            dump_ckpt("epoch-end", epoch + 1, step)
                         elif step % save_every == 0:
                             dump_ckpt("rolling", epoch, step)
                         if max_steps is not None and step >= max_steps:
