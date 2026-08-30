@@ -3,10 +3,59 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 from biv_wm.cut import GROUP, N_LAYERS
+
+LAYER_IN_NAME = re.compile(r"layers\.(\d+)\.")
+
+
+def freeze_instruct_tail(model: Any, ell: int) -> int:
+    """Freeze decoder layers[ell:] and final norm (Instruct half)."""
+    lm = language_model(model)
+    n = 0
+    layers = list(getattr(lm, "layers", []) or [])
+    for i, layer in enumerate(layers):
+        if i < ell:
+            continue
+        for p in layer.parameters():
+            p.requires_grad = False
+            n += 1
+    norm = getattr(lm, "norm", None)
+    if norm is not None:
+        for p in norm.parameters():
+            p.requires_grad = False
+            n += 1
+    return n
+
+
+def lora_targets_world_only(module_names: list[str], ell: int) -> list[str]:
+    """Keep LoRA only on decoder layers before the cut."""
+    out: list[str] = []
+    for name in module_names:
+        m = LAYER_IN_NAME.search(name)
+        if m is None:
+            continue
+        if int(m.group(1)) < ell:
+            out.append(name)
+    return out
+
+
+def _span_status(layers: list[Any], start: int, end: int) -> str:
+    n_train = 0
+    n_all = 0
+    for ly in layers[start:end]:
+        for p in ly.parameters():
+            n_all += 1
+            if p.requires_grad:
+                n_train += 1
+    if n_all == 0:
+        return "empty"
+    if n_train == 0:
+        return "frozen"
+    return f"LoRA/trainable tensors={n_train}/{n_all}"
 
 
 def _kind(layer: Any) -> str:
@@ -162,11 +211,12 @@ def log_train_architecture(
     embed = getattr(lm, "embed_tokens", None) or getattr(lm, "embedding", None)
     if embed is not None:
         log(f"  embed_tokens  {type(embed).__name__}")
-    log(f"  layers[0:{ell}]   AgentWorld  {collapse_block(front)}")
-    log(f"  layers[{ell}:{n}]  Instruct   {collapse_block(back)}")
+    log(f"  layers[0:{ell}]   AgentWorld  {collapse_block(front)}  {_span_status(layers, 0, ell)}")
+    log(f"  layers[{ell}:{n}]  Instruct   {collapse_block(back)}  {_span_status(layers, ell, n)}")
     norm = getattr(lm, "norm", None)
     if norm is not None:
-        log(f"  norm  {type(norm).__name__}")
+        frozen = not any(p.requires_grad for p in norm.parameters())
+        log(f"  norm  {type(norm).__name__}  {'frozen' if frozen else 'trainable'}")
     log("world path after backbone (no tokens):")
     if extra:
         for name, mod in extra.items():

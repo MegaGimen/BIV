@@ -193,7 +193,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 - **Step 1.** 在拼合主干后面接上 JEPA。读 `train/outputs/stage1_cut/`。**训练时从活模块上摘掉 `lm_head`**，`forward` 只跑 `language_model → hidden → JEPA`，不算词表 logits。磁盘上的 `stage1_cut` 仍带 Instruct `lm_head`，给 Stage 2 用。启动时打印架构（切点前后各一行 `*n`，主干后全打，确认 `lm_head: detached`）。
 - **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
-- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（65536，4 卡切序列）。
+- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新**切点前** AgentWorld 的 LoRA 和 JEPA；**切点后 Instruct 层 + 末层 norm 冻住**，避免世界损失把写命令那半边带跑。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`。
 
 **Stage 2 — 出字**
 

@@ -444,9 +444,23 @@ def main() -> None:
         if "lm_head" in name:
             p.requires_grad = False
 
+    from biv_wm.arch import (
+        freeze_instruct_tail,
+        install_hidden_only_forward,
+        log_train_architecture,
+        lora_targets_world_only,
+        read_ell,
+    )
+
+    ell = read_ell(model_dir)
+    if ell is None:
+        ell = 12
+    n_frozen = freeze_instruct_tail(model, ell)
     suffixes = list(tcfg.get("target_modules") or [])
-    targets = two_d_lora_targets(model, suffixes)
-    rank_log(f"lora 2D targets={len(targets)}")
+    targets = lora_targets_world_only(two_d_lora_targets(model, suffixes), ell)
+    if not targets:
+        raise SystemExit(f"no LoRA targets in AgentWorld layers[0:{ell}]")
+    rank_log(f"ell={ell} froze_instruct_tensors={n_frozen} lora 2D world={len(targets)}")
     lora = LoraConfig(
         r=int(tcfg.get("lora_rank") or 16),
         lora_alpha=int(tcfg.get("lora_alpha") or 32),
@@ -458,8 +472,6 @@ def main() -> None:
     model = get_peft_model(model, lora)
     if is_main and hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
-    from biv_wm.arch import install_hidden_only_forward, log_train_architecture
-
     install_hidden_only_forward(model)
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa = JEPAPred(dim=hidden, hidden=int(tcfg.get("jepa_hidden") or hidden * 2))

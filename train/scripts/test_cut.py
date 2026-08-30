@@ -10,7 +10,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.arch import collapse_block, detach_lm_head
+from biv_wm.arch import collapse_block, detach_lm_head, lora_targets_world_only
 from biv_wm.cut import pick_cut, tensor_source
 from biv_wm.hao import split_hao
 
@@ -70,6 +70,18 @@ def test_detach_lm_head() -> None:
     assert detach_lm_head(b) is False
 
 
+def test_lora_targets_world_only() -> None:
+    names = [
+        "model.language_model.layers.0.self_attn.q_proj",
+        "model.language_model.layers.11.mlp.gate_proj",
+        "model.language_model.layers.12.self_attn.q_proj",
+        "model.language_model.layers.39.mlp.down_proj",
+        "lm_head",
+    ]
+    kept = lora_targets_world_only(names, 12)
+    assert kept == names[:2], kept
+
+
 def test_collapse_block() -> None:
     gdn = "Dec(linear_attn)"
     full = "Dec(self_attn)"
@@ -83,6 +95,7 @@ def main() -> None:
     test_tensor_source()
     test_split_hao()
     test_collapse_block()
+    test_lora_targets_world_only()
     test_detach_lm_head()
     print("ok", flush=True)
 
