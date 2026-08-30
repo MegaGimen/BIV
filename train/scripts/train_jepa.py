@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -223,12 +225,44 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool):
     return model, tok
 
 
+def open_tb(log_dir: Path):
+    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:
+        from tensorboardX import SummaryWriter
+    writer = SummaryWriter(log_dir=str(log_dir))
+    log(f"tensorboard → {log_dir}  (tensorboard --logdir {log_dir.parent})")
+    return writer
+
+
+def resolve_tb_dir(tcfg: dict[str, Any], out_dir: Path, cli: Path | None) -> Path:
+    raw = (
+        cli
+        or os.environ.get("LOGGING_DIR")
+        or os.environ.get("TF_LOGS")
+        or tcfg.get("logging_dir")
+        or (out_dir / "tb")
+    )
+    root = Path(str(raw))
+    if not root.is_absolute():
+        root = _resolve(root)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return root / f"jepa-{stamp}"
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--model-dir", type=Path, default=None)
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument(
+        "--logging-dir",
+        type=Path,
+        default=None,
+        help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or output_dir/tb)",
+    )
     return p.parse_args()
 
 
@@ -326,6 +360,11 @@ def main() -> None:
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
     log(f"steps_per_epoch≈{steps_per_epoch} accum={accum}")
+    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
+    writer = open_tb(tb_dir)
+    writer.add_text("data/mix_dir", str(mix_dir), 0)
+    writer.add_text("data/sources", ", ".join(sources), 0)
+    writer.add_text("train/max_length", str(max_length), 0)
 
     model.train()
     jepa.train()
@@ -333,40 +372,64 @@ def main() -> None:
     opt.zero_grad(set_to_none=True)
     running = 0.0
     n_loss = 0
+    run_h = run_a = run_o = 0.0
 
-    for epoch in range(epochs):
-        for i, batch in enumerate(loader):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.no_grad():
-                z = last_hidden(model, batch["o_ids"], batch["o_mask"])
-            c = last_hidden(model, batch["h_ids"], batch["h_mask"])
-            u = last_hidden(model, batch["a_ids"], batch["a_mask"])
-            pred = jepa(c, u)
-            loss = cosine_align_loss(pred, z) / accum
-            loss.backward()
-            running += float(loss.item()) * accum
-            n_loss += 1
-            if (i + 1) % accum == 0:
-                torch.nn.utils.clip_grad_norm_(
-                    list(backbone_params) + list(jepa.parameters()), max_norm
-                )
-                opt.step()
-                opt.zero_grad(set_to_none=True)
-                step += 1
-                if step % log_every == 0:
-                    log(f"epoch={epoch} step={step} loss={running / max(n_loss, 1):.4f}")
-                    running = 0.0
-                    n_loss = 0
-                if step % save_every == 0:
-                    ckpt = out_dir / f"step-{step}"
-                    ckpt.mkdir(parents=True, exist_ok=True)
-                    model.save_pretrained(ckpt)
-                    torch.save(jepa.state_dict(), ckpt / "jepa.pt")
-                    log(f"saved {ckpt}")
-                if max_steps is not None and step >= max_steps:
-                    break
-        if max_steps is not None and step >= max_steps:
-            break
+    try:
+        for epoch in range(epochs):
+            for i, batch in enumerate(loader):
+                batch = {k: v.to(device) for k, v in batch.items()}
+                h_len = float(batch["h_mask"].sum(dim=1).float().mean().item())
+                a_len = float(batch["a_mask"].sum(dim=1).float().mean().item())
+                o_len = float(batch["o_mask"].sum(dim=1).float().mean().item())
+                run_h += h_len
+                run_a += a_len
+                run_o += o_len
+                with torch.no_grad():
+                    z = last_hidden(model, batch["o_ids"], batch["o_mask"])
+                c = last_hidden(model, batch["h_ids"], batch["h_mask"])
+                u = last_hidden(model, batch["a_ids"], batch["a_mask"])
+                pred = jepa(c, u)
+                loss = cosine_align_loss(pred, z) / accum
+                loss.backward()
+                running += float(loss.item()) * accum
+                n_loss += 1
+                if (i + 1) % accum == 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        list(backbone_params) + list(jepa.parameters()), max_norm
+                    )
+                    opt.step()
+                    opt.zero_grad(set_to_none=True)
+                    step += 1
+                    if step % log_every == 0:
+                        avg = running / max(n_loss, 1)
+                        denom = max(n_loss, 1)
+                        log(
+                            f"epoch={epoch} step={step} loss={avg:.4f} "
+                            f"len(h/a/o)={run_h/denom:.0f}/{run_a/denom:.0f}/{run_o/denom:.0f}"
+                        )
+                        writer.add_scalar("train/loss", avg, step)
+                        writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
+                        writer.add_scalar("train/lr_jepa", opt.param_groups[1]["lr"], step)
+                        writer.add_scalar("train/len_h", run_h / denom, step)
+                        writer.add_scalar("train/len_a", run_a / denom, step)
+                        writer.add_scalar("train/len_o", run_o / denom, step)
+                        writer.flush()
+                        running = 0.0
+                        n_loss = 0
+                        run_h = run_a = run_o = 0.0
+                    if step % save_every == 0:
+                        ckpt = out_dir / f"step-{step}"
+                        ckpt.mkdir(parents=True, exist_ok=True)
+                        model.save_pretrained(ckpt)
+                        torch.save(jepa.state_dict(), ckpt / "jepa.pt")
+                        log(f"saved {ckpt}")
+                    if max_steps is not None and step >= max_steps:
+                        break
+            if max_steps is not None and step >= max_steps:
+                break
+    finally:
+        writer.flush()
+        writer.close()
 
     final = out_dir / "final"
     final.mkdir(parents=True, exist_ok=True)
@@ -378,6 +441,8 @@ def main() -> None:
         "mix_dir": str(mix_dir),
         "sources": sources,
         "steps": step,
+        "max_length": max_length,
+        "tensorboard": str(tb_dir),
         "cut_meta": str(model_dir / "cut_meta.json"),
     }
     (final / "train_meta.json").write_text(
