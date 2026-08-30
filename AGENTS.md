@@ -170,7 +170,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。Stage 1 JEPA：`python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml`。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子（专家 3D `gate/up/down` 不套 Muse 那套名字）。FSDP wrap `Qwen3_5MoeDecoderLayer`（`train/configs/accelerate/qwen35_moe_fsdp2.yaml`）。
+切鱼入口：`python train/scripts/cut_stage1.py`（CPU 流式，写出 `train/outputs/stage1_cut/`：前半 AgentWorld、后半 + `lm_head` + 末层 norm 用 Instruct，丢掉 ViT/MTP）。Stage 1 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536，和 Muse 一样把一条序列拆到四张卡）。数据仍用 `prepare_data.py` 已经写好的 `wm_code` / `wm_os` JSONL（`mix_v2` 优先，没有则 `mix_v1`；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子（专家 3D `gate/up/down` 不套 Muse 那套名字）。FSDP wrap `Qwen3_5MoeDecoderLayer`。
 
 ---
 
@@ -193,7 +193,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 - **Step 1.** 在拼合主干后面接上 JEPA。本阶段不开草稿、打分、\(W\)、`lm_head`。
 - **Step 2.** 每个 \((h,a,o)\) 走完 40 层：\(h\to c_t\)，\(a\to u^\star\)，\(o\to z^\star\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
-- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA：`python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml`。
+- **Step 3.** \(\mathrm{Pred}(c_t, u^\star)\) 对齐 \(z^\star\)。只更新主干 LoRA 和 JEPA：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（65536，4 卡切序列）。
 
 **Stage 2 — 出字**
 
@@ -252,8 +252,9 @@ python train/scripts/cut_stage1.py
 # 若还没有 mix：不要 --all（Stage 1 不用 anti_forget）
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/processed/mix_v2
 
-# Stage 1 JEPA（95GB 单卡直接 python；多卡 FSDP2 的 wrap 类名在 yaml 里，循环尚未接 Accelerator）
-python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml
+# Stage 1 JEPA：4 卡 FSDP2+CP，序列 65536（和 Muse 一样切序列）
+cd train
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 ```
 
 旧 9B 线可用 `configs/pilot.yaml` 先筛（保持 8k，少采样行，不要截断序列把观察切掉）。缓存根：`outputs/ds_cache/`。GPU 上再跑 `train_sft.py` / `swift` / `axolotl`；`prepare_data.py` 等可在 CPU。

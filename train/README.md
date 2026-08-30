@@ -58,7 +58,8 @@ python train/scripts/cut_stage1.py          # CPU, ~70GB → train/outputs/stage
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
 
-python train/scripts/train_jepa.py --config configs/jepa/stage1.yaml
+cd train
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
 ```
 
 ## Pipeline (Muse Glimmer-30B — TRL; other branch)
