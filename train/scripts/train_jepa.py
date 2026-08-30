@@ -363,7 +363,7 @@ def save_ckpt(accelerator, model, jepa, tokenizer, path: Path, extra: dict | Non
     unwrapped = accelerator.unwrap_model(model)
     unwrapped.save_pretrained(path)
     torch_mod = __import__("torch")
-    torch_mod.save(accelerator.unwrap_model(jepa).state_dict(), path / "jepa.pt")
+    torch_mod.save(jepa.state_dict(), path / "jepa.pt")
     if tokenizer is not None:
         tokenizer.save_pretrained(path)
     if extra:
@@ -482,15 +482,19 @@ def main() -> None:
         num_workers=0,
     )
 
-    backbone_params = [p for p in model.parameters() if p.requires_grad]
+    # FSDP2: only one nn.Module. JEPA is a small MLP, replicate it on each rank.
+    model = accelerator.prepare(model)
+    jepa = jepa.to(device=accelerator.device, dtype=dtype)
     opt = torch.optim.AdamW(
         [
-            {"params": backbone_params, "lr": float(tcfg.get("lr") or 2e-4)},
-            {"params": jepa.parameters(), "lr": float(tcfg.get("jepa_lr") or 1e-3)},
+            {
+                "params": [p for p in model.parameters() if p.requires_grad],
+                "lr": float(tcfg.get("lr") or 2e-4),
+            },
+            {"params": list(jepa.parameters()), "lr": float(tcfg.get("jepa_lr") or 1e-3)},
         ],
         weight_decay=0.01,
     )
-    model, jepa, opt = accelerator.prepare(model, jepa, opt)
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(tcfg.get("logging_steps") or 10)
@@ -538,9 +542,8 @@ def main() -> None:
                     run_a += a_len
                     run_o += o_len
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            list(model.parameters()) + list(jepa.parameters()), max_norm
-                        )
+                        accelerator.clip_grad_norm_(model.parameters(), max_norm)
+                        torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
                         opt.step()
                         opt.zero_grad(set_to_none=True)
                         step += 1
