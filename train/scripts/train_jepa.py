@@ -181,17 +181,28 @@ def collate(batch: list[dict[str, Any]], pad_id: int) -> dict[str, Any]:
 
 
 def last_hidden(model, input_ids, attention_mask):
+    """Qwen3.5 MoE CausalLM returns MoeCausalLMOutputWithPast: logits + hidden_states, no last_hidden_state."""
+    import torch
+
     out = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
         output_hidden_states=True,
         use_cache=False,
+        return_dict=True,
     )
-    h = out.last_hidden_state
+    hs = getattr(out, "hidden_states", None)
+    if hs:
+        h = hs[-1]
+    else:
+        h = getattr(out, "last_hidden_state", None)
     if h is None:
-        h = out.hidden_states[-1]
+        raise RuntimeError(
+            f"{type(out).__name__} has no hidden_states; "
+            f"fields={getattr(out, '__dataclass_fields__', {})}"
+        )
     idx = attention_mask.long().sum(dim=1).clamp(min=1) - 1
-    b = __import__("torch").arange(h.size(0), device=h.device)
+    b = torch.arange(h.size(0), device=h.device)
     return h[b, idx]
 
 
