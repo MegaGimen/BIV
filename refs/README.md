@@ -489,7 +489,7 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
 这组回答的问题不是「WM 和 agent 的目标该怎么共处」——那件事已经交给 K-draft/JEPA/selector/token 头处理了。
 这组回答的是更窄的一件事：**Stage 2 的嘴巴从哪来、切点切在哪、要不要重置 `lm_head`**。
 
-**已定结构（2026-08-29）。** 刀切在原始 40 层 **backbone 直筒** 上，不切在 JEPA 上。前半 \(T^W\) = AgentWorld 的 `emb` + \(L_0\ldots L_{\ell-1}\)；摘掉 `lm_head`，把 Instruct 的 \(L_\ell\ldots L_{39}\) 贴进切点到末端，再把 **Instruct 的 `lm_head` 接回（不重置）**。JEPA / 草稿 / 打分挂在 \(T^W\) **旁边**。两套前向不要合成一条：直筒仍把残差流 \(h_{\ell-1}\) 喂给 Instruct 后半截（Layer Swapping 支持的就是这个）；Stage 2 出字是 \(u_i \to\) 线性 \(W\)（\(2048\times 2048\)）\(\to\) Instruct `lm_head`，嘴巴吃的是 \(W(u_i)\)，**不是** \(h_{39}\)。`lm_head` \(\sim 5\times 10^8\) 参数，\(W\) \(\sim 4\times 10^6\)；先冻 \(T^W\) 和 `lm_head` 只训 \(W\)（+草稿），再小步解开 `lm_head`。切鱼论文支持换外层、常零训练；**不支持**「重置头后拟合更快」，也没做过嘴巴只吃 \(u_i\)。
+**已定结构（2026-08-29，出字接口同日更正）。** 刀切在原始 40 层 **backbone 直筒** 上，不切在 JEPA 上。前半 AgentWorld，后半 Instruct 整层，Instruct `lm_head` 接回（不重置）。JEPA / 草稿 / 打分挂在**拼合后的整条 backbone 之后**，不插在切点、也不从切点前抽 \(c_t\)。Stage 2 出字：草稿动作向量 → JEPA 打分 → \(u_i \to W \to\) Instruct `lm_head`（吃的是动作向量，不是 \(\hat z\)，也不是 \(h_{39}\)）。
 
 用户 2026-08-29 指出的关键事实，已经核对：`Qwen-AgentWorld-35B-A3B` 和 `Qwen3.5-35B-A3B`
 （我们的 agent/Instruct checkpoint）**同源**——都是 `Qwen3.5-35B-A3B-Base` 往下的两条后训练路径。

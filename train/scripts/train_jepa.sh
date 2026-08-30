@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536 (Muse recipe).
+# Stage 1 JEPA on AgentWorld's own backbone (no fish-cut). 4-GPU FSDP2 +
+# Context Parallel, max_length=65536 (Muse recipe).
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3

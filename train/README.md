@@ -40,9 +40,14 @@ train/
 
 ## Branch note
 
-Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: fish-cut AgentWorld[:ℓ]+Instruct[ℓ:] then Stage 1 JEPA
-(`train/scripts/probe.py` → `cut_stage1.py` → `train_jepa.py`). Mix JSONL is the existing
-`wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`).
+Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: two separate, unmodified 40-layer backbones
+(AgentWorld hosts JEPA; Instruct hosts the agent + draft/scorer/W), not a fish-cut single backbone —
+`compare.py` showed AgentWorld/Instruct deltas vs Base are dense and overlapping everywhere, not the
+low-entropy split fish-cut assumes, so `probe.py`/`cut_stage1.py` are now diagnostic-only, not part of
+the live pipeline. Stage 1 (`train_jepa.py`) loads AgentWorld directly (auto-downloaded via
+`merge/download.py`) and trains LoRA + JEPA over its full backbone. Mix JSONL is the existing
+`wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`). See `AGENTS.md` "模型架构" / "训练全过程"
+for the full two-backbone + connector + Stage 2 argmax/softmax-CE design.
 
 Sister **Muse** branch: Meta Muse Glimmer-30B with TRL + PEFT + Accelerate. Do not mix checkpoints.
 
@@ -51,18 +56,20 @@ Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent me
 ### Qwen3.5-35B JEPA (this branch)
 
 ```bash
-# 相对 Base 的行-MAV 文本表；缺权重会自动下
+# Optional diagnostic: row-MAV vs Base (no longer decides any cut point)
 python train/scripts/compare.py
-# ℓ from probe (already run: 12). Recompute: python train/scripts/probe.py
-python train/scripts/cut_stage1.py --print-cut
-python train/scripts/cut_stage1.py          # CPU, ~70GB → train/outputs/stage1_cut/
 
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
 
+# Stage 1: JEPA on AgentWorld's own backbone, no cut. model_dir in
+# configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
 ```
+
+`probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by
+`train_jepa.py` anymore.
 
 ## Pipeline (Muse Glimmer-30B — TRL; other branch)
 

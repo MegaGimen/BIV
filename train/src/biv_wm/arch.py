@@ -183,6 +183,48 @@ def dump_tree(mod: Any, log: Callable[[str], None], prefix: str = "  ") -> None:
             dump_tree(child, log, prefix + "  ")
 
 
+def log_world_architecture(
+    *,
+    model: Any,
+    extra: dict[str, Any],
+    model_dir: Path,
+    log: Callable[[str], None],
+) -> None:
+    """Plain AgentWorld backbone, no fish-cut, no Instruct tail.
+
+    Stage 1 (current plan): JEPA sits on AgentWorld's own unmodified 40
+    layers. There is no ``ell``/cut_meta.json here — the whole backbone is
+    "world", LoRA'd or frozen as a block, not split by layer index.
+    """
+    lm = language_model(model)
+    layers = list(getattr(lm, "layers", []))
+    n = len(layers) or N_LAYERS
+    kinds = [_kind(ly) for ly in layers]
+
+    log("=== architecture (Stage 1: AgentWorld, no cut) ===")
+    log(f"backbone  {model_dir}  layers=0..{n}  (AgentWorld only, full — no Instruct tail)")
+    embed = getattr(lm, "embed_tokens", None) or getattr(lm, "embedding", None)
+    if embed is not None:
+        log(f"  embed_tokens  {type(embed).__name__}")
+    log(f"  layers[0:{n}]  AgentWorld  {collapse_block(kinds)}  {_span_status(layers, 0, n)}")
+    norm = getattr(lm, "norm", None)
+    if norm is not None:
+        frozen = not any(p.requires_grad for p in norm.parameters())
+        log(f"  norm  {type(norm).__name__}  {'frozen' if frozen else 'trainable'}")
+    log("world path after backbone (no tokens):")
+    if extra:
+        for name, mod in extra.items():
+            log(f"  {name}")
+            dump_tree(mod, log, prefix="    ")
+    else:
+        log("  (none)")
+    if lm_head_module(model) is not None:
+        log("ERROR: lm_head still attached; Stage 1 must detach it")
+    else:
+        log("lm_head: detached this stage (AgentWorld's own lm_head unused by JEPA)")
+    log("=== end architecture ===")
+
+
 def log_train_architecture(
     *,
     model: Any,
@@ -193,7 +235,10 @@ def log_train_architecture(
 ) -> None:
     """Backbone: collapse repeating decoder groups. After backbone: print every module.
 
-    Stage 1 extra is JEPA. Stage 2 adds draft / scorer / W the same way.
+    Historical: fish-cut (AgentWorld[:ell]+Instruct[ell:]) single-backbone plan.
+    The live Stage 1/2 pipeline uses two separate backbones instead (see
+    ``log_world_architecture`` for the current Stage 1); kept for
+    ``cut_stage1.py``/measurement use, not called by ``train_jepa.py`` anymore.
     """
     if ell is None:
         ell = read_ell(model_dir)

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Stage 1: JEPA on the fish-cut backbone. Observation tokens are not LM labels.
+"""Stage 1: JEPA on AgentWorld's own, unmodified backbone. No fish-cut, no Instruct.
+
+AgentWorld and Instruct are two separate backbones (see AGENTS.md "模型架构").
+This script only ever touches AgentWorld: c_t, u*, z* are all encoded by
+AgentWorld's own 40 layers. Instruct + draft/scorer/W (Stage 2) attach later
+and call this trained, frozen JEPA like an advisor.
 
 Encodes (h, a, o) from mix JSONL messages, predicts ẑ = JEPA(c_t, u*) vs stop-grad z*.
 4-GPU FSDP2 + Context Parallel (Muse recipe), max_length=65536.
@@ -21,10 +26,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 TRAIN = ROOT / "train"
 SRC = TRAIN / "src"
+MERGE = ROOT / "merge"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(MERGE) not in sys.path:
+    sys.path.insert(0, str(MERGE))
 
 from biv_wm.hao import split_hao  # noqa: E402
+from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
 
@@ -341,11 +350,18 @@ def resolve_cp_size(cli: int | None) -> int:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    p.add_argument("--model-dir", type=Path, default=None)
+    p.add_argument("--model-dir", type=str, default=None, help="AgentWorld hub id or local dir")
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--max-length", type=int, default=None)
     p.add_argument("--cp-size", type=int, default=None, help="Context-parallel size (Ring Attention).")
+    p.add_argument("--cache-dir", type=Path, default=None, help="Default: merge/output/cache")
+    p.add_argument(
+        "--source",
+        choices=["modelscope", "huggingface"],
+        default=os.environ.get("MERGE_SOURCE", "modelscope"),
+        help="Where to download AgentWorld from if not already cached.",
+    )
     p.add_argument(
         "--logging-dir",
         type=Path,
@@ -408,11 +424,15 @@ def main() -> None:
         if is_main:
             log(msg)
 
-    model_dir = _resolve(args.model_dir or cfg["model_dir"])
+    cache_dir = _resolve(args.cache_dir or "merge/output/cache", ROOT)
+    model_dir = resolve_model(
+        str(args.model_dir or cfg["model_dir"]),
+        source=args.source,
+        cache_dir=cache_dir,
+        role="world",
+    )
     sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
     mix_dir = resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
-    if not model_dir.is_dir():
-        raise SystemExit(f"missing cut model {model_dir}; run python train/scripts/cut_stage1.py")
     out_dir = _resolve(tcfg.get("output_dir") or "outputs/jepa_stage1")
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -444,23 +464,16 @@ def main() -> None:
         if "lm_head" in name:
             p.requires_grad = False
 
-    from biv_wm.arch import (
-        freeze_instruct_tail,
-        install_hidden_only_forward,
-        log_train_architecture,
-        lora_targets_world_only,
-        read_ell,
-    )
+    from biv_wm.arch import install_hidden_only_forward, log_world_architecture
 
-    ell = read_ell(model_dir)
-    if ell is None:
-        ell = 12
-    n_frozen = freeze_instruct_tail(model, ell)
+    # No fish-cut, no Instruct tail: the whole AgentWorld backbone is "world".
+    # get_peft_model() below freezes every base-model param except these LoRA
+    # targets, so there is no separate freeze() call to make.
     suffixes = list(tcfg.get("target_modules") or [])
-    targets = lora_targets_world_only(two_d_lora_targets(model, suffixes), ell)
+    targets = two_d_lora_targets(model, suffixes)
     if not targets:
-        raise SystemExit(f"no LoRA targets in AgentWorld layers[0:{ell}]")
-    rank_log(f"ell={ell} froze_instruct_tensors={n_frozen} lora 2D world={len(targets)}")
+        raise SystemExit(f"no LoRA targets matching {suffixes} in AgentWorld backbone")
+    rank_log(f"lora 2D targets (full AgentWorld backbone, no cut)={len(targets)}")
     lora = LoraConfig(
         r=int(tcfg.get("lora_rank") or 16),
         lora_alpha=int(tcfg.get("lora_alpha") or 32),
@@ -476,7 +489,7 @@ def main() -> None:
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa = JEPAPred(dim=hidden, hidden=int(tcfg.get("jepa_hidden") or hidden * 2))
     if is_main:
-        log_train_architecture(
+        log_world_architecture(
             model=model,
             extra={"jepa": jepa},
             model_dir=model_dir,
@@ -615,9 +628,8 @@ def main() -> None:
             "max_length": max_length,
             "cp_size": cp_size,
             "lm_head": "detached_at_runtime",
-            "reload_lm_head_from": str(model_dir),
+            "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
             "tensorboard": str(tb_dir),
-            "cut_meta": str(model_dir / "cut_meta.json"),
         },
     )
     rank_log(f"wrote {out_dir / 'final'}")
