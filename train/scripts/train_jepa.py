@@ -363,7 +363,7 @@ def parse_args() -> argparse.Namespace:
         "--save-steps",
         type=int,
         default=None,
-        help="Override yaml save_steps (Muse default 25). Post-save eval locked to this.",
+        help="Override yaml save_steps (default 25). No eval — save only.",
     )
     p.add_argument("--max-length", type=int, default=None)
     p.add_argument("--cp-size", type=int, default=None, help="Context-parallel size (Ring Attention).")
@@ -414,35 +414,13 @@ def save_ckpt(
     log(f"saved {path}")
 
 
-def eval_align_loss(model, jepa, loader, device, cp_size: int, max_batches: int) -> float | None:
-    """Held-out cosine align; all ranks must step (FSDP). Returns mean loss or None."""
-    import torch
-    from biv_wm.jepa import cosine_align_loss
+def _warmup_lambda(warmup: int):
+    def fn(step: int) -> float:
+        if warmup <= 0:
+            return 1.0
+        return min(1.0, float(step + 1) / float(warmup))
 
-    if loader is None or max_batches <= 0:
-        return None
-    model.eval()
-    jepa.eval()
-    total = 0.0
-    n = 0
-    try:
-        with torch.no_grad():
-            for i, batch in enumerate(loader):
-                if i >= max_batches:
-                    break
-                batch = {k: v.to(device) for k, v in batch.items()}
-                z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
-                u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
-                loss = cosine_align_loss(jepa(c, u), z)
-                total += float(loss.detach().float().item())
-                n += 1
-    finally:
-        model.train()
-        jepa.train()
-    if n == 0:
-        return None
-    return total / n
+    return fn
 
 
 def main() -> None:
@@ -451,6 +429,7 @@ def main() -> None:
     import torch
     from accelerate import Accelerator
     from peft import LoraConfig, get_peft_model
+    from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
     from biv_wm.jepa import JEPAPred, cosine_align_loss
 
@@ -557,12 +536,6 @@ def main() -> None:
         raise SystemExit(f"no (h,a,o) rows under {mix_dir}/{sources}/train.jsonl")
     rank_log(f"train_rows={len(train_rows)}")
 
-    eval_cap = int(tcfg.get("max_eval_samples") or tcfg.get("eval_max_samples") or 128)
-    eval_max_length = int(tcfg.get("eval_max_length") or min(8192, max_length))
-    eval_max_length = min(eval_max_length, max_length)
-    eval_rows = load_rows(mix_dir, sources, "eval", eval_cap)
-    rank_log(f"eval_rows={len(eval_rows)} eval_max_length={eval_max_length}")
-
     train_ds = HaoDataset(train_rows, tokenizer, max_length)
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
     gen = torch.Generator()
@@ -576,29 +549,24 @@ def main() -> None:
         collate_fn=lambda b: collate(b, pad_id, pad_multiple),
         num_workers=0,
     )
-    eval_loader = None
-    if eval_rows:
-        eval_loader = DataLoader(
-            HaoDataset(eval_rows, tokenizer, eval_max_length),
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-            num_workers=0,
-        )
 
     # FSDP2: one model + its optimizer in the same prepare(). JEPA is a small
     # MLP on each rank, separate optimizer (not an FSDP module).
+    # LRs are not Muse SFT: cosine-align a new predictor on an already-trained
+    # AgentWorld, so LoRA is a small nudge and the MLP is a new head.
+    backbone_lr = float(tcfg.get("lr") or 5e-5)
+    jepa_lr = float(tcfg.get("jepa_lr") or 1e-3)
     opt = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=float(tcfg.get("lr") or 2e-4),
-        weight_decay=0.01,
+        lr=backbone_lr,
+        weight_decay=float(tcfg.get("weight_decay") or 0.01),
     )
     model, opt = accelerator.prepare(model, opt)
     jepa = jepa.to(device=accelerator.device, dtype=dtype)
     opt_jepa = torch.optim.AdamW(
         list(jepa.parameters()),
-        lr=float(tcfg.get("jepa_lr") or 1e-3),
-        weight_decay=0.01,
+        lr=jepa_lr,
+        weight_decay=float(tcfg.get("jepa_weight_decay") or 0.0),
     )
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
@@ -610,9 +578,14 @@ def main() -> None:
     steps_per_epoch = math.ceil(len(loader) / accum)
     planned = steps_per_epoch * epochs
     total_opt = planned if max_steps is None else min(planned, int(max_steps))
+    warmup = int(tcfg.get("warmup_steps") or 50)
+    warmup = max(0, min(warmup, max(total_opt - 1, 0)))
+    sched = LambdaLR(opt, _warmup_lambda(warmup))
+    sched_jepa = LambdaLR(opt_jepa, _warmup_lambda(warmup))
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
-        f"save_steps={save_every} save_total_limit={save_limit} (eval locked to save_steps)"
+        f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
+        f"save_steps={save_every} save_total_limit={save_limit} (save only, no eval)"
     )
 
     ckpt_extra = {
@@ -652,35 +625,6 @@ def main() -> None:
         if is_main:
             emit(f"[jepa] checkpoint ({kind}) → {dest.name}")
             rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepa] {m}"))
-
-    def post_save_eval(step_i: int) -> None:
-        if eval_loader is None:
-            if is_main:
-                emit("[jepa] post-save eval skipped: no eval.jsonl rows")
-            return
-        if is_main:
-            emit(f"[jepa] post-save eval @ step {step_i}: held-out cosine align")
-        accelerator.wait_for_everyone()
-        try:
-            mean = eval_align_loss(
-                model,
-                jepa,
-                eval_loader,
-                accelerator.device,
-                cp_size,
-                eval_cap,
-            )
-        except Exception:
-            emit("[jepa] post-save eval FAILED")
-            raise
-        accelerator.wait_for_everyone()
-        if is_main and mean is not None:
-            emit(f"[jepa] post-save eval metrics: {{'eval_loss': {mean:.6f}}}")
-            if writer is not None:
-                writer.add_scalar("eval/loss", mean, step_i)
-                writer.flush()
-        elif is_main and mean is None:
-            emit("[jepa] post-save eval metrics: empty")
 
     writer = None
     tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
@@ -740,6 +684,8 @@ def main() -> None:
                         torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
                         opt.step()
                         opt_jepa.step()
+                        sched.step()
+                        sched_jepa.step()
                         opt.zero_grad(set_to_none=True)
                         opt_jepa.zero_grad(set_to_none=True)
                         step += 1
@@ -773,13 +719,11 @@ def main() -> None:
                         if is_last_in_epoch:
                             emit(
                                 f"[jepa] epoch {epoch + 1} end: force checkpoint "
-                                "+ post-save evaluate (permanent epoch ckpt)"
+                                "(permanent epoch ckpt)"
                             )
                             dump_ckpt("epoch-end", epoch + 1, step, tok=tokenizer)
-                            post_save_eval(step)
                         elif step % save_every == 0:
                             dump_ckpt("rolling", epoch, step)
-                            post_save_eval(step)
                         if max_steps is not None and step >= max_steps:
                             hit_max = True
                             break

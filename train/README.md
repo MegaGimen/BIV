@@ -66,9 +66,9 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
-# Checkpoints match Muse: 2 epochs, save_steps=25, tqdm bar,
-# checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep),
-# post-save eval on mix eval.jsonl after every save. Override: --save-steps N
+# Checkpoints: 2 epochs, save_steps=25, tqdm bar,
+# checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
+# No mid-run eval. Override: --save-steps N
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by

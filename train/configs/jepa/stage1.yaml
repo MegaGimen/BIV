@@ -4,6 +4,11 @@
 # and calls this trained, frozen JEPA like an advisor.
 # Data: existing mix_v2 wm_code + wm_os (not anti_forget).
 #
+# Hyperparams are NOT Muse Glimmer SFT. Muse 2e-4 + token CE teaches a
+# generator to write observation text. Here the loss is cosine align of a
+# new MLP predictor in 2048-d, and AgentWorld already went CPT → next-state
+# SFT → RL. LoRA only nudges that geometry; the MLP is a randomly inited head.
+#
 #   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 #   python train/scripts/train_jepa.py --config train/configs/jepa/stage1.yaml
 #
@@ -19,13 +24,17 @@ train:
   max_length: 65536
   batch_size: 1
   grad_accum: 8
-  lr: 2.0e-4
+  # Backbone LoRA: ~1/4 of Muse SFT (2e-4). Cosine hidden-align, already-trained WM.
+  lr: 5.0e-5
+  weight_decay: 0.01
+  # Predictor MLP: new params, ~20× backbone so the head moves first (JEPA-style).
   jepa_lr: 1.0e-3
+  jepa_weight_decay: 0.0
   num_epochs: 2
   logging_steps: 10
-  # Mid-run: every N steps → checkpoint-e{epoch}-s{step}; keep newest save_total_limit.
-  # Epoch-end: always save checkpoint-epoch{N}-end-s{step} (permanent) + evaluate.
-  # Same cadence as Muse Glimmer (configs/trl/muse_glimmer_30b_lora.yaml).
+  # Checkpoint cadence (not a loss hyperparam): same names/rotation as Muse.
+  # Mid-run: checkpoint-e{epoch}-s{step}, keep newest save_total_limit.
+  # Epoch-end: checkpoint-epoch{N}-end-s{step} (permanent). No eval.
   save_steps: 25
   save_total_limit: 3
   # TensorBoard root. Override with $LOGGING_DIR or $TF_LOGS (Muse uses /root/tf-logs).
@@ -55,5 +64,3 @@ train:
   torch_dtype: bfloat16
   gradient_checkpointing: true
   max_train_samples: null
-  eval_max_samples: 128
-  eval_max_length: 8192
