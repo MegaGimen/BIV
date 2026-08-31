@@ -174,21 +174,27 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 - **Step 1.** JEPA 接在 AgentWorld 自己完整的 40 层后面。`model_dir` 直接解析成 AgentWorld 的 hub id / 缓存路径（`train/configs/jepa/stage1.yaml`，缺失自动下载），不读任何切鱼产物。**训练时从活模块上摘掉 AgentWorld 自己的 `lm_head`**，`forward` 只跑 `language_model → hidden → JEPA`，不算词表 logits。启动时打印架构：`biv_wm.arch.log_world_architecture`，一行打完整条 40 层，确认 `lm_head: detached`。
 - **Step 2.** 每个 \((h,a,o)\) 走完 AgentWorld 的 40 层：\(h\to c_t^{AW}\)，\(a\to u^{\star W}\)，\(o\to z^{\star W}\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
-- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失是 `1 - cosine`。旁边加一项逆动力学，写进梯度：小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)。真正反传的是这两项，TensorBoard 的 `train/loss` 就是它：
+- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失是 `1 - cosine`。旁边加逆动力学（小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)）——这两项和以前一样，`z` 仍是 `torch.no_grad()` 编出来的，`detach` 也没拿掉。**在这两项之外，另加两条独立的反坍缩损失**，原因见下面「JEPA 家族怎么防坍缩」：一条真的让编码器自己的输出被推开（`loss_simcse`），一条纠正了上次翻车的队列（`loss_bank`）。四项分两次反传：
 
   \[
-  \texttt{loss} = \texttt{loss\_align} + 0.3\,\texttt{loss\_inv}
+  \texttt{loss} = \texttt{loss\_align} + \texttt{inv\_weight}\cdot\texttt{loss\_inv} + \texttt{bank\_weight}\cdot\texttt{loss\_bank}
   \]
 
-  `0.3` 来自 yaml 的 `inv_weight`。`train/loss_align`、`train/loss_inv` 是乘权重之前的原值。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（共用 `jepa_lr=1e-3`）。两条学习率仍然分开：主干 LoRA 小步挪已经训过的几何，两个新头大约 20 倍大，先自己动起来。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开 JEPA/LoRA）。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训才用 `--resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
+  这一项每个 micro-batch 反传一次，和以前的写法完全一样（`inv_weight` 默认 `0.3`）。`loss_bank` 的 `pred`（JEPA 猜测，带梯度）来自同一次前向，`z`/`u` 都用已经 `detach` 的版本，所以这条不额外碰编码器，插进现有反传不改内存形状。
 
-  同域内、只学这个轻映射，需要的数据量和墙钟时间都可能比 AgentWorld 自己那轮 CPT+SFT+RL 少——这是推论，不是已经验证的结果。数字掉得快（例如 0.9→0.04）**不能**单独当成学到了转移：语言模型最后一层隐状态本身容易挤在一个窄锥里，预测器可以靠输出万能方向把余弦做高。所以损失里除了对齐还有逆动力学：两个观察若塌成一样，就认不出中间那条命令。坍缩检查只负责报这股力有没有起作用。损失和坍缩检查共用 `log_steps`（默认 5 个 optimizer step），存盘仍是 `save_steps`（默认 25），可以用 `--log-steps` / `--save-steps` 盖掉。检查用的是**这一段已经训过的行**上的前向缓存，不再另找没见过的数据：步数还少时没见过的对不上，分不清没学够还是学坏了。报告配对余弦、错配余弦、\(z^*\) 自身彼此有多像、\(\hat z\) 自身彼此有多像；看中位数和 90 分位，不看均值。错配时观察字符串完全相同的不当负例。配对中位数明显高于错配中位数 → 至少在见过的例子上分开了；两者都高 → 坍缩。
+  \[
+  \texttt{loss\_simcse\_group} = \texttt{nce\_weight}\cdot\texttt{loss\_simcse}
+  \]
+
+  这一项**每 `nce_group_size` 个 micro-batch 才反传一次**，是单独的 `accelerator.backward()` 调用，见下段。`train/loss_align`、`train/loss_inv`、`train/loss_bank`、`train/loss_simcse` 都是乘权重之前的原值。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（共用 `jepa_lr=1e-3`）；两条反坍缩损失都不新增可训练参数，走的是已经存在的两条路——`loss_bank` 的正例/负例都在函数里 `detach`，梯度只经 `pred` 回流到 JEPA MLP 和 \(c,u\) 那两条编码路径（和 `loss_align` 一样，够不到产出 \(z^*\) 那次前向）；`loss_simcse` 的 \(z^{(1)},z^{(2)}\) 不 `detach`，梯度直接回流进产出 \(z^*\) 那次前向本身的 LoRA，这是四项里唯一一条摸得到它的。两条学习率仍然分开：主干 LoRA 小步挪已经训过的几何，两个新头大约 20 倍大，先自己动起来。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开 JEPA/LoRA）。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训才用 `--resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
+
+  同域内、只学这个轻映射，需要的数据量和墙钟时间都可能比 AgentWorld 自己那轮 CPT+SFT+RL 少——这是推论，不是已经验证的结果。数字掉得快（例如 0.9→0.04）**不能**单独当成学到了转移：语言模型最后一层隐状态本身容易挤在一个窄锥里，预测器可以靠输出万能方向把余弦做高。25 步内就实测到这个坍缩（`pred_self_median` 从 0.69 冲到 0.996，`paired_median`/`mismatch_median` 几乎重合），说明只靠停梯度 + 逆动力学这两条挡不住——根子在于产出 \(z^*\) 那次前向从来没吃过梯度，逆动力学再怎么训也碰不到编码器本身。坍缩检查只负责报这股力有没有起作用，不产生梯度。损失和坍缩检查共用 `log_steps`（默认 5 个 optimizer step），存盘仍是 `save_steps`（默认 25），可以用 `--log-steps` / `--save-steps` 盖掉。检查用的是**这一段已经训过的行**上的前向缓存，不再另找没见过的数据：步数还少时没见过的对不上，分不清没学够还是学坏了。报告配对余弦、错配余弦、\(z^*\) 自身彼此有多像、\(\hat z\) 自身彼此有多像；看中位数和 90 分位，不看均值。错配时观察字符串完全相同的不当负例。配对中位数明显高于错配中位数 → 至少在见过的例子上分开了；两者都高 → 坍缩。逆动力学自己有同一个盲区：`inv_hat`（猜出来的命令编码）会不会也塌成一样，之前完全没人查——现在 `check_collapse` 额外拿 `inv_hat` vs \(u^*\) 跑一遍同一套配对/错配统计，`collapse/inv_paired_median`、`collapse/inv_mismatch_median` 写进 TensorBoard 和 `collapse.json`。
 
   假负例：命令行观察重复极高，随机换位会撞上「碰巧也说得通」的下一观察。不在训练循环里拉沙箱重跑（成本和造正样本同一量级）。默认赌的是「去重之后，行得通的负例是少数」——这是对比学习的标准假设，不是我们独有的将就。LLM 打分器只作为离线清洗的最后一道，不进训练循环。
 
 **Stage 1 坍缩检查（和损失一起，每 `log_steps` 步，默认 5）**
 
-这些数字**不是**再跑一遍前向。训练每条样本时已经算出了 JEPA 的猜测 \(\hat z\) 和真观察编码 \(z^*\)，主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计，然后清空这段缓存。存盘不碰这份缓存。同一份结果出现三处：终端一行 `[jepa] collapse ...`、`output_dir/collapse.json`（以及 `collapse-s{step}.json`）、TensorBoard 的 `collapse/*`（`paired_median`、`mismatch_median`、`mismatch_p90`、`z_self_median`、`pred_self_median`、`n`、`skipped_same_o`、`verdict`）。
+这些数字**不是**再跑一遍前向。训练每条样本时已经算出了 JEPA 的猜测 \(\hat z\) 和真观察编码 \(z^*\)，主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计，然后清空这段缓存。存盘不碰这份缓存。同一份结果出现三处：终端一行 `[jepa] collapse ...`（逆动力学那侧另起一行 `[jepa] collapse(inv) ...`）、`output_dir/collapse.json`（以及 `collapse-s{step}.json`，顶层字段不变，逆动力学那份挂在新增的 `inv` 键下）、TensorBoard 的 `collapse/*`（`paired_median`、`mismatch_median`、`mismatch_p90`、`z_self_median`、`pred_self_median`、`n`、`skipped_same_o`、`verdict`、`inv_paired_median`、`inv_mismatch_median`）。
 
 拿两条样本来读字段。第一条 `rm a.txt`，真观察是「文件没了」。第二条 `cat b.txt`，真观察是「Hi Cyberpunk!」。JEPA 给每一条吐一个猜测向量。
 
@@ -201,16 +207,19 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 | `z_self_med` | `collapse/z_self_median` | 两条真观察编完之后彼此像不像（JEPA 不参与） |
 | `pred_self_med` | `collapse/pred_self_median` | JEPA 吐出的几个猜测彼此像不像 |
 | `verdict` | `collapse/verdict`（text） | 用中位数套的标签：`collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低，还没拟合；`no_mismatch_pairs`＝去掉相同文本后没有可换的负例 |
+| `inv_paired_med` / `inv_mismatch_med` | `collapse/inv_paired_median`、`collapse/inv_mismatch_median` | 同一套配对/错配统计，换成逆动力学：`inv_hat`（从 \(c_t,z^*\) 猜出来的命令编码）靠不靠近自己真正的命令 \(u^*\)、会不会也和别条的 \(u^*\) 分不开。以前只查了 JEPA 这一侧，逆动力学自己塌不塌没人看，现在补上 |
 
-期望方向：`paired_median` 升高、同时 `mismatch_median` 压低。只升配对、错配跟着升 → 万能方向（坍缩）。两项都低 → 还没拟合，不是已经分开了。代码里差 ≥ 0.2 才标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
+期望方向：`paired_median` 升高、同时 `mismatch_median` 压低。只升配对、错配跟着升 → 万能方向（坍缩）。两项都低 → 还没拟合，不是已经分开了。代码里差 ≥ 0.2 才标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。`inv_paired_med`/`inv_mismatch_med` 只报数字，不套 `verdict` 标签。
 
 **TensorBoard `train/*`**
 
 | 标量 | 是什么 |
 |------|--------|
-| `train/loss` | 反传用的加权和：`loss_align + inv_weight×loss_inv`（默认 `inv_weight=0.3`） |
+| `train/loss` | 每 micro-batch 反传的加权和：`loss_align + inv_weight×loss_inv + bank_weight×loss_bank`（默认 `inv_weight=0.3`、`bank_weight=0.2`） |
 | `train/loss_align` | 「猜测靠近自己的真观察」，`1 - cosine` |
-| `train/loss_inv` | 逆动力学的原值（还没乘 0.3） |
+| `train/loss_inv` | 逆动力学的原值（还没乘权重） |
+| `train/loss_bank` | 修正版队列 InfoNCE 的原值（还没乘 `bank_weight`），和上面三项同一次反传 |
+| `train/loss_simcse` | 编码器自己的 SimCSE InfoNCE 原值（还没乘 `nce_weight`），**单独一次反传**，每 `nce_group_size` 个 micro-batch 才更新一次，别的标量每步都有、这个不是 |
 | `train/lr_backbone` | 主干 LoRA 的学习率，热身到 `5e-5` |
 | `train/lr_jepa` | JEPA 预测器和逆动力学头共用的学习率，热身到 `1e-3`，大约是主干的 20 倍 |
 | `train/len_h` / `len_a` / `len_o` | 这段样本里历史 / 命令 / 下一观察的非 pad token 数。不测学得好不好 |
@@ -219,7 +228,16 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 图像/视频上的 JEPA 都承认：只把预测拉近目标，编码器可以让所有样本变成同一个向量，损失照样能降。I-JEPA 的做法是目标编码器走指数滑动平均（EMA），并且目标这条路上停梯度，预测器改不了目标 [201]。后来有工作发现单靠 EMA 挡不住整网坍成常数，于是在预测损失旁边加上 VICReg：强迫每个维度保持方差、维度之间少冗余 [202][203]。更新的一条线（LeJEPA / LeWorldModel）用 SIGReg 一类正则，把嵌入推成各向同性的高斯，宣称可以不再依赖 EMA 和学生–教师 [204][205]。这些都是**写进损失里的排斥力**，不是事后看一眼。
 
-我们 Stage 1 能落地的两件，已经写进损失。第一件是停梯度：真观察 \(z^*\) 在 `torch.no_grad()` 里编码，余弦损失里也对目标 `detach`，所以预测器改不了「文件没了」那条目标向量——这对应 I-JEPA 的停梯度半边。AgentWorld 原权重冻住、只动 LoRA，底座不会整网去追预测器。第二件是逆动力学：小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出命令编码 \(u^*\)。两个观察若塌成一样，就认不出中间那条命令。这对应从潜差或两端状态还原动作的那条线 [206][207]。跨轨迹的队列 softmax / ranking NCE 试过，负例和当前转移无关，会把 `loss_align` 顶回去，已经拿掉。batch=1、accum=8 时 VICReg / SIGReg 的协方差没有信号；整网 EMA 教师在 35B 上做不到。坍缩检查和损失标量一起每 `log_steps` 步报一次，但它不再是唯一的防坍缩手段。
+我们 Stage 1 一开始只落地了两件。第一件是停梯度：真观察 \(z^*\) 在 `torch.no_grad()` 里编码，余弦损失里也对目标 `detach`，所以预测器改不了「文件没了」那条目标向量——这对应 I-JEPA 的停梯度半边。AgentWorld 原权重冻住、只动 LoRA，底座不会整网去追预测器。第二件是逆动力学：小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出命令编码 \(u^*\)。两个观察若塌成一样，就认不出中间那条命令。这对应从潜差或两端状态还原动作的那条线 [206][207]。
+
+问题是这两件合起来**挡不住**，25 步内实测到了：`pred_self_median` 从 0.69 冲到 0.996，`paired_median` 和 `mismatch_median` 几乎重合。原因很直接——SMWM/ICM 这类论文里逆动力学能防坍缩，前提是产出状态编码那次前向本身在挨反传，逆动力学的梯度能一路怼回编码器，逼它把不同状态编得开 [206][207]。我们这边为了不让预测器追着一个会动的靶子跑，把 \(z^*\) 焊在 `no_grad` 里——这样一来逆动力学虽然还在训，但它的梯度只够到 \(c_t\) 和它自己的 MLP，摸不到编码器产出 \(z^*\) 的那次前向，防坍缩这条腿就是断的。VICReg/SIGReg 这条线 [202][203][204][205] 需要一批样本估计方差/协方差，我们 batch=1、accum=8，一批只有几条，协方差没有信号，试了也白试；整网 EMA 教师（I-JEPA 原装做法 [201]）要求另外存一份 35B 的滑动平均副本，做不到。
+
+**新加的两条不属于这两类，绕开了它们的前提。** 都不需要教师网络，也都不需要几十条以上的批才能估计出协方差：
+
+1. **`loss_simcse`：让编码器自己的输出被推开，这是唯一真正碰到 \(z^*\) 那次前向的一条。** 做法照抄 SimCSE 的无监督版本：同一条观察文本 \(o\) 用 `model.train()` 的 dropout 噪声重复编码两次，得到 \(z^{(1)},z^{(2)}\)——两次前向权重相同，唯一差异是 dropout 掩码不同，天然是一对「正样本」，不用额外造数据增强 [208]。把连续 `nce_group_size`（默认 4）个 micro-batch 的 \(z^{(1)},z^{(2)}\) 攒起来，做一次批内 InfoNCE：每条的正例是自己的另一视角，负例是组里其它条（文本不同的那些，同文本剔除，和坍缩检查的 `skip_same_o` 一个逻辑），温度 `nce_temperature`（默认 0.05，抄 SimCSE 的量级，因为 LLM 隐状态本来就挤在一个窄锥里，不用低温度分不出差异 [208][209]）。这次的 \(z^{(1)},z^{(2)}\) **不 detach**，梯度顺着 InfoNCE 的分母（负例项）一路回到编码器自己的前向，逼它把不同观察编得散开——这是 `loss_align`/`loss_bank` 从来没做到的事，因为它们用的 `z` 都是停梯度或者已经 `detach`。只对 `o_ids` 多算两次前向，`o` 比 `h` 短两个数量级（均值几百 token vs 几万），显存成本只是多攒着 `nce_group_size×2` 条短序列的图，不去动本来就吃紧的 `h` 这条路。
+2. **`loss_bank`：修正版的队列，不再单打独斗。** 还是 JEPA 的猜测 `pred` 去认真观察，但这次库很小很新鲜（`bank_size` 默认 64，逐步滚动，不是攒了几百步的陈年队列），标准 softmax 温度 `bank_temperature`（默认 0.05）,不是把负例余弦硬按到 0——上次翻车正是因为「负例目标=0」这个绝对值和 LLM 嵌入天生 0.85+ 的基线互相打架，把 `loss_align` 顶了回去。这次要浅：靠 `loss_simcse` 已经在把 \(z^*\) 的几何推开，`loss_bank` 只是在一个不再是死水的空间里，让预测器也学着分辨，不用一个人对抗一整个挤在一起的窄锥。
+
+坍缩检查（`collapse/*`）不产生梯度，只负责报这两条新损失有没有真的起作用：`pred_self_median` 该往下掉，`paired_median` 该和 `mismatch_median` 拉开距离，`z_self_median` 该跟着往下松动（如果三个月都不动，说明 `loss_simcse` 的权重或组大小需要调）。
 
 **Stage 2 — 出字（Instruct 自己的 backbone + 草稿 / 打分 / \(W\)，JEPA 当冻死的顾问）**
 
@@ -340,9 +358,9 @@ nanobot gateway
 
 ## 灵感来源
 
-编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]，编号超出这个范围但同样是当前方案在用的证据，不是背景阅读。
+编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]；Stage 1 的 JEPA 防坍缩细节引了 [201]–[207]；[208]–[210] 是这一轮新加的、真正被写进 `loss_simcse`/`loss_bank` 温度取值的证据。这些编号都超出 [1]–[42] 的范围，但同样是当前方案在用的证据，不是背景阅读。
 
-世界这一头走 JEPA：在表征空间里预测下一状态，观察文本只当训练目标，不进预测器。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。潜自预测作为辅助任务、以及它和转移算子谱分解的关系来自 [4][5]。把「下一潜状态」接到 Transformer、并让预测只读当前状态和动作，来自 [6][7]。观察损失打在 JEPA、命令损失打在 `lm_head`，对应 [8][9][10]。Stage 1 防坍缩：目标停梯度对齐 I-JEPA [201]；逆动力学让 \(c_t,z^*\) 必须保住「中间发生了哪条命令」[206][207]。VICReg / SIGReg / 整网 EMA 在这套 35B、batch=1 的设定里用不上 [202][203][204][205]。跨轨迹队列 NCE [16][17] 试过，已从 Stage 1 拿掉。
+世界这一头走 JEPA：在表征空间里预测下一状态，观察文本只当训练目标，不进预测器。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。潜自预测作为辅助任务、以及它和转移算子谱分解的关系来自 [4][5]。把「下一潜状态」接到 Transformer、并让预测只读当前状态和动作，来自 [6][7]。观察损失打在 JEPA、命令损失打在 `lm_head`，对应 [8][9][10]。Stage 1 防坍缩：目标停梯度对齐 I-JEPA [201]；逆动力学让 \(c_t,z^*\) 必须保住「中间发生了哪条命令」[206][207]，前提是产出状态编码那次前向本身要挨反传，这条前提在我们最早的实现里被 `no_grad` 切断了。VICReg / SIGReg / 整网 EMA 在这套 35B、batch=1 的设定里用不上 [202][203][204][205]，因为它们要么要一批样本估协方差、要么要另存一份 35B 的滑动平均教师。跨轨迹队列 NCE [16][17] 最早试过，负例和当前转移无关、目标又是把余弦硬按到 0，把 `loss_align` 顶了回去，已经从 Stage 1 拿掉；现在换成的 `loss_bank` 是同一条队列思路的修正版（新鲜、小、softmax 温度而非硬目标），不是同一份代码复活。真正补上「编码器自己被推开」这条腿的是无监督 SimCSE：同一段文本重复走一遍 dropout 当正样本对，批内温度 InfoNCE 当负例 [208]；LLM 隐状态天生挤在窄锥里、需要低温度才能分出差异，这一点和 sentence embedding 的各向异性问题共享同一个诊断 [209][210]，`loss_bank`/`loss_simcse` 的温度取值抄的都是这条线，不是随手定的 0.05。
 
 出字这一头走「先在向量里提案，在潜空间里看未来，只把一个赢家写成字」。ω-EVA 是提案 → 潜未来 → 改写 [11]；I2A 先编码想象轨迹再交给策略 [12]；Coconut 让字只在最后出现 [13]。动作侧先学表征、再还原成真命令 [14]。负例在同一条轨迹内采 [15]；转移损失用排序形式 [16][17]，现在具体落地成打分器的 \(K{+}1\) 路 softmax 交叉熵（真实分支当正例，草稿当负例，不需要经过 \(\arg\max\)）。\(K\) 个草稿全部过 JEPA，\(\arg\max\) 只在推理时用一次；训练时解码器走教师强制的真实分支，和打分器的排序损失彼此独立、不用等 \(\arg\max\) 先选出赢家。
 
@@ -568,3 +586,7 @@ nanobot gateway
 [205] [LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels](https://consensus.app/papers/details/38896c0cf07758818f46cbbe31bfe177/)
 [206] [Delta-JEPA: Learning Action-Sensitive World Models via Latent Difference Decoding](https://consensus.app/papers/details/113822ab3e8d5d2a998bc66dc83f69a7/)
 [207] [Sensorimotor World Models: Perception for Action via Inverse Dynamics](https://consensus.app/papers/details/87c251c2d324525cb746e3761b01f7d3/)
+
+[208] [SimCSE: Simple Contrastive Learning of Sentence Embeddings](https://arxiv.org/abs/2104.08821)
+[209] [Whitening Sentence Representations for Better Semantics and Faster Retrieval](https://arxiv.org/abs/2103.15316)
+[210] [On the Sentence Embeddings from Pre-trained Language Models (BERT-flow, anisotropy diagnosis)](https://arxiv.org/abs/2011.05864)

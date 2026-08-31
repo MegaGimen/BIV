@@ -41,8 +41,33 @@ train:
   save_steps: 25
   save_total_limit: 3
   # Inverse MLP recovers u* from (c_t, stop-grad z*). Weight 0.3 vs the
-  # main cosine-align term (1.0). No ranking / queue NCE.
+  # main cosine-align term (1.0).
   inv_weight: 0.3
+  # Anti-collapse (AGENTS.md "JEPA 家族怎么防坍缩"). align_loss + inv_loss
+  # alone measurably collapsed within 25 steps (pred_self_median 0.69→0.996)
+  # because z* is stop-grad — inv's own gradient never reaches the encoder
+  # that produces z*. Two more terms fix that, neither needs a batch-level
+  # covariance estimate (VICReg/SIGReg) or a whole-network EMA teacher
+  # (I-JEPA), both infeasible at batch=1/accum=8 on a 35B backbone.
+  #
+  # 1) loss_simcse: unsupervised SimCSE on the observation encoder itself —
+  #    two live (non-stop-grad) dropout views of the same o_ids, in-group
+  #    InfoNCE. The only term whose gradient reaches the encoder that
+  #    produces z*. Grouped across nce_group_size micro-batches (o_ids only,
+  #    short sequences — cheap) so there's something to contrast against;
+  #    backward'd separately from loss_align/loss_inv/loss_bank.
+  nce_weight: 0.1
+  nce_temperature: 0.05
+  nce_group_size: 4
+  # 2) loss_bank: corrected version of the queue NCE that blew up loss_align
+  #    last time. Differences from that attempt: bank is small and fresh
+  #    (rolls every step, not a 256-deep multi-epoch-stale queue), softmax
+  #    cross-entropy with temperature instead of a hand-picked "push cosine
+  #    to 0" target, and it now runs alongside loss_simcse instead of being
+  #    the only anti-collapse force fighting a static, ungraded target space.
+  bank_weight: 0.2
+  bank_temperature: 0.05
+  bank_size: 64
   # TensorBoard root. AutoDL's panel watches /root/tf-logs (same as Muse).
   # Override with $LOGGING_DIR or $TF_LOGS or --logging-dir.
   logging_dir: null

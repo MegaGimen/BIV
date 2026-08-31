@@ -591,14 +591,20 @@ def load_adapter_and_heads(model, jepa, inv, path: Path, log_fn) -> tuple[int, i
     return int(state.get("epoch") or 0), int(state.get("global_step") or 0)
 
 
-def decode_o_texts(tokenizer, batch) -> list[str]:
-    ids = batch["o_ids"]
-    mask = batch["o_mask"]
+def decode_ids_texts(tokenizer, ids, mask) -> list[str]:
     out: list[str] = []
     for i in range(ids.size(0)):
         tok = ids[i][mask[i].bool()].tolist()
         out.append(tokenizer.decode(tok, skip_special_tokens=True))
     return out
+
+
+def decode_o_texts(tokenizer, batch) -> list[str]:
+    return decode_ids_texts(tokenizer, batch["o_ids"], batch["o_mask"])
+
+
+def decode_a_texts(tokenizer, batch) -> list[str]:
+    return decode_ids_texts(tokenizer, batch["a_ids"], batch["a_mask"])
 
 
 def _warmup_lambda(warmup: int):
@@ -621,9 +627,11 @@ def main() -> None:
     from biv_wm.jepa import (  # noqa: PLC0415
         InverseDyn,
         JEPAPred,
+        bank_nce_loss,
         collapse_stats,
         cosine_align_loss,
         format_collapse_line,
+        simcse_pair_loss,
     )
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
@@ -799,6 +807,20 @@ def main() -> None:
         raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
     inv_w = float(tcfg.get("inv_weight") or 0.3)
+    # Anti-collapse, part 2/3 (see AGENTS.md "JEPA 家族怎么防坍缩"): loss_simcse is
+    # the only loss whose target side isn't stop-grad — gradient reaches the
+    # observation-encoding forward pass itself. Bufferred across nce_group_size
+    # micro-batches (o_ids only, short sequences) so there are in-group negatives
+    # to contrast against; backward'd separately from align/inv/bank.
+    nce_w = float(tcfg.get("nce_weight") or 0.1)
+    nce_temp = float(tcfg.get("nce_temperature") or 0.05)
+    nce_group_size = min(max(1, int(tcfg.get("nce_group_size") or 4)), accum)
+    # Anti-collapse, part 3/3: corrected queue. Small + fresh (not the 256-deep,
+    # cross-epoch queue that blew up loss_align last time), softmax temperature
+    # instead of a hand-picked "push cosine to 0" target.
+    bank_w = float(tcfg.get("bank_weight") or 0.2)
+    bank_temp = float(tcfg.get("bank_temperature") or 0.05)
+    bank_size = max(1, int(tcfg.get("bank_size") or 64))
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
@@ -815,7 +837,9 @@ def main() -> None:
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step}"
+        f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step} "
+        f"nce_w={nce_w} nce_temp={nce_temp} nce_group_size={nce_group_size} "
+        f"bank_w={bank_w} bank_temp={bank_temp} bank_size={bank_size}"
     )
 
     ckpt_extra = {
@@ -830,6 +854,12 @@ def main() -> None:
     seen_pred: deque = deque()
     seen_z: deque = deque()
     seen_o: deque = deque()
+    # Inverse dynamics has the same blind spot JEPA had: nobody checked whether
+    # inv_hat (guessed command encoding) collapses too. Same paired/mismatch
+    # machinery, applied to (inv_hat, u*, a_text) instead of (pred, z*, o_text).
+    seen_invhat: deque = deque()
+    seen_u: deque = deque()
+    seen_a: deque = deque()
     writer = None
 
     def emit(msg: str) -> None:
@@ -842,10 +872,16 @@ def main() -> None:
                 log(msg)
 
     def check_collapse(step_i: int) -> None:
-        if not is_main or not seen_pred:
+        def _clear() -> None:
             seen_pred.clear()
             seen_z.clear()
             seen_o.clear()
+            seen_invhat.clear()
+            seen_u.clear()
+            seen_a.clear()
+
+        if not is_main or not seen_pred:
+            _clear()
             return
         stats = collapse_stats(
             torch.stack(list(seen_pred)),
@@ -853,7 +889,18 @@ def main() -> None:
             list(seen_o),
         )
         emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
-        payload = json.dumps(stats, indent=2, ensure_ascii=False) + "\n"
+        inv_stats: dict[str, object] | None = None
+        if seen_invhat:
+            inv_stats = collapse_stats(
+                torch.stack(list(seen_invhat)),
+                torch.stack(list(seen_u)),
+                list(seen_a),
+            )
+            emit(f"[jepa] collapse(inv) step={step_i} {format_collapse_line(inv_stats)}")
+        payload_obj: dict[str, object] = dict(stats)
+        if inv_stats is not None:
+            payload_obj["inv"] = inv_stats
+        payload = json.dumps(payload_obj, indent=2, ensure_ascii=False) + "\n"
         (out_dir / "collapse.json").write_text(payload, encoding="utf-8")
         (out_dir / f"collapse-s{step_i}.json").write_text(payload, encoding="utf-8")
         if writer is not None:
@@ -874,10 +921,11 @@ def main() -> None:
             _sc("collapse/z_self_median", z_self, "median")
             _sc("collapse/pred_self_median", pred_self, "median")
             writer.add_text("collapse/verdict", str(stats.get("verdict")), step_i)
+            if inv_stats is not None:
+                _sc("collapse/inv_paired_median", inv_stats["paired"], "median")
+                _sc("collapse/inv_mismatch_median", inv_stats["mismatch"], "median")
             writer.flush()
-        seen_pred.clear()
-        seen_z.clear()
-        seen_o.clear()
+        _clear()
 
     def dump_ckpt(kind: str, epoch_i: int, step_i: int) -> None:
         extra = {**ckpt_extra, "kind": kind}
@@ -912,6 +960,12 @@ def main() -> None:
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
         writer.add_text("train/inv_weight", str(inv_w), 0)
+        writer.add_text("train/nce_weight", str(nce_w), 0)
+        writer.add_text("train/nce_temperature", str(nce_temp), 0)
+        writer.add_text("train/nce_group_size", str(nce_group_size), 0)
+        writer.add_text("train/bank_weight", str(bank_w), 0)
+        writer.add_text("train/bank_temperature", str(bank_temp), 0)
+        writer.add_text("train/bank_size", str(bank_size), 0)
 
     try:
         from tqdm.auto import tqdm
@@ -945,11 +999,23 @@ def main() -> None:
     opt.zero_grad(set_to_none=True)
     opt_jepa.zero_grad(set_to_none=True)
     running = 0.0
-    run_align = run_inv = 0.0
+    run_align = run_inv = run_bank = 0.0
+    run_simcse = 0.0
     n_loss = 0
+    n_simcse = 0
     run_h = run_a = run_o = 0.0
     last_train_loss = None
     hit_max = False
+    # Anti-collapse buffers, see AGENTS.md "JEPA 家族怎么防坍缩". Every rank keeps
+    # its own copy (DP_REPLICATE=1: CP shards one example's sequence across
+    # ranks, it does not partition distinct examples per rank, so every rank
+    # sees the identical stream of examples and these stay in sync without an
+    # all-gather).
+    bank_z: deque = deque(maxlen=bank_size)
+    bank_o: deque = deque(maxlen=bank_size)
+    nce_buf_z1: list = []
+    nce_buf_z2: list = []
+    nce_buf_o: list = []
 
     try:
         for epoch in range(epochs):
@@ -973,21 +1039,70 @@ def main() -> None:
                     align_loss = cosine_align_loss(pred, z)
                     inv_hat = inv(c, z.detach())
                     inv_loss = cosine_align_loss(inv_hat, u)
+                    o_texts = decode_o_texts(tokenizer, batch)
+                    # loss_bank: corrected queue, part 3/3 of anti-collapse (see
+                    # AGENTS.md). Cheap — bank entries are detached, no extra
+                    # forward pass, just a softmax over a small rolling buffer.
+                    bank_loss = None
+                    if bank_z:
+                        bank_loss = bank_nce_loss(
+                            pred, z, o_texts, torch.stack(list(bank_z)), list(bank_o), bank_temp
+                        )
                     loss = align_loss + inv_w * inv_loss
+                    if bank_loss is not None:
+                        loss = loss + bank_w * bank_loss
                     if is_main:
-                        texts = decode_o_texts(tokenizer, batch)
+                        a_texts = decode_a_texts(tokenizer, batch)
                         for i in range(pred.size(0)):
                             seen_pred.append(pred[i].detach().float().cpu())
                             seen_z.append(z[i].detach().float().cpu())
-                            seen_o.append(texts[i])
+                            seen_o.append(o_texts[i])
+                            seen_invhat.append(inv_hat[i].detach().float().cpu())
+                            seen_u.append(u[i].detach().float().cpu())
+                            seen_a.append(a_texts[i])
                     accelerator.backward(loss)
+                    for i in range(z.size(0)):
+                        bank_z.append(z[i].detach())
+                        bank_o.append(o_texts[i])
                     running += float(loss.detach().float().item())
                     run_align += float(align_loss.detach().float().item())
                     run_inv += float(inv_loss.detach().float().item())
+                    if bank_loss is not None:
+                        run_bank += float(bank_loss.detach().float().item())
                     n_loss += 1
                     run_h += h_len
                     run_a += a_len
                     run_o += o_len
+                    # loss_simcse: anti-collapse part 1/3, the one that actually
+                    # touches the observation-encoding forward pass (see
+                    # AGENTS.md "JEPA 家族怎么防坍缩"). Buffered across
+                    # nce_group_size micro-batches so there's something to
+                    # contrast against; force-flushed at the accumulation
+                    # window's last micro-batch so a still-open group never
+                    # survives past opt.step() (its saved activations would be
+                    # stale against the just-updated LoRA weights otherwise).
+                    if nce_w > 0:
+                        z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        z2 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        nce_buf_z1.append(z1)
+                        nce_buf_z2.append(z2)
+                        nce_buf_o.extend(o_texts)
+                        if nce_buf_o and (
+                            len(nce_buf_o) >= nce_group_size or accelerator.sync_gradients
+                        ):
+                            simcse_loss = simcse_pair_loss(
+                                torch.cat(nce_buf_z1, dim=0),
+                                torch.cat(nce_buf_z2, dim=0),
+                                nce_buf_o,
+                                nce_temp,
+                            )
+                            if simcse_loss is not None:
+                                accelerator.backward(nce_w * simcse_loss)
+                                run_simcse += float(simcse_loss.detach().float().item())
+                                n_simcse += 1
+                            nce_buf_z1.clear()
+                            nce_buf_z2.clear()
+                            nce_buf_o.clear()
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
@@ -1012,23 +1127,30 @@ def main() -> None:
                         if step % log_every == 0:
                             if is_main:
                                 denom = max(n_loss, 1)
+                                simcse_denom = max(n_simcse, 1)
                                 emit(
                                     f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
                                     f"align={run_align / denom:.4f} inv={run_inv / denom:.4f} "
+                                    f"bank={run_bank / denom:.4f} simcse={run_simcse / simcse_denom:.4f} "
                                     f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                                 )
                                 if writer is not None:
                                     writer.add_scalar("train/loss", last_train_loss, step)
                                     writer.add_scalar("train/loss_align", run_align / denom, step)
                                     writer.add_scalar("train/loss_inv", run_inv / denom, step)
+                                    writer.add_scalar("train/loss_bank", run_bank / denom, step)
+                                    if n_simcse > 0:
+                                        writer.add_scalar("train/loss_simcse", run_simcse / simcse_denom, step)
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
                                     writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
                                     writer.add_scalar("train/len_h", run_h / denom, step)
                                     writer.add_scalar("train/len_a", run_a / denom, step)
                                     writer.add_scalar("train/len_o", run_o / denom, step)
                                 running = 0.0
-                                run_align = run_inv = 0.0
+                                run_align = run_inv = run_bank = 0.0
+                                run_simcse = 0.0
                                 n_loss = 0
+                                n_simcse = 0
                                 run_h = run_a = run_o = 0.0
                             check_collapse(step)
                         if is_last_in_epoch:
