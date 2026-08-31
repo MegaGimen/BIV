@@ -12,12 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.jepa import (  # noqa: E402
-    bank_nce_loss,
-    collapse_stats,
-    format_collapse_line,
-    simcse_pair_loss,
-)
+from biv_wm.jepa import bank_nce_loss, collapse_stats, format_collapse_line  # noqa: E402
 
 
 def test_real_align_not_collapse() -> None:
@@ -65,31 +60,22 @@ def test_too_few_distinct() -> None:
     assert "verdict=no_mismatch_pairs" in line
 
 
-def test_simcse_pair_loss_separated_beats_collapsed() -> None:
-    n, d = 4, 8
-    texts = [f"obs-{i}" for i in range(n)]
-    sep = torch.eye(n, d, requires_grad=True)
-    sep_loss = simcse_pair_loss(sep, sep.clone(), texts, temperature=0.05)
-    collapsed = torch.ones(n, d, requires_grad=True)
-    collapsed_loss = simcse_pair_loss(collapsed, collapsed.clone(), texts, temperature=0.05)
-    assert sep_loss is not None and collapsed_loss is not None
-    assert float(sep_loss.detach()) < float(collapsed_loss.detach())
-    # gradient must reach the (live, non-detached) inputs — this is the whole point.
-    sep_loss.backward()
-    assert sep.grad is not None and torch.any(sep.grad != 0)
-
-
-def test_simcse_pair_loss_duplicate_text_masked_no_nan() -> None:
-    n, d = 3, 4
-    z1 = torch.randn(n, d)
-    z2 = torch.randn(n, d)
-    texts = ["same", "same", "other"]
-    loss = simcse_pair_loss(z1, z2, texts, temperature=0.05)
-    assert loss is not None and torch.isfinite(loss)
-
-
-def test_simcse_pair_loss_needs_at_least_two_rows() -> None:
-    assert simcse_pair_loss(torch.randn(1, 4), torch.randn(1, 4), ["only"]) is None
+def test_bank_nce_loss_live_anchor_gradient_reaches_encoder() -> None:
+    """loss_simcse's call site: anchor is a *second live encoding* of the same
+    text, pos_z is the first (also live at the call site, but the function
+    detaches it internally) — gradient must still reach the anchor tensor,
+    since that anchor IS the observation encoder's own output.
+    """
+    d = 8
+    anchor = torch.zeros(1, d, requires_grad=True)
+    with torch.no_grad():
+        anchor[0, 0] = 1.0
+    pos = anchor.detach().clone()  # a separate live encoding, same text, ~same direction
+    bank = torch.eye(d)[1:5]
+    loss = bank_nce_loss(anchor, pos, ["obs"], bank, [f"neg-{i}" for i in range(4)], temperature=0.05)
+    assert loss is not None
+    loss.backward()
+    assert anchor.grad is not None and torch.any(anchor.grad != 0)
 
 
 def test_bank_nce_loss_separated_negatives_low_loss() -> None:
@@ -123,9 +109,7 @@ def main() -> None:
     test_collapse_like_constant_pred()
     test_exact_string_not_used_as_negative()
     test_too_few_distinct()
-    test_simcse_pair_loss_separated_beats_collapsed()
-    test_simcse_pair_loss_duplicate_text_masked_no_nan()
-    test_simcse_pair_loss_needs_at_least_two_rows()
+    test_bank_nce_loss_live_anchor_gradient_reaches_encoder()
     test_bank_nce_loss_separated_negatives_low_loss()
     test_bank_nce_loss_masks_text_duplicates()
     test_bank_nce_loss_empty_bank_is_none()

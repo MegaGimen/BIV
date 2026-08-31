@@ -174,19 +174,13 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 - **Step 1.** JEPA 接在 AgentWorld 自己完整的 40 层后面。`model_dir` 直接解析成 AgentWorld 的 hub id / 缓存路径（`train/configs/jepa/stage1.yaml`，缺失自动下载），不读任何切鱼产物。**训练时从活模块上摘掉 AgentWorld 自己的 `lm_head`**，`forward` 只跑 `language_model → hidden → JEPA`，不算词表 logits。启动时打印架构：`biv_wm.arch.log_world_architecture`，一行打完整条 40 层，确认 `lm_head: detached`。
 - **Step 2.** 每个 \((h,a,o)\) 走完 AgentWorld 的 40 层：\(h\to c_t^{AW}\)，\(a\to u^{\star W}\)，\(o\to z^{\star W}\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
-- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失是 `1 - cosine`。旁边加逆动力学（小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)）——这两项和以前一样，`z` 仍是 `torch.no_grad()` 编出来的，`detach` 也没拿掉。**在这两项之外，另加两条独立的反坍缩损失**，原因见下面「JEPA 家族怎么防坍缩」：一条真的让编码器自己的输出被推开（`loss_simcse`），一条纠正了上次翻车的队列（`loss_bank`）。四项分两次反传：
+- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失是 `1 - cosine`。旁边加逆动力学（小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)）——这两项和以前一样，`z` 仍是 `torch.no_grad()` 编出来的，`detach` 也没拿掉。**在这两项之外，另加两条独立的反坍缩损失**，原因见下面「JEPA 家族怎么防坍缩」：一条真的让编码器自己的输出被推开（`loss_simcse`），一条纠正了上次翻车的队列（`loss_bank`）。四项**合成一个数、一次反传**：
 
   \[
-  \texttt{loss} = \texttt{loss\_align} + \texttt{inv\_weight}\cdot\texttt{loss\_inv} + \texttt{bank\_weight}\cdot\texttt{loss\_bank}
+  \texttt{loss} = \texttt{loss\_align} + \texttt{inv\_weight}\cdot\texttt{loss\_inv} + \texttt{bank\_weight}\cdot\texttt{loss\_bank} + \texttt{nce\_weight}\cdot\texttt{loss\_simcse}
   \]
 
-  这一项每个 micro-batch 反传一次，和以前的写法完全一样（`inv_weight` 默认 `0.3`）。`loss_bank` 的 `pred`（JEPA 猜测，带梯度）来自同一次前向，`z`/`u` 都用已经 `detach` 的版本，所以这条不额外碰编码器，插进现有反传不改内存形状。
-
-  \[
-  \texttt{loss\_simcse\_group} = \texttt{nce\_weight}\cdot\texttt{loss\_simcse}
-  \]
-
-  这一项**每 `nce_group_size` 个 micro-batch 才反传一次**，是单独的 `accelerator.backward()` 调用，见下段。`train/loss_align`、`train/loss_inv`、`train/loss_bank`、`train/loss_simcse` 都是乘权重之前的原值。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（共用 `jepa_lr=1e-3`）；两条反坍缩损失都不新增可训练参数，走的是已经存在的两条路——`loss_bank` 的正例/负例都在函数里 `detach`，梯度只经 `pred` 回流到 JEPA MLP 和 \(c,u\) 那两条编码路径（和 `loss_align` 一样，够不到产出 \(z^*\) 那次前向）；`loss_simcse` 的 \(z^{(1)},z^{(2)}\) 不 `detach`，梯度直接回流进产出 \(z^*\) 那次前向本身的 LoRA，这是四项里唯一一条摸得到它的。两条学习率仍然分开：主干 LoRA 小步挪已经训过的几何，两个新头大约 20 倍大，先自己动起来。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开 JEPA/LoRA）。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训才用 `--resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
+  `train/loss_align`、`train/loss_inv`、`train/loss_bank`、`train/loss_simcse` 都是乘权重之前的原值。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（共用 `jepa_lr=1e-3`）；两条反坍缩损失都不新增可训练参数，走的是已经存在的路——`loss_bank` 的正例/负例都在函数里 `detach`，梯度只经 `pred` 回流到 JEPA MLP 和 \(c,u\) 那两条编码路径（和 `loss_align` 一样，够不到产出 \(z^*\) 那次前向）；`loss_simcse` 多算一次 \(o\) 的活前向 \(z^{(1)}\)（同一个 `o_ids`，`model.train()` 下第二次 dropout 抽样），这次**不 `detach`**，梯度直接回流进产出观察编码那次前向本身的 LoRA——四项里唯一一条摸得到它的。两条学习率仍然分开：主干 LoRA 小步挪已经训过的几何，两个新头大约 20 倍大，先自己动起来。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开 JEPA/LoRA）。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训才用 `--resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
 
   同域内、只学这个轻映射，需要的数据量和墙钟时间都可能比 AgentWorld 自己那轮 CPT+SFT+RL 少——这是推论，不是已经验证的结果。数字掉得快（例如 0.9→0.04）**不能**单独当成学到了转移：语言模型最后一层隐状态本身容易挤在一个窄锥里，预测器可以靠输出万能方向把余弦做高。25 步内就实测到这个坍缩（`pred_self_median` 从 0.69 冲到 0.996，`paired_median`/`mismatch_median` 几乎重合），说明只靠停梯度 + 逆动力学这两条挡不住——根子在于产出 \(z^*\) 那次前向从来没吃过梯度，逆动力学再怎么训也碰不到编码器本身。坍缩检查只负责报这股力有没有起作用，不产生梯度。损失和坍缩检查共用 `log_steps`（默认 5 个 optimizer step），存盘仍是 `save_steps`（默认 25），可以用 `--log-steps` / `--save-steps` 盖掉。检查用的是**这一段已经训过的行**上的前向缓存，不再另找没见过的数据：步数还少时没见过的对不上，分不清没学够还是学坏了。报告配对余弦、错配余弦、\(z^*\) 自身彼此有多像、\(\hat z\) 自身彼此有多像；看中位数和 90 分位，不看均值。错配时观察字符串完全相同的不当负例。配对中位数明显高于错配中位数 → 至少在见过的例子上分开了；两者都高 → 坍缩。逆动力学自己有同一个盲区：`inv_hat`（猜出来的命令编码）会不会也塌成一样，之前完全没人查——现在 `check_collapse` 额外拿 `inv_hat` vs \(u^*\) 跑一遍同一套配对/错配统计，`collapse/inv_paired_median`、`collapse/inv_mismatch_median` 写进 TensorBoard 和 `collapse.json`。
 
@@ -219,7 +213,7 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 | `train/loss_align` | 「猜测靠近自己的真观察」，`1 - cosine` |
 | `train/loss_inv` | 逆动力学的原值（还没乘权重） |
 | `train/loss_bank` | 修正版队列 InfoNCE 的原值（还没乘 `bank_weight`），和上面三项同一次反传 |
-| `train/loss_simcse` | 编码器自己的 SimCSE InfoNCE 原值（还没乘 `nce_weight`），**单独一次反传**，每 `nce_group_size` 个 micro-batch 才更新一次，别的标量每步都有、这个不是 |
+| `train/loss_simcse` | 编码器自己那条 InfoNCE 的原值（还没乘 `nce_weight`），和上面三项同一次反传、每步都有 |
 | `train/lr_backbone` | 主干 LoRA 的学习率，热身到 `5e-5` |
 | `train/lr_jepa` | JEPA 预测器和逆动力学头共用的学习率，热身到 `1e-3`，大约是主干的 20 倍 |
 | `train/len_h` / `len_a` / `len_o` | 这段样本里历史 / 命令 / 下一观察的非 pad token 数。不测学得好不好 |
@@ -234,10 +228,12 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 **新加的两条不属于这两类，绕开了它们的前提。** 都不需要教师网络，也都不需要几十条以上的批才能估计出协方差：
 
-1. **`loss_simcse`：让编码器自己的输出被推开，这是唯一真正碰到 \(z^*\) 那次前向的一条。** 做法照抄 SimCSE 的无监督版本：同一条观察文本 \(o\) 用 `model.train()` 的 dropout 噪声重复编码两次，得到 \(z^{(1)},z^{(2)}\)——两次前向权重相同，唯一差异是 dropout 掩码不同，天然是一对「正样本」，不用额外造数据增强 [208]。这两次前向**每个 micro-batch 都会算**，`nce_group_size`（默认 8，等于 `grad_accum`）只决定攒多少对才凑成一次 InfoNCE、不决定算几次——`o` 比 `h` 短两个数量级，调大这个数字不多花算力，只多攒一会儿这几条短序列的图，实测显存有富余（4 卡各 66% 左右、算力已经跑满）就直接把它开到等于 `grad_accum`，没有再往上的理由，因为一个 accumulation 窗口最多也就这么多条。把连续 `nce_group_size` 个 micro-batch 的 \(z^{(1)},z^{(2)}\) 攒起来，做一次批内 InfoNCE：每条的正例是自己的另一视角，负例是组里其它条（文本不同的那些，同文本剔除，和坍缩检查的 `skip_same_o` 一个逻辑），温度 `nce_temperature`（默认 0.05，抄 SimCSE 的量级，因为 LLM 隐状态本来就挤在一个窄锥里，不用低温度分不出差异 [208][209]）。这次的 \(z^{(1)},z^{(2)}\) **不 detach**，梯度顺着 InfoNCE 的分母（负例项）一路回到编码器自己的前向，逼它把不同观察编得散开——这是 `loss_align`/`loss_bank` 从来没做到的事，因为它们用的 `z` 都是停梯度或者已经 `detach`。只对 `o_ids` 多算两次前向，`o` 比 `h` 短两个数量级（均值几百 token vs 几万），显存成本只是多攒着 `nce_group_size×2` 条短序列的图，不去动本来就吃紧的 `h` 这条路。
+1. **`loss_simcse`：让编码器自己的输出被推开，这是唯一真正碰到 \(z^*\) 那次前向的一条。** 做法是 SimCSE 的无监督思路，但接线是 MoCo 那种不对称查询-字典，不是 SimCSE 原装的对称双视角：同一条观察文本 \(o\) 只多算**一次**活前向 \(z^{(1)}\)（`model.train()` 下第二次 dropout 抽样，`o_ids` 和已经算过的 `z` 完全一样，唯一差异是掩码），把它当 query；正例是这个 micro-batch 自己那份 `z`（本来就要算，给 `loss_align` 用，现在多兼一份职）；负例复用 `loss_bank` 那同一个滚动库 `bank_z`——不再另起一套「攒够几条再一起反传」的分组缓冲。梯度只经过 \(z^{(1)}\) 这一条活路：InfoNCE 分母里的负例项会把它推离库里其它文本的方向，分子里的正例项会把它拉向自己另一视角，两股力都直接怼回产出观察编码那次前向的 LoRA，这是 `loss_align`/`loss_bank` 从来没做到的事（它们用的 `z` 都是停梯度或者已经 `detach`）。温度 `nce_temperature`（默认 0.05，抄 SimCSE 的量级，因为 LLM 隐状态本来就挤在一个窄锥里，不用低温度分不出差异 [208][209]）。
 2. **`loss_bank`：修正版的队列，不再单打独斗。** 还是 JEPA 的猜测 `pred` 去认真观察，但这次库很小很新鲜（`bank_size` 默认 256，逐步滚动，不是攒了几百步的陈年队列；库本身只是 detach 过的 2048 维向量，256 条也就 2MB，跟显存富不富裕没关系，能加就加），标准 softmax 温度 `bank_temperature`（默认 0.05）,不是把负例余弦硬按到 0——上次翻车正是因为「负例目标=0」这个绝对值和 LLM 嵌入天生 0.85+ 的基线互相打架，把 `loss_align` 顶了回去。这次要浅：靠 `loss_simcse` 已经在把 \(z^*\) 的几何推开，`loss_bank` 只是在一个不再是死水的空间里，让预测器也学着分辨，不用一个人对抗一整个挤在一起的窄锥。
 
-**显存富余怎么花，不该怎么花。** 实测 4 卡各占 66% 左右、算力已经跑满（GPU-Util 99–100%），说明现在是算力瓶颈不是显存瓶颈。没开任何量化——主干纯 bf16、LoRA 也是 bf16，量化只在显存紧张时才有意义，这里加了只会多一层反量化开销，白费。梯度检查点（`gradient_checkpointing: true`）继续开着，没有因为看到富余就关掉：这份富余是在当前这批样本的**平均**长度下测出来的（`h` 均值三万多 token），但 `max_length=65536` 允许单条冲到均值的近两倍，关掉检查点等于把这批「不重算、全存着」的显存需求也乘上去，长尾那几条可能直接把 33GB 缓冲吃穿、训练中途 OOM——这笔账不划算，省下来的那点时间抵不过训练崩掉重来的成本。这份富余真正该花的地方是上面两条新损失：`nce_group_size`、`bank_size` 都调大了，因为 `o` 序列短、`bank` 只是几个 detach 过的向量，加大它们基本不占算力、只占一点点显存，换来的是更强的负例信号——这是本来就该做但之前没 GPU 验证、只能保守取值的地方，不是「反正显存富余就随便加」。
+**这两条不是免费的，第一版还算错了成本。** 第一版 `loss_simcse` 抄的是 SimCSE 原装的对称双视角：每个 micro-batch 多算**两次**活前向（\(z^{(1)},z^{(2)}\)），还另起一套「攒够 `nce_group_size` 条才反传一次」的分组缓冲。这一改动之前只按 token 数估过算力（`o` 比 `h` 短两个数量级，看起来几乎免费），漏算了一件事：FSDP2 每次前向都要把这一层的完整权重先 all-gather 回来，这份通信开销跟这次前向算了几个 token 无关，跟"又多做了一次完整的 40 层前向"有关；开着梯度检查点时，任何一条带梯度的前向还会在反传时**重算一遍**（checkpoint 的省显存换算力）。原来每个 micro-batch 有 `z`（不带梯度，只算一次）、`c`、`u`（各带梯度，前向+反算两次）三条路；加上 `z^{(1)},z^{(2)}` 两条新的带梯度前向后，「过一遍完整 40 层」的次数从约 5 次涨到约 9 次——这和实测的 1 epoch 从 300 小时涨到 450 小时（约 1.5 倍）对得上，不是「显存换时间」那种可控的取舍，是低估了 FSDP2 通信和检查点重算这两项固定开销。改成上面写的 MoCo 式接线后，多出来的活前向从两次砍到一次（\(z^{(1)}\) 一条，`loss_bank` 已经在算的 `z` 直接复用当正例），过一遍完整 40 层的次数约从 9 次回落到 7 次，预期比 450 小时快，但不会回到没有反坍缩损失时的 300 小时——这本来就是「让梯度真的碰到编码器」这件事必须付的算力，砍掉的只是可以避免的那部分（多余的第二次活前向、单独的分组缓冲反传）。原来评估「`o` 短所以几乎免费」时只算了 FLOPs 随 token 数的那一半，没算前向次数本身的固定通信/重算成本——这是本节这次改动要记的教训。同时去掉了 `nce_group_size` 这个配置项：不再需要分组缓冲，`loss_simcse` 现在跟其它三项一样，每个 micro-batch 算一次、反传一次。
+
+**显存富余怎么花，不该怎么花。** 实测 4 卡各占 66% 左右、算力已经跑满（GPU-Util 99–100%），说明现在是算力瓶颈不是显存瓶颈。没开任何量化——主干纯 bf16、LoRA 也是 bf16，量化只在显存紧张时才有意义，这里加了只会多一层反量化开销，白费。梯度检查点（`gradient_checkpointing: true`）继续开着，没有因为看到富余就关掉：这份富余是在当前这批样本的**平均**长度下测出来的（`h` 均值三万多 token），但 `max_length=65536` 允许单条冲到均值的近两倍，关掉检查点等于把这批「不重算、全存着」的显存需求也乘上去，长尾那几条可能直接把 33GB 缓冲吃穿、训练中途 OOM——这笔账不划算，省下来的那点时间抵不过训练崩掉重来的成本，而且关检查点省的是"不用重算"这部分时间，恰恰是上面那条 1.5 倍变慢里"重算"贡献的那一半，两件事不能都要。`bank_size` 调到 256 这件事本身没问题：库本身只是几个 detach 过的向量，加大它基本不占算力、只占一点点显存，这部分判断不变，变的只是 `loss_simcse` 的接线方式。
 
 坍缩检查（`collapse/*`）不产生梯度，只负责报这两条新损失有没有真的起作用：`pred_self_median` 该往下掉，`paired_median` 该和 `mismatch_median` 拉开距离，`z_self_median` 该跟着往下松动（如果三个月都不动，说明 `loss_simcse` 的权重或组大小需要调）。
 

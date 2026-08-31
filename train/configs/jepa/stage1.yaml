@@ -50,21 +50,19 @@ train:
   # covariance estimate (VICReg/SIGReg) or a whole-network EMA teacher
   # (I-JEPA), both infeasible at batch=1/accum=8 on a 35B backbone.
   #
-  # 1) loss_simcse: unsupervised SimCSE on the observation encoder itself —
-  #    two live (non-stop-grad) dropout views of the same o_ids, in-group
-  #    InfoNCE. The only term whose gradient reaches the encoder that
-  #    produces z*. Grouped across nce_group_size micro-batches (o_ids only,
-  #    short sequences — cheap) so there's something to contrast against;
-  #    backward'd separately from loss_align/loss_inv/loss_bank.
+  # 1) loss_simcse: SimCSE-style, but MoCo-shaped (asymmetric) instead of
+  #    symmetric — one extra *live* forward per micro-batch (z1: same o_ids as
+  #    z, a second dropout draw) is the query; this micro-batch's own z (the
+  #    no-grad one computed anyway for loss_align) is the positive; the same
+  #    bank_z below is the negatives. Folded into the same backward as
+  #    everything else — no separate group buffer, no deferred backward.
+  #    The only term whose gradient reaches the encoder that produces z*.
+  #    Costs one extra full-backbone forward+recompute per micro-batch — real,
+  #    not free; a first version that used two live forwards plus a separate
+  #    group buffer cost roughly double this and is why an early smoke run
+  #    went from ~300h/epoch to ~450h/epoch (see AGENTS.md).
   nce_weight: 0.1
   nce_temperature: 0.05
-  # z1/z2 (the two dropout views) are computed every micro-batch regardless of
-  # this value — it only controls how many pairs get batched into one
-  # InfoNCE call before backward. o_ids are short (see len_o in TensorBoard),
-  # so raising this costs ~0 extra compute, just a little more memory held
-  # briefly (see train_jepa.py's nce_buf_*). Capped at grad_accum (below) —
-  # a bigger group needs a bigger accumulation window, see AGENTS.md.
-  nce_group_size: 8
   # 2) loss_bank: corrected version of the queue NCE that blew up loss_align
   #    last time. Differences from that attempt: bank is small and fresh
   #    (rolls every step, not a 256-deep multi-epoch-stale queue), softmax
@@ -74,8 +72,8 @@ train:
   bank_weight: 0.2
   bank_temperature: 0.05
   # Just detached 2048-d vectors (256 × 2048 × 4B ≈ 2MB) — practically free,
-  # raise freely for more negatives. Not the memory-costly one; loss_simcse
-  # above (via nce_group_size) and h's own sequence length are.
+  # raise freely for more negatives. h's own sequence length is the real
+  # memory/time cost, not this.
   bank_size: 256
   # TensorBoard root. AutoDL's panel watches /root/tf-logs (same as Muse).
   # Override with $LOGGING_DIR or $TF_LOGS or --logging-dir.

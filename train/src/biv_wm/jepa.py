@@ -44,52 +44,6 @@ def cosine_align_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (1.0 - (p * t).sum(dim=-1)).mean()
 
 
-def simcse_pair_loss(
-    z1: torch.Tensor,
-    z2: torch.Tensor,
-    o_texts: list[str],
-    temperature: float = 0.05,
-) -> torch.Tensor | None:
-    """Unsupervised SimCSE on the observation encoder itself.
-
-    ``z1``/``z2`` are two *live* (not stop-grad) encodings of the same
-    ``o_texts[i]``, produced by two separate forward passes through the same
-    model in train() mode — dropout noise is the only difference, no data
-    augmentation needed. Positive pair for row i is (z1[i], z2[i]); negatives
-    are every other row's z2 (resp. z1) whose text differs from o_texts[i]
-    (character-identical duplicates are excluded the same way collapse_stats
-    excludes them, since they are not usable negatives).
-
-    This is the one loss in this file where the *target* side is not
-    detached: gradient from the denominator (negative) terms flows back into
-    whichever forward pass produced z1/z2, i.e. into the backbone's own
-    observation-encoding step. That is the only mechanism here that pushes
-    the encoder's own outputs apart — align_loss/inv_loss/bank_nce_loss all
-    treat z as a stop-grad target and cannot do this (see AGENTS.md "JEPA
-    家族怎么防坍缩"). Returns ``None`` if there are fewer than 2 rows.
-    """
-    n = int(z1.size(0))
-    if n < 2 or z2.size(0) != n or len(o_texts) != n:
-        return None
-    p1 = F.normalize(z1.float(), dim=-1)
-    p2 = F.normalize(z2.float(), dim=-1)
-    same = torch.tensor(
-        [[o_texts[i] == o_texts[j] for j in range(n)] for i in range(n)],
-        dtype=torch.bool,
-        device=z1.device,
-    )
-    eye = torch.eye(n, dtype=torch.bool, device=z1.device)
-    dup_mask = same & ~eye  # duplicate-but-not-self: excluded as unusable negatives
-    target = torch.arange(n, device=z1.device)
-
-    def _direction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        logits = (a @ b.T) / temperature
-        logits = logits.masked_fill(dup_mask, float("-inf"))
-        return F.cross_entropy(logits, target)
-
-    return 0.5 * (_direction(p1, p2) + _direction(p2, p1))
-
-
 def bank_nce_loss(
     pred: torch.Tensor,
     pos_z: torch.Tensor,
@@ -98,14 +52,25 @@ def bank_nce_loss(
     bank_o_texts: list[str],
     temperature: float = 0.05,
 ) -> torch.Tensor | None:
-    """JEPA's own guess vs a small, fresh, rolling bank of real observations.
+    """``pred`` vs a small, fresh, rolling bank of real observations.
 
-    ``pred`` is live (JEPAPred's output for this micro-batch); ``pos_z`` is
-    this micro-batch's own target, already stop-grad at the call site (same
-    as align_loss's target). ``bank_z`` is a rolling buffer of *detached*
+    ``pred`` is the *live* (gradient-carrying) query; ``pos_z`` is this
+    micro-batch's own positive target, stop-grad'd internally regardless of
+    what the caller passes in. ``bank_z`` is a rolling buffer of *detached*
     recent z* vectors (see ``train_jepa.py``'s bank deque) — cheap, no extra
-    forward pass, and refreshed every step so it tracks the current encoder
-    instead of going stale like the earlier 256-deep cross-epoch queue did.
+    forward pass to build, and refreshed every step so it tracks the current
+    encoder instead of going stale like the earlier 256-deep cross-epoch
+    queue did.
+
+    Two call sites in ``train_jepa.py``, same function, different anchor:
+    - ``loss_bank``: ``pred`` = JEPAPred's output. Trains the predictor to
+      discriminate against the bank; never touches the observation encoder
+      (``pos_z``/``bank_z`` are both stop-grad).
+    - ``loss_simcse``: ``pred`` = a *second, live* encoding of the current
+      row's own ``o_ids`` (different dropout draw than the ``pos_z`` view,
+      same underlying text — the SimCSE trick, no data augmentation needed).
+      This is the one call whose gradient reaches the encoder itself, since
+      the anchor here *is* the encoder's own output, not JEPA's guess.
 
     Softmax cross-entropy with the true pair as the positive (index 0), not
     a hand-picked "push cosine to 0" target — that absolute target is what

@@ -631,7 +631,6 @@ def main() -> None:
         collapse_stats,
         cosine_align_loss,
         format_collapse_line,
-        simcse_pair_loss,
     )
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
@@ -808,13 +807,13 @@ def main() -> None:
     save_limit = int(tcfg.get("save_total_limit") or 3)
     inv_w = float(tcfg.get("inv_weight") or 0.3)
     # Anti-collapse, part 2/3 (see AGENTS.md "JEPA 家族怎么防坍缩"): loss_simcse is
-    # the only loss whose target side isn't stop-grad — gradient reaches the
-    # observation-encoding forward pass itself. Bufferred across nce_group_size
-    # micro-batches (o_ids only, short sequences) so there are in-group negatives
-    # to contrast against; backward'd separately from align/inv/bank.
+    # the only loss whose gradient reaches the observation-encoding forward pass
+    # itself. It costs exactly ONE extra live forward per micro-batch (z1, same
+    # o_ids as z but a second dropout draw) — folded into the same backward as
+    # everything else, no separate group buffer needed: the positive is this
+    # micro-batch's own no-grad z, negatives come from the shared bank below.
     nce_w = float(tcfg.get("nce_weight") or 0.1)
     nce_temp = float(tcfg.get("nce_temperature") or 0.05)
-    nce_group_size = min(max(1, int(tcfg.get("nce_group_size") or 4)), accum)
     # Anti-collapse, part 3/3: corrected queue. Small + fresh (not the 256-deep,
     # cross-epoch queue that blew up loss_align last time), softmax temperature
     # instead of a hand-picked "push cosine to 0" target.
@@ -838,7 +837,7 @@ def main() -> None:
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
         f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step} "
-        f"nce_w={nce_w} nce_temp={nce_temp} nce_group_size={nce_group_size} "
+        f"nce_w={nce_w} nce_temp={nce_temp} "
         f"bank_w={bank_w} bank_temp={bank_temp} bank_size={bank_size}"
     )
 
@@ -962,7 +961,6 @@ def main() -> None:
         writer.add_text("train/inv_weight", str(inv_w), 0)
         writer.add_text("train/nce_weight", str(nce_w), 0)
         writer.add_text("train/nce_temperature", str(nce_temp), 0)
-        writer.add_text("train/nce_group_size", str(nce_group_size), 0)
         writer.add_text("train/bank_weight", str(bank_w), 0)
         writer.add_text("train/bank_temperature", str(bank_temp), 0)
         writer.add_text("train/bank_size", str(bank_size), 0)
@@ -1013,9 +1011,6 @@ def main() -> None:
     # all-gather).
     bank_z: deque = deque(maxlen=bank_size)
     bank_o: deque = deque(maxlen=bank_size)
-    nce_buf_z1: list = []
-    nce_buf_z2: list = []
-    nce_buf_o: list = []
 
     try:
         for epoch in range(epochs):
@@ -1040,17 +1035,31 @@ def main() -> None:
                     inv_hat = inv(c, z.detach())
                     inv_loss = cosine_align_loss(inv_hat, u)
                     o_texts = decode_o_texts(tokenizer, batch)
+                    bank_stack = torch.stack(list(bank_z)) if bank_z else None
+                    bank_texts = list(bank_o)
                     # loss_bank: corrected queue, part 3/3 of anti-collapse (see
                     # AGENTS.md). Cheap — bank entries are detached, no extra
                     # forward pass, just a softmax over a small rolling buffer.
                     bank_loss = None
-                    if bank_z:
-                        bank_loss = bank_nce_loss(
-                            pred, z, o_texts, torch.stack(list(bank_z)), list(bank_o), bank_temp
-                        )
+                    if bank_stack is not None:
+                        bank_loss = bank_nce_loss(pred, z, o_texts, bank_stack, bank_texts, bank_temp)
                     loss = align_loss + inv_w * inv_loss
                     if bank_loss is not None:
                         loss = loss + bank_w * bank_loss
+                    # loss_simcse: anti-collapse part 1/3, the one that actually
+                    # touches the observation-encoding forward pass (see AGENTS.md
+                    # "JEPA 家族怎么防坍缩"). Costs exactly one extra live forward
+                    # (z1 — same o_ids as z, a second dropout draw) instead of
+                    # two, and reuses the same shared bank as negatives instead
+                    # of a separate group buffer: the positive is this
+                    # micro-batch's own z (already computed above), so no extra
+                    # bookkeeping or deferred backward across micro-batches.
+                    simcse_loss = None
+                    if nce_w > 0 and bank_stack is not None:
+                        z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
+                        if simcse_loss is not None:
+                            loss = loss + nce_w * simcse_loss
                     if is_main:
                         a_texts = decode_a_texts(tokenizer, batch)
                         for i in range(pred.size(0)):
@@ -1069,40 +1078,13 @@ def main() -> None:
                     run_inv += float(inv_loss.detach().float().item())
                     if bank_loss is not None:
                         run_bank += float(bank_loss.detach().float().item())
+                    if simcse_loss is not None:
+                        run_simcse += float(simcse_loss.detach().float().item())
+                        n_simcse += 1
                     n_loss += 1
                     run_h += h_len
                     run_a += a_len
                     run_o += o_len
-                    # loss_simcse: anti-collapse part 1/3, the one that actually
-                    # touches the observation-encoding forward pass (see
-                    # AGENTS.md "JEPA 家族怎么防坍缩"). Buffered across
-                    # nce_group_size micro-batches so there's something to
-                    # contrast against; force-flushed at the accumulation
-                    # window's last micro-batch so a still-open group never
-                    # survives past opt.step() (its saved activations would be
-                    # stale against the just-updated LoRA weights otherwise).
-                    if nce_w > 0:
-                        z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                        z2 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                        nce_buf_z1.append(z1)
-                        nce_buf_z2.append(z2)
-                        nce_buf_o.extend(o_texts)
-                        if nce_buf_o and (
-                            len(nce_buf_o) >= nce_group_size or accelerator.sync_gradients
-                        ):
-                            simcse_loss = simcse_pair_loss(
-                                torch.cat(nce_buf_z1, dim=0),
-                                torch.cat(nce_buf_z2, dim=0),
-                                nce_buf_o,
-                                nce_temp,
-                            )
-                            if simcse_loss is not None:
-                                accelerator.backward(nce_w * simcse_loss)
-                                run_simcse += float(simcse_loss.detach().float().item())
-                                n_simcse += 1
-                            nce_buf_z1.clear()
-                            nce_buf_z2.clear()
-                            nce_buf_o.clear()
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
