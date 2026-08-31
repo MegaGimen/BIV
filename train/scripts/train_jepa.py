@@ -355,7 +355,7 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
     return model, tok
 
 
-def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
+def apply_selective_checkpointing(model, rank_log_fn=None, max_uncheckpoint: int | None = None) -> int:
     """Disable gradient checkpointing on linear-attention layers only.
 
     Full-attention layers (O(L²) activation memory — ~8 GiB/layer at
@@ -382,6 +382,12 @@ def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
     by the later-visited child) — that mixer has no gradient_checkpointing
     attribute, so the previous version of this function found 0 layers
     and uncheckpointed nothing.
+
+    max_uncheckpoint caps how many linear-attention layers get uncheckpointed
+    (None = all of them). All linear-attn layers cost the same per-layer
+    activation memory, so this just takes the first N by index — use it to
+    dial back memory usage if 30/30 OOMs (e.g. try 15 for roughly half the
+    activation memory and half the recompute savings).
 
     Returns the count of uncheckpointed layers.
     """
@@ -410,16 +416,22 @@ def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
         return 0
 
     n_missing_attr = sum(1 for layer in decoder_layers.values() if not hasattr(layer, "gradient_checkpointing"))
+    linear_idx_sorted = sorted(i for i in decoder_layers if i not in full_attn)
+    if max_uncheckpoint is not None:
+        linear_idx_sorted = linear_idx_sorted[: max(0, int(max_uncheckpoint))]
+    to_uncheckpoint = set(linear_idx_sorted)
+
     n_uncheckpointed = 0
     for idx, layer in decoder_layers.items():
-        if idx not in full_attn and hasattr(layer, "gradient_checkpointing"):
+        if idx in to_uncheckpoint and hasattr(layer, "gradient_checkpointing"):
             layer.gradient_checkpointing = False
             n_uncheckpointed += 1
 
     if rank_log_fn:
         rank_log_fn(
             f"selective_checkpointing: {n_uncheckpointed}/{len(decoder_layers)} linear-attn "
-            f"layers uncheckpointed  full-attn (checkpointed): {sorted(full_attn)}"
+            f"layers uncheckpointed (idx {sorted(to_uncheckpoint)})  "
+            f"full-attn (checkpointed): {sorted(full_attn)}"
             + (f"  WARNING: {n_missing_attr} layers have no gradient_checkpointing attr" if n_missing_attr else "")
         )
     return n_uncheckpointed
@@ -792,7 +804,12 @@ def main() -> None:
         model.print_trainable_parameters()
     install_hidden_only_forward(model)
     if bool(tcfg.get("selective_checkpointing", True)) and bool(tcfg.get("gradient_checkpointing", True)):
-        apply_selective_checkpointing(model, rank_log_fn=rank_log)
+        max_uncheckpoint = tcfg.get("selective_checkpointing_max_layers")
+        apply_selective_checkpointing(
+            model,
+            rank_log_fn=rank_log,
+            max_uncheckpoint=int(max_uncheckpoint) if max_uncheckpoint is not None else None,
+        )
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa_h = int(tcfg.get("jepa_hidden") or hidden * 2)
     jepa = JEPAPred(dim=hidden, hidden=jepa_h)
