@@ -103,3 +103,19 @@ train:
   torch_dtype: bfloat16
   gradient_checkpointing: true
   max_train_samples: null
+  # Space-for-time, isolated retry (2026-08-31). Only this one switch is on —
+  # selective_checkpointing and batch_size/grad_accum stay at the pre-optimization
+  # baseline (see AGENTS.md postmortem: both of those made things worse/OOM'd).
+  # Merges z (no-grad half) and z1 (live half, loss_simcse's query) into one
+  # batch_size×2 forward instead of two separate batch_size×1 calls, cutting one
+  # full-backbone FSDP2 all-gather round per micro-batch.
+  #
+  # KNOWN RISK: probe.py --speed-advice's isolated batch=2+CP micro-test hit
+  # "CUDA error: unspecified launch failure" once. That exact error string also
+  # shows up in an unrelated vLLM bug report serving Qwen's Gated DeltaNet (GDN)
+  # linear-attention layers on consumer/prosumer Blackwell (sm_120) GPUs — same
+  # layer family, same GPU generation as this box. Root-caused there as a
+  # shape-dependent gap in the GDN Triton/FLA kernels on sm_120, not a caller
+  # bug. If a step crashes with this signature, it's plausibly the same kernel
+  # gap, not this script; set batch_o_z1: false and report the step count.
+  batch_o_z1: true

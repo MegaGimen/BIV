@@ -1026,8 +1026,34 @@ def main() -> None:
                 a_len = float(batch["a_mask"].sum(dim=1).float().mean().item())
                 o_len = float(batch["o_mask"].sum(dim=1).float().mean().item())
                 with accelerator.accumulate(model):
-                    with torch.no_grad():
-                        z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                    # Space-for-time, isolated retry (2026-08-31 AGENTS.md postmortem):
+                    # z (no-grad) and z1 (live, for loss_simcse below) both encode the
+                    # same o_ids with different dropout draws. Batching them into one
+                    # batch_size×2 call eliminates one full-backbone FSDP2 all-gather
+                    # round vs two separate calls. z1 is computed here (live) instead
+                    # of later so both rows share this single forward.
+                    #
+                    # KNOWN RISK: this is a batch>1 forward under Context Parallel.
+                    # probe.py --speed-advice's isolated batch=2+CP micro-test hit
+                    # "CUDA error: unspecified launch failure" on this GPU. A web
+                    # search turned up a matching signature (same error string, same
+                    # Gated DeltaNet Triton/FLA kernel family, same sm_120 consumer-
+                    # Blackwell generation) in an unrelated vLLM serving bug report —
+                    # suggests a real shape-dependent stability gap in GDN Triton
+                    # kernels on this GPU generation, not necessarily a bug in this
+                    # script. If this crashes, it is not obviously our code's fault;
+                    # set batch_o_z1: false and report which step/shape it hit.
+                    z1_precomputed = None
+                    if bool(tcfg.get("batch_o_z1", False)) and nce_w > 0:
+                        o_ids2 = torch.cat([batch["o_ids"], batch["o_ids"]], dim=0)
+                        o_mask2 = torch.cat([batch["o_mask"], batch["o_mask"]], dim=0)
+                        z_both = last_hidden(model, o_ids2, o_mask2, cp_size)
+                        bsz0 = batch["o_ids"].size(0)
+                        z = z_both[:bsz0].detach()
+                        z1_precomputed = z_both[bsz0:]
+                    else:
+                        with torch.no_grad():
+                            z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
                     c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
                     u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
                     pred = jepa(c, u)
@@ -1056,7 +1082,11 @@ def main() -> None:
                     # bookkeeping or deferred backward across micro-batches.
                     simcse_loss = None
                     if nce_w > 0 and bank_stack is not None:
-                        z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        z1 = (
+                            z1_precomputed
+                            if z1_precomputed is not None
+                            else last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        )
                         simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
                         if simcse_loss is not None:
                             loss = loss + nce_w * simcse_loss
