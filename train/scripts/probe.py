@@ -1522,8 +1522,61 @@ def main() -> None:
             cut=int(args.cut),
             device_map=str(args.device_map),
         )
-        log(f"speed_advice ok={report['speed_advice'].get('ok')} "
-            f"fits_at_max_len={report['speed_advice'].get('selective_checkpointing_memory_math', {}).get('fits_at_max_len')}")
+        sa = report["speed_advice"]
+        audit = sa.get("gc_mechanism_audit") or {}
+        sim = audit.get("sim_apply_selective_checkpointing") or {}
+        mem = sa.get("selective_checkpointing_memory_math") or {}
+        thr = sa.get("throughput_estimates") or {}
+        z1t = sa.get("z1_batch_merge_test") or {}
+
+        sep = "=" * 70
+        print(sep)
+        print("SPEED-ADVICE DIAGNOSTIC RESULTS")
+        print(sep)
+
+        print("\n── GC mechanism (how does this model do gradient checkpointing?) ──")
+        print(f"  meta_loader (model class):      {audit.get('meta_loader')}")
+        print(f"  path_discovery_result:          {audit.get('path_discovery_result')}")
+        print(f"  path_discovery_layer_count:     {audit.get('path_discovery_count')}")
+        print(f"  gcl_inheritor_count:            {audit.get('gcl_inheritor_count')}")
+        print(f"    (>0 = layers inherit GradientCheckpointingLayer, per-layer flag works)")
+        print(f"  layer_idx_scan_total:           {audit.get('layer_idx_scan_total')}")
+        print(f"  layer_idx_gc_scan_total:        {audit.get('layer_idx_gc_scan_total')}")
+        print(f"    (= what apply_selective_checkpointing finds via model.modules())")
+        print(f"  gc_attr_changed_after_enable:   {audit.get('gc_attr_changed_after_enable_count')}")
+        print(f"    (>0 = gradient_checkpointing_enable() sets per-layer flags)")
+        print(f"  gc_in_forward:                  {audit.get('gc_in_forward')}")
+        print(f"  decoder_classname_matches:      {audit.get('decoder_classname_matches', [])[:5]}")
+        print(f"  gcl_inheritor_sample:           {audit.get('gcl_inheritor_sample', [])[:3]}")
+
+        print("\n── Simulation: what apply_selective_checkpointing() would do ──")
+        print(f"  found_via_layer_idx_gc:         {sim.get('found_via_layer_idx_gc')}")
+        print(f"  would_uncheckpoint:             {sim.get('would_uncheckpoint')}")
+        print(f"  flags_after_sim_sample:         {sim.get('flags_after_sim_sample', [])[:10]}")
+        print(f"  sim_ok:                         {sim.get('ok')}")
+
+        print("\n── Memory math ──")
+        print(f"  linear layers to uncheckpoint:  {mem.get('linear_layers_to_uncheckpoint')}")
+        print(f"  activation GiB at max_len:      {mem.get('estimated_activation_gib_at_max_len_65536')}")
+        print(f"  headroom GiB/GPU:               {mem.get('observed_headroom_gib_per_gpu')}")
+        print(f"  fits_at_max_len:                {mem.get('fits_at_max_len')}")
+
+        print("\n── z/z1 batch-merge test ──")
+        print(f"  tested:  {z1t.get('tested')}  ok: {z1t.get('ok')}  error: {z1t.get('error')}")
+        if z1t.get("ok"):
+            print(f"  single hidden shape: {z1t.get('single_hidden_shape')}")
+            print(f"  double hidden shape: {z1t.get('double_hidden_shape')}")
+            print(f"  mem batch1={z1t.get('batch1_mem_delta_mb')} MB  batch2={z1t.get('batch2_mem_delta_mb')} MB")
+
+        print("\n── Throughput estimates ──")
+        print(f"  after selective-ckpt:  {thr.get('after_selective_checkpointing_h_per_epoch')} h/epoch")
+        print(f"  after both opts:       {thr.get('after_both_optimizations_h_per_epoch')} h/epoch")
+
+        print(sep)
+        if audit.get("error"):
+            print(f"WARNING gc_mechanism_audit error: {audit.get('error')}")
+            print(audit.get("tb", ""))
+        print()
     else:
         report["speed_advice"] = {"ok": False, "error": "skipped (pass --speed-advice)"}
 
