@@ -1053,7 +1053,11 @@ def probe_speed_advice(
                         meta_model = None
             if meta_model is not None:
                 meta_model.gradient_checkpointing_enable()
+                # First try path-based lookup (raw model, no PEFT).
+                # Training uses model.modules() scan instead (train_jepa.py
+                # apply_selective_checkpointing) so PEFT wrapping doesn't matter there.
                 layers_found = None
+                found_path = None
                 for path in (
                     "model.language_model.layers",
                     "language_model.layers",
@@ -1067,7 +1071,18 @@ def probe_speed_advice(
                             break
                     if m is not None:
                         layers_found = m
+                        found_path = path
                         break
+                # Fallback: scan by layer_idx (same logic as training-time)
+                if layers_found is None:
+                    by_idx: dict[int, Any] = {}
+                    for mod in meta_model.modules():
+                        idx = getattr(mod, "layer_idx", None)
+                        if isinstance(idx, int) and hasattr(mod, "gradient_checkpointing"):
+                            by_idx[idx] = mod
+                    if by_idx:
+                        layers_found = [by_idx[i] for i in sorted(by_idx)]
+                        found_path = "modules(layer_idx)"
                 if layers_found is not None:
                     flags_before = [
                         getattr(l, "gradient_checkpointing", None) for l in layers_found
@@ -1083,10 +1098,15 @@ def probe_speed_advice(
                     out["per_layer_gc_check"] = {
                         "ok": per_layer_flag_ok,
                         "all_layers_have_flag": per_layer_flag_ok,
+                        "layers_path_found": found_path,
                         "sample_before_enable": flags_before[:5],
                         "sample_after_selective": flags_after[:5],
                         "n_still_checkpointed": sum(1 for f in flags_after if f),
                         "n_uncheckpointed": sum(1 for f in flags_after if not f),
+                        "note": (
+                            "probe uses raw model (no PEFT); training uses model.modules() "
+                            "scan which is PEFT-safe. Both now use layer_idx-based discovery."
+                        ),
                     }
                 del meta_model
         except Exception as e:
