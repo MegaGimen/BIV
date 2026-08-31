@@ -65,7 +65,12 @@ def ckpt_complete(path: Path) -> bool:
 
 
 def find_latest_ckpt(out_dir: Path) -> Path | None:
-    """Newest complete ckpt. Rank key ``(epoch, step, kind)`` — same as Muse / daemon."""
+    """Newest complete ckpt. Rank key ``(epoch, step, kind)`` — epoch first, then step.
+
+    Same as Muse / daemon. Rolling ``checkpoint-e{epoch}-s{step}`` uses the 0-based
+    epoch index from the training loop; epoch-end uses a 1-based completed epoch,
+    so it ranks above that epoch's rolling dirs.
+    """
     if not out_dir.is_dir():
         return None
     best: tuple[int, int, int, Path] | None = None

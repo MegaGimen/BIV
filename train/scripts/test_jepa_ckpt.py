@@ -56,6 +56,14 @@ def test_rotate_keeps_epoch_end(tmp: Path) -> None:
     assert len([n for n in names if n.startswith("checkpoint-e0-")]) == 3
 
 
+def test_find_latest_epoch_then_step(tmp: Path) -> None:
+    _fake_ckpt(tmp, "checkpoint-e0-s900")
+    _fake_ckpt(tmp, "checkpoint-e1-s10")
+    picked = find_latest_ckpt(tmp)
+    assert picked is not None
+    assert picked.name == "checkpoint-e1-s10"
+
+
 def test_find_latest_prefers_epoch_end(tmp: Path) -> None:
     _fake_ckpt(tmp, "checkpoint-e0-s100")
     _fake_ckpt(tmp, "checkpoint-epoch1-end-s100")
@@ -88,6 +96,8 @@ def main() -> None:
         test_rotate_keeps_epoch_end(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_find_latest_prefers_epoch_end(Path(d))
+    with tempfile.TemporaryDirectory() as d:
+        test_find_latest_epoch_then_step(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_incomplete_skipped(Path(d))
     with tempfile.TemporaryDirectory() as d:

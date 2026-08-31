@@ -28,10 +28,23 @@ while [[ $# -gt 0 ]]; do
       CONFIG="$2"
       shift 2
       ;;
-    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps)
+    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps|--collapse-steps|--resume-from)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
-      EXTRA+=("$1" "$2")
+      if [[ "$1" == "--resume-from" ]]; then
+        EXTRA+=(--resume "$2")
+      else
+        EXTRA+=("$1" "$2")
+      fi
       shift 2
+      ;;
+    --resume)
+      if [[ $# -ge 2 && "$2" != -* ]]; then
+        EXTRA+=(--resume "$2")
+        shift 2
+      else
+        EXTRA+=(--resume)
+        shift
+      fi
       ;;
     -h|--help)
       cat <<'EOF'
@@ -42,9 +55,14 @@ Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
   bash scripts/train_jepa.sh
   bash scripts/train_jepa.sh --max-length 65536
   bash scripts/train_jepa.sh --save-steps 1 --max-steps 2
+  bash scripts/train_jepa.sh --resume
+  bash scripts/train_jepa.sh --resume outputs/jepa_stage1/checkpoint-e0-s25
 
 Env: PARALLEL=single|fsdp2|fsdp2_cp|auto  CONFIG=...  MAX_LENGTH=...
-     --save-steps N  (default yaml 25; 1 is valid — smoke that FSDP save works)
+     --save-steps N       (default yaml 25; 1 smokes FSDP save)
+     --collapse-steps N   (default yaml 10; independent of save)
+     --resume             newest complete ckpt under output_dir (epoch, then step)
+     --resume PATH / --resume-from PATH
      --max-steps N
 EOF
       exit 0

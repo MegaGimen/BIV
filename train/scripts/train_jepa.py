@@ -7,10 +7,12 @@ AgentWorld's own 40 layers. Instruct + draft/scorer/W (Stage 2) attach later
 and call this trained, frozen JEPA like an advisor.
 
 Encodes (h, a, o) from mix JSONL messages, predicts ẑ = JEPA(c_t, u*) vs stop-grad z*.
+Ranking NCE (queued z*) + inverse dynamics Inv(c, z*)→u sit on the same step.
 4-GPU FSDP2 + Context Parallel (Muse recipe), max_length=65536.
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
   bash scripts/train_jepa.sh --save-steps 1 --max-steps 2   # smoke the FSDP saver
+  bash scripts/train_jepa.sh --resume                         # newest ckpt (epoch, then step)
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ if str(MERGE) not in sys.path:
 
 from biv_wm.ckpt import (  # noqa: E402
     epoch_end_name,
+    find_latest_ckpt,
     rotate_rolling,
     rolling_name,
     write_trainer_state,
@@ -393,7 +396,20 @@ def parse_args() -> argparse.Namespace:
         "--save-steps",
         type=int,
         default=None,
-        help="Override yaml save_steps (default 25). 1 is valid (smoke the saver).",
+        help="Override yaml save_steps (default 25).",
+    )
+    p.add_argument(
+        "--collapse-steps",
+        type=int,
+        default=None,
+        help="Collapse check every N optimizer steps (default 10). Independent of save.",
+    )
+    p.add_argument(
+        "--resume",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Resume weights. Bare --resume picks the newest ckpt (epoch, then step).",
     )
     p.add_argument("--max-length", type=int, default=None)
     p.add_argument("--cp-size", type=int, default=None, help="Context-parallel size (Ring Attention).")
@@ -481,27 +497,79 @@ def save_ckpt(
     *,
     epoch: int,
     step: int,
+    inv=None,
 ) -> None:
     accelerator.wait_for_everyone()
     lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
     jepa_cpu = {k: v.detach().cpu().contiguous().clone() for k, v in jepa.state_dict().items()}
-    if not accelerator.is_main_process:
-        return
-    path.mkdir(parents=True, exist_ok=True)
-    unwrapped = accelerator.unwrap_model(model)
-    save_adapter(unwrapped, lora_cpu, path)
-    torch_mod = __import__("torch")
-    torch_mod.save(jepa_cpu, path / "jepa.pt")
-    if tokenizer is not None:
-        tokenizer.save_pretrained(path)
-    meta = dict(extra or {})
-    write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
-    (path / "train_meta.json").write_text(
-        json.dumps({"epoch": epoch, "global_step": step, **meta}, indent=2, ensure_ascii=False)
-        + "\n",
-        encoding="utf-8",
-    )
-    log(f"saved {path}")
+    inv_cpu = None
+    if inv is not None:
+        inv_cpu = {k: v.detach().cpu().contiguous().clone() for k, v in inv.state_dict().items()}
+    if accelerator.is_main_process:
+        path.mkdir(parents=True, exist_ok=True)
+        unwrapped = accelerator.unwrap_model(model)
+        save_adapter(unwrapped, lora_cpu, path)
+        torch_mod = __import__("torch")
+        torch_mod.save(jepa_cpu, path / "jepa.pt")
+        if inv_cpu is not None:
+            torch_mod.save(inv_cpu, path / "inv.pt")
+        if tokenizer is not None:
+            tokenizer.save_pretrained(path)
+        meta = dict(extra or {})
+        write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
+        (path / "train_meta.json").write_text(
+            json.dumps({"epoch": epoch, "global_step": step, **meta}, indent=2, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        log(f"saved {path}")
+    accelerator.wait_for_everyone()
+
+
+def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
+    if raw is None:
+        return None
+    if raw == "auto":
+        found = find_latest_ckpt(out_dir)
+        if found is None:
+            raise SystemExit(f"--resume: no complete checkpoint under {out_dir}")
+        return found
+    p = Path(raw)
+    if not p.is_absolute():
+        p = _resolve(p)
+    if p.is_dir() and (p / "trainer_state.json").is_file():
+        return p
+    raise SystemExit(f"--resume path is not a checkpoint: {p}")
+
+
+def load_adapter_and_heads(model, jepa, inv, path: Path, log_fn) -> tuple[int, int]:
+    import torch
+    from peft import set_peft_model_state_dict
+    from safetensors.torch import load_file
+
+    adapter = path / "adapter_model.safetensors"
+    if adapter.is_file():
+        sd = load_file(str(adapter))
+        result = set_peft_model_state_dict(model, sd)
+        if isinstance(result, tuple) and len(result) >= 2:
+            log_fn(
+                f"resume adapter from {path.name} "
+                f"missing={len(result[0])} unexpected={len(result[1])}"
+            )
+        else:
+            log_fn(f"resume adapter from {path.name}")
+    jepa_p = path / "jepa.pt"
+    if jepa_p.is_file():
+        jepa.load_state_dict(torch.load(jepa_p, map_location="cpu"))
+        log_fn(f"resume jepa.pt from {path.name}")
+    inv_p = path / "inv.pt"
+    if inv is not None and inv_p.is_file():
+        inv.load_state_dict(torch.load(inv_p, map_location="cpu"))
+        log_fn(f"resume inv.pt from {path.name}")
+    elif inv is not None:
+        log_fn(f"no inv.pt in {path.name}; inverse head stays randomly initialized")
+    state = json.loads((path / "trainer_state.json").read_text(encoding="utf-8"))
+    return int(state.get("epoch") or 0), int(state.get("global_step") or 0)
 
 
 def decode_o_texts(tokenizer, batch) -> list[str]:
@@ -531,7 +599,14 @@ def main() -> None:
     from peft import LoraConfig, get_peft_model
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
-    from biv_wm.jepa import JEPAPred, collapse_stats, cosine_align_loss, format_collapse_line
+    from biv_wm.jepa import (  # noqa: PLC0415
+        InverseDyn,
+        JEPAPred,
+        collapse_stats,
+        cosine_align_loss,
+        format_collapse_line,
+        ranking_nce,
+    )
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
     if not cfg_path.is_file():
@@ -622,11 +697,23 @@ def main() -> None:
         model.print_trainable_parameters()
     install_hidden_only_forward(model)
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
-    jepa = JEPAPred(dim=hidden, hidden=int(tcfg.get("jepa_hidden") or hidden * 2))
+    jepa_h = int(tcfg.get("jepa_hidden") or hidden * 2)
+    jepa = JEPAPred(dim=hidden, hidden=jepa_h)
+    inv = InverseDyn(dim=hidden, hidden=jepa_h)
+    resume_dir = load_resume_dir(out_dir, args.resume)
+    resume_epoch, resume_step = 0, 0
+    if resume_dir is not None:
+        resume_epoch, resume_step = load_adapter_and_heads(
+            model, jepa, inv, resume_dir, rank_log
+        )
+        rank_log(
+            f"resume {resume_dir.name} trainer_state epoch={resume_epoch} "
+            f"global_step={resume_step} (newest by epoch, then step)"
+        )
     if is_main:
         log_world_architecture(
             model=model,
-            extra={"jepa": jepa},
+            extra={"jepa": jepa, "inv": inv},
             model_dir=model_dir,
             log=log,
         )
@@ -663,18 +750,32 @@ def main() -> None:
     )
     model, opt = accelerator.prepare(model, opt)
     jepa = jepa.to(device=accelerator.device, dtype=dtype)
+    inv = inv.to(device=accelerator.device, dtype=dtype)
     opt_jepa = torch.optim.AdamW(
-        list(jepa.parameters()),
+        list(jepa.parameters()) + list(inv.parameters()),
         lr=jepa_lr,
         weight_decay=float(tcfg.get("jepa_weight_decay") or 0.0),
     )
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(tcfg.get("logging_steps") or 10)
-    save_every = int(args.save_steps or tcfg.get("save_steps") or 25)
+    save_every = int(
+        args.save_steps if args.save_steps is not None else (tcfg.get("save_steps") or 25)
+    )
+    collapse_every = int(
+        args.collapse_steps
+        if args.collapse_steps is not None
+        else (tcfg.get("collapse_steps") or 10)
+    )
     if save_every < 1:
         raise SystemExit(f"save_steps must be >= 1, got {save_every}")
+    if collapse_every < 1:
+        raise SystemExit(f"collapse_steps must be >= 1, got {collapse_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
+    rank_w = float(tcfg.get("rank_weight") or 0.3)
+    inv_w = float(tcfg.get("inv_weight") or 0.3)
+    rank_temp = float(tcfg.get("rank_temperature") or 0.1)
+    rank_queue_n = int(tcfg.get("rank_queue") or 256)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
@@ -684,11 +785,15 @@ def main() -> None:
     warmup = max(0, min(warmup, max(total_opt - 1, 0)))
     sched = LambdaLR(opt, _warmup_lambda(warmup))
     sched_jepa = LambdaLR(opt_jepa, _warmup_lambda(warmup))
+    for _ in range(resume_step):
+        sched.step()
+        sched_jepa.step()
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
-        f"save_steps={save_every} save_total_limit={save_limit} "
-        f"(FSDP LoRA gather + collapse check on save; no eval)"
+        f"save_steps={save_every} collapse_steps={collapse_every} "
+        f"rank_w={rank_w} inv_w={inv_w} rank_queue={rank_queue_n} "
+        f"save_total_limit={save_limit} resume_step={resume_step}"
     )
 
     ckpt_extra = {
@@ -703,6 +808,7 @@ def main() -> None:
     seen_pred: deque = deque()
     seen_z: deque = deque()
     seen_o: deque = deque()
+    rank_mem: deque = deque(maxlen=rank_queue_n)
     writer = None
 
     def emit(msg: str) -> None:
@@ -714,35 +820,46 @@ def main() -> None:
             except Exception:
                 log(msg)
 
+    def check_collapse(step_i: int) -> None:
+        if not is_main or not seen_pred:
+            seen_pred.clear()
+            seen_z.clear()
+            seen_o.clear()
+            return
+        stats = collapse_stats(
+            torch.stack(list(seen_pred)),
+            torch.stack(list(seen_z)),
+            list(seen_o),
+        )
+        emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
+        payload = json.dumps(stats, indent=2, ensure_ascii=False) + "\n"
+        (out_dir / "collapse.json").write_text(payload, encoding="utf-8")
+        (out_dir / f"collapse-s{step_i}.json").write_text(payload, encoding="utf-8")
+        if writer is not None:
+            def _sc(name: str, block: object, key: str) -> None:
+                if isinstance(block, dict) and block.get(key) is not None:
+                    writer.add_scalar(name, float(block[key]), step_i)
+
+            paired = stats["paired"]
+            mis = stats["mismatch"]
+            z_self = stats["z_self"]
+            pred_self = stats["pred_self"]
+            writer.add_scalar("collapse/n", float(stats["n"]), step_i)
+            writer.add_scalar("collapse/skipped_same_o", float(stats["skipped_same_o"]), step_i)
+            _sc("collapse/paired_median", paired, "median")
+            _sc("collapse/paired_mean", paired, "mean")
+            _sc("collapse/mismatch_median", mis, "median")
+            _sc("collapse/mismatch_p90", mis, "p90")
+            _sc("collapse/z_self_median", z_self, "median")
+            _sc("collapse/pred_self_median", pred_self, "median")
+            writer.add_text("collapse/verdict", str(stats.get("verdict")), step_i)
+            writer.flush()
+        seen_pred.clear()
+        seen_z.clear()
+        seen_o.clear()
+
     def dump_ckpt(kind: str, epoch_i: int, step_i: int) -> None:
         extra = {**ckpt_extra, "kind": kind}
-        if is_main and seen_pred:
-            stats = collapse_stats(
-                torch.stack(list(seen_pred)),
-                torch.stack(list(seen_z)),
-                list(seen_o),
-            )
-            extra["collapse"] = stats
-            emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
-            if writer is not None:
-                def _sc(name: str, block: object, key: str) -> None:
-                    if isinstance(block, dict) and block.get(key) is not None:
-                        writer.add_scalar(name, float(block[key]), step_i)
-
-                paired = stats["paired"]
-                mis = stats["mismatch"]
-                z_self = stats["z_self"]
-                pred_self = stats["pred_self"]
-                writer.add_scalar("collapse/n", float(stats["n"]), step_i)
-                writer.add_scalar("collapse/skipped_same_o", float(stats["skipped_same_o"]), step_i)
-                _sc("collapse/paired_median", paired, "median")
-                _sc("collapse/paired_mean", paired, "mean")
-                _sc("collapse/mismatch_median", mis, "median")
-                _sc("collapse/mismatch_p90", mis, "p90")
-                _sc("collapse/z_self_median", z_self, "median")
-                _sc("collapse/pred_self_median", pred_self, "median")
-                writer.add_text("collapse/verdict", str(stats.get("verdict")), step_i)
-                writer.flush()
         if kind == "epoch-end":
             dest = out_dir / epoch_end_name(epoch_i, step_i)
         else:
@@ -756,18 +873,11 @@ def main() -> None:
             extra=extra,
             epoch=epoch_i,
             step=step_i,
+            inv=inv,
         )
         if is_main:
             emit(f"[jepa] checkpoint ({kind}) → {dest.name}")
-            if extra.get("collapse") is not None:
-                (dest / "collapse.json").write_text(
-                    json.dumps(extra["collapse"], indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
             rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepa] {m}"))
-            seen_pred.clear()
-            seen_z.clear()
-            seen_o.clear()
 
     tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
     ckpt_extra["tensorboard"] = str(tb_dir)
@@ -779,6 +889,9 @@ def main() -> None:
         writer.add_text("train/cp_size", str(cp_size), 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
+        writer.add_text("train/collapse_steps", str(collapse_every), 0)
+        writer.add_text("train/rank_weight", str(rank_w), 0)
+        writer.add_text("train/inv_weight", str(inv_w), 0)
 
     try:
         from tqdm.auto import tqdm
@@ -787,14 +900,32 @@ def main() -> None:
 
     pbar = None
     if is_main and tqdm is not None:
-        pbar = tqdm(total=total_opt, desc="jepa", unit="step", dynamic_ncols=True)
+        pbar = tqdm(
+            total=total_opt,
+            initial=min(resume_step, total_opt),
+            desc="jepa",
+            unit="step",
+            dynamic_ncols=True,
+        )
+
+    if resume_step >= total_opt:
+        rank_log(f"resume_step={resume_step} already covers total_opt={total_opt}; nothing to do")
+        if pbar is not None:
+            pbar.close()
+        if writer is not None:
+            writer.close()
+        return
 
     model.train()
     jepa.train()
-    step = 0
+    inv.train()
+    step = resume_step
+    skip_micro = resume_step * accum
+    micro_seen = 0
     opt.zero_grad(set_to_none=True)
     opt_jepa.zero_grad(set_to_none=True)
     running = 0.0
+    run_align = run_rank = run_inv = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
     last_train_loss = None
@@ -802,8 +933,13 @@ def main() -> None:
 
     try:
         for epoch in range(epochs):
-            epoch_opt = 0
+            epoch_base = epoch * steps_per_epoch
+            epoch_opt = max(0, min(resume_step - epoch_base, steps_per_epoch))
             for batch in loader:
+                if micro_seen < skip_micro:
+                    micro_seen += 1
+                    continue
+                micro_seen += 1
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()}
                 h_len = float(batch["h_mask"].sum(dim=1).float().mean().item())
                 a_len = float(batch["a_mask"].sum(dim=1).float().mean().item())
@@ -814,15 +950,37 @@ def main() -> None:
                     c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
                     u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
                     pred = jepa(c, u)
-                    loss = cosine_align_loss(pred, z)
+                    align_loss = cosine_align_loss(pred, z)
+                    texts = decode_o_texts(tokenizer, batch)
+                    if rank_w > 0.0 and rank_mem:
+                        neg_z = torch.stack([t[0] for t in rank_mem]).to(
+                            device=pred.device, dtype=pred.dtype
+                        )
+                        rank_loss = ranking_nce(
+                            pred,
+                            z,
+                            neg_z,
+                            texts,
+                            [t[1] for t in rank_mem],
+                            temperature=rank_temp,
+                        )
+                    else:
+                        rank_loss = pred.new_zeros(())
+                    inv_hat = inv(c, z.detach())
+                    inv_loss = cosine_align_loss(inv_hat, u)
+                    loss = align_loss + rank_w * rank_loss + inv_w * inv_loss
+                    for i in range(pred.size(0)):
+                        rank_mem.append((z[i].detach().float().cpu(), texts[i]))
                     if is_main:
-                        texts = decode_o_texts(tokenizer, batch)
                         for i in range(pred.size(0)):
                             seen_pred.append(pred[i].detach().float().cpu())
                             seen_z.append(z[i].detach().float().cpu())
                             seen_o.append(texts[i])
                     accelerator.backward(loss)
                     running += float(loss.detach().float().item())
+                    run_align += float(align_loss.detach().float().item())
+                    run_rank += float(rank_loss.detach().float().item())
+                    run_inv += float(inv_loss.detach().float().item())
                     n_loss += 1
                     run_h += h_len
                     run_a += a_len
@@ -830,6 +988,7 @@ def main() -> None:
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
+                        torch.nn.utils.clip_grad_norm_(inv.parameters(), max_norm)
                         opt.step()
                         opt_jepa.step()
                         sched.step()
@@ -851,10 +1010,15 @@ def main() -> None:
                             denom = max(n_loss, 1)
                             emit(
                                 f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
+                                f"align={run_align / denom:.4f} rank={run_rank / denom:.4f} "
+                                f"inv={run_inv / denom:.4f} "
                                 f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                             )
                             if writer is not None:
                                 writer.add_scalar("train/loss", last_train_loss, step)
+                                writer.add_scalar("train/loss_align", run_align / denom, step)
+                                writer.add_scalar("train/loss_rank", run_rank / denom, step)
+                                writer.add_scalar("train/loss_inv", run_inv / denom, step)
                                 writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
                                 writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
                                 writer.add_scalar("train/len_h", run_h / denom, step)
@@ -862,8 +1026,11 @@ def main() -> None:
                                 writer.add_scalar("train/len_o", run_o / denom, step)
                                 writer.flush()
                             running = 0.0
+                            run_align = run_rank = run_inv = 0.0
                             n_loss = 0
                             run_h = run_a = run_o = 0.0
+                        if step % collapse_every == 0:
+                            check_collapse(step)
                         if is_last_in_epoch:
                             emit(
                                 f"[jepa] epoch {epoch + 1} end: force checkpoint "
