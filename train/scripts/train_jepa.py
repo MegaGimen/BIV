@@ -355,88 +355,6 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
     return model, tok
 
 
-def apply_selective_checkpointing(model, rank_log_fn=None, max_uncheckpoint: int | None = None) -> int:
-    """Disable gradient checkpointing on linear-attention layers only.
-
-    Full-attention layers (O(L²) activation memory — ~8 GiB/layer at
-    max_length=65536) MUST remain checkpointed. Linear-attention (Gated
-    DeltaNet) layers are O(L), safe to uncheckpoint given the ~33 GiB/GPU
-    headroom observed at average length. Uncheckpointing a layer means its
-    intermediate activations are stored instead of recomputed during backward,
-    saving one forward-equivalent recompute per layer per backward pass.
-
-    GradientCheckpointingLayer (transformers/modeling_layers.py) stores the
-    flag as an instance attribute set by gradient_checkpointing_enable(); we
-    just override it per-layer with False for linear-attention layers.
-
-    Discovery: match by class name "Qwen3_5MoeDecoderLayer" via
-    model.named_modules(), pulling the layer index from the dotted module
-    path suffix (e.g. "...layers.5" -> 5). This is robust to PEFT wrapping
-    (named_modules() traverses the full tree regardless of wrapper depth)
-    AND avoids a real collision found by probe.py --speed-advice: the
-    decoder layer's own child mixer (Qwen3_5MoeGatedDeltaNet, for its
-    recurrent DeltaNet state) also carries a `layer_idx` attribute, so a
-    naive `layer_idx`-keyed modules() scan silently ends up holding the
-    *child mixer* instead of the actual decoder layer (modules() visits
-    parent-before-children, so a dict keyed by layer_idx gets overwritten
-    by the later-visited child) — that mixer has no gradient_checkpointing
-    attribute, so the previous version of this function found 0 layers
-    and uncheckpointed nothing.
-
-    max_uncheckpoint caps how many linear-attention layers get uncheckpointed
-    (None = all of them). All linear-attn layers cost the same per-layer
-    activation memory, so this just takes the first N by index — use it to
-    dial back memory usage if 30/30 OOMs (e.g. try 15 for roughly half the
-    activation memory and half the recompute savings).
-
-    Returns the count of uncheckpointed layers.
-    """
-    import re
-
-    cfg = getattr(model, "config", None)
-    tc = getattr(cfg, "text_config", cfg)
-    layer_types: list[str] = getattr(tc, "layer_types", [])
-    # fallback: every 4th layer is full attention in Qwen3.5-35B-A3B
-    full_attn_fallback = {3, 7, 11, 15, 19, 23, 27, 31, 35, 39}
-    if layer_types:
-        full_attn = {i for i, t in enumerate(layer_types) if t == "full_attention"}
-    else:
-        full_attn = full_attn_fallback
-
-    decoder_layers: dict[int, Any] = {}
-    for name, m in model.named_modules():
-        if type(m).__name__ == "Qwen3_5MoeDecoderLayer":
-            match = re.search(r"\.(\d+)$", name)
-            if match:
-                decoder_layers[int(match.group(1))] = m
-
-    if not decoder_layers:
-        if rank_log_fn:
-            rank_log_fn("selective_checkpointing: no Qwen3_5MoeDecoderLayer found by class name, skipping")
-        return 0
-
-    n_missing_attr = sum(1 for layer in decoder_layers.values() if not hasattr(layer, "gradient_checkpointing"))
-    linear_idx_sorted = sorted(i for i in decoder_layers if i not in full_attn)
-    if max_uncheckpoint is not None:
-        linear_idx_sorted = linear_idx_sorted[: max(0, int(max_uncheckpoint))]
-    to_uncheckpoint = set(linear_idx_sorted)
-
-    n_uncheckpointed = 0
-    for idx, layer in decoder_layers.items():
-        if idx in to_uncheckpoint and hasattr(layer, "gradient_checkpointing"):
-            layer.gradient_checkpointing = False
-            n_uncheckpointed += 1
-
-    if rank_log_fn:
-        rank_log_fn(
-            f"selective_checkpointing: {n_uncheckpointed}/{len(decoder_layers)} linear-attn "
-            f"layers uncheckpointed (idx {sorted(to_uncheckpoint)})  "
-            f"full-attn (checkpointed): {sorted(full_attn)}"
-            + (f"  WARNING: {n_missing_attr} layers have no gradient_checkpointing attr" if n_missing_attr else "")
-        )
-    return n_uncheckpointed
-
-
 def open_tb(log_dir: Path):
     log_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -803,13 +721,6 @@ def main() -> None:
     if is_main and hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
     install_hidden_only_forward(model)
-    if bool(tcfg.get("selective_checkpointing", True)) and bool(tcfg.get("gradient_checkpointing", True)):
-        max_uncheckpoint = tcfg.get("selective_checkpointing_max_layers")
-        apply_selective_checkpointing(
-            model,
-            rank_log_fn=rank_log,
-            max_uncheckpoint=int(max_uncheckpoint) if max_uncheckpoint is not None else None,
-        )
     hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
     jepa_h = int(tcfg.get("jepa_hidden") or hidden * 2)
     jepa = JEPAPred(dim=hidden, hidden=jepa_h)
@@ -895,10 +806,6 @@ def main() -> None:
         raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
     inv_w = float(tcfg.get("inv_weight") or 0.3)
-    # Space-for-time: batch z and z1 into one forward when nce_w > 0.
-    # Instead of two calls (z no_grad + z1 live), one call with batch_size×2 on
-    # o_ids eliminates one full 40-layer FSDP2 all-gather round per micro-batch.
-    batch_o_z1 = bool(tcfg.get("batch_o_z1", True))
     # Anti-collapse, part 2/3 (see AGENTS.md "JEPA 家族怎么防坍缩"): loss_simcse is
     # the only loss whose gradient reaches the observation-encoding forward pass
     # itself. It costs exactly ONE extra live forward per micro-batch (z1, same
@@ -1119,27 +1026,8 @@ def main() -> None:
                 a_len = float(batch["a_mask"].sum(dim=1).float().mean().item())
                 o_len = float(batch["o_mask"].sum(dim=1).float().mean().item())
                 with accelerator.accumulate(model):
-                    # When batch_o_z1 and nce_w>0: z and z1 are both o_ids
-                    # encodings (different dropout draws). Batching them into
-                    # one call (batch_size×2) eliminates one full 40-layer
-                    # FSDP2 all-gather round vs two separate calls. The live
-                    # z1 row carries gradient; z row is stop-grad'd at every
-                    # downstream use (cosine_align_loss detaches target
-                    # internally; inv uses z.detach(); bank_nce_loss detaches
-                    # pos_z internally), so only z1 contributes real gradient
-                    # through this forward — the z row's recompute/store cost
-                    # during backward is negligible (o_ids is short).
-                    if nce_w > 0 and batch_o_z1:
-                        o_ids2 = torch.cat([batch["o_ids"], batch["o_ids"]], dim=0)
-                        o_mask2 = torch.cat([batch["o_mask"], batch["o_mask"]], dim=0)
-                        z_both = last_hidden(model, o_ids2, o_mask2, cp_size)
-                        bsz = batch["o_ids"].size(0)
-                        z = z_both[:bsz]   # stop-grad'd at point of use below
-                        z1 = z_both[bsz:]  # live, for loss_simcse
-                    else:
-                        with torch.no_grad():
-                            z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                        z1 = None
+                    with torch.no_grad():
+                        z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
                     c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
                     u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
                     pred = jepa(c, u)
@@ -1158,14 +1046,17 @@ def main() -> None:
                     loss = align_loss + inv_w * inv_loss
                     if bank_loss is not None:
                         loss = loss + bank_w * bank_loss
-                    # loss_simcse: anti-collapse part 1/3 — the only term whose
-                    # gradient reaches the observation encoder (see AGENTS.md).
-                    # z1 is either the batch-merge second row (no extra forward)
-                    # or a separate live forward when batch_o_z1 is off.
+                    # loss_simcse: anti-collapse part 1/3, the one that actually
+                    # touches the observation-encoding forward pass (see AGENTS.md
+                    # "JEPA 家族怎么防坍缩"). Costs exactly one extra live forward
+                    # (z1 — same o_ids as z, a second dropout draw) instead of
+                    # two, and reuses the same shared bank as negatives instead
+                    # of a separate group buffer: the positive is this
+                    # micro-batch's own z (already computed above), so no extra
+                    # bookkeeping or deferred backward across micro-batches.
                     simcse_loss = None
                     if nce_w > 0 and bank_stack is not None:
-                        if z1 is None:  # batch_o_z1 disabled
-                            z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
+                        z1 = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
                         simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
                         if simcse_loss is not None:
                             loss = loss + nce_w * simcse_loss

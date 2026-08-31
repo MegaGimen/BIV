@@ -22,25 +22,8 @@ sources:
 
 train:
   max_length: 65536
-  # Space-for-time attempt #3 (2026-08-31): batch_size 1->2, grad_accum 8->4,
-  # effective batch (batch_size * grad_accum) unchanged at 8. Fewer, larger
-  # micro-batches means fewer FSDP2 all-gather rounds per step and better
-  # matmul occupancy (batch=1 wastes GPU parallelism on many small kernels).
-  # Unlike selective_checkpointing (which needed exact per-layer memory
-  # accounting and blew up), this only needs collate's within-microbatch
-  # padding (pads h/a/o to the LONGEST example in each pair) to not blow the
-  # budget on unlucky short+long pairings — memory should track training
-  # data length distribution, not a fixed per-layer formula, so it is safer
-  # but not risk-free. Smoke-test with --max-steps 3 before a full run.
-  #
-  # KNOWN RISK: batch_o_z1 already runs a batch=2 forward (z/z1) under
-  # Context Parallel (cp_size=4); probe.py --speed-advice's isolated batch=2
-  # CP test crashed with "CUDA error: unspecified launch failure" (real
-  # training survived 1 step with it, so not guaranteed to crash, but this
-  # change makes EVERY forward batch=2 under CP, exercising that same code
-  # path far more — watch the first few steps closely).
-  batch_size: 2
-  grad_accum: 4
+  batch_size: 1
+  grad_accum: 8
   # Backbone LoRA: ~1/4 of Muse SFT (2e-4). Cosine hidden-align, already-trained WM.
   lr: 5.0e-5
   weight_decay: 0.01
@@ -119,34 +102,4 @@ train:
   output_dir: outputs/jepa_stage1
   torch_dtype: bfloat16
   gradient_checkpointing: true
-  # Space-for-time: un-checkpoint linear-attention (Gated DeltaNet) layers.
-  # Full-attention layers (O(L²) KV memory — ~8 GiB/layer at L=65536) stay
-  # checkpointed. Linear-attention layers are O(L) and were estimated to fit
-  # in the ~33 GiB/GPU headroom even at max_length=65536 (probe.py
-  # --speed-advice put all 30 at ~13.5 GiB using a 1.8x residual-stream
-  # proxy) — but that estimate under-counted real activation memory (attn
-  # projections, gate/output intermediates per DeltaNet layer are more than
-  # 1.8x residual size) and a live run OOM'd with all 30 uncheckpointed.
-  # selective_checkpointing_max_layers below caps how many of the 30
-  # linear-attn layers actually get uncheckpointed (rest stay checkpointed,
-  # same as before this feature existed).
-  #
-  # DISABLED (2026-08-31): live OOM at both max_layers=30 (94.97 GiB total,
-  # ~93.55 GiB allocated) and max_layers=10 (same). Real per-layer activation
-  # cost for Qwen3_5MoeGatedDeltaNet is much higher than the probe's
-  # residual-stream×1.8 estimate (~3 GiB/layer observed vs ~0.48 GiB/layer
-  # estimated, ~6x off) — the layer's internal chunk-wise recurrent state and
-  # gate intermediates dominate, not the residual stream. This optimization
-  # is not viable at max_length=65536 without a much smaller cap (untested
-  # below ~3-5 layers) or a from-scratch per-layer memory profile on GPU
-  # instead of a static estimate. Re-enable only after profiling actual
-  # torch.cuda.max_memory_allocated() deltas for 1, 2, 5 uncheckpointed
-  # layers individually.
-  selective_checkpointing: false
-  selective_checkpointing_max_layers: 10
-  # Space-for-time: batch z (no-grad) and z1 (live, for loss_simcse) into one
-  # forward call with batch_size×2 on o_ids. Eliminates one full 40-layer
-  # FSDP2 all-gather round. Only active when nce_weight > 0. Disable if
-  # context-parallel + batch>1 causes issues on this setup (set false).
-  batch_o_z1: true
   max_train_samples: null
