@@ -1395,7 +1395,7 @@ def main() -> None:
 
         s1_path = args.stage1_config
         if not s1_path.is_absolute():
-            s1_path = TRAIN / s1_path
+            s1_path = ROOT / "train" / s1_path
         try:
             s1 = _yaml.safe_load(s1_path.read_text(encoding="utf-8"))
             s1_model = (s1 or {}).get("model_dir") or (s1 or {}).get("train", {}).get("model_dir")
