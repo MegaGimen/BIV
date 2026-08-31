@@ -365,13 +365,14 @@ def open_tb(log_dir: Path):
     return writer
 
 
-def resolve_tb_dir(tcfg: dict[str, Any], out_dir: Path, cli: Path | None) -> Path:
+def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Path:
+    """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval)."""
     raw = (
         cli
         or os.environ.get("LOGGING_DIR")
         or os.environ.get("TF_LOGS")
         or tcfg.get("logging_dir")
-        or (out_dir / "tb")
+        or "/root/tf-logs"
     )
     root = Path(str(raw))
     if not root.is_absolute():
@@ -424,7 +425,7 @@ def parse_args() -> argparse.Namespace:
         "--logging-dir",
         type=Path,
         default=None,
-        help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or output_dir/tb)",
+        help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or /root/tf-logs)",
     )
     return p.parse_args()
 
