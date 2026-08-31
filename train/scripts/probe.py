@@ -670,6 +670,28 @@ def write_summary(report: dict[str, Any], path: Path) -> None:
     if spl.get("ok"):
         a(f"  hidden={spl.get('last_hidden_shape')} logits={spl.get('logits_shape')}")
         a(f"  dummy_W_logits={spl.get('dummy_w_logits_shape')} dummy_W_ok={spl.get('dummy_w_ok')}")
+    sa = report.get("speed_advice") or {}
+    a("")
+    if sa.get("ok"):
+        mem = sa.get("selective_checkpointing_memory_math") or {}
+        thr = sa.get("throughput_estimates") or {}
+        base = sa.get("throughput_baseline") or {}
+        a("speed_advice ok=True")
+        a(f"  current: {base.get('current_h_per_epoch')}h/epoch  original-est: {base.get('original_h_per_epoch_estimate')}h/epoch")
+        a(f"  linear layers to uncheckpoint: {mem.get('linear_layers_to_uncheckpoint')}  full-attn remain: {mem.get('full_attention_layers_remain_checkpointed')}")
+        a(f"  activation mem at max_len: {mem.get('estimated_activation_gib_at_max_len_65536')} GiB  headroom: {mem.get('observed_headroom_gib_per_gpu')} GiB  fits={mem.get('fits_at_max_len')}")
+        a(f"  estimate after selective-ckpt: {thr.get('after_selective_checkpointing_h_per_epoch')}h/epoch")
+        a(f"  estimate after both opts: {thr.get('after_both_optimizations_h_per_epoch')}h/epoch")
+        gc_check = sa.get("per_layer_gc_check") or {}
+        a(f"  per-layer gc flag ok={gc_check.get('ok')} still-ckpt={gc_check.get('n_still_checkpointed')} unchkpt={gc_check.get('n_uncheckpointed')}")
+        z1t = sa.get("z1_batch_merge_test") or {}
+        a(f"  z1 batch=2 test: tested={z1t.get('tested')} ok={z1t.get('ok')} error={z1t.get('error')}")
+        if z1t.get("ok"):
+            a(f"    single shape={z1t.get('single_hidden_shape')} double shape={z1t.get('double_hidden_shape')}")
+            a(f"    mem batch1={z1t.get('batch1_mem_delta_mb')}MB  batch2={z1t.get('batch2_mem_delta_mb')}MB")
+    else:
+        a(f"speed_advice: {sa.get('error', 'not run')}")
+
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -971,6 +993,212 @@ def try_forward_and_surgery(
     return fwd, splice
 
 
+def probe_speed_advice(
+    *,
+    world_dir: Path,
+    agent_dir: Path,
+    cut: int,
+    device_map: str,
+) -> dict[str, Any]:
+    """Measure the two space-for-time knobs on the real GPU host.
+
+    1. Selective gradient checkpointing: only full-attention layers keep
+       checkpointing (O(L²) activation memory); linear-attention layers are
+       uncheckpointed (O(L), safe given the observed ~33 GiB/GPU headroom).
+       Per-layer toggle works via GradientCheckpointingLayer.gradient_checkpointing
+       instance attribute — confirmed from transformers/modeling_layers.py.
+
+    2. z/z1 batch-merge: the no-grad z forward and the live z1 forward both
+       process the same o_ids (different dropout draws). Batching them into one
+       call (batch_size×2 on o_ids) eliminates one full-backbone FSDP2
+       all-gather round per micro-batch.
+
+    Writes to report['speed_advice'].  Run with::
+
+        python train/scripts/probe.py --speed-advice
+    """
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
+
+    out: dict[str, Any] = {"ok": False}
+
+    # ── 1. Per-layer gradient_checkpointing architecture check (meta device) ──
+    try:
+        config = AutoConfig.from_pretrained(str(agent_dir), trust_remote_code=True)
+        tc = getattr(config, "text_config", config)
+        layer_types: list[str] = getattr(tc, "layer_types", [])
+        hidden_size: int = getattr(tc, "hidden_size", 2048)
+        num_layers: int = getattr(tc, "num_hidden_layers", 40)
+        full_attn_idx = sorted(i for i, t in enumerate(layer_types) if t == "full_attention")
+        linear_attn_idx = sorted(i for i, t in enumerate(layer_types) if t != "full_attention")
+        if not layer_types:
+            full_attn_idx = sorted({3, 7, 11, 15, 19, 23, 27, 31, 35, 39} & set(range(num_layers)))
+            linear_attn_idx = sorted(set(range(num_layers)) - set(full_attn_idx))
+        out["layer_types_from_config"] = {
+            "total": num_layers,
+            "full_attention_count": len(full_attn_idx),
+            "linear_attention_count": len(linear_attn_idx),
+            "full_attention_indices": full_attn_idx,
+            "hidden_size": hidden_size,
+        }
+
+        per_layer_flag_ok = False
+        try:
+            with torch.device("meta"):
+                for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
+                    try:
+                        meta_model = loader.from_config(config, trust_remote_code=True)
+                        break
+                    except Exception:
+                        meta_model = None
+            if meta_model is not None:
+                meta_model.gradient_checkpointing_enable()
+                layers_found = None
+                for path in (
+                    "model.language_model.layers",
+                    "language_model.layers",
+                    "model.model.layers",
+                    "model.layers",
+                ):
+                    m = meta_model
+                    for part in path.split("."):
+                        m = getattr(m, part, None)
+                        if m is None:
+                            break
+                    if m is not None:
+                        layers_found = m
+                        break
+                if layers_found is not None:
+                    flags_before = [
+                        getattr(l, "gradient_checkpointing", None) for l in layers_found
+                    ]
+                    # selectively disable for linear layers
+                    for i, layer in enumerate(layers_found):
+                        if i in set(linear_attn_idx) and hasattr(layer, "gradient_checkpointing"):
+                            layer.gradient_checkpointing = False
+                    flags_after = [
+                        getattr(l, "gradient_checkpointing", None) for l in layers_found
+                    ]
+                    per_layer_flag_ok = all(f is not None for f in flags_before)
+                    out["per_layer_gc_check"] = {
+                        "ok": per_layer_flag_ok,
+                        "all_layers_have_flag": per_layer_flag_ok,
+                        "sample_before_enable": flags_before[:5],
+                        "sample_after_selective": flags_after[:5],
+                        "n_still_checkpointed": sum(1 for f in flags_after if f),
+                        "n_uncheckpointed": sum(1 for f in flags_after if not f),
+                    }
+                del meta_model
+        except Exception as e:
+            out["per_layer_gc_check"] = {"ok": False, "error": repr(e)}
+
+        # ── 2. Static memory arithmetic for selective checkpointing ──
+        # Residual-stream activation per uncheckpointed linear layer (bf16):
+        #   batch=1 × seq_len × hidden_size × 2 bytes
+        MAX_LEN = 65536
+        AVG_LEN = 35000
+        bytes_per_linear_layer_max = 1 * MAX_LEN * hidden_size * 2
+        bytes_per_linear_layer_avg = 1 * AVG_LEN * hidden_size * 2
+        # Full-attention layers at max_len keep O(L²) KV; linear layers are O(L).
+        # Overhead estimate (residual stream only — real is ~1.5-2x due to attn
+        # intermediates per layer, but linear-attn intermediates are O(L)).
+        gib = lambda b: round(b / 1024**3, 3)
+        total_linear_max_gib = gib(len(linear_attn_idx) * bytes_per_linear_layer_max * 1.8)
+        total_linear_avg_gib = gib(len(linear_attn_idx) * bytes_per_linear_layer_avg * 1.8)
+        out["selective_checkpointing_memory_math"] = {
+            "linear_layers_to_uncheckpoint": len(linear_attn_idx),
+            "full_attention_layers_remain_checkpointed": len(full_attn_idx),
+            "estimated_activation_gib_at_max_len_65536": total_linear_max_gib,
+            "estimated_activation_gib_at_avg_len_35000": total_linear_avg_gib,
+            "observed_headroom_gib_per_gpu": 33.0,
+            "fits_at_max_len": total_linear_max_gib < 33.0,
+            "note": (
+                "Estimate uses 1.8× residual-stream size as proxy for all O(L) "
+                "activations per linear-attention layer. Full-attention layers are "
+                "never uncheckpointed because their O(L²) KV activations at "
+                f"L={MAX_LEN} would be ~{gib(MAX_LEN**2 * 2 * 2):.1f} GiB/layer."
+            ),
+        }
+
+        # ── 3. Throughput arithmetic (using empirical step times) ──
+        # Known from training run: 192.92 s/step with 1 extra live o forward.
+        # Original (no anti-collapse): ~158 s/step.
+        total_steps_per_epoch = 6815  # 13630 total / 2 epochs
+        current_sps = 192.92
+        out["throughput_baseline"] = {
+            "current_s_per_step": current_sps,
+            "current_h_per_epoch": round(total_steps_per_epoch * current_sps / 3600, 1),
+            "original_s_per_step_estimate": 158.0,
+            "original_h_per_epoch_estimate": round(total_steps_per_epoch * 158.0 / 3600, 1),
+        }
+        # Selective checkpointing saves backward recompute for 30 linear layers.
+        # Recompute = 1 extra forward per checkpointed layer per backward.
+        # For c and u (both live): 30 fewer recomputes each. z1 (live): same.
+        # 3 paths × 30 saved recomputes = 90 layer-passes saved out of ~400 total
+        # (rough model: 3 no-backward forwards + 3×(forward+backward) with recompute
+        # = 3×40 + 3×80 = 120+240 = 360 layer-passes; selective: 3×40 + 3×50 = 270).
+        saved_fraction_ckpt = (360 - 270) / 360  # ~0.25
+        sps_after_ckpt = round(current_sps * (1 - saved_fraction_ckpt * 0.8), 1)  # 0.8: recompute ≠ full forward cost
+        # z/z1 batch-merge: eliminates 1 of 4 distinct backbone calls (the no-grad z
+        # forward merges with z1 into one batched call). Estimated saving: ~15-20%.
+        sps_after_both = round(sps_after_ckpt * 0.87, 1)
+        out["throughput_estimates"] = {
+            "after_selective_checkpointing_s_per_step": sps_after_ckpt,
+            "after_selective_checkpointing_h_per_epoch": round(total_steps_per_epoch * sps_after_ckpt / 3600, 1),
+            "after_both_optimizations_s_per_step": sps_after_both,
+            "after_both_optimizations_h_per_epoch": round(total_steps_per_epoch * sps_after_both / 3600, 1),
+            "note": "Static estimates; run a smoke step and measure to calibrate.",
+        }
+
+        # ── 4. z/z1 batch-merge: GPU forward test ──
+        z1_batch_test: dict[str, Any] = {"tested": False}
+        if torch.cuda.is_available():
+            try:
+                dtype = torch.bfloat16
+                model, _, _ = _load_qwen_moe(world_dir, dtype=dtype, device_map=device_map)
+                tokenizer = AutoTokenizer.from_pretrained(str(agent_dir), trust_remote_code=True)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                sample = "ls /tmp\n"
+                toks = tokenizer(sample, return_tensors="pt")
+                o_ids = toks["input_ids"].to("cuda")
+                o_mask = toks["attention_mask"].to("cuda")
+                # batch=2: two independent dropout views of the same o_ids
+                o_ids2 = torch.cat([o_ids, o_ids], dim=0)
+                o_mask2 = torch.cat([o_mask, o_mask], dim=0)
+                torch.cuda.reset_peak_memory_stats()
+                mem_before = torch.cuda.memory_allocated()
+                with torch.no_grad():
+                    out_single = model(input_ids=o_ids, attention_mask=o_mask, output_hidden_states=True, use_cache=False)
+                    h_single = out_single.hidden_states[-1][:, -1, :]
+                mem_single = torch.cuda.memory_allocated() - mem_before
+                torch.cuda.reset_peak_memory_stats()
+                mem_before2 = torch.cuda.memory_allocated()
+                with torch.no_grad():
+                    out_double = model(input_ids=o_ids2, attention_mask=o_mask2, output_hidden_states=True, use_cache=False)
+                    h_double = out_double.hidden_states[-1][:, -1, :]
+                mem_double = torch.cuda.memory_allocated() - mem_before2
+                shapes_match = h_single.shape == h_double[:1].shape
+                z1_batch_test = {
+                    "tested": True,
+                    "ok": shapes_match,
+                    "single_hidden_shape": list(h_single.shape),
+                    "double_hidden_shape": list(h_double.shape),
+                    "batch1_mem_delta_mb": round(mem_single / 1024**2, 2),
+                    "batch2_mem_delta_mb": round(mem_double / 1024**2, 2),
+                }
+                del model, h_single, h_double, out_single, out_double
+                torch.cuda.empty_cache()
+            except Exception as e:
+                z1_batch_test = {"tested": True, "ok": False, "error": repr(e)}
+        out["z1_batch_merge_test"] = z1_batch_test
+        out["ok"] = True
+    except Exception as e:
+        out["error"] = repr(e)
+
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -1000,6 +1228,16 @@ def parse_args() -> argparse.Namespace:
         "--meta",
         action="store_true",
         help="Also build module tree on meta device (forward already dumps the live tree)",
+    )
+    p.add_argument(
+        "--speed-advice",
+        action="store_true",
+        help=(
+            "Probe selective gradient checkpointing feasibility and z/z1 batch-merge "
+            "on the GPU host. Writes report['speed_advice']. Uses meta device for "
+            "architecture checks (no weights needed) plus a live GPU micro-forward "
+            "if CUDA is available."
+        ),
     )
     return p.parse_args()
 
@@ -1118,6 +1356,19 @@ def main() -> None:
         report["meta_tree"] = try_meta_tree(agent_dir)
     else:
         report["meta_tree"] = {"ok": False, "error": "skipped (pass --meta)"}
+
+    if args.speed_advice:
+        log("probing selective-checkpointing + z/z1 batch-merge (--speed-advice)")
+        report["speed_advice"] = probe_speed_advice(
+            world_dir=world_dir,
+            agent_dir=agent_dir,
+            cut=int(args.cut),
+            device_map=str(args.device_map),
+        )
+        log(f"speed_advice ok={report['speed_advice'].get('ok')} "
+            f"fits_at_max_len={report['speed_advice'].get('selective_checkpointing_memory_math', {}).get('fits_at_max_len')}")
+    else:
+        report["speed_advice"] = {"ok": False, "error": "skipped (pass --speed-advice)"}
 
     report["frameworks"] = probe_frameworks()
     log(f"libraries: {report['frameworks']['versions']}")
