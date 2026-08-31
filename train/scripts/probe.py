@@ -1021,7 +1021,8 @@ def probe_speed_advice(
 
     Writes to report['speed_advice'].  Run with::
 
-        python train/scripts/probe.py --speed-advice
+        # Stage 1: uses world_dir (AgentWorld backbone) — defaults already set
+        cd train && python scripts/probe.py --speed-advice
     """
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
@@ -1029,8 +1030,9 @@ def probe_speed_advice(
     out: dict[str, Any] = {"ok": False}
 
     # ── 1. Per-layer gradient_checkpointing architecture check (meta device) ──
+    # Stage 1 trains AgentWorld (world_dir); use its config, not agent_dir.
     try:
-        config = AutoConfig.from_pretrained(str(agent_dir), trust_remote_code=True)
+        config = AutoConfig.from_pretrained(str(world_dir), trust_remote_code=True)
         tc = getattr(config, "text_config", config)
         layer_types: list[str] = getattr(tc, "layer_types", [])
         hidden_size: int = getattr(tc, "hidden_size", 2048)
@@ -1362,6 +1364,19 @@ def parse_args() -> argparse.Namespace:
             "if CUDA is available."
         ),
     )
+    p.add_argument(
+        "--stage1-config",
+        type=Path,
+        default=None,
+        metavar="YAML",
+        help=(
+            "Read train.model_dir (and optionally train.torch_dtype) from a Stage-1 "
+            "YAML config (e.g. configs/jepa/stage1.yaml) and override --world. "
+            "Makes probe and training guaranteed-identical in model path. "
+            "Example: python scripts/probe.py --stage1-config configs/jepa/stage1.yaml "
+            "--speed-advice --skip-weights --skip-forward"
+        ),
+    )
     return p.parse_args()
 
 
@@ -1372,6 +1387,25 @@ def main() -> None:
     cache_dir = args.cache_dir if args.cache_dir.is_absolute() else (ROOT / args.cache_dir)
     out_dir = args.out if args.out.is_absolute() else (ROOT / args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # --stage1-config: read model_dir from a Stage-1 YAML and override --world.
+    # Guarantees probe uses the exact same model as train_jepa.py.
+    if args.stage1_config is not None:
+        import yaml as _yaml
+
+        s1_path = args.stage1_config
+        if not s1_path.is_absolute():
+            s1_path = TRAIN / s1_path
+        try:
+            s1 = _yaml.safe_load(s1_path.read_text(encoding="utf-8"))
+            s1_model = (s1 or {}).get("model_dir") or (s1 or {}).get("train", {}).get("model_dir")
+            if s1_model:
+                print(f"[stage1-config] overriding --world with model_dir={s1_model!r} from {s1_path}")
+                args.world = s1_model
+            else:
+                print(f"[stage1-config] WARNING: no model_dir found in {s1_path}, using default")
+        except Exception as exc:
+            print(f"[stage1-config] WARNING: could not read {s1_path}: {exc}")
 
     world_dir = resolve_model(args.world, source=args.source, cache_dir=cache_dir, role="world")
     agent_dir = resolve_model(args.agent, source=args.source, cache_dir=cache_dir, role="agent")
