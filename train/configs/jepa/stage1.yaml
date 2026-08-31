@@ -22,8 +22,25 @@ sources:
 
 train:
   max_length: 65536
-  batch_size: 1
-  grad_accum: 8
+  # Space-for-time attempt #3 (2026-08-31): batch_size 1->2, grad_accum 8->4,
+  # effective batch (batch_size * grad_accum) unchanged at 8. Fewer, larger
+  # micro-batches means fewer FSDP2 all-gather rounds per step and better
+  # matmul occupancy (batch=1 wastes GPU parallelism on many small kernels).
+  # Unlike selective_checkpointing (which needed exact per-layer memory
+  # accounting and blew up), this only needs collate's within-microbatch
+  # padding (pads h/a/o to the LONGEST example in each pair) to not blow the
+  # budget on unlucky short+long pairings — memory should track training
+  # data length distribution, not a fixed per-layer formula, so it is safer
+  # but not risk-free. Smoke-test with --max-steps 3 before a full run.
+  #
+  # KNOWN RISK: batch_o_z1 already runs a batch=2 forward (z/z1) under
+  # Context Parallel (cp_size=4); probe.py --speed-advice's isolated batch=2
+  # CP test crashed with "CUDA error: unspecified launch failure" (real
+  # training survived 1 step with it, so not guaranteed to crash, but this
+  # change makes EVERY forward batch=2 under CP, exercising that same code
+  # path far more — watch the first few steps closely).
+  batch_size: 2
+  grad_accum: 4
   # Backbone LoRA: ~1/4 of Muse SFT (2e-4). Cosine hidden-align, already-trained WM.
   lr: 5.0e-5
   weight_decay: 0.01
