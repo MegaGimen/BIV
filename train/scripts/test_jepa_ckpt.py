@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from biv_wm.ckpt import (  # noqa: E402
+    canonical_lora_key,
     ckpt_complete,
     epoch_end_name,
     find_latest_ckpt,
@@ -30,6 +31,13 @@ def _fake_ckpt(root: Path, name: str, *, with_jepa: bool = True) -> Path:
     if with_jepa:
         (p / "jepa.pt").write_bytes(b"x")
     return p
+
+
+def test_canonical_lora_key() -> None:
+    saved = "base_model.model.layers.0.self_attn.q_proj.lora_A.weight"
+    live = "base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight"
+    fsdp = "_fsdp_wrapped_module." + live
+    assert canonical_lora_key(saved) == canonical_lora_key(live) == canonical_lora_key(fsdp)
 
 
 def test_names() -> None:
@@ -91,6 +99,7 @@ def test_trainer_state(tmp: Path) -> None:
 def main() -> None:
     import tempfile
 
+    test_canonical_lora_key()
     test_names()
     with tempfile.TemporaryDirectory() as d:
         test_rotate_keeps_epoch_end(Path(d))

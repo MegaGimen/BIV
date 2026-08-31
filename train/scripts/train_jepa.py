@@ -38,6 +38,7 @@ if str(MERGE) not in sys.path:
     sys.path.insert(0, str(MERGE))
 
 from biv_wm.ckpt import (  # noqa: E402
+    canonical_lora_key,
     epoch_end_name,
     find_latest_ckpt,
     rotate_rolling,
@@ -436,14 +437,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _strip_fsdp_name(name: str) -> str:
-    out = name
-    for pfx in ("_fsdp_wrapped_module.", "module."):
-        while out.startswith(pfx):
-            out = out[len(pfx) :]
-    return out
-
-
 def _full_cpu(param):
     """Materialize a (possibly DTensor) param on CPU. Collective if DTensor."""
     t = param.full_tensor() if hasattr(param, "full_tensor") else param
@@ -466,14 +459,7 @@ def gather_lora_cpu(model, *, keep: bool) -> dict:
             continue
         full = _full_cpu(param)
         if keep:
-            key = _strip_fsdp_name(name)
-            key = (
-                key.replace(".lora_A.default.", ".lora_A.")
-                .replace(".lora_B.default.", ".lora_B.")
-                .replace(".lora_embedding_A.default.", ".lora_embedding_A.")
-                .replace(".lora_embedding_B.default.", ".lora_embedding_B.")
-            )
-            out[key] = full
+            out[canonical_lora_key(name)] = full
         del full
     return out
 
@@ -549,22 +535,48 @@ def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
     raise SystemExit(f"--resume path is not a checkpoint: {p}")
 
 
+def load_lora_into_model(model, sd: dict, log_fn) -> None:
+    """Copy LoRA tensors by name. Skip PEFT's MoE WeightConverter (PEFT/transformers skew)."""
+    live = {n: p for n, p in model.named_parameters() if "lora_" in n}
+    if not live:
+        raise SystemExit("resume: model has no LoRA parameters")
+    by_canon = {canonical_lora_key(n): n for n in live}
+    mapped: dict[str, Any] = {}
+    unmatched = 0
+    shape_bad: list[str] = []
+    for k, v in sd.items():
+        if "lora_" not in k:
+            continue
+        dest = by_canon.get(canonical_lora_key(k))
+        if dest is None:
+            unmatched += 1
+            continue
+        if tuple(live[dest].shape) != tuple(v.shape):
+            shape_bad.append(f"{dest} file={tuple(v.shape)} model={tuple(live[dest].shape)}")
+            continue
+        mapped[dest] = v
+    if shape_bad:
+        raise SystemExit("resume LoRA shape mismatch: " + "; ".join(shape_bad[:8]))
+    if not mapped:
+        raise SystemExit(
+            f"resume: 0 LoRA tensors matched (file_keys={len(sd)} model_lora={len(live)})"
+        )
+    model.load_state_dict(mapped, strict=False)
+    log_fn(
+        f"resume adapter matched={len(mapped)}/{len(live)} "
+        f"unmatched_saved={unmatched}"
+    )
+
+
 def load_adapter_and_heads(model, jepa, inv, path: Path, log_fn) -> tuple[int, int]:
     import torch
-    from peft import set_peft_model_state_dict
     from safetensors.torch import load_file
 
     adapter = path / "adapter_model.safetensors"
     if adapter.is_file():
-        sd = load_file(str(adapter))
-        result = set_peft_model_state_dict(model, sd)
-        if isinstance(result, tuple) and len(result) >= 2:
-            log_fn(
-                f"resume adapter from {path.name} "
-                f"missing={len(result[0])} unexpected={len(result[1])}"
-            )
-        else:
-            log_fn(f"resume adapter from {path.name}")
+        load_lora_into_model(model, load_file(str(adapter)), log_fn)
+    else:
+        raise SystemExit(f"resume: missing {adapter}")
     jepa_p = path / "jepa.pt"
     if jepa_p.is_file():
         jepa.load_state_dict(torch.load(jepa_p, map_location="cpu"))

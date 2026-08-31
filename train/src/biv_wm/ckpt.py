@@ -44,6 +44,22 @@ def parse_ckpt_name(name: str) -> tuple[int, int, int] | None:
     return None
 
 
+def canonical_lora_key(name: str) -> str:
+    """Strip FSDP prefixes and PEFT ``.default.`` so save keys match live names."""
+    out = name
+    for pfx in ("_fsdp_wrapped_module.", "module."):
+        while out.startswith(pfx):
+            out = out[len(pfx) :]
+    for src, dst in (
+        (".lora_A.default.", ".lora_A."),
+        (".lora_B.default.", ".lora_B."),
+        (".lora_embedding_A.default.", ".lora_embedding_A."),
+        (".lora_embedding_B.default.", ".lora_embedding_B."),
+    ):
+        out = out.replace(src, dst)
+    return out
+
+
 def ckpt_complete(path: Path) -> bool:
     """Same bar as Muse: trainer_state.json + some weights (+ JEPA's jepa.pt)."""
     if not path.is_dir():
