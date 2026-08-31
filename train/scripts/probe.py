@@ -682,8 +682,14 @@ def write_summary(report: dict[str, Any], path: Path) -> None:
         a(f"  activation mem at max_len: {mem.get('estimated_activation_gib_at_max_len_65536')} GiB  headroom: {mem.get('observed_headroom_gib_per_gpu')} GiB  fits={mem.get('fits_at_max_len')}")
         a(f"  estimate after selective-ckpt: {thr.get('after_selective_checkpointing_h_per_epoch')}h/epoch")
         a(f"  estimate after both opts: {thr.get('after_both_optimizations_h_per_epoch')}h/epoch")
-        gc_check = sa.get("per_layer_gc_check") or {}
-        a(f"  per-layer gc flag ok={gc_check.get('ok')} still-ckpt={gc_check.get('n_still_checkpointed')} unchkpt={gc_check.get('n_uncheckpointed')}")
+        audit = sa.get("gc_mechanism_audit") or {}
+        sim = audit.get("sim_apply_selective_checkpointing") or {}
+        a(f"  gc_mechanism_audit: gcl_inheritors={audit.get('gcl_inheritor_count')} "
+          f"layer_idx_gc_found={audit.get('layer_idx_gc_scan_total')} "
+          f"path={audit.get('path_discovery_result')} "
+          f"sim_uncheckpoint={sim.get('would_uncheckpoint')} sim_ok={sim.get('ok')}")
+        a(f"    gc_in_forward={audit.get('gc_in_forward')}")
+        a(f"    decoder_classname_matches={audit.get('decoder_classname_matches','[]')[:3]}")
         z1t = sa.get("z1_batch_merge_test") or {}
         a(f"  z1 batch=2 test: tested={z1t.get('tested')} ok={z1t.get('ok')} error={z1t.get('error')}")
         if z1t.get("ok"):
@@ -1042,20 +1048,49 @@ def probe_speed_advice(
             "hidden_size": hidden_size,
         }
 
-        per_layer_flag_ok = False
         try:
             with torch.device("meta"):
+                meta_model = None
+                meta_loader = None
                 for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
                     try:
                         meta_model = loader.from_config(config, trust_remote_code=True)
+                        meta_loader = loader.__name__
                         break
                     except Exception:
-                        meta_model = None
+                        pass
             if meta_model is not None:
+                # ── 1a. Scan ALL modules BEFORE gradient_checkpointing_enable ──
+                # Record which modules have gradient_checkpointing / layer_idx
+                import inspect
+
+                def _scan_modules(model_):
+                    has_gc = {}   # name -> bool (has gradient_checkpointing attr)
+                    has_idx = {}  # name -> value
+                    for name, mod in model_.named_modules():
+                        gc = getattr(mod, "gradient_checkpointing", _SENTINEL := object())
+                        if gc is not _SENTINEL:
+                            has_gc[name] = gc
+                        idx = getattr(mod, "layer_idx", None)
+                        if idx is not None:
+                            has_idx[name] = idx
+                    return has_gc, has_idx
+
+                gc_before, idx_before = _scan_modules(meta_model)
+
+                # ── 1b. gradient_checkpointing_enable and re-scan ──
                 meta_model.gradient_checkpointing_enable()
-                # First try path-based lookup (raw model, no PEFT).
-                # Training uses model.modules() scan instead (train_jepa.py
-                # apply_selective_checkpointing) so PEFT wrapping doesn't matter there.
+                gc_after, idx_after = _scan_modules(meta_model)
+
+                # Which modules gained / changed gradient_checkpointing after enable?
+                gc_changed = {
+                    k: {"before": gc_before.get(k), "after": gc_after[k]}
+                    for k in gc_after
+                    if gc_before.get(k) != gc_after[k]
+                }
+
+                # ── 1c. Identify decoder-layer candidates ──
+                # Strategy A: path-based
                 layers_found = None
                 found_path = None
                 for path in (
@@ -1070,47 +1105,115 @@ def probe_speed_advice(
                         if m is None:
                             break
                     if m is not None:
-                        layers_found = m
+                        layers_found = list(m)
                         found_path = path
                         break
-                # Fallback: scan by layer_idx (same logic as training-time)
-                if layers_found is None:
-                    by_idx: dict[int, Any] = {}
-                    for mod in meta_model.modules():
-                        idx = getattr(mod, "layer_idx", None)
-                        if isinstance(idx, int) and hasattr(mod, "gradient_checkpointing"):
-                            by_idx[idx] = mod
-                    if by_idx:
-                        layers_found = [by_idx[i] for i in sorted(by_idx)]
-                        found_path = "modules(layer_idx)"
-                if layers_found is not None:
-                    flags_before = [
-                        getattr(l, "gradient_checkpointing", None) for l in layers_found
-                    ]
-                    # selectively disable for linear layers
-                    for i, layer in enumerate(layers_found):
-                        if i in set(linear_attn_idx) and hasattr(layer, "gradient_checkpointing"):
-                            layer.gradient_checkpointing = False
-                    flags_after = [
-                        getattr(l, "gradient_checkpointing", None) for l in layers_found
-                    ]
-                    per_layer_flag_ok = all(f is not None for f in flags_before)
-                    out["per_layer_gc_check"] = {
-                        "ok": per_layer_flag_ok,
-                        "all_layers_have_flag": per_layer_flag_ok,
-                        "layers_path_found": found_path,
-                        "sample_before_enable": flags_before[:5],
-                        "sample_after_selective": flags_after[:5],
-                        "n_still_checkpointed": sum(1 for f in flags_after if f),
-                        "n_uncheckpointed": sum(1 for f in flags_after if not f),
-                        "note": (
-                            "probe uses raw model (no PEFT); training uses model.modules() "
-                            "scan which is PEFT-safe. Both now use layer_idx-based discovery."
-                        ),
-                    }
+
+                # Strategy B: layer_idx scan (what training-time code now uses)
+                by_idx: dict[int, Any] = {}
+                for mod in meta_model.modules():
+                    idx = getattr(mod, "layer_idx", None)
+                    if isinstance(idx, int):
+                        by_idx[idx] = mod
+                layer_idx_scan_count = len(by_idx)
+
+                # Strategy B filtered: layer_idx + gradient_checkpointing
+                by_idx_gc: dict[int, Any] = {}
+                for mod in meta_model.modules():
+                    idx = getattr(mod, "layer_idx", None)
+                    if isinstance(idx, int) and hasattr(mod, "gradient_checkpointing"):
+                        by_idx_gc[idx] = mod
+                layer_idx_gc_scan_count = len(by_idx_gc)
+
+                # Strategy C: class name contains "DecoderLayer" or "Block"
+                by_classname: list[str] = []
+                for name, mod in meta_model.named_modules():
+                    cn = type(mod).__name__
+                    if any(k in cn for k in ("DecoderLayer", "TransformerBlock", "HybridLayer")):
+                        by_classname.append(f"{name}: {cn}")
+
+                # ── 1d. GradientCheckpointingLayer inheritance check ──
+                try:
+                    from transformers.modeling_layers import GradientCheckpointingLayer as GCL
+                    gcl_available = True
+                except ImportError:
+                    GCL = None
+                    gcl_available = False
+
+                gcl_inheritors = []
+                for name, mod in meta_model.named_modules():
+                    if GCL is not None and isinstance(mod, GCL):
+                        gcl_inheritors.append(f"{name}: {type(mod).__name__}")
+                    elif type(mod).__name__ in ("GradientCheckpointingLayer",):
+                        gcl_inheritors.append(f"{name}: {type(mod).__name__} [by name]")
+
+                # ── 1e. Check if model forward uses per-layer or model-level GC ──
+                # Look at the inner language model's forward source for checkpoint calls
+                gc_in_forward: dict[str, str] = {}
+                for attr_name in ("model", "language_model"):
+                    inner = getattr(meta_model, attr_name, None)
+                    if inner is None:
+                        continue
+                    try:
+                        src = inspect.getsource(type(inner).forward)
+                        if "gradient_checkpointing_func" in src or "_gradient_checkpointing_func" in src:
+                            gc_in_forward[attr_name] = "model-level: uses self._gradient_checkpointing_func in forward loop"
+                        elif "gradient_checkpointing" in src:
+                            gc_in_forward[attr_name] = "model-level: checks self.gradient_checkpointing in forward loop"
+                        else:
+                            gc_in_forward[attr_name] = "no gradient_checkpointing in forward source"
+                    except (TypeError, OSError):
+                        gc_in_forward[attr_name] = "could not get source"
+
+                # ── 1f. Simulate apply_selective_checkpointing with modules() scan ──
+                # (what the current training code does)
+                full_attn = set(full_attn_idx)
+                sim_layers = by_idx_gc  # idx -> mod
+                sim_uncheckpointed = 0
+                for idx, mod in sim_layers.items():
+                    if idx not in full_attn:
+                        mod.gradient_checkpointing = False
+                        sim_uncheckpointed += 1
+                flags_after_sim = [
+                    getattr(by_idx_gc[i], "gradient_checkpointing", None)
+                    for i in sorted(by_idx_gc)
+                ]
+
+                out["gc_mechanism_audit"] = {
+                    "meta_loader": meta_loader,
+                    # What modules have gradient_checkpointing BEFORE enable?
+                    "gc_attr_before_enable_count": len(gc_before),
+                    "gc_attr_before_sample": dict(list(gc_before.items())[:5]),
+                    # What changed after enable?
+                    "gc_attr_changed_after_enable_count": len(gc_changed),
+                    "gc_attr_changed_sample": dict(list(gc_changed.items())[:5]),
+                    # layer_idx scan
+                    "layer_idx_scan_total": layer_idx_scan_count,
+                    "layer_idx_gc_scan_total": layer_idx_gc_scan_count,
+                    "layer_idx_gc_sample_names": list(by_idx_gc.keys())[:10],
+                    # path-based discovery
+                    "path_discovery_result": found_path,
+                    "path_discovery_count": len(layers_found) if layers_found else 0,
+                    # class-name discovery
+                    "decoder_classname_matches": by_classname[:10],
+                    # GradientCheckpointingLayer inheritance
+                    "gcl_available_in_transformers": gcl_available,
+                    "gcl_inheritor_count": len(gcl_inheritors),
+                    "gcl_inheritor_sample": gcl_inheritors[:5],
+                    # forward source analysis
+                    "gc_in_forward": gc_in_forward,
+                    # Simulation: what apply_selective_checkpointing (training) would do
+                    "sim_apply_selective_checkpointing": {
+                        "found_via_layer_idx_gc": layer_idx_gc_scan_count,
+                        "would_uncheckpoint": sim_uncheckpointed,
+                        "flags_after_sim_sample": flags_after_sim[:10],
+                        "ok": sim_uncheckpointed > 0,
+                    },
+                }
                 del meta_model
         except Exception as e:
-            out["per_layer_gc_check"] = {"ok": False, "error": repr(e)}
+            import traceback
+            out["gc_mechanism_audit"] = {"ok": False, "error": repr(e), "tb": traceback.format_exc()[-800:]}
 
         # ── 2. Static memory arithmetic for selective checkpointing ──
         # Residual-stream activation per uncheckpointed linear layer (bf16):
