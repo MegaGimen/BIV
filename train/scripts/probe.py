@@ -1150,22 +1150,51 @@ def probe_speed_advice(
                         gcl_inheritors.append(f"{name}: {type(mod).__name__} [by name]")
 
                 # ── 1e. Check if model forward uses per-layer or model-level GC ──
-                # Look at the inner language model's forward source for checkpoint calls
+                # Walk the actual nesting found by path discovery (e.g.
+                # "model.language_model") instead of guessing flat attr names —
+                # the outer multimodal wrapper's own forward never loops over
+                # decoder layers, only its nested text sub-model does.
                 gc_in_forward: dict[str, str] = {}
-                for attr_name in ("model", "language_model"):
-                    inner = getattr(meta_model, attr_name, None)
+                probe_targets: dict[str, Any] = {"top_level_model": getattr(meta_model, "model", None)}
+                if found_path:
+                    # e.g. "model.language_model.layers" -> walk to "model.language_model"
+                    parts = found_path.split(".")[:-1]  # drop trailing "layers"
+                    m = meta_model
+                    for part in parts:
+                        m = getattr(m, part, None)
+                        if m is None:
+                            break
+                    if m is not None:
+                        probe_targets["decoder_stack_parent (" + ".".join(parts) + ")"] = m
+                for label, inner in probe_targets.items():
                     if inner is None:
                         continue
                     try:
                         src = inspect.getsource(type(inner).forward)
                         if "gradient_checkpointing_func" in src or "_gradient_checkpointing_func" in src:
-                            gc_in_forward[attr_name] = "model-level: uses self._gradient_checkpointing_func in forward loop"
+                            gc_in_forward[label] = "MODEL-LEVEL: uses self._gradient_checkpointing_func in forward loop"
                         elif "gradient_checkpointing" in src:
-                            gc_in_forward[attr_name] = "model-level: checks self.gradient_checkpointing in forward loop"
+                            gc_in_forward[label] = "MODEL-LEVEL: checks self.gradient_checkpointing in forward loop"
                         else:
-                            gc_in_forward[attr_name] = "no gradient_checkpointing in forward source"
+                            gc_in_forward[label] = "no gradient_checkpointing in forward source (neither model-level nor delegates to layer.__call__ with checkpoint)"
+                    except (TypeError, OSError) as e:
+                        gc_in_forward[label] = f"could not get source: {e!r}"
+
+                # ── 1e-2. Ground truth: what does Qwen3_5MoeDecoderLayer actually inherit? ──
+                decoder_layer_mro: list[str] = []
+                decoder_layer_has_gc_attr = None
+                if by_idx:
+                    sample_layer = next(iter(by_idx.values()))
+                    decoder_layer_mro = [c.__name__ for c in type(sample_layer).__mro__]
+                    decoder_layer_has_gc_attr = hasattr(sample_layer, "gradient_checkpointing")
+                    # does the class *define* forward with a checkpoint call itself?
+                    try:
+                        layer_fwd_src = inspect.getsource(type(sample_layer).forward)
+                        decoder_layer_forward_has_checkpoint = (
+                            "checkpoint" in layer_fwd_src or "gradient_checkpointing" in layer_fwd_src
+                        )
                     except (TypeError, OSError):
-                        gc_in_forward[attr_name] = "could not get source"
+                        decoder_layer_forward_has_checkpoint = None
 
                 # ── 1f. Simulate apply_selective_checkpointing with modules() scan ──
                 # (what the current training code does)
@@ -1204,6 +1233,12 @@ def probe_speed_advice(
                     "gcl_inheritor_sample": gcl_inheritors[:5],
                     # forward source analysis
                     "gc_in_forward": gc_in_forward,
+                    # Ground truth: does the actual decoder layer class support
+                    # per-layer checkpointing at all?
+                    "decoder_layer_mro": decoder_layer_mro,
+                    "decoder_layer_has_gradient_checkpointing_attr": decoder_layer_has_gc_attr,
+                    "decoder_layer_forward_has_checkpoint_call": decoder_layer_forward_has_checkpoint,
+                    "decoder_layer_class_name": decoder_layer_mro[0] if decoder_layer_mro else None,
                     # Simulation: what apply_selective_checkpointing (training) would do
                     "sim_apply_selective_checkpointing": {
                         "found_via_layer_idx_gc": layer_idx_gc_scan_count,
@@ -1548,6 +1583,10 @@ def main() -> None:
         print(f"  gc_in_forward:                  {audit.get('gc_in_forward')}")
         print(f"  decoder_classname_matches:      {audit.get('decoder_classname_matches', [])[:5]}")
         print(f"  gcl_inheritor_sample:           {audit.get('gcl_inheritor_sample', [])[:3]}")
+        print(f"\n  decoder_layer_class_name:       {audit.get('decoder_layer_class_name')}")
+        print(f"  decoder_layer_mro:              {audit.get('decoder_layer_mro')}")
+        print(f"  decoder_layer_has_gc_attr:      {audit.get('decoder_layer_has_gradient_checkpointing_attr')}")
+        print(f"  decoder_layer_forward_has_ckpt: {audit.get('decoder_layer_forward_has_checkpoint_call')}")
 
         print("\n── Simulation: what apply_selective_checkpointing() would do ──")
         print(f"  found_via_layer_idx_gc:         {sim.get('found_via_layer_idx_gc')}")
