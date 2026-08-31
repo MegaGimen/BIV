@@ -44,41 +44,6 @@ def cosine_align_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (1.0 - (p * t).sum(dim=-1)).mean()
 
 
-def ranking_nce(
-    pred: torch.Tensor,
-    pos: torch.Tensor,
-    neg: torch.Tensor,
-    pos_texts: list[str],
-    neg_texts: list[str],
-    temperature: float = 0.1,
-) -> torch.Tensor:
-    """Softmax over (own z*, queued z*). Drop queued rows whose observation text matches."""
-    if pred.ndim == 1:
-        pred = pred.unsqueeze(0)
-        pos = pos.unsqueeze(0)
-    if neg.numel() == 0:
-        return pred.new_zeros(())
-    if neg.ndim == 1:
-        neg = neg.unsqueeze(0)
-    p = F.normalize(pred.float(), dim=-1)
-    pos_n = F.normalize(pos.float().detach(), dim=-1)
-    neg_n = F.normalize(neg.float().detach(), dim=-1)
-    temp = max(float(temperature), 1e-6)
-    losses = []
-    for i in range(p.size(0)):
-        keep = [j for j, t in enumerate(neg_texts) if t != pos_texts[i]]
-        if not keep:
-            continue
-        pos_sc = (p[i] * pos_n[i]).sum() / temp
-        neg_sc = neg_n[keep] @ p[i] / temp
-        logits = torch.cat([pos_sc.unsqueeze(0), neg_sc], dim=0)
-        target = torch.zeros(1, dtype=torch.long, device=logits.device)
-        losses.append(F.cross_entropy(logits.unsqueeze(0), target))
-    if not losses:
-        return pred.new_zeros(())
-    return torch.stack(losses).mean()
-
-
 def _quantile_summary(x: torch.Tensor) -> dict[str, float | int | None]:
     if x.numel() == 0:
         return {"n": 0, "mean": None, "median": None, "p90": None}

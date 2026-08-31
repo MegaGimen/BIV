@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.jepa import collapse_stats, format_collapse_line, ranking_nce  # noqa: E402
+from biv_wm.jepa import collapse_stats, format_collapse_line  # noqa: E402
 
 
 def test_real_align_not_collapse() -> None:
@@ -60,30 +60,11 @@ def test_too_few_distinct() -> None:
     assert "verdict=no_mismatch_pairs" in line
 
 
-def test_ranking_skips_same_text() -> None:
-    pred = torch.tensor([[1.0, 0.0]])
-    pos = torch.tensor([[1.0, 0.0]])
-    neg = torch.tensor([[0.0, 1.0]])
-    loss = ranking_nce(pred, pos, neg, ["same"], ["same"], temperature=0.1)
-    assert float(loss) == 0.0
-
-
-def test_ranking_prefers_own() -> None:
-    pred = torch.tensor([[1.0, 0.0]])
-    pos = torch.tensor([[1.0, 0.0]])
-    other = torch.tensor([[0.0, 1.0]])
-    good = ranking_nce(pred, pos, other, ["a"], ["b"], temperature=0.1)
-    bad = ranking_nce(pred, other, pos, ["a"], ["b"], temperature=0.1)
-    assert float(good) < float(bad)
-
-
 def main() -> None:
     test_real_align_not_collapse()
     test_collapse_like_constant_pred()
     test_exact_string_not_used_as_negative()
     test_too_few_distinct()
-    test_ranking_skips_same_text()
-    test_ranking_prefers_own()
     print("ok", flush=True)
 
 

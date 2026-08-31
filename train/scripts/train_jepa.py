@@ -7,7 +7,7 @@ AgentWorld's own 40 layers. Instruct + draft/scorer/W (Stage 2) attach later
 and call this trained, frozen JEPA like an advisor.
 
 Encodes (h, a, o) from mix JSONL messages, predicts ẑ = JEPA(c_t, u*) vs stop-grad z*.
-Ranking NCE (queued z*) + inverse dynamics Inv(c, z*)→u sit on the same step.
+Inverse dynamics Inv(c, z*)→u sits on the same step (anti-collapse). No ranking NCE.
 4-GPU FSDP2 + Context Parallel (Muse recipe), max_length=65536.
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
@@ -624,7 +624,6 @@ def main() -> None:
         collapse_stats,
         cosine_align_loss,
         format_collapse_line,
-        ranking_nce,
     )
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
@@ -799,10 +798,7 @@ def main() -> None:
     if log_every < 1:
         raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
-    rank_w = float(tcfg.get("rank_weight") or 0.3)
     inv_w = float(tcfg.get("inv_weight") or 0.3)
-    rank_temp = float(tcfg.get("rank_temperature") or 0.1)
-    rank_queue_n = int(tcfg.get("rank_queue") or 256)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
@@ -819,8 +815,7 @@ def main() -> None:
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"rank_w={rank_w} inv_w={inv_w} rank_queue={rank_queue_n} "
-        f"save_total_limit={save_limit} resume_step={resume_step}"
+        f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step}"
     )
 
     ckpt_extra = {
@@ -835,7 +830,6 @@ def main() -> None:
     seen_pred: deque = deque()
     seen_z: deque = deque()
     seen_o: deque = deque()
-    rank_mem: deque = deque(maxlen=rank_queue_n)
     writer = None
 
     def emit(msg: str) -> None:
@@ -917,7 +911,6 @@ def main() -> None:
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
-        writer.add_text("train/rank_weight", str(rank_w), 0)
         writer.add_text("train/inv_weight", str(inv_w), 0)
 
     try:
@@ -952,7 +945,7 @@ def main() -> None:
     opt.zero_grad(set_to_none=True)
     opt_jepa.zero_grad(set_to_none=True)
     running = 0.0
-    run_align = run_rank = run_inv = 0.0
+    run_align = run_inv = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
     last_train_loss = None
@@ -978,27 +971,11 @@ def main() -> None:
                     u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
                     pred = jepa(c, u)
                     align_loss = cosine_align_loss(pred, z)
-                    texts = decode_o_texts(tokenizer, batch)
-                    if rank_w > 0.0 and rank_mem:
-                        neg_z = torch.stack([t[0] for t in rank_mem]).to(
-                            device=pred.device, dtype=pred.dtype
-                        )
-                        rank_loss = ranking_nce(
-                            pred,
-                            z,
-                            neg_z,
-                            texts,
-                            [t[1] for t in rank_mem],
-                            temperature=rank_temp,
-                        )
-                    else:
-                        rank_loss = pred.new_zeros(())
                     inv_hat = inv(c, z.detach())
                     inv_loss = cosine_align_loss(inv_hat, u)
-                    loss = align_loss + rank_w * rank_loss + inv_w * inv_loss
-                    for i in range(pred.size(0)):
-                        rank_mem.append((z[i].detach().float().cpu(), texts[i]))
+                    loss = align_loss + inv_w * inv_loss
                     if is_main:
+                        texts = decode_o_texts(tokenizer, batch)
                         for i in range(pred.size(0)):
                             seen_pred.append(pred[i].detach().float().cpu())
                             seen_z.append(z[i].detach().float().cpu())
@@ -1006,7 +983,6 @@ def main() -> None:
                     accelerator.backward(loss)
                     running += float(loss.detach().float().item())
                     run_align += float(align_loss.detach().float().item())
-                    run_rank += float(rank_loss.detach().float().item())
                     run_inv += float(inv_loss.detach().float().item())
                     n_loss += 1
                     run_h += h_len
@@ -1038,14 +1014,12 @@ def main() -> None:
                                 denom = max(n_loss, 1)
                                 emit(
                                     f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
-                                    f"align={run_align / denom:.4f} rank={run_rank / denom:.4f} "
-                                    f"inv={run_inv / denom:.4f} "
+                                    f"align={run_align / denom:.4f} inv={run_inv / denom:.4f} "
                                     f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                                 )
                                 if writer is not None:
                                     writer.add_scalar("train/loss", last_train_loss, step)
                                     writer.add_scalar("train/loss_align", run_align / denom, step)
-                                    writer.add_scalar("train/loss_rank", run_rank / denom, step)
                                     writer.add_scalar("train/loss_inv", run_inv / denom, step)
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
                                     writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
@@ -1053,7 +1027,7 @@ def main() -> None:
                                     writer.add_scalar("train/len_a", run_a / denom, step)
                                     writer.add_scalar("train/len_o", run_o / denom, step)
                                 running = 0.0
-                                run_align = run_rank = run_inv = 0.0
+                                run_align = run_inv = 0.0
                                 n_loss = 0
                                 run_h = run_a = run_o = 0.0
                             check_collapse(step)
