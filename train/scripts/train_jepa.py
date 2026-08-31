@@ -400,10 +400,16 @@ def parse_args() -> argparse.Namespace:
         help="Override yaml save_steps (default 25).",
     )
     p.add_argument(
+        "--log-steps",
+        type=int,
+        default=None,
+        help="Loss + collapse log every N optimizer steps (default 5). Not save.",
+    )
+    p.add_argument(
         "--collapse-steps",
         type=int,
         default=None,
-        help="Collapse check every N optimizer steps (default 10). Independent of save.",
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--resume",
@@ -759,19 +765,27 @@ def main() -> None:
     )
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
-    log_every = int(tcfg.get("logging_steps") or 10)
+    log_every = int(
+        args.log_steps
+        if args.log_steps is not None
+        else (
+            args.collapse_steps
+            if args.collapse_steps is not None
+            else (
+                tcfg.get("log_steps")
+                or tcfg.get("logging_steps")
+                or tcfg.get("collapse_steps")
+                or 5
+            )
+        )
+    )
     save_every = int(
         args.save_steps if args.save_steps is not None else (tcfg.get("save_steps") or 25)
     )
-    collapse_every = int(
-        args.collapse_steps
-        if args.collapse_steps is not None
-        else (tcfg.get("collapse_steps") or 10)
-    )
     if save_every < 1:
         raise SystemExit(f"save_steps must be >= 1, got {save_every}")
-    if collapse_every < 1:
-        raise SystemExit(f"collapse_steps must be >= 1, got {collapse_every}")
+    if log_every < 1:
+        raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
     rank_w = float(tcfg.get("rank_weight") or 0.3)
     inv_w = float(tcfg.get("inv_weight") or 0.3)
@@ -792,7 +806,7 @@ def main() -> None:
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
-        f"save_steps={save_every} collapse_steps={collapse_every} "
+        f"save_steps={save_every} log_steps={log_every} "
         f"rank_w={rank_w} inv_w={inv_w} rank_queue={rank_queue_n} "
         f"save_total_limit={save_limit} resume_step={resume_step}"
     )
@@ -890,7 +904,7 @@ def main() -> None:
         writer.add_text("train/cp_size", str(cp_size), 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
-        writer.add_text("train/collapse_steps", str(collapse_every), 0)
+        writer.add_text("train/log_steps", str(log_every), 0)
         writer.add_text("train/rank_weight", str(rank_w), 0)
         writer.add_text("train/inv_weight", str(inv_w), 0)
 
@@ -1007,30 +1021,29 @@ def main() -> None:
                                 refresh=False,
                             )
                         is_last_in_epoch = epoch_opt >= steps_per_epoch
-                        if step % log_every == 0 and is_main:
-                            denom = max(n_loss, 1)
-                            emit(
-                                f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
-                                f"align={run_align / denom:.4f} rank={run_rank / denom:.4f} "
-                                f"inv={run_inv / denom:.4f} "
-                                f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
-                            )
-                            if writer is not None:
-                                writer.add_scalar("train/loss", last_train_loss, step)
-                                writer.add_scalar("train/loss_align", run_align / denom, step)
-                                writer.add_scalar("train/loss_rank", run_rank / denom, step)
-                                writer.add_scalar("train/loss_inv", run_inv / denom, step)
-                                writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
-                                writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
-                                writer.add_scalar("train/len_h", run_h / denom, step)
-                                writer.add_scalar("train/len_a", run_a / denom, step)
-                                writer.add_scalar("train/len_o", run_o / denom, step)
-                                writer.flush()
-                            running = 0.0
-                            run_align = run_rank = run_inv = 0.0
-                            n_loss = 0
-                            run_h = run_a = run_o = 0.0
-                        if step % collapse_every == 0:
+                        if step % log_every == 0:
+                            if is_main:
+                                denom = max(n_loss, 1)
+                                emit(
+                                    f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
+                                    f"align={run_align / denom:.4f} rank={run_rank / denom:.4f} "
+                                    f"inv={run_inv / denom:.4f} "
+                                    f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
+                                )
+                                if writer is not None:
+                                    writer.add_scalar("train/loss", last_train_loss, step)
+                                    writer.add_scalar("train/loss_align", run_align / denom, step)
+                                    writer.add_scalar("train/loss_rank", run_rank / denom, step)
+                                    writer.add_scalar("train/loss_inv", run_inv / denom, step)
+                                    writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
+                                    writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
+                                    writer.add_scalar("train/len_h", run_h / denom, step)
+                                    writer.add_scalar("train/len_a", run_a / denom, step)
+                                    writer.add_scalar("train/len_o", run_o / denom, step)
+                                running = 0.0
+                                run_align = run_rank = run_inv = 0.0
+                                n_loss = 0
+                                run_h = run_a = run_o = 0.0
                             check_collapse(step)
                         if is_last_in_epoch:
                             emit(

@@ -66,9 +66,9 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
-# Checkpoints: 2 epochs, save_steps=25, collapse_steps=10, tqdm bar,
+# Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
-# --resume picks newest (epoch, then step). Override: --save-steps N --collapse-steps N
+# --resume picks newest (epoch, then step). Override: --save-steps N --log-steps N
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by

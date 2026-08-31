@@ -28,10 +28,12 @@ while [[ $# -gt 0 ]]; do
       CONFIG="$2"
       shift 2
       ;;
-    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps|--collapse-steps|--resume-from)
+    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps|--log-steps|--collapse-steps|--resume-from)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
       if [[ "$1" == "--resume-from" ]]; then
         EXTRA+=(--resume "$2")
+      elif [[ "$1" == "--collapse-steps" ]]; then
+        EXTRA+=(--log-steps "$2")
       else
         EXTRA+=("$1" "$2")
       fi
@@ -60,7 +62,7 @@ Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
 
 Env: PARALLEL=single|fsdp2|fsdp2_cp|auto  CONFIG=...  MAX_LENGTH=...
      --save-steps N       (default yaml 25; 1 smokes FSDP save)
-     --collapse-steps N   (default yaml 10; independent of save)
+     --log-steps N        (default yaml 5; loss + collapse, not save)
      --resume             newest complete ckpt under output_dir (epoch, then step)
      --resume PATH / --resume-from PATH
      --max-steps N
