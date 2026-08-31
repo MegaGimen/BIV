@@ -369,12 +369,24 @@ def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
     flag as an instance attribute set by gradient_checkpointing_enable(); we
     just override it per-layer with False for linear-attention layers.
 
-    Uses model.modules() scan keyed by layer_idx, so PEFT and FSDP2 wrapping
-    do not affect layer discovery (attribute path lookup would differ between
-    raw, PEFT-wrapped, and probe-on-meta contexts).
+    Discovery: match by class name "Qwen3_5MoeDecoderLayer" via
+    model.named_modules(), pulling the layer index from the dotted module
+    path suffix (e.g. "...layers.5" -> 5). This is robust to PEFT wrapping
+    (named_modules() traverses the full tree regardless of wrapper depth)
+    AND avoids a real collision found by probe.py --speed-advice: the
+    decoder layer's own child mixer (Qwen3_5MoeGatedDeltaNet, for its
+    recurrent DeltaNet state) also carries a `layer_idx` attribute, so a
+    naive `layer_idx`-keyed modules() scan silently ends up holding the
+    *child mixer* instead of the actual decoder layer (modules() visits
+    parent-before-children, so a dict keyed by layer_idx gets overwritten
+    by the later-visited child) — that mixer has no gradient_checkpointing
+    attribute, so the previous version of this function found 0 layers
+    and uncheckpointed nothing.
 
     Returns the count of uncheckpointed layers.
     """
+    import re
+
     cfg = getattr(model, "config", None)
     tc = getattr(cfg, "text_config", cfg)
     layer_types: list[str] = getattr(tc, "layer_types", [])
@@ -385,24 +397,22 @@ def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
     else:
         full_attn = full_attn_fallback
 
-    # Scan all descendant modules for decoder layers. Decoder layers are the
-    # only modules that have both `layer_idx` (int) and `gradient_checkpointing`
-    # (set by GradientCheckpointingLayer). This is robust to PEFT wrapping:
-    # peft_model.modules() still traverses all raw decoder layer objects.
     decoder_layers: dict[int, Any] = {}
-    for m in model.modules():
-        idx = getattr(m, "layer_idx", None)
-        if isinstance(idx, int) and hasattr(m, "gradient_checkpointing"):
-            decoder_layers[idx] = m
+    for name, m in model.named_modules():
+        if type(m).__name__ == "Qwen3_5MoeDecoderLayer":
+            match = re.search(r"\.(\d+)$", name)
+            if match:
+                decoder_layers[int(match.group(1))] = m
 
     if not decoder_layers:
         if rank_log_fn:
-            rank_log_fn("selective_checkpointing: no decoder layers with layer_idx found, skipping")
+            rank_log_fn("selective_checkpointing: no Qwen3_5MoeDecoderLayer found by class name, skipping")
         return 0
 
+    n_missing_attr = sum(1 for layer in decoder_layers.values() if not hasattr(layer, "gradient_checkpointing"))
     n_uncheckpointed = 0
     for idx, layer in decoder_layers.items():
-        if idx not in full_attn:
+        if idx not in full_attn and hasattr(layer, "gradient_checkpointing"):
             layer.gradient_checkpointing = False
             n_uncheckpointed += 1
 
@@ -410,6 +420,7 @@ def apply_selective_checkpointing(model, rank_log_fn=None) -> int:
         rank_log_fn(
             f"selective_checkpointing: {n_uncheckpointed}/{len(decoder_layers)} linear-attn "
             f"layers uncheckpointed  full-attn (checkpointed): {sorted(full_attn)}"
+            + (f"  WARNING: {n_missing_attr} layers have no gradient_checkpointing attr" if n_missing_attr else "")
         )
     return n_uncheckpointed
 

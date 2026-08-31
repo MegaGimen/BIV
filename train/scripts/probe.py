@@ -1181,13 +1181,23 @@ def probe_speed_advice(
                         gc_in_forward[label] = f"could not get source: {e!r}"
 
                 # ── 1e-2. Ground truth: what does Qwen3_5MoeDecoderLayer actually inherit? ──
+                # IMPORTANT: use layers_found (path-based discovery), NOT by_idx.
+                # by_idx is contaminated: Qwen3_5MoeDecoderLayer has a child mixer
+                # module (Qwen3_5MoeGatedDeltaNet) that ALSO carries layer_idx (for
+                # its recurrent state), and modules() visits parent-then-children,
+                # so by_idx[i] silently ends up holding the *child* mixer, not the
+                # DecoderLayer — that was the actual bug in the previous probe run.
                 decoder_layer_mro: list[str] = []
                 decoder_layer_has_gc_attr = None
-                if by_idx:
-                    sample_layer = next(iter(by_idx.values()))
+                decoder_layer_forward_has_checkpoint = None
+                decoder_layer_gc_sample: list[Any] = []
+                if layers_found:
+                    sample_layer = layers_found[0]
                     decoder_layer_mro = [c.__name__ for c in type(sample_layer).__mro__]
                     decoder_layer_has_gc_attr = hasattr(sample_layer, "gradient_checkpointing")
-                    # does the class *define* forward with a checkpoint call itself?
+                    decoder_layer_gc_sample = [
+                        getattr(l, "gradient_checkpointing", "<no attr>") for l in layers_found[:5]
+                    ]
                     try:
                         layer_fwd_src = inspect.getsource(type(sample_layer).forward)
                         decoder_layer_forward_has_checkpoint = (
@@ -1196,18 +1206,36 @@ def probe_speed_advice(
                     except (TypeError, OSError):
                         decoder_layer_forward_has_checkpoint = None
 
-                # ── 1f. Simulate apply_selective_checkpointing with modules() scan ──
-                # (what the current training code does)
+                # Class-name-based scan (robust to PEFT wrapping + layer_idx
+                # collisions): match by type name, pull index from the dotted
+                # module path suffix instead of an unreliable instance attribute.
+                import re as _re
+
+                by_classname_idx: dict[int, Any] = {}
+                decoder_cls_name = type(layers_found[0]).__name__ if layers_found else None
+                if decoder_cls_name:
+                    for name, mod in meta_model.named_modules():
+                        if type(mod).__name__ == decoder_cls_name:
+                            m = _re.search(r"\.(\d+)$", name)
+                            if m:
+                                by_classname_idx[int(m.group(1))] = mod
+                classname_scan_gc_count = sum(
+                    1 for mod in by_classname_idx.values() if hasattr(mod, "gradient_checkpointing")
+                )
+
+                # ── 1f. Simulate the fixed apply_selective_checkpointing: class-name
+                # scan (by_classname_idx), NOT the layer_idx scan (by_idx_gc is
+                # contaminated by the child GatedDeltaNet mixer's own layer_idx).
                 full_attn = set(full_attn_idx)
-                sim_layers = by_idx_gc  # idx -> mod
+                sim_layers = by_classname_idx  # idx -> real Qwen3_5MoeDecoderLayer
                 sim_uncheckpointed = 0
                 for idx, mod in sim_layers.items():
-                    if idx not in full_attn:
+                    if idx not in full_attn and hasattr(mod, "gradient_checkpointing"):
                         mod.gradient_checkpointing = False
                         sim_uncheckpointed += 1
                 flags_after_sim = [
-                    getattr(by_idx_gc[i], "gradient_checkpointing", None)
-                    for i in sorted(by_idx_gc)
+                    getattr(by_classname_idx[i], "gradient_checkpointing", "<no attr>")
+                    for i in sorted(by_classname_idx)
                 ]
 
                 out["gc_mechanism_audit"] = {
@@ -1239,9 +1267,16 @@ def probe_speed_advice(
                     "decoder_layer_has_gradient_checkpointing_attr": decoder_layer_has_gc_attr,
                     "decoder_layer_forward_has_checkpoint_call": decoder_layer_forward_has_checkpoint,
                     "decoder_layer_class_name": decoder_layer_mro[0] if decoder_layer_mro else None,
-                    # Simulation: what apply_selective_checkpointing (training) would do
+                    "decoder_layer_gc_sample_first5": decoder_layer_gc_sample,
+                    # class-name scan: robust discovery immune to layer_idx collisions
+                    "classname_scan_total": len(by_classname_idx),
+                    "classname_scan_gc_count": classname_scan_gc_count,
+                    # Simulation: what the FIXED apply_selective_checkpointing
+                    # (class-name scan) would do -- this is ground truth for
+                    # whether the training-time fix will actually work.
                     "sim_apply_selective_checkpointing": {
-                        "found_via_layer_idx_gc": layer_idx_gc_scan_count,
+                        "found_via_classname_scan": len(by_classname_idx),
+                        "found_via_layer_idx_gc_OLD_BUGGY": layer_idx_gc_scan_count,
                         "would_uncheckpoint": sim_uncheckpointed,
                         "flags_after_sim_sample": flags_after_sim[:10],
                         "ok": sim_uncheckpointed > 0,
@@ -1583,13 +1618,19 @@ def main() -> None:
         print(f"  gc_in_forward:                  {audit.get('gc_in_forward')}")
         print(f"  decoder_classname_matches:      {audit.get('decoder_classname_matches', [])[:5]}")
         print(f"  gcl_inheritor_sample:           {audit.get('gcl_inheritor_sample', [])[:3]}")
-        print(f"\n  decoder_layer_class_name:       {audit.get('decoder_layer_class_name')}")
+        print(f"\n  decoder_layer_class_name (from path-based, correct object):")
+        print(f"    {audit.get('decoder_layer_class_name')}")
         print(f"  decoder_layer_mro:              {audit.get('decoder_layer_mro')}")
         print(f"  decoder_layer_has_gc_attr:      {audit.get('decoder_layer_has_gradient_checkpointing_attr')}")
+        print(f"  decoder_layer_gc_sample_first5: {audit.get('decoder_layer_gc_sample_first5')}")
         print(f"  decoder_layer_forward_has_ckpt: {audit.get('decoder_layer_forward_has_checkpoint_call')}")
+        print(f"  classname_scan_total:           {audit.get('classname_scan_total')}  "
+              f"classname_scan_gc_count: {audit.get('classname_scan_gc_count')}")
+        print(f"    (classname scan = robust discovery, immune to layer_idx collision with child mixer)")
 
-        print("\n── Simulation: what apply_selective_checkpointing() would do ──")
-        print(f"  found_via_layer_idx_gc:         {sim.get('found_via_layer_idx_gc')}")
+        print("\n── Simulation: fixed apply_selective_checkpointing() (class-name scan) ──")
+        print(f"  found_via_classname_scan:       {sim.get('found_via_classname_scan')}")
+        print(f"  found_via_layer_idx_gc (OLD, buggy): {sim.get('found_via_layer_idx_gc_OLD_BUGGY')}")
         print(f"  would_uncheckpoint:             {sim.get('would_uncheckpoint')}")
         print(f"  flags_after_sim_sample:         {sim.get('flags_after_sim_sample', [])[:10]}")
         print(f"  sim_ok:                         {sim.get('ok')}")
