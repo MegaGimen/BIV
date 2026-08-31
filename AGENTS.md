@@ -174,7 +174,13 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 - **Step 1.** JEPA 接在 AgentWorld 自己完整的 40 层后面。`model_dir` 直接解析成 AgentWorld 的 hub id / 缓存路径（`train/configs/jepa/stage1.yaml`，缺失自动下载），不读任何切鱼产物。**训练时从活模块上摘掉 AgentWorld 自己的 `lm_head`**，`forward` 只跑 `language_model → hidden → JEPA`，不算词表 logits。启动时打印架构：`biv_wm.arch.log_world_architecture`，一行打完整条 40 层，确认 `lm_head: detached`。
 - **Step 2.** 每个 \((h,a,o)\) 走完 AgentWorld 的 40 层：\(h\to c_t^{AW}\)，\(a\to u^{\star W}\)，\(o\to z^{\star W}\)。\(o\) 只当目标。mix JSONL 里 user = 工具调用、assistant = 真观察。
-- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失仍是 `1 - cosine`。旁边再加两项，都写进梯度，不是事后看一眼：窗口排序（当前 \(\hat z\) 在最近若干条 \(z^*\) 里认自己那条，观察原文完全相同的丢掉）和逆动力学（小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)）。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（`lr=1e-3`）。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训：`bash scripts/train_jepa.sh --resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
+- **Step 3.** \(\mathrm{Pred}(c_t^{AW}, u^{\star W})\) 对齐 \(z^{\star W}\)，主损失仍是 `1 - cosine`。旁边再加两项，都写进梯度，不是事后看一眼：窗口排序（当前 \(\hat z\) 在最近若干条 \(z^*\) 里认自己那条，观察原文完全相同的丢掉）和逆动力学（小 MLP 从 \(c_t\) 和停梯度的 \(z^*\) 认出 \(u^*\)）。真正反传的是三项加权和，TensorBoard 的 `train/loss` 就是它：
+
+  \[
+  \texttt{loss} = \texttt{loss\_align} + 0.3\,\texttt{loss\_rank} + 0.3\,\texttt{loss\_inv}
+  \]
+
+  `0.3` / `0.3` 来自 yaml 的 `rank_weight` / `inv_weight`。`train/loss_align`、`train/loss_rank`、`train/loss_inv` 是乘权重之前的三项原值，所以 `loss` 不会等于后三项相加。AgentWorld **原始权重冻住**，可训练的是全部 40 层的 LoRA（`rank=16`，`lr=5e-5`）加上新初始化的 JEPA MLP 和逆动力学头（共用 `jepa_lr=1e-3`）。两条学习率仍然分开：主干 LoRA 小步挪已经训过的几何，两个新头大约 20 倍大，先自己动起来。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`。冒烟保存：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。续训：`bash scripts/train_jepa.sh --resume`。训完这一步，AgentWorld+JEPA 这份权重整体冻死，Stage 2 只查询、不更新。
 
   同域内、只学这个轻映射，需要的数据量和墙钟时间都可能比 AgentWorld 自己那轮 CPT+SFT+RL 少——这是推论，不是已经验证的结果。数字掉得快（例如 0.9→0.04）**不能**单独当成学到了转移：语言模型最后一层隐状态本身容易挤在一个窄锥里，预测器可以靠输出万能方向把余弦做高。所以损失里要有认对「哪条是下一观察」和「中间发生了哪条命令」这两股力；坍缩检查只负责报这股力有没有起作用。损失和坍缩检查共用 `log_steps`（默认 5 个 optimizer step），存盘仍是 `save_steps`（默认 25），可以用 `--log-steps` / `--save-steps` 盖掉。检查用的是**这一段已经训过的行**上的前向缓存，不再另找没见过的数据：步数还少时没见过的对不上，分不清没学够还是学坏了。报告配对余弦、错配余弦、\(z^*\) 自身彼此有多像、\(\hat z\) 自身彼此有多像；看中位数和 90 分位，不看均值。错配时观察字符串完全相同的不当负例。配对中位数明显高于错配中位数 → 至少在见过的例子上分开了；两者都高 → 坍缩。
 
@@ -186,17 +192,29 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 拿两条样本来读字段。第一条 `rm a.txt`，真观察是「文件没了」。第二条 `cat b.txt`，真观察是「Hi Cyberpunk!」。JEPA 给每一条吐一个猜测向量。
 
-| 字段 | 在问什么 |
-|------|----------|
-| `n` | 这一段拿了几条来比 |
-| `skipped_same_o` | 两条观察原文完全一样、换位时丢掉的对数 |
-| `paired_med` | 第一条的猜测，靠不靠近第一条自己的真观察。训练 loss 看的就是这个 |
-| `mismatch_med` / `mismatch_p90` | 第一条的猜测，靠不靠近第二条的真观察。90 分位看少数特别像的错配 |
-| `z_self_med` | 两条真观察编完之后彼此像不像（JEPA 不参与） |
-| `pred_self_med` | JEPA 吐出的几个猜测彼此像不像 |
-| `verdict` | 用中位数套的标签：`collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低，还没拟合；`no_mismatch_pairs`＝去掉相同文本后没有可换的负例 |
+| 字段 | TensorBoard | 在问什么 |
+|------|-------------|----------|
+| `n` | `collapse/n` | 这一段拿了几条来比 |
+| `skipped_same_o` | `collapse/skipped_same_o` | 两条观察原文完全一样、换位时丢掉的对数 |
+| `paired_med` | `collapse/paired_median` | 第一条的猜测，靠不靠近第一条自己的真观察。对应 `train/loss_align`（余弦高 ↔ 对齐损失低） |
+| `mismatch_med` / `mismatch_p90` | `collapse/mismatch_median`、`collapse/mismatch_p90` | 第一条的猜测，靠不靠近第二条的真观察。90 分位看少数特别像的错配 |
+| `z_self_med` | `collapse/z_self_median` | 两条真观察编完之后彼此像不像（JEPA 不参与） |
+| `pred_self_med` | `collapse/pred_self_median` | JEPA 吐出的几个猜测彼此像不像 |
+| `verdict` | `collapse/verdict`（text） | 用中位数套的标签：`collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低，还没拟合；`no_mismatch_pairs`＝去掉相同文本后没有可换的负例 |
 
-怎么判：`paired_med` 高且 `mismatch_med` 也差不多那么高 → 坍缩（JEPA 在吐万能方向）。`paired_med` 高且 `mismatch_med` 明显更低 → 至少在见过的例子上分开了。
+期望方向：`paired_median` 升高、同时 `mismatch_median` 压低。只升配对、错配跟着升 → 万能方向（坍缩）。两项都低 → 还没拟合，不是已经分开了。代码里差 ≥ 0.2 才标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
+
+**TensorBoard `train/*`**
+
+| 标量 | 是什么 |
+|------|--------|
+| `train/loss` | 反传用的加权和：`loss_align + rank_weight×loss_rank + inv_weight×loss_inv`（默认两个权重都是 0.3） |
+| `train/loss_align` | 只有「猜测靠近自己的真观察」，`1 - cosine`。`loss` 掉了而这项几乎不动，是另外两项在动 |
+| `train/loss_rank` | 窗口排序的原值（还没乘 0.3）。队列还空时是 0 |
+| `train/loss_inv` | 逆动力学的原值（还没乘 0.3） |
+| `train/lr_backbone` | 主干 LoRA 的学习率，热身到 `5e-5` |
+| `train/lr_jepa` | JEPA 预测器和逆动力学头共用的学习率，热身到 `1e-3`，大约是主干的 20 倍 |
+| `train/len_h` / `len_a` / `len_o` | 这段样本里历史 / 命令 / 下一观察的非 pad token 数。不测学得好不好 |
 
 **JEPA 家族怎么防坍缩，我们现在怎么做**
 
