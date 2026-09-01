@@ -126,8 +126,12 @@ def detach_lm_head(model: Any) -> bool:
     return True
 
 
-def install_hidden_only_forward(model: Any) -> None:
-    """CausalLM.forward → language_model only (no token logits). Call via wrapped model()."""
+def install_hidden_only_forward(model: Any, *, detach_head: bool = True) -> None:
+    """CausalLM.forward → language_model only (no full-seq token logits).
+
+    ``detach_head=True`` (Stage 1 旧配方) 把 ``lm_head`` 从活模块摘掉。
+    LLM-JEPA 配方要留着这张表，只对观察段切片再乘，所以传 ``detach_head=False``。
+    """
     import inspect
 
     m = unwrap_base(model)
@@ -153,7 +157,8 @@ def install_hidden_only_forward(model: Any) -> None:
         return inner(**filt)
 
     m.forward = _fwd
-    detach_lm_head(model)
+    if detach_head:
+        detach_lm_head(model)
 
 
 def lm_head_module(model: Any) -> Any | None:
@@ -189,12 +194,16 @@ def log_world_architecture(
     extra: dict[str, Any],
     model_dir: Path,
     log: Callable[[str], None],
+    expect_lm_head: str = "detached",
 ) -> None:
     """Plain AgentWorld backbone, no fish-cut, no Instruct tail.
 
     Stage 1 (current plan): JEPA sits on AgentWorld's own unmodified 40
     layers. There is no ``ell``/cut_meta.json here — the whole backbone is
     "world", LoRA'd or frozen as a block, not split by layer index.
+
+    ``expect_lm_head``: ``detached`` (old cosine-MLP recipe) or ``attached``
+    (LLM-JEPA: observation token CE goes through AgentWorld's own lm_head).
     """
     lm = language_model(model)
     layers = list(getattr(lm, "layers", []))
@@ -218,7 +227,13 @@ def log_world_architecture(
             dump_tree(mod, log, prefix="    ")
     else:
         log("  (none)")
-    if lm_head_module(model) is not None:
+    attached = lm_head_module(model) is not None
+    if expect_lm_head == "attached":
+        if attached:
+            log("lm_head: attached (observation token CE; base weights frozen, LoRA not on the table)")
+        else:
+            log("ERROR: lm_head missing; LLM-JEPA Stage 1 needs AgentWorld's own table")
+    elif attached:
         log("ERROR: lm_head still attached; Stage 1 must detach it")
     else:
         log("lm_head: detached this stage (AgentWorld's own lm_head unused by JEPA)")
