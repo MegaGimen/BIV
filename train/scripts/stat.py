@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Step 3 (optional): length + hard-truncate retention stats from cached_dataset.
+"""Truncation stats for Stage 1 LLM-JEPA (AgentWorld tokenizer, mix JSONL).
 
-For each of the 3 sources (wm_code / wm_os / anti_forget) prints **2**
-distributions (6 total):
+Same three sequences as train_jepallm.py: full = chat(h+a+o), left = chat(h+a),
+right = chat(o). Lengths are counted *before* the 65k fit. Retention is
+min(L, seqlen)/L; full/left keep the tail, right keeps the head.
 
-  1) token-length histogram
-  2) hard-truncate retention-ratio histogram at ``--max-length``
-     ratio_i = min(L_i, max_length) / L_i
-     (estimate only — no structure-preserving assistant cut)
-
-Also reports delete-style keep counts at the same max_length (scalar, not a dist).
-
-Examples:
-  python scripts/stat.py --max-length 8192
-  python scripts/stat.py --max-length 16384 --tag full_wm_a2o0.35_...
+  cd train
+  python scripts/stat.py
+  python scripts/stat.py --max-length 65536
+  python scripts/stat.py --max-length 65536 --max-samples 2000
 """
 
 from __future__ import annotations
@@ -25,12 +20,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "configs" / "trl" / "muse_glimmer_30b_lora.yaml"
-SOURCE_KEYS = ("wm_code", "wm_os", "anti_forget")
-MANIFEST_NAME = "tokenize_manifest.json"
+ROOT = Path(__file__).resolve().parents[2]
+TRAIN = ROOT / "train"
+SCRIPTS = Path(__file__).resolve().parent
+SRC = TRAIN / "src"
+MERGE = ROOT / "merge"
+for p in (str(SCRIPTS), str(SRC), str(MERGE)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+import train_jepallm as tj  # noqa: E402
+from download import resolve_model  # noqa: E402
+
+DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "jepallm.yaml"
+SEQS = ("full", "left", "right")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
-# retention ratio buckets; exact 1.0 (no trunc) counted separately at the end
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 
@@ -44,98 +48,6 @@ def _tqdm(iterable=None, **kwargs):
     if iterable is None:
         return tqdm(**kwargs)
     return tqdm(iterable, **kwargs)
-
-
-def _load_yaml(path: Path) -> dict:
-    import yaml
-
-    with path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise SystemExit(f"Invalid YAML: {path}")
-    return data
-
-
-def _resolve(raw: str | Path) -> Path:
-    p = Path(str(raw))
-    return p if p.is_absolute() else (ROOT / p)
-
-
-def _find_manifest(cache_root: Path, tag: str | None) -> Path:
-    if tag:
-        p = cache_root / tag / MANIFEST_NAME
-        if not p.is_file():
-            raise SystemExit(f"Manifest not found: {p}")
-        return p
-    latest = cache_root / "LATEST"
-    if latest.is_file():
-        t = latest.read_text(encoding="utf-8").strip()
-        p = cache_root / t / MANIFEST_NAME
-        if p.is_file():
-            return p
-    cands = sorted(cache_root.glob(f"*/{MANIFEST_NAME}"), key=lambda x: x.stat().st_mtime)
-    if not cands:
-        raise SystemExit(
-            f"No {MANIFEST_NAME} under {cache_root}. Run:\n  python scripts/tokenize_data.py"
-        )
-    return cands[-1]
-
-
-def _as_int_length(v: Any) -> int | None:
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return None
-    if isinstance(v, int):
-        return v
-    if isinstance(v, float):
-        return int(v)
-    if isinstance(v, list):
-        if len(v) == 1 and isinstance(v[0], (int, float)):
-            return int(v[0])
-        return None
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _load_lengths(ds_path: Path, *, desc: str) -> list[int]:
-    try:
-        from datasets import load_from_disk
-    except ImportError as e:
-        raise SystemExit(f"datasets required: pip install datasets\n({e})") from e
-
-    ds = load_from_disk(str(ds_path))
-    col = None
-    for name in ("length", "lengths"):
-        if name in ds.column_names:
-            col = name
-            break
-    if col is None:
-        raise SystemExit(
-            f"{ds_path}: no 'length' column (got {ds.column_names}). "
-            "Re-run tokenize with ms-swift>=3.11 cached_dataset export."
-        )
-
-    lengths: list[int] = []
-    n = len(ds)
-    bar = _tqdm(total=n, unit="rows", desc=desc)
-    batch = 1024
-    for start in range(0, n, batch):
-        end = min(start + batch, n)
-        chunk = ds[start:end][col]
-        for v in chunk:
-            iv = _as_int_length(v)
-            if iv is not None and iv >= 0:
-                lengths.append(iv)
-        if bar is not None:
-            bar.update(end - start)
-    if bar is not None:
-        bar.close()
-    if not lengths:
-        raise SystemExit(f"{ds_path}: no valid length values")
-    return lengths
 
 
 def _pct(xs: list[float] | list[int], p: float) -> float:
@@ -173,9 +85,7 @@ def _hist_int(xs: list[int], edges: list[int]) -> list[tuple[str, int]]:
 
 
 def _hist_ratio(ratios: list[float], edges: list[float]) -> list[tuple[str, int]]:
-    """Histogram on (0, 1]; put exact 1.0 in a final '=1.0 (no trunc)' bucket."""
-    n_partial = len(edges)  # bins for r < 1.0 ending at each edge
-    counts = [0] * (n_partial + 1)
+    counts = [0] * (len(edges) + 1)
     for r in ratios:
         if r >= 1.0 - 1e-12:
             counts[-1] += 1
@@ -187,7 +97,6 @@ def _hist_ratio(ratios: list[float], edges: list[float]) -> list[tuple[str, int]
                 placed = True
                 break
         if not placed:
-            # r in [last_edge, 1.0) — should be rare if last edge is 1.0
             counts[-2] += 1
     labels: list[str] = []
     prev = 0.0
@@ -203,35 +112,22 @@ def _print_bar(label: str, c: int, n: int) -> None:
     print(f"    {label:>22}: {c:7,} ({100 * c / n:5.1f}%) {bar}", flush=True)
 
 
-def _trunc_retention_ratios(lengths: list[int], max_length: int) -> list[float]:
+def _retention(lengths: list[int], seqlen: int) -> list[float]:
     out: list[float] = []
     for x in lengths:
-        if x <= 0:
-            out.append(1.0)
-        else:
-            out.append(min(1.0, max_length / float(x)))
+        out.append(1.0 if x <= 0 else min(1.0, seqlen / float(x)))
     return out
 
 
-def _print_source(
-    name: str,
-    lengths: list[int],
-    max_length: int,
-    *,
-    dist_idx: int,
-) -> dict[str, Any]:
-    """Print 2 distributions for one source; dist_idx is 1-based index of first dist."""
+def _print_seq(src: str, seq: str, lengths: list[int], seqlen: int) -> dict[str, Any]:
     n = len(lengths)
-    ratios = _trunc_retention_ratios(lengths, max_length)
-    keep_delete = sum(1 for x in lengths if x <= max_length)
+    ratios = _retention(lengths, seqlen)
+    keep = sum(1 for x in lengths if x <= seqlen)
+    kept_tokens = sum(min(x, seqlen) for x in lengths)
+    total_tokens = sum(lengths)
+    keep_how = "suffix (tail)" if seq in ("full", "left") else "prefix (head)"
 
-    print(f"\n=== {name} (n={n:,}) ===", flush=True)
-
-    # --- dist A: token length ---
-    print(
-        f"--- distribution {dist_idx}/6: {name} token length ---",
-        flush=True,
-    )
+    print(f"\n=== {src} / {seq}  n={n:,}  keep={keep_how} ===", flush=True)
     print(
         f"  min={min(lengths):,}  max={max(lengths):,}  "
         f"mean={statistics.mean(lengths):.1f}  median={_pct(lengths, 50):.1f}",
@@ -242,53 +138,35 @@ def _print_source(
         f"p99={_pct(lengths, 99):.1f}",
         flush=True,
     )
-    print("  histogram:", flush=True)
+    print("  length histogram:", flush=True)
     length_hist = _hist_int(lengths, LENGTH_EDGES)
     for label, c in length_hist:
         _print_bar(label, c, n)
 
-    # --- dist B: hard-truncate retention ratio ---
-    print(
-        f"--- distribution {dist_idx + 1}/6: {name} hard-trunc retention "
-        f"@ max_length={max_length} ---",
-        flush=True,
-    )
-    print(
-        "  estimate: ratio = min(L, max_length) / L  "
-        "(no structure-preserving assistant cut)",
-        flush=True,
-    )
+    print(f"  hard-trunc retention @ seqlen={seqlen}:", flush=True)
     print(
         f"  ratio min={min(ratios):.4f}  max={max(ratios):.4f}  "
         f"mean={statistics.mean(ratios):.4f}  median={_pct(ratios, 50):.4f}",
         flush=True,
     )
     print(
-        f"  p10={_pct(ratios, 10):.4f}  p25={_pct(ratios, 25):.4f}  "
-        f"p75={_pct(ratios, 75):.4f}  p90={_pct(ratios, 90):.4f}",
-        flush=True,
-    )
-    # aggregate token mass kept under hard trunc
-    kept_tokens = sum(min(x, max_length) for x in lengths)
-    total_tokens = sum(lengths)
-    print(
         f"  token-mass kept: {kept_tokens:,} / {total_tokens:,} "
         f"({100 * kept_tokens / max(total_tokens, 1):.1f}%)",
         flush=True,
     )
     print(
-        f"  delete-style keep (L<=max_length): {keep_delete:,} / {n:,} "
-        f"({100 * keep_delete / n:5.1f}%)  — scalar contrast, not a dist",
+        f"  rows fully in window (L<=seqlen): {keep:,} / {n:,} "
+        f"({100 * keep / n:5.1f}%)",
         flush=True,
     )
-    print("  histogram (per-row retention ratio):", flush=True)
+    print("  retention-ratio histogram:", flush=True)
     ratio_hist = _hist_ratio(ratios, RATIO_EDGES)
     for label, c in ratio_hist:
         _print_bar(label, c, n)
 
     return {
         "n": n,
-        "max_length": max_length,
+        "keep": keep_how,
         "length": {
             "min": min(lengths),
             "max": max(lengths),
@@ -299,140 +177,143 @@ def _print_source(
             "p99": _pct(lengths, 99),
             "histogram": {lab: c for lab, c in length_hist},
         },
-        "hard_trunc_retention": {
-            "ratio_min": min(ratios),
-            "ratio_max": max(ratios),
+        "retention": {
             "ratio_mean": statistics.mean(ratios),
             "ratio_p50": _pct(ratios, 50),
-            "ratio_p10": _pct(ratios, 10),
-            "ratio_p25": _pct(ratios, 25),
-            "ratio_p75": _pct(ratios, 75),
-            "ratio_p90": _pct(ratios, 90),
             "token_mass_kept": kept_tokens,
             "token_mass_total": total_tokens,
             "token_mass_kept_pct": kept_tokens / max(total_tokens, 1),
+            "rows_in_window": keep,
+            "rows_in_window_pct": keep / n,
             "histogram": {lab: c for lab, c in ratio_hist},
         },
-        "delete_keep": {
-            "keep": keep_delete,
-            "drop": n - keep_delete,
-            "keep_pct": keep_delete / n,
-        },
     }
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument(
+        "--max-length",
+        "--seqlen",
+        type=int,
+        default=65536,
+        dest="max_length",
+        help="Training window (default 65536).",
+    )
+    p.add_argument("--mix-dir", type=Path, default=None)
+    p.add_argument("--model-dir", type=str, default=None)
+    p.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Cap rows across sources (reservoir). Default: all train rows.",
+    )
+    p.add_argument("--json-out", type=Path, default=None)
+    p.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Default: merge/output/cache",
+    )
+    p.add_argument(
+        "--source",
+        choices=["modelscope", "huggingface"],
+        default=None,
+        help="Tokenizer download if AgentWorld is not cached.",
+    )
+    return p.parse_args()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Per-source token length + hard-truncate retention-ratio distributions "
-            "(2 × 3 sources = 6)."
-        )
-    )
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--tag", type=str, default=None)
-    parser.add_argument(
-        "--max-length",
-        "--max_length",
-        type=int,
-        required=True,
-        dest="max_length",
-        help="Hard-truncate estimate length; also used for delete-style keep scalar",
-    )
-    parser.add_argument(
-        "--json-out",
-        type=Path,
-        default=None,
-        help="Optional path to write full stats JSON",
-    )
-    args = parser.parse_args()
-
+    args = parse_args()
     if args.max_length <= 0:
         raise SystemExit("--max-length must be a positive integer")
 
-    config_path = args.config if args.config.is_absolute() else (ROOT / args.config)
-    cfg = _load_yaml(config_path) if config_path.is_file() else {}
-    cache_root = _resolve(cfg.get("cache_root", "outputs/trl_cache/muse_glimmer_mix_v2"))
-    manifest_path = _find_manifest(cache_root, args.tag)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
+    if not cfg_path.is_file():
+        raise SystemExit(f"config not found: {cfg_path}")
+    cfg = tj._load_yaml(cfg_path)
+    tcfg = cfg.get("train") or {}
+    sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
+    mix_dir = tj.resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
+    cache_dir = tj._resolve(args.cache_dir or "merge/output/cache", ROOT)
+    model_dir = resolve_model(
+        str(args.model_dir or cfg["model_dir"]),
+        source=args.source or "modelscope",
+        cache_dir=cache_dir,
+        role="world",
+    )
 
-    cached = manifest.get("cached_train") or {}
-    print(f"Manifest:   {manifest_path}", flush=True)
-    print(f"Tag:        {manifest.get('tag')}", flush=True)
-    print(f"Model:      {manifest.get('model')}", flush=True)
-    print(f"Targets:    {manifest.get('targets')}", flush=True)
-    print(f"max_length: {args.max_length}  (hard-trunc estimate; 2 dists × 3 sources)", flush=True)
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "right"
+
+    seqlen = int(args.max_length)
+    limit = args.max_samples
+    print(f"tokenizer: {model_dir}", flush=True)
+    print(f"mix:       {mix_dir}  sources={sources}", flush=True)
+    print(f"seqlen:    {seqlen}", flush=True)
+    if limit is not None:
+        print(f"rows:      max-samples={limit} (reservoir per source)", flush=True)
 
     report: dict[str, Any] = {
-        "manifest": str(manifest_path.relative_to(ROOT)),
-        "tag": manifest.get("tag"),
-        "max_length": args.max_length,
-        "note": (
-            "hard_trunc ratio = min(L, max_length)/L; "
-            "not structure-preserving assistant cut"
-        ),
+        "seqlen": seqlen,
+        "mix_dir": str(mix_dir),
+        "model_dir": str(model_dir),
         "sources": {},
+        "note": (
+            "lengths are untruncated AgentWorld chat-template token counts; "
+            "full/left keep suffix, right keeps prefix when L>seqlen"
+        ),
     }
 
-    src_bar = _tqdm(total=len(SOURCE_KEYS), unit="source", desc="stat sources")
-    dist_idx = 1
-    for name in SOURCE_KEYS:
-        rel = cached.get(name)
-        if not rel:
-            print(f"WARNING: no cached_train.{name} in manifest — skip", flush=True)
-            if src_bar is not None:
-                src_bar.update(1)
+    for src in sources:
+        rows = tj.load_rows(mix_dir, [src], "train", limit)
+        if not rows:
+            print(f"WARNING: no rows for {src}", flush=True)
             continue
-        path = _resolve(rel)
-        if not path.is_dir():
-            raise SystemExit(f"Missing cache dir {path}")
-        lengths = _load_lengths(path, desc=f"lengths {name}")
-        report["sources"][name] = _print_source(
-            name, lengths, args.max_length, dist_idx=dist_idx
-        )
-        dist_idx += 2
-        if src_bar is not None:
-            src_bar.update(1)
-            src_bar.set_postfix_str(name)
-    if src_bar is not None:
-        src_bar.close()
+        buckets = {k: [] for k in SEQS}
+        bar = _tqdm(rows, desc=f"tokenize {src}", unit="row")
+        for h, a, o in bar:
+            lens = tj.sequence_lengths(tok, h, a, o)
+            for k in SEQS:
+                buckets[k].append(lens[k])
+        report["sources"][src] = {}
+        for seq in SEQS:
+            report["sources"][src][seq] = _print_seq(src, seq, buckets[seq], seqlen)
 
-    print("\n=== mix summary @ max_length (scalars) ===", flush=True)
-    parts_del = []
-    parts_mass = []
-    total_keep = 0
-    total_n = 0
-    mass_kept = 0
-    mass_tot = 0
-    for name in SOURCE_KEYS:
-        st = report["sources"].get(name)
-        if not st:
-            continue
-        d = st["delete_keep"]
-        h = st["hard_trunc_retention"]
-        parts_del.append(f"{name}={d['keep']:,}")
-        parts_mass.append(f"{name}={100 * h['token_mass_kept_pct']:.1f}%")
-        total_keep += d["keep"]
-        total_n += st["n"]
-        mass_kept += h["token_mass_kept"]
-        mass_tot += h["token_mass_total"]
-    print(
-        "  delete keep rows: "
-        + ", ".join(parts_del)
-        + f" | total {total_keep:,}/{total_n:,}",
-        flush=True,
-    )
-    print(
-        "  hard-trunc token-mass kept: "
-        + ", ".join(parts_mass)
-        + f" | mix {100 * mass_kept / max(mass_tot, 1):.1f}%",
-        flush=True,
-    )
+    print("\n=== mix summary @ seqlen (rows fully in window) ===", flush=True)
+    for seq in SEQS:
+        parts = []
+        keep = n = 0
+        mass_k = mass_t = 0
+        for src in sources:
+            st = (report["sources"].get(src) or {}).get(seq)
+            if not st:
+                continue
+            r = st["retention"]
+            parts.append(f"{src}={r['rows_in_window']:,}/{st['n']:,}")
+            keep += r["rows_in_window"]
+            n += st["n"]
+            mass_k += r["token_mass_kept"]
+            mass_t += r["token_mass_total"]
+        if n:
+            print(
+                f"  {seq}: {', '.join(parts)} | "
+                f"{keep:,}/{n:,} rows  token-mass {100 * mass_k / max(mass_t, 1):.1f}%",
+                flush=True,
+            )
 
     out = args.json_out
     if out is None:
-        out = manifest_path.parent / f"length_stats_ml{args.max_length}.json"
+        out_dir = tj._resolve(tcfg.get("output_dir") or "outputs/jepallm_stage1")
+        out = out_dir / f"length_stats_ml{seqlen}.json"
     else:
-        out = out if out.is_absolute() else (ROOT / out)
+        out = out if out.is_absolute() else (TRAIN / out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nWrote {out}", flush=True)

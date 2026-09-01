@@ -279,6 +279,9 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/proc
 # 4 卡 FSDP2+CP，序列 65536。两路损失：写观察 + 左右隐藏对齐。
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh
+
+# 可选：AgentWorld 词表下三段序列在 65536 会砍掉多少（CPU，只加载 tokenizer）
+python scripts/stat.py --max-length 65536
 ```
 
 `probe.py`/`cut_stage1.py` 仍在仓库里，留作历史对照/实验用，不在这条 live 流水线里。

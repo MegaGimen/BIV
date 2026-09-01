@@ -16,7 +16,8 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 JEPA
+│   ├── jepa/jepallm.yaml              # Qwen3.5-35B Stage 1 LLM-JEPA
+│   ├── jepa/stage1.yaml               # old MLP JEPA (not this branch's entry)
 │   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
 │   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (other branch)
@@ -26,11 +27,9 @@ train/
 ├── src/biv_wm/
 ├── scripts/
 │   ├── probe.py / compare.py / cut_stage1.py / train_jepa.py
+│   ├── train_jepallm.py / train_jepallm.sh
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
-│   ├── prepare_model.py               # step 2: download base LLM
-│   ├── tokenize_data.py               # step 3: ratio-sample + HF cache
-│   ├── train_prep_mix.py              # struct-right trunc + choice
-│   ├── stat.py                        # step 4 (optional): length stats
+│   ├── stat.py                        # AgentWorld seqlen truncation stats
 │   ├── trainmodel.sh                  # step 5: TRL single/multi-GPU
 │   ├── train_muse_trl.py              # TRL SFTTrainer entry
 │   └── eval_wm.py
@@ -91,7 +90,7 @@ python scripts/prepare_model.py --check
 # 3) Ratio-sample + HF messages/lengths cache (CPU OK; no ms-swift)
 python scripts/tokenize_data.py
 
-# 4) Optional length / hard-trunc retention
+# 4) Optional length / hard-trunc retention (Muse tokenize cache; Muse branch)
 python scripts/stat.py --max-length 8192
 
 # 4b) Export all TB / trainer log steps → one table (long or --wide)

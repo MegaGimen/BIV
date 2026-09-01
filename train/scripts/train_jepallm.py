@@ -205,6 +205,18 @@ def encode_texts(
     }
 
 
+def sequence_lengths(tokenizer, h_msgs: list, a_msg: dict, o_msg: dict) -> dict[str, int]:
+    """Untruncated token counts for the three LLM-JEPA sequences."""
+    full = tokenize_ids(
+        tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])
+    )
+    left = tokenize_ids(
+        tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])
+    )
+    right = tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg]))
+    return {"full": len(full), "left": len(left), "right": len(right)}
+
+
 def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) -> list[list]:
     """Read (h, a, o) rows for each source.
 
