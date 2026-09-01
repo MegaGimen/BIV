@@ -251,6 +251,7 @@ def main() -> None:
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.padding_side = "right"
+    tok.model_max_length = int(1e12)
 
     seqlen = int(args.max_length)
     limit = args.max_samples
