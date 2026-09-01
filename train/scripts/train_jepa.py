@@ -616,6 +616,44 @@ def _warmup_lambda(warmup: int):
     return fn
 
 
+def effective_nce_weight(
+    z_self_median: float | None,
+    *,
+    full: float,
+    floor: float,
+    anneal_start: float,
+    anneal_end: float,
+) -> float:
+    """Pace loss_simcse by *achieved* separation, not wall-clock step.
+
+    See AGENTS.md "JEPA 家族怎么防坍缩" / "130 步实测" for why: gradient-cosine
+    gating (Du et al., https://arxiv.org/abs/1812.02224) assumes an auxiliary
+    task's conflicting gradient is a signal to suppress it, but loss_simcse
+    is structurally supposed to fight loss_align/inv/bank (alignment vs
+    uniformity, https://arxiv.org/abs/2005.10242) — gating it on conflict
+    would turn off the exact force that stops the collapse. Instead this
+    schedules *how hard* loss_simcse pushes, tracking the DirectPred insight
+    that a predictor's eigenspace only stabilizes once the target statistics
+    it's chasing stop moving (https://arxiv.org/abs/2102.06810): while
+    z_self_median (this window's median cosine between two different
+    observations' z*) is still high, the target space hasn't been
+    de-crowded yet, so loss_simcse runs at full strength; once it drops to
+    an already-separated regime, loss_simcse eases to a small maintenance
+    floor instead of continuing to reshape a target the predictor is still
+    trying to converge onto.
+
+    Resuming mid-run needs no special-casing: the first collapse check
+    after --resume reports whatever z_self_median the checkpoint already
+    achieved, so an already-separated run anneals to the floor within one
+    log_steps window with no "are we resuming" branch anywhere.
+    """
+    if z_self_median is None or anneal_start <= anneal_end:
+        return full
+    frac = (z_self_median - anneal_end) / (anneal_start - anneal_end)
+    frac = max(0.0, min(1.0, frac))
+    return floor + frac * (full - floor)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -814,6 +852,16 @@ def main() -> None:
     # micro-batch's own no-grad z, negatives come from the shared bank below.
     nce_w = float(tcfg.get("nce_weight") or 0.1)
     nce_temp = float(tcfg.get("nce_temperature") or 0.05)
+    # Pacing (AGENTS.md "130 步实测" / effective_nce_weight above): nce_w is the
+    # full-strength weight used while z_self_median is still high (target space
+    # not yet de-crowded). Once z_self_median drops to/below nce_anneal_end,
+    # the effective weight eases toward nce_weight_floor — a maintenance level
+    # that keeps the target from re-crowding without continuing to reshape it
+    # out from under the predictor. Defaulting the floor to nce_w keeps old
+    # configs that don't set it running exactly as before (no annealing).
+    nce_w_floor = float(tcfg.get("nce_weight_floor") if tcfg.get("nce_weight_floor") is not None else nce_w)
+    nce_anneal_start = float(tcfg.get("nce_anneal_start") or 0.85)
+    nce_anneal_end = float(tcfg.get("nce_anneal_end") or 0.45)
     # Anti-collapse, part 3/3: corrected queue. Small + fresh (not the 256-deep,
     # cross-epoch queue that blew up loss_align last time), softmax temperature
     # instead of a hand-picked "push cosine to 0" target.
@@ -837,7 +885,8 @@ def main() -> None:
         f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
         f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step} "
-        f"nce_w={nce_w} nce_temp={nce_temp} "
+        f"nce_w={nce_w} nce_w_floor={nce_w_floor} "
+        f"nce_anneal=[{nce_anneal_start},{nce_anneal_end}] nce_temp={nce_temp} "
         f"bank_w={bank_w} bank_temp={bank_temp} bank_size={bank_size}"
     )
 
@@ -859,6 +908,15 @@ def main() -> None:
     seen_invhat: deque = deque()
     seen_u: deque = deque()
     seen_a: deque = deque()
+    # Mutable single-element holder (not a plain float) so the nested
+    # check_collapse() closure below can update it without `nonlocal`.
+    # Every rank computes this identically off identical (CP-gathered) data
+    # (see AGENTS.md "130 步实测"), so effective_nce_weight() below reads the
+    # same value on every rank without a broadcast — required because this
+    # run has DP_REPLICATE=1: all ranks jointly compute one logical
+    # forward/backward, so a per-rank-different loss weight would desync
+    # gradients across the FSDP2+CP boundary.
+    last_z_self: list[float | None] = [None]
     writer = None
 
     def emit(msg: str) -> None:
@@ -879,14 +937,24 @@ def main() -> None:
             seen_u.clear()
             seen_a.clear()
 
-        if not is_main or not seen_pred:
+        if not seen_pred:
             _clear()
             return
+        # Every rank runs this (not just is_main): effective_nce_weight() needs
+        # last_z_self on every rank to keep the loss weight identical across
+        # the FSDP2+CP group. It's cheap — cosine stats over the handful of
+        # cached 2048-d vectors from this log_steps window, no extra forward.
         stats = collapse_stats(
             torch.stack(list(seen_pred)),
             torch.stack(list(seen_z)),
             list(seen_o),
         )
+        z_self_block = stats.get("z_self")
+        if isinstance(z_self_block, dict) and z_self_block.get("median") is not None:
+            last_z_self[0] = float(z_self_block["median"])
+        if not is_main:
+            _clear()
+            return
         emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
         inv_stats: dict[str, object] | None = None
         if seen_invhat:
@@ -960,6 +1028,9 @@ def main() -> None:
         writer.add_text("train/log_steps", str(log_every), 0)
         writer.add_text("train/inv_weight", str(inv_w), 0)
         writer.add_text("train/nce_weight", str(nce_w), 0)
+        writer.add_text("train/nce_weight_floor", str(nce_w_floor), 0)
+        writer.add_text("train/nce_anneal_start", str(nce_anneal_start), 0)
+        writer.add_text("train/nce_anneal_end", str(nce_anneal_end), 0)
         writer.add_text("train/nce_temperature", str(nce_temp), 0)
         writer.add_text("train/bank_weight", str(bank_w), 0)
         writer.add_text("train/bank_temperature", str(bank_temp), 0)
@@ -999,6 +1070,7 @@ def main() -> None:
     running = 0.0
     run_align = run_inv = run_bank = 0.0
     run_simcse = 0.0
+    run_nce_w_eff = 0.0
     n_loss = 0
     n_simcse = 0
     run_h = run_a = run_o = 0.0
@@ -1081,6 +1153,17 @@ def main() -> None:
                     # micro-batch's own z (already computed above), so no extra
                     # bookkeeping or deferred backward across micro-batches.
                     simcse_loss = None
+                    # effective_nce_w is the *paced* weight (AGENTS.md "130 步实测"),
+                    # not the raw nce_w config value — see effective_nce_weight()
+                    # above. Computed fresh every micro-batch from last_z_self,
+                    # which every rank updates identically in check_collapse().
+                    effective_nce_w = effective_nce_weight(
+                        last_z_self[0],
+                        full=nce_w,
+                        floor=nce_w_floor,
+                        anneal_start=nce_anneal_start,
+                        anneal_end=nce_anneal_end,
+                    )
                     if nce_w > 0 and bank_stack is not None:
                         z1 = (
                             z1_precomputed
@@ -1089,16 +1172,19 @@ def main() -> None:
                         )
                         simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
                         if simcse_loss is not None:
-                            loss = loss + nce_w * simcse_loss
-                    if is_main:
-                        a_texts = decode_a_texts(tokenizer, batch)
-                        for i in range(pred.size(0)):
-                            seen_pred.append(pred[i].detach().float().cpu())
-                            seen_z.append(z[i].detach().float().cpu())
-                            seen_o.append(o_texts[i])
-                            seen_invhat.append(inv_hat[i].detach().float().cpu())
-                            seen_u.append(u[i].detach().float().cpu())
-                            seen_a.append(a_texts[i])
+                            loss = loss + effective_nce_w * simcse_loss
+                    # Every rank collects these (not just is_main): check_collapse()
+                    # now runs on every rank so effective_nce_weight() can read an
+                    # identical last_z_self everywhere (see comment by its
+                    # declaration). Cheap — tiny detached 2048-d CPU vectors.
+                    a_texts = decode_a_texts(tokenizer, batch)
+                    for i in range(pred.size(0)):
+                        seen_pred.append(pred[i].detach().float().cpu())
+                        seen_z.append(z[i].detach().float().cpu())
+                        seen_o.append(o_texts[i])
+                        seen_invhat.append(inv_hat[i].detach().float().cpu())
+                        seen_u.append(u[i].detach().float().cpu())
+                        seen_a.append(a_texts[i])
                     accelerator.backward(loss)
                     for i in range(z.size(0)):
                         bank_z.append(z[i].detach())
@@ -1111,6 +1197,7 @@ def main() -> None:
                     if simcse_loss is not None:
                         run_simcse += float(simcse_loss.detach().float().item())
                         n_simcse += 1
+                    run_nce_w_eff += effective_nce_w
                     n_loss += 1
                     run_h += h_len
                     run_a += a_len
@@ -1144,6 +1231,7 @@ def main() -> None:
                                     f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
                                     f"align={run_align / denom:.4f} inv={run_inv / denom:.4f} "
                                     f"bank={run_bank / denom:.4f} simcse={run_simcse / simcse_denom:.4f} "
+                                    f"nce_w_eff={run_nce_w_eff / denom:.4f} "
                                     f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                                 )
                                 if writer is not None:
@@ -1153,6 +1241,7 @@ def main() -> None:
                                     writer.add_scalar("train/loss_bank", run_bank / denom, step)
                                     if n_simcse > 0:
                                         writer.add_scalar("train/loss_simcse", run_simcse / simcse_denom, step)
+                                    writer.add_scalar("train/nce_weight_effective", run_nce_w_eff / denom, step)
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
                                     writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
                                     writer.add_scalar("train/len_h", run_h / denom, step)
@@ -1161,6 +1250,7 @@ def main() -> None:
                                 running = 0.0
                                 run_align = run_inv = run_bank = 0.0
                                 run_simcse = 0.0
+                                run_nce_w_eff = 0.0
                                 n_loss = 0
                                 n_simcse = 0
                                 run_h = run_a = run_o = 0.0
