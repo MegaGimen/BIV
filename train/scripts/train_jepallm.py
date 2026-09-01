@@ -646,14 +646,18 @@ def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
     if raw is None:
         return None
     if raw == "auto":
-        found = find_latest_ckpt(out_dir)
+        found = find_latest_ckpt(out_dir, require_jepa=False)
         if found is None:
             raise SystemExit(f"--resume: no complete checkpoint under {out_dir}")
         return found
     pth = Path(raw)
     if not pth.is_absolute():
         pth = _resolve(pth)
-    if pth.is_dir() and (pth / "trainer_state.json").is_file():
+    if (
+        pth.is_dir()
+        and (pth / "trainer_state.json").is_file()
+        and (pth / "adapter_model.safetensors").is_file()
+    ):
         return pth
     raise SystemExit(f"--resume path is not a checkpoint: {pth}")
 
