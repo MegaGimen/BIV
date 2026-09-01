@@ -13,6 +13,13 @@
 #
 # Needs exactly 4 GPUs (2x2). Fewer/more: fall back to train_jepallm.sh with
 # --max-length 32768 (single 4-way CP group, no dp_replicate speedup).
+#
+# accelerate's ParallelismConfig refuses dp_replicate>1 + cp>1 with
+# dp_shard_size==1 out of the box (raises "pure data parallelism... cannot be
+# used with... context parallelism"). train_jepallm.py's build_parallelism_config()
+# routes around that — see its docstring for why it's safe here. If you hit
+# that ValueError again, it means that workaround isn't being reached (e.g.
+# PARALLELISM_CONFIG_DP_REPLICATE_SIZE not set before Accelerator() runs).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

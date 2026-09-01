@@ -534,6 +534,56 @@ def resolve_cp_size(cli: int | None) -> int:
     return int(os.environ.get("BIV_CP_SIZE") or os.environ.get("PARALLELISM_CONFIG_CP_SIZE") or "1")
 
 
+def build_parallelism_config():
+    """Explicit ParallelismConfig, only to route around one overly-blunt guard.
+
+    accelerate's ParallelismConfig.__post_init__ hard-blocks dp_replicate>1 +
+    cp>1 with dp_shard_size==1 ("pure DP + CP"), because in general that would
+    mean literal DDP composed with TP/CP, which they don't support. But CP
+    doesn't need that guard: accelerate's own ParallelismConfig.fsdp_dim_names
+    (consumed verbatim by fsdp2_prepare_model as `mesh[fsdp_dim_names]` passed
+    to torch's `fully_shard`) folds cp into a `dp_shard_cp` joint dim whenever
+    cp_enabled, even with dp_shard disabled — that's exactly the mechanism our
+    already-working single-group config (dp_shard=1, cp=NGPU, dp_replicate=1)
+    relies on. Adding dp_replicate>1 on top just makes fsdp_dim_names =
+    ("dp_replicate", "dp_shard_cp"), a plain 2D (replicate, shard) mesh that
+    torch's fully_shard natively treats as HSDP — grad sync across the
+    replicate dim is automatic, no manual all_reduce needed.
+
+    So: construct with a throwaway dp_shard_size=2 to satisfy __post_init__'s
+    check, then patch it back to the real value (1) — __post_init__ only runs
+    at construction, total_size/fsdp_dim_names/_sizes are live-attribute
+    properties, unaffected by the later mutation. Untested off-GPU; if this is
+    wrong, torch's fully_shard should fail loudly (wrong mesh rank/shape), not
+    silently train wrong.
+
+    Returns None when dp_replicate isn't in play, so Accelerator() falls back
+    to its normal env-var-driven construction — single-group CP (this file's
+    original, verified path) is untouched.
+    """
+    from accelerate.utils import ParallelismConfig
+
+    dp_replicate = int(os.environ.get("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "1"))
+    if dp_replicate <= 1:
+        return None
+    dp_shard = int(os.environ.get("PARALLELISM_CONFIG_DP_SHARD_SIZE", "1"))
+    cp = int(os.environ.get("PARALLELISM_CONFIG_CP_SIZE", "1"))
+    tp = int(os.environ.get("PARALLELISM_CONFIG_TP_SIZE", "1"))
+    cp_backend = os.environ.get("PARALLELISM_CONFIG_CP_BACKEND", "torch")
+    needs_hack = dp_shard <= 1 and cp > 1 and tp <= 1
+    pc = ParallelismConfig(
+        dp_replicate_size=dp_replicate,
+        dp_shard_size=2 if needs_hack else dp_shard,
+        tp_size=tp,
+        cp_size=cp,
+        cp_backend=cp_backend,
+    )
+    if needs_hack:
+        pc.dp_shard_size = dp_shard
+        pc._sizes["dp_shard"] = dp_shard
+    return pc
+
+
 def dp_replicate_info(accelerator, cp_size: int) -> tuple[int, int]:
     """(dp_rank, dp_size) — which data-parallel replicate group this rank is in.
 
@@ -827,7 +877,9 @@ def main() -> None:
         os.environ["PARALLELISM_CONFIG_CP_SIZE"] = str(cp_size)
         os.environ.setdefault("PARALLELISM_CONFIG_CP_BACKEND", "torch")
 
-    accelerator = Accelerator(gradient_accumulation_steps=accum)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=accum, parallelism_config=build_parallelism_config()
+    )
     is_main = accelerator.is_main_process
 
     def rank_log(msg: str) -> None:
