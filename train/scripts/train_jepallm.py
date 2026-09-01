@@ -512,7 +512,7 @@ def open_tb(log_dir: Path):
     return writer
 
 
-def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_tag: str = "jepallm") -> Path:
+def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Path:
     """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval)."""
     raw = (
         cli
@@ -525,110 +525,13 @@ def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_t
     if not root.is_absolute():
         root = _resolve(root)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return root / f"{run_tag}-{stamp}"
+    return root / f"jepallm-{stamp}"
 
 
 def resolve_cp_size(cli: int | None) -> int:
     if cli is not None and int(cli) > 0:
         return int(cli)
     return int(os.environ.get("BIV_CP_SIZE") or os.environ.get("PARALLELISM_CONFIG_CP_SIZE") or "1")
-
-
-def build_parallelism_config():
-    """Explicit ParallelismConfig, only to route around one overly-blunt guard.
-
-    accelerate's ParallelismConfig.__post_init__ hard-blocks dp_replicate>1 +
-    cp>1 with dp_shard_size==1 ("pure DP + CP"), because in general that would
-    mean literal DDP composed with TP/CP, which they don't support. But CP
-    doesn't need that guard: accelerate's own ParallelismConfig.fsdp_dim_names
-    (consumed verbatim by fsdp2_prepare_model as `mesh[fsdp_dim_names]` passed
-    to torch's `fully_shard`) folds cp into a `dp_shard_cp` joint dim whenever
-    cp_enabled, even with dp_shard disabled — that's exactly the mechanism our
-    already-working single-group config (dp_shard=1, cp=NGPU, dp_replicate=1)
-    relies on. Adding dp_replicate>1 on top just makes fsdp_dim_names =
-    ("dp_replicate", "dp_shard_cp"), a plain 2D (replicate, shard) mesh that
-    torch's fully_shard natively treats as HSDP — grad sync across the
-    replicate dim is automatic, no manual all_reduce needed.
-
-    So: construct with a throwaway dp_shard_size=2 to satisfy __post_init__'s
-    check, then patch it back to the real value (1) — __post_init__ only runs
-    at construction, total_size/fsdp_dim_names/_sizes are live-attribute
-    properties, unaffected by the later mutation. Untested off-GPU; if this is
-    wrong, torch's fully_shard should fail loudly (wrong mesh rank/shape), not
-    silently train wrong.
-
-    Returns None when dp_replicate isn't in play, so Accelerator() falls back
-    to its normal env-var-driven construction — single-group CP (this file's
-    original, verified path) is untouched.
-    """
-    from accelerate.utils import ParallelismConfig
-
-    dp_replicate = int(os.environ.get("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "1"))
-    if dp_replicate <= 1:
-        return None
-    dp_shard = int(os.environ.get("PARALLELISM_CONFIG_DP_SHARD_SIZE", "1"))
-    cp = int(os.environ.get("PARALLELISM_CONFIG_CP_SIZE", "1"))
-    tp = int(os.environ.get("PARALLELISM_CONFIG_TP_SIZE", "1"))
-    cp_backend = os.environ.get("PARALLELISM_CONFIG_CP_BACKEND", "torch")
-    needs_hack = dp_shard <= 1 and cp > 1 and tp <= 1
-    pc = ParallelismConfig(
-        dp_replicate_size=dp_replicate,
-        dp_shard_size=2 if needs_hack else dp_shard,
-        tp_size=tp,
-        cp_size=cp,
-        cp_backend=cp_backend,
-    )
-    if needs_hack:
-        pc.dp_shard_size = dp_shard
-        pc._sizes["dp_shard"] = dp_shard
-    return pc
-
-
-def dp_replicate_info(accelerator, cp_size: int) -> tuple[int, int]:
-    """(dp_rank, dp_size) — which data-parallel replicate group this rank is in.
-
-    2 CP groups of 2 GPUs each (32k smoke) means dp_size=2: group 0 = ranks
-    0-1, group 1 = ranks 2-3. Prefers accelerate's actual device mesh (correct
-    regardless of dim ordering); falls back to rank // cp_size, which matches
-    accelerate's (dp_replicate, dp_shard, cp, tp) mesh convention. Untested
-    off-GPU — first run should log and eyeball this before trusting it.
-    """
-    mesh = getattr(accelerator, "torch_device_mesh", None)
-    try:
-        if mesh is not None and "dp_replicate" in getattr(mesh, "mesh_dim_names", ()):
-            sub = mesh["dp_replicate"]
-            return int(sub.get_local_rank()), int(sub.size())
-    except Exception:
-        pass
-    nproc = accelerator.num_processes
-    if cp_size > 0 and nproc % cp_size == 0:
-        dp_size = nproc // cp_size
-        if dp_size > 1:
-            return accelerator.process_index // cp_size, dp_size
-    return 0, 1
-
-
-class ReplicaSampler:
-    """Same global shuffle order on every rank; each dp_replicate group takes
-    a disjoint interleaved slice, so the two groups train on different data
-    (real throughput gain, not redundant compute). Ranks inside one CP group
-    share dp_rank, so they get the identical slice — required, since CP
-    splits one sample's sequence across those ranks, not the batch."""
-
-    def __init__(self, n: int, dp_rank: int, dp_size: int, generator) -> None:
-        self.n = n
-        self.dp_rank = dp_rank
-        self.dp_size = dp_size
-        self.generator = generator
-
-    def __iter__(self):
-        import torch
-
-        order = torch.randperm(self.n, generator=self.generator).tolist()
-        return iter(order[self.dp_rank :: self.dp_size])
-
-    def __len__(self) -> int:
-        return len(range(self.dp_rank, self.n, self.dp_size))
 
 
 def parse_args() -> argparse.Namespace:
@@ -676,13 +579,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or /root/tf-logs)",
-    )
-    p.add_argument(
-        "--run-tag",
-        type=str,
-        default="jepallm",
-        help="Console/TensorBoard prefix, e.g. jepallm32k for the 32k/2x2 smoke "
-        "(keeps it from colliding with the 65536 run's TB folder).",
     )
     return p.parse_args()
 
@@ -848,7 +744,6 @@ def _warmup_lambda(warmup: int):
 
 def main() -> None:
     args = parse_args()
-    run_tag = args.run_tag
 
     import torch
     from accelerate import Accelerator
@@ -877,9 +772,7 @@ def main() -> None:
         os.environ["PARALLELISM_CONFIG_CP_SIZE"] = str(cp_size)
         os.environ.setdefault("PARALLELISM_CONFIG_CP_BACKEND", "torch")
 
-    accelerator = Accelerator(
-        gradient_accumulation_steps=accum, parallelism_config=build_parallelism_config()
-    )
+    accelerator = Accelerator(gradient_accumulation_steps=accum)
     is_main = accelerator.is_main_process
 
     def rank_log(msg: str) -> None:
@@ -970,30 +863,14 @@ def main() -> None:
     gen = torch.Generator()
     gen.manual_seed(seed)
     batch_size = int(tcfg.get("batch_size") or 1)
-    dp_rank, dp_size = dp_replicate_info(accelerator, cp_size)
-    log(
-        f"[rank {accelerator.process_index}/{accelerator.num_processes}] "
-        f"dp_replicate rank={dp_rank}/{dp_size} cp_size={cp_size} — "
-        f"first run: check dp_rank groups match {{0,1}} and {{2,3}} (or your GPU order), "
-        f"not all-0 or all-different."
+    loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=gen,
+        collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+        num_workers=0,
     )
-    if dp_size > 1:
-        loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            sampler=ReplicaSampler(len(train_ds), dp_rank, dp_size, gen),
-            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-            num_workers=0,
-        )
-    else:
-        loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            shuffle=True,
-            generator=gen,
-            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-            num_workers=0,
-        )
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
     opt = torch.optim.AdamW(
@@ -1063,8 +940,6 @@ def main() -> None:
         "sources": sources,
         "max_length": max_length,
         "cp_size": cp_size,
-        "dp_replicate_size": dp_size,
-        "run_tag": run_tag,
         "lm_head": "attached_frozen_base",
         "recipe": "llm-jepa RepresentationTrainer (independent Enc + last_token cosine + shifted CE)",
         "last_token": last_token,
@@ -1101,7 +976,7 @@ def main() -> None:
         if not is_main:
             _clear()
             return
-        emit(f"[{run_tag}] collapse step={step_i} {format_collapse_line(stats)}")
+        emit(f"[jepallm] collapse step={step_i} {format_collapse_line(stats)}")
         payload = json.dumps(dict(stats), indent=2, ensure_ascii=False) + "\n"
         (out_dir / "collapse.json").write_text(payload, encoding="utf-8")
         (out_dir / f"collapse-s{step_i}.json").write_text(payload, encoding="utf-8")
@@ -1142,10 +1017,10 @@ def main() -> None:
             step=step_i,
         )
         if is_main:
-            emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")
-            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[{run_tag}] {m}"))
+            emit(f"[jepallm] checkpoint ({kind}) → {dest.name}")
+            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepallm] {m}"))
 
-    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag)
+    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
     ckpt_extra["tensorboard"] = str(tb_dir)
     if is_main:
         writer = open_tb(tb_dir)
@@ -1153,8 +1028,6 @@ def main() -> None:
         writer.add_text("data/sources", ", ".join(sources), 0)
         writer.add_text("train/max_length", str(max_length), 0)
         writer.add_text("train/cp_size", str(cp_size), 0)
-        writer.add_text("train/dp_replicate_size", str(dp_size), 0)
-        writer.add_text("train/run_tag", run_tag, 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
@@ -1172,7 +1045,7 @@ def main() -> None:
         pbar = tqdm(
             total=total_opt,
             initial=min(resume_step, total_opt),
-            desc=run_tag,
+            desc="jepallm",
             unit="step",
             dynamic_ncols=True,
         )
@@ -1285,7 +1158,7 @@ def main() -> None:
                             check_collapse(step)
                         if is_last_in_epoch:
                             emit(
-                                f"[{run_tag}] epoch {epoch + 1} end: force checkpoint "
+                                f"[jepallm] epoch {epoch + 1} end: force checkpoint "
                                 "(permanent epoch ckpt)"
                             )
                             dump_ckpt("epoch-end", epoch + 1, step)
