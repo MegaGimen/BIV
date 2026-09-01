@@ -1173,18 +1173,23 @@ def main() -> None:
                         simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
                         if simcse_loss is not None:
                             loss = loss + effective_nce_w * simcse_loss
-                    # Every rank collects these (not just is_main): check_collapse()
-                    # now runs on every rank so effective_nce_weight() can read an
-                    # identical last_z_self everywhere (see comment by its
-                    # declaration). Cheap — tiny detached 2048-d CPU vectors.
-                    a_texts = decode_a_texts(tokenizer, batch)
+                    # Every rank collects pred/z/o (not just is_main): check_collapse()
+                    # needs z_self_median on every rank so effective_nce_weight() reads
+                    # an identical value everywhere (see comment by last_z_self's
+                    # declaration). inv_hat/u/a stay is_main-only — they only feed the
+                    # inv_paired/inv_mismatch diagnostics, which only rank 0 ever
+                    # writes to TensorBoard/JSON, so the other ranks decoding a_texts
+                    # and copying inv_hat/u to CPU every micro-batch was pure waste.
                     for i in range(pred.size(0)):
                         seen_pred.append(pred[i].detach().float().cpu())
                         seen_z.append(z[i].detach().float().cpu())
                         seen_o.append(o_texts[i])
-                        seen_invhat.append(inv_hat[i].detach().float().cpu())
-                        seen_u.append(u[i].detach().float().cpu())
-                        seen_a.append(a_texts[i])
+                    if is_main:
+                        a_texts = decode_a_texts(tokenizer, batch)
+                        for i in range(pred.size(0)):
+                            seen_invhat.append(inv_hat[i].detach().float().cpu())
+                            seen_u.append(u[i].detach().float().cpu())
+                            seen_a.append(a_texts[i])
                     accelerator.backward(loss)
                     for i in range(z.size(0)):
                         bank_z.append(z[i].detach())
