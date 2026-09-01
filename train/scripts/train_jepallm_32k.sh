@@ -3,7 +3,9 @@
 # doing Context Parallel (cp_size=2) on different data (dp_replicate_size=2).
 # Roughly 2x throughput vs train_jepallm.sh's 65536/4-way-CP run, at the cost
 # of truncating longer rows. Separate config/output_dir/TensorBoard tag from
-# train_jepallm.sh so neither run overwrites the other.
+# train_jepallm.sh so neither run overwrites the other. Both groups' losses
+# are merged (all-reduced) into one combined number per log point, so
+# TensorBoard shows a single "whole job" curve, not two side-by-side runs.
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -73,9 +75,11 @@ Stage 1 LLM-JEPA, 32768 smoke: 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
   bash scripts/train_jepallm_32k.sh --resume outputs/jepallm32k_stage1/checkpoint-e0-s25
 
 Separate from train_jepallm.sh: config=configs/jepa/jepallm_32k.yaml,
-output_dir=outputs/jepallm32k_stage1, TensorBoard tags=jepallm32k-g0-<stamp> and
-jepallm32k-g1-<stamp> (one run per dp_replicate group, same shared stamp —
-`tensorboard --logdir /root/tf-logs` shows both curves together).
+output_dir=outputs/jepallm32k_stage1, TensorBoard tag=jepallm32k-<stamp> — one
+single run. Both dp_replicate groups' losses are all-reduced into one number
+before each log point, so the curve represents the *whole* job's data (both
+groups combined), not one group's local view; the x-axis is step*2 so it lines
+up with a non-parallel run's step count for direct comparison.
 Needs exactly 4 GPUs; falls back to a single 4-way CP group (no dp_replicate
 speedup) otherwise.
 
