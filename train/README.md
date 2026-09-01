@@ -90,8 +90,10 @@ python scripts/prepare_model.py --check
 # 3) Ratio-sample + HF messages/lengths cache (CPU OK; no ms-swift)
 python scripts/tokenize_data.py
 
-# 4) Optional length / hard-trunc retention (Muse tokenize cache; Muse branch)
-python scripts/stat.py --max-length 8192
+# 4) Optional length / hard-trunc retention
+# This branch (AgentWorld / LLM-JEPA mix JSONL):
+python scripts/stat.py --max-length 65536
+# Muse branch instead reads tokenize_data.py cache (different stat.py).
 
 # 4b) Export all TB / trainer log steps → one table (long or --wide)
 python scripts/export.py --log-dir /root/tf-logs --out /tmp/muse_metrics.csv

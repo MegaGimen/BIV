@@ -512,7 +512,7 @@ def open_tb(log_dir: Path):
     return writer
 
 
-def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Path:
+def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_tag: str = "jepallm") -> Path:
     """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval)."""
     raw = (
         cli
@@ -525,13 +525,60 @@ def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Pa
     if not root.is_absolute():
         root = _resolve(root)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return root / f"jepallm-{stamp}"
+    return root / f"{run_tag}-{stamp}"
 
 
 def resolve_cp_size(cli: int | None) -> int:
     if cli is not None and int(cli) > 0:
         return int(cli)
     return int(os.environ.get("BIV_CP_SIZE") or os.environ.get("PARALLELISM_CONFIG_CP_SIZE") or "1")
+
+
+def dp_replicate_info(accelerator, cp_size: int) -> tuple[int, int]:
+    """(dp_rank, dp_size) — which data-parallel replicate group this rank is in.
+
+    2 CP groups of 2 GPUs each (32k smoke) means dp_size=2: group 0 = ranks
+    0-1, group 1 = ranks 2-3. Prefers accelerate's actual device mesh (correct
+    regardless of dim ordering); falls back to rank // cp_size, which matches
+    accelerate's (dp_replicate, dp_shard, cp, tp) mesh convention. Untested
+    off-GPU — first run should log and eyeball this before trusting it.
+    """
+    mesh = getattr(accelerator, "torch_device_mesh", None)
+    try:
+        if mesh is not None and "dp_replicate" in getattr(mesh, "mesh_dim_names", ()):
+            sub = mesh["dp_replicate"]
+            return int(sub.get_local_rank()), int(sub.size())
+    except Exception:
+        pass
+    nproc = accelerator.num_processes
+    if cp_size > 0 and nproc % cp_size == 0:
+        dp_size = nproc // cp_size
+        if dp_size > 1:
+            return accelerator.process_index // cp_size, dp_size
+    return 0, 1
+
+
+class ReplicaSampler:
+    """Same global shuffle order on every rank; each dp_replicate group takes
+    a disjoint interleaved slice, so the two groups train on different data
+    (real throughput gain, not redundant compute). Ranks inside one CP group
+    share dp_rank, so they get the identical slice — required, since CP
+    splits one sample's sequence across those ranks, not the batch."""
+
+    def __init__(self, n: int, dp_rank: int, dp_size: int, generator) -> None:
+        self.n = n
+        self.dp_rank = dp_rank
+        self.dp_size = dp_size
+        self.generator = generator
+
+    def __iter__(self):
+        import torch
+
+        order = torch.randperm(self.n, generator=self.generator).tolist()
+        return iter(order[self.dp_rank :: self.dp_size])
+
+    def __len__(self) -> int:
+        return len(range(self.dp_rank, self.n, self.dp_size))
 
 
 def parse_args() -> argparse.Namespace:
@@ -579,6 +626,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or /root/tf-logs)",
+    )
+    p.add_argument(
+        "--run-tag",
+        type=str,
+        default="jepallm",
+        help="Console/TensorBoard prefix, e.g. jepallm32k for the 32k/2x2 smoke "
+        "(keeps it from colliding with the 65536 run's TB folder).",
     )
     return p.parse_args()
 
@@ -744,6 +798,7 @@ def _warmup_lambda(warmup: int):
 
 def main() -> None:
     args = parse_args()
+    run_tag = args.run_tag
 
     import torch
     from accelerate import Accelerator
@@ -863,14 +918,30 @@ def main() -> None:
     gen = torch.Generator()
     gen.manual_seed(seed)
     batch_size = int(tcfg.get("batch_size") or 1)
-    loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        generator=gen,
-        collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-        num_workers=0,
+    dp_rank, dp_size = dp_replicate_info(accelerator, cp_size)
+    log(
+        f"[rank {accelerator.process_index}/{accelerator.num_processes}] "
+        f"dp_replicate rank={dp_rank}/{dp_size} cp_size={cp_size} — "
+        f"first run: check dp_rank groups match {{0,1}} and {{2,3}} (or your GPU order), "
+        f"not all-0 or all-different."
     )
+    if dp_size > 1:
+        loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            sampler=ReplicaSampler(len(train_ds), dp_rank, dp_size, gen),
+            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+            num_workers=0,
+        )
+    else:
+        loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=gen,
+            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+            num_workers=0,
+        )
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
     opt = torch.optim.AdamW(
@@ -940,6 +1011,8 @@ def main() -> None:
         "sources": sources,
         "max_length": max_length,
         "cp_size": cp_size,
+        "dp_replicate_size": dp_size,
+        "run_tag": run_tag,
         "lm_head": "attached_frozen_base",
         "recipe": "llm-jepa RepresentationTrainer (independent Enc + last_token cosine + shifted CE)",
         "last_token": last_token,
@@ -976,7 +1049,7 @@ def main() -> None:
         if not is_main:
             _clear()
             return
-        emit(f"[jepallm] collapse step={step_i} {format_collapse_line(stats)}")
+        emit(f"[{run_tag}] collapse step={step_i} {format_collapse_line(stats)}")
         payload = json.dumps(dict(stats), indent=2, ensure_ascii=False) + "\n"
         (out_dir / "collapse.json").write_text(payload, encoding="utf-8")
         (out_dir / f"collapse-s{step_i}.json").write_text(payload, encoding="utf-8")
@@ -1017,10 +1090,10 @@ def main() -> None:
             step=step_i,
         )
         if is_main:
-            emit(f"[jepallm] checkpoint ({kind}) → {dest.name}")
-            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepallm] {m}"))
+            emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")
+            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[{run_tag}] {m}"))
 
-    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
+    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag)
     ckpt_extra["tensorboard"] = str(tb_dir)
     if is_main:
         writer = open_tb(tb_dir)
@@ -1028,6 +1101,8 @@ def main() -> None:
         writer.add_text("data/sources", ", ".join(sources), 0)
         writer.add_text("train/max_length", str(max_length), 0)
         writer.add_text("train/cp_size", str(cp_size), 0)
+        writer.add_text("train/dp_replicate_size", str(dp_size), 0)
+        writer.add_text("train/run_tag", run_tag, 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
@@ -1045,7 +1120,7 @@ def main() -> None:
         pbar = tqdm(
             total=total_opt,
             initial=min(resume_step, total_opt),
-            desc="jepallm",
+            desc=run_tag,
             unit="step",
             dynamic_ncols=True,
         )
@@ -1158,7 +1233,7 @@ def main() -> None:
                             check_collapse(step)
                         if is_last_in_epoch:
                             emit(
-                                f"[jepallm] epoch {epoch + 1} end: force checkpoint "
+                                f"[{run_tag}] epoch {epoch + 1} end: force checkpoint "
                                 "(permanent epoch ckpt)"
                             )
                             dump_ckpt("epoch-end", epoch + 1, step)

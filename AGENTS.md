@@ -183,6 +183,8 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
   `lm_loss`：HuggingFace 那种移位交叉熵，标签只解开观察正文。`jepa_loss`：`1 - mean(cosine(Enc(left)[last_token], Enc(right)[last_token]))`，**目标不 detach**。默认 \(\gamma=1\)、\(\lambda=0.1\)（他们的 `--gamma` / `--lbd`），Qwen 的 `last_token=-3`。没有 JEPA MLP、没有逆动力学、没有 SimCSE/bank。可训练的只有全部 40 层 LoRA（`rank=16`，`lr=5e-5`）。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh`（不要加 `--resume` 才是从零开）。冒烟：`bash scripts/train_jepallm.sh --save-steps 1 --max-steps 2`。不要 `--resume` 旧的 `jepa_stage1` 检查点。训完这一步，AgentWorld+LoRA 整体冻死，Stage 2 只查询、不更新。
 
+**32768 speed variant（截断，只为快速验证配方，不是正式跑）。** `train_jepallm_32k.sh` + `configs/jepa/jepallm_32k.yaml`：4 卡切成两组各 2 卡，每组内部按 `cp_size=2` 切序列，两组吃不同数据（`dp_replicate_size=2`）。比 65536/4 卡整组 CP 快一倍左右，代价是长样本被切得更狠。`output_dir=outputs/jepallm32k_stage1`、TensorBoard 前缀 `jepallm32k-`、控制台前缀 `[jepallm32k]`，和 65536 跑的 `outputs/jepallm_stage1` / `jepallm-` 互不覆盖。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm_32k.sh`。两组各吃不同数据靠 `dp_replicate_info()`（`train_jepallm.py`）读 accelerate 的设备网格，第一次跑起来时终端会打印每个 rank 的 `dp_replicate rank=x/2`——GPU0/1 应该是 `0/2`、GPU2/3 应该是 `1/2`，不是这样说明这套映射没猜对，需要另外核实。这条路径没在这台开发机上跑过，第一次在 GPU 机上跑请顺手看一眼这行日志。
+
 写字这一路就是挡坍缩的锚：如果编码器把所有观察编成同一个方向，观察正文写不对。对齐这一路两边都活着，编码器没法把右边焊死再让预测头朝万能方向吐。这是他们成功案例里的做法，不是再叠对比损失。
 
 坍缩检查只负责报，不产生梯度。损失和检查共用 `log_steps`（默认 5），存盘仍是 `save_steps`（默认 25）。检查用的是这一段已经训过的行上缓存的左边向量 / 右边向量。配对中位数明显高于错配 → 至少在见过的例子上分开了；两者都高 → 坍缩。
