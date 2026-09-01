@@ -9,11 +9,16 @@ min(L, seqlen)/L; full/left keep the tail, right keeps the head.
   python scripts/stat.py
   python scripts/stat.py --max-length 65536
   python scripts/stat.py --max-length 65536 --max-samples 2000
+
+Lengths are cached under train/outputs/stat_cache/jepallm/ (untruncated
+full/left/right counts, keyed by row content + tokenizer). Rerun hits disk.
+--recompute ignores the cache. --no-cache does not read or write.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import sys
@@ -33,6 +38,8 @@ import train_jepallm as tj  # noqa: E402
 from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "jepallm.yaml"
+DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepallm"
+RECIPE = "jepallm-seqlen-v1"
 SEQS = ("full", "left", "right")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
@@ -190,6 +197,59 @@ def _print_seq(src: str, seq: str, lengths: list[int], seqlen: int) -> dict[str,
     }
 
 
+def _row_key(h, a, o) -> str:
+    blob = json.dumps(
+        {"h": h, "a": a, "o": o},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _tok_slug(model_dir: Path) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(model_dir))[-120:]
+
+
+class LengthCache:
+    """Append-only jsonl of {k, full, left, right} for one mix source."""
+
+    def __init__(self, path: Path, *, enabled: bool) -> None:
+        self.path = path
+        self.enabled = enabled
+        self.store: dict[str, dict[str, int]] = {}
+        if enabled and path.is_file():
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    k = obj.get("k")
+                    if not k:
+                        continue
+                    self.store[str(k)] = {
+                        "full": int(obj["full"]),
+                        "left": int(obj["left"]),
+                        "right": int(obj["right"]),
+                    }
+
+    def get(self, key: str) -> dict[str, int] | None:
+        if not self.enabled:
+            return None
+        return self.store.get(key)
+
+    def put(self, key: str, lens: dict[str, int]) -> None:
+        rec = {s: int(lens[s]) for s in SEQS}
+        self.store[key] = rec
+        if not self.enabled:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"k": key, **rec}, ensure_ascii=False) + "\n")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -214,7 +274,23 @@ def parse_args() -> argparse.Namespace:
         "--cache-dir",
         type=Path,
         default=None,
-        help="Default: merge/output/cache",
+        help="Model download cache. Default: merge/output/cache",
+    )
+    p.add_argument(
+        "--stat-cache",
+        type=Path,
+        default=None,
+        help=f"Length jsonl cache. Default: {DEFAULT_STAT_CACHE.relative_to(TRAIN)}",
+    )
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Do not read or write the length cache.",
+    )
+    p.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Ignore existing length cache and overwrite it.",
     )
     p.add_argument(
         "--source",
@@ -255,9 +331,39 @@ def main() -> None:
 
     seqlen = int(args.max_length)
     limit = args.max_samples
+    use_cache = not args.no_cache
+    stat_root = args.stat_cache
+    if stat_root is None:
+        stat_root = DEFAULT_STAT_CACHE
+    elif not stat_root.is_absolute():
+        stat_root = TRAIN / stat_root
+    cache_ns = stat_root / _tok_slug(model_dir)
+    if use_cache:
+        cache_ns.mkdir(parents=True, exist_ok=True)
+        man = cache_ns / "manifest.json"
+        meta = {"recipe": RECIPE, "model_dir": str(model_dir), "mix_dir": str(mix_dir)}
+        if man.is_file():
+            old = json.loads(man.read_text(encoding="utf-8"))
+            if old.get("recipe") != RECIPE or old.get("model_dir") != str(model_dir):
+                print(
+                    f"stat cache recipe/tokenizer mismatch at {cache_ns}; using it as a new namespace",
+                    flush=True,
+                )
+        man.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if args.recompute:
+            for src in sources:
+                pth = cache_ns / f"{src}.jsonl"
+                if pth.is_file():
+                    pth.unlink()
+            print(f"stat cache: recompute, cleared jsonl under {cache_ns}", flush=True)
+
     print(f"tokenizer: {model_dir}", flush=True)
     print(f"mix:       {mix_dir}  sources={sources}", flush=True)
     print(f"seqlen:    {seqlen}", flush=True)
+    if use_cache:
+        print(f"stat cache: {cache_ns}  recipe={RECIPE}", flush=True)
+    else:
+        print("stat cache: off", flush=True)
     if limit is not None:
         print(f"rows:      max-samples={limit} (reservoir per source)", flush=True)
 
@@ -278,11 +384,26 @@ def main() -> None:
             print(f"WARNING: no rows for {src}", flush=True)
             continue
         buckets = {k: [] for k in SEQS}
+        cache = LengthCache(
+            cache_ns / f"{src}.jsonl",
+            enabled=use_cache,
+        )
+        hits = misses = 0
         bar = _tqdm(rows, desc=f"tokenize {src}", unit="row")
         for h, a, o in bar:
-            lens = tj.sequence_lengths(tok, h, a, o)
+            key = _row_key(h, a, o)
+            lens = cache.get(key)
+            if lens is None:
+                lens = tj.sequence_lengths(tok, h, a, o)
+                cache.put(key, lens)
+                misses += 1
+            else:
+                hits += 1
             for k in SEQS:
                 buckets[k].append(lens[k])
+            if bar is not None and hasattr(bar, "set_postfix"):
+                bar.set_postfix(hit=hits, miss=misses, refresh=False)
+        print(f"  {src} cache hit={hits:,} miss={misses:,} stored={len(cache.store):,}", flush=True)
         report["sources"][src] = {}
         for seq in SEQS:
             report["sources"][src][seq] = _print_seq(src, seq, buckets[seq], seqlen)

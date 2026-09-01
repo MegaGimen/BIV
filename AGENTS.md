@@ -280,7 +280,8 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/proc
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh
 
-# 可选：AgentWorld 词表下三段序列在 65536 会砍掉多少（CPU，只加载 tokenizer）
+# 可选：AgentWorld 词表下三段序列在 65536 会砍掉多少（CPU，只加载 tokenizer；
+# 长度写入 train/outputs/stat_cache/jepallm/，再跑会命中）
 python scripts/stat.py --max-length 65536
 ```
 
