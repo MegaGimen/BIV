@@ -187,6 +187,10 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_size>1` 又开了 `cp_size>1`，就要求 `dp_shard_size` 也必须 `>1`（否则报"pure data parallelism...cannot be used with...context parallelism"），按这条字面要求得 8 卡才能凑出「两组各自 CP+同步梯度」。但往下看它自己怎么建 FSDP 用的网格（`fsdp_dim_names`／`dp_shard_cp_dim_names`）：`cp` 自己就会被折进那张切分维度表，跟现在已经跑通的单组 4 卡 CP（`dp_shard=1, cp=4`）用的是同一套机制，只是没叠 `dp_replicate` 这层。所以 `train_jepallm.py` 的 `build_parallelism_config()` 手动绕开这条校验：构造时先塞个假的 `dp_shard_size=2` 骗过检查，构造完再把它改回真实值 `1`——后面用到的都是实时读属性，不受这次事后修改影响。没在 GPU 上验证过这个绕法，出问题应该是 `fully_shard` 直接报网格形状不对，不会静默训错。
 
+**两组各写各的 TensorBoard，不再只见一份记录。** `is_group_main`（`train_jepallm.py`）= 每个 `dp_replicate` 组里 rank 最小的那个（`process_index % cp_size == 0`；`dp_size<=1` 时退化成普通的 `is_main`，否则单组跑法会所有 rank 抢同一个 tb_dir）。两组各开一份 `SummaryWriter`，目录名共享同一个时间戳（`broadcast_stamp()` 让 rank0 生成时间戳后广播给所有 rank，不然每个 rank 自己 `datetime.now()` 会差几秒），靠 `-g0`/`-g1` 后缀区分：`jepallm32k-g0-<stamp>`、`jepallm32k-g1-<stamp>`。`tensorboard --logdir /root/tf-logs` 会把这两个当两条独立曲线叠在一起显示。吞吐量（`rows/s`、`tok/s`，两组一起算的整个任务速率，不是单组）只在 group0 这边额外写一份 `train/rows_per_sec_global` / `train/tokens_per_sec_global`，同时也印到控制台和进度条 postfix 上——这是"加速看得见"的实际数字。
+
+**两组的 step 不会错位，不是靠运气。** `ReplicaSampler` 切数据前先按 `(n // dp_size) * dp_size` 截掉多出来的尾巴，保证每组分到的行数完全相等（最多扔掉 `dp_size-1` 行/epoch），`steps_per_epoch` 对两组永远算出同一个数，`save_steps`/`log_steps` 触发的 `step` 在所有 rank 上是同一个整数，不需要临时协商。另外加了 `assert_equal_loader_len()` 作为保险丝：训练开始前用一次 `all_gather_object` 把所有 rank 的 `len(loader)` 收集起来，只要有一个不一样就直接报错退出（把哪个 rank 长度是多少打出来），不会等到训到一半、某组数据先耗尽、another 组的梯度同步集合通信永远等不到对端，卡死在那里都不知道为什么。
+
 写字这一路就是挡坍缩的锚：如果编码器把所有观察编成同一个方向，观察正文写不对。对齐这一路两边都活着，编码器没法把右边焊死再让预测头朝万能方向吐。这是他们成功案例里的做法，不是再叠对比损失。
 
 坍缩检查只负责报，不产生梯度。损失和检查共用 `log_steps`（默认 5），存盘仍是 `save_steps`（默认 25）。检查用的是这一段已经训过的行上缓存的左边向量 / 右边向量。配对中位数明显高于错配 → 至少在见过的例子上分开了；两者都高 → 坍缩。

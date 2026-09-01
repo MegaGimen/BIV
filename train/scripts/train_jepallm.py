@@ -22,6 +22,7 @@ import math
 import os
 import random
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -512,8 +513,21 @@ def open_tb(log_dir: Path):
     return writer
 
 
-def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_tag: str = "jepallm") -> Path:
-    """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval)."""
+def resolve_tb_dir(
+    tcfg: dict[str, Any],
+    _out_dir: Path,
+    cli: Path | None,
+    run_tag: str = "jepallm",
+    stamp: str | None = None,
+    group_suffix: str = "",
+) -> Path:
+    """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval).
+
+    `group_suffix` (e.g. `-g0`, `-g1`) puts each dp_replicate group's run in
+    its own sibling directory under the same stamp, so `tensorboard --logdir
+    /root/tf-logs` shows both groups' curves side by side as two named runs
+    instead of only whichever rank happened to be global main.
+    """
     raw = (
         cli
         or os.environ.get("LOGGING_DIR")
@@ -524,8 +538,24 @@ def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_t
     root = Path(str(raw))
     if not root.is_absolute():
         root = _resolve(root)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return root / f"{run_tag}-{stamp}"
+    stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return root / f"{run_tag}{group_suffix}-{stamp}"
+
+
+def broadcast_stamp(accelerator) -> str:
+    """Same timestamp on every rank (one broadcast), so per-group TensorBoard
+    dirs (`{run_tag}-g0-{stamp}`, `{run_tag}-g1-{stamp}`) are obviously "the
+    same launch, two groups" rather than two runs a few seconds apart because
+    each rank's own `datetime.now()` call landed on a different second."""
+    if accelerator.num_processes <= 1:
+        return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    import torch.distributed as dist
+
+    box = [
+        datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") if accelerator.is_main_process else None
+    ]
+    dist.broadcast_object_list(box, src=0)
+    return box[0]
 
 
 def resolve_cp_size(cli: int | None) -> int:
@@ -613,7 +643,20 @@ class ReplicaSampler:
     a disjoint interleaved slice, so the two groups train on different data
     (real throughput gain, not redundant compute). Ranks inside one CP group
     share dp_rank, so they get the identical slice — required, since CP
-    splits one sample's sequence across those ranks, not the batch."""
+    splits one sample's sequence across those ranks, not the batch.
+
+    Truncates to `(n // dp_size) * dp_size` *before* slicing by dp_rank, so
+    every replicate group gets exactly the same number of rows per epoch —
+    drops at most `dp_size - 1` rows/epoch, but guarantees identical
+    `len(loader)` (hence identical steps_per_epoch) across groups. Without
+    this, `n % dp_size != 0` can leave one group's DataLoader one micro-batch
+    short; since the two groups' gradients are all-reduced every accumulation
+    boundary (a blocking collective), whichever group's loop exits its epoch
+    first would leave the other group's rank waiting on a collective call
+    that never comes — an NCCL hang, not a crash. This is what keeps
+    save_steps/log_steps from drifting between the two groups: they are the
+    same integer `step` on every rank, computed off equal-length loaders, not
+    negotiated at runtime."""
 
     def __init__(self, n: int, dp_rank: int, dp_size: int, generator) -> None:
         self.n = n
@@ -625,10 +668,38 @@ class ReplicaSampler:
         import torch
 
         order = torch.randperm(self.n, generator=self.generator).tolist()
-        return iter(order[self.dp_rank :: self.dp_size])
+        usable = (self.n // self.dp_size) * self.dp_size
+        return iter(order[:usable][self.dp_rank :: self.dp_size])
 
     def __len__(self) -> int:
-        return len(range(self.dp_rank, self.n, self.dp_size))
+        return self.n // self.dp_size
+
+
+def assert_equal_loader_len(accelerator, local_len: int) -> None:
+    """Belt-and-suspenders check: every rank's local `len(loader)` must match.
+
+    ReplicaSampler already guarantees this by construction (equal split before
+    slicing), so this should never fire. It exists because a hang from
+    mismatched loader lengths (see ReplicaSampler docstring) is silent and
+    happens much later — mid-epoch, at whatever step one group's DataLoader
+    runs dry — which is a miserable thing to debug on a live 4-GPU job. This
+    turns that into a loud, immediate, pre-training error naming the actual
+    per-rank lengths, using one all_gather (negligible cost, runs once).
+    """
+    if accelerator.num_processes <= 1:
+        return
+    import torch.distributed as dist
+
+    lens = [None] * accelerator.num_processes
+    dist.all_gather_object(lens, int(local_len))
+    if len(set(lens)) > 1:
+        raise SystemExit(
+            f"loader length mismatch across ranks: {lens} "
+            f"(rank {accelerator.process_index}={local_len}) — ReplicaSampler "
+            "should make these identical; something upstream changed n or "
+            "dp_size per-rank. Fix before training: mismatched lengths hang "
+            "mid-epoch at the accumulation boundary, not at startup."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -971,11 +1042,18 @@ def main() -> None:
     gen.manual_seed(seed)
     batch_size = int(tcfg.get("batch_size") or 1)
     dp_rank, dp_size = dp_replicate_info(accelerator, cp_size)
+    # Local main of *this* dp_replicate group — one process per group writes
+    # its own TensorBoard curve. Matches the (dp_replicate, ..., cp) mesh
+    # layout: cp is the fastest-varying dim, so each group is a contiguous
+    # block of cp_size ranks and its own rank-0 is process_index % cp_size==0.
+    # dp_size<=1 means there's only ever one group (everyone) — collapse to
+    # the usual is_main, or every rank would open the same tb_dir at once.
+    is_group_main = is_main if dp_size <= 1 else (accelerator.process_index % cp_size == 0)
     log(
         f"[rank {accelerator.process_index}/{accelerator.num_processes}] "
-        f"dp_replicate rank={dp_rank}/{dp_size} cp_size={cp_size} — "
-        f"first run: check dp_rank groups match {{0,1}} and {{2,3}} (or your GPU order), "
-        f"not all-0 or all-different."
+        f"dp_replicate rank={dp_rank}/{dp_size} cp_size={cp_size} "
+        f"group_main={is_group_main} — first run: check dp_rank groups match "
+        f"{{0,1}} and {{2,3}} (or your GPU order), not all-0 or all-different."
     )
     if dp_size > 1:
         loader = DataLoader(
@@ -994,6 +1072,7 @@ def main() -> None:
             collate_fn=lambda b: collate(b, pad_id, pad_multiple),
             num_workers=0,
         )
+    assert_equal_loader_len(accelerator, len(loader))
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
     opt = torch.optim.AdamW(
@@ -1145,15 +1224,21 @@ def main() -> None:
             emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")
             rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[{run_tag}] {m}"))
 
-    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag)
+    # One shared stamp, one writer per dp_replicate group (not per rank — CP
+    # siblings share a group). dp_size==1 keeps the old bare "{run_tag}-{stamp}"
+    # name so existing single-group runs/outputs are untouched.
+    stamp = broadcast_stamp(accelerator)
+    group_suffix = f"-g{dp_rank}" if dp_size > 1 else ""
+    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag, stamp=stamp, group_suffix=group_suffix)
     ckpt_extra["tensorboard"] = str(tb_dir)
-    if is_main:
+    if is_group_main:
         writer = open_tb(tb_dir)
         writer.add_text("data/mix_dir", str(mix_dir), 0)
         writer.add_text("data/sources", ", ".join(sources), 0)
         writer.add_text("train/max_length", str(max_length), 0)
         writer.add_text("train/cp_size", str(cp_size), 0)
         writer.add_text("train/dp_replicate_size", str(dp_size), 0)
+        writer.add_text("train/dp_rank", str(dp_rank), 0)
         writer.add_text("train/run_tag", run_tag, 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
@@ -1197,6 +1282,8 @@ def main() -> None:
     run_h = run_a = run_o = 0.0
     last_train_loss = None
     hit_max = False
+    last_log_time = time.monotonic()
+    throughput_postfix: dict[str, str] = {}
 
     try:
         for epoch in range(epochs):
@@ -1259,16 +1346,16 @@ def main() -> None:
                                 epoch=f"{epoch + 1}/{epochs}",
                                 loss=f"{last_train_loss:.4f}",
                                 refresh=False,
+                                **throughput_postfix,
                             )
                         is_last_in_epoch = epoch_opt >= steps_per_epoch
                         if step % log_every == 0:
-                            if is_main:
-                                denom = max(n_loss, 1)
-                                emit(
-                                    f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
-                                    f"ce={run_ce / denom:.4f} jepa={run_jepa / denom:.4f} "
-                                    f"len(full/left/right)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
-                                )
+                            denom = max(n_loss, 1)
+                            # Every dp_replicate group's local main logs its own
+                            # curve (own writer, own windowed average) — this is
+                            # the "2 records in TensorBoard" fix: previously only
+                            # global rank 0 (one group) ever wrote anything.
+                            if is_group_main:
                                 if writer is not None:
                                     writer.add_scalar("train/loss", last_train_loss, step)
                                     writer.add_scalar("train/loss_ce", run_ce / denom, step)
@@ -1277,11 +1364,38 @@ def main() -> None:
                                     writer.add_scalar("train/len_h", run_h / denom, step)
                                     writer.add_scalar("train/len_a", run_a / denom, step)
                                     writer.add_scalar("train/len_o", run_o / denom, step)
+                                if is_main:
+                                    # Throughput is a whole-job number (every
+                                    # group's steps count), not per-group, so it
+                                    # only gets logged once — on group0's writer,
+                                    # tagged "_global" so that's unambiguous.
+                                    now = time.monotonic()
+                                    elapsed = max(now - last_log_time, 1e-6)
+                                    rows = dp_size * accum * batch_size * log_every
+                                    toks = rows * (run_h / denom)
+                                    rows_s = rows / elapsed
+                                    toks_s = toks / elapsed
+                                    last_log_time = now
+                                    throughput_postfix = {"rows/s": f"{rows_s:.2f}", "tok/s": f"{toks_s:.0f}"}
+                                    emit(
+                                        f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
+                                        f"ce={run_ce / denom:.4f} jepa={run_jepa / denom:.4f} "
+                                        f"len(full/left/right)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f} "
+                                        f"throughput≈{rows_s:.2f} rows/s {toks_s:.0f} tok/s "
+                                        f"(dp_size={dp_size} groups, this is the whole job's rate)"
+                                    )
+                                    if writer is not None:
+                                        writer.add_scalar("train/rows_per_sec_global", rows_s, step)
+                                        writer.add_scalar("train/tokens_per_sec_global", toks_s, step)
                                 running = 0.0
                                 run_ce = 0.0
                                 run_jepa = 0.0
                                 n_loss = 0
                                 run_h = run_a = run_o = 0.0
+                            # Unconditional: check_collapse() clears seen_pred/
+                            # seen_z/seen_o on every rank internally (only
+                            # is_main computes+logs stats) — skipping this on
+                            # non-main ranks would leak those deques forever.
                             check_collapse(step)
                         if is_last_in_epoch:
                             emit(

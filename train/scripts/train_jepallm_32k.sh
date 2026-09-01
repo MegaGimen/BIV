@@ -73,7 +73,9 @@ Stage 1 LLM-JEPA, 32768 smoke: 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
   bash scripts/train_jepallm_32k.sh --resume outputs/jepallm32k_stage1/checkpoint-e0-s25
 
 Separate from train_jepallm.sh: config=configs/jepa/jepallm_32k.yaml,
-output_dir=outputs/jepallm32k_stage1, TensorBoard tag=jepallm32k-<stamp>.
+output_dir=outputs/jepallm32k_stage1, TensorBoard tags=jepallm32k-g0-<stamp> and
+jepallm32k-g1-<stamp> (one run per dp_replicate group, same shared stamp —
+`tensorboard --logdir /root/tf-logs` shows both curves together).
 Needs exactly 4 GPUs; falls back to a single 4-way CP group (no dp_replicate
 speedup) otherwise.
 
