@@ -163,7 +163,11 @@ def install_hidden_only_forward(model: Any, *, detach_head: bool = True) -> None
 
 def lm_head_module(model: Any) -> Any | None:
     m = unwrap_base(model)
-    return getattr(m, "lm_head", None)
+    head = getattr(m, "lm_head", None)
+    if head is not None:
+        return head
+    inner = getattr(m, "model", None)
+    return getattr(inner, "lm_head", None) if inner is not None else None
 
 
 def read_ell(model_dir: Path) -> int | None:
@@ -220,17 +224,25 @@ def log_world_architecture(
     if norm is not None:
         frozen = not any(p.requires_grad for p in norm.parameters())
         log(f"  norm  {type(norm).__name__}  {'frozen' if frozen else 'trainable'}")
-    log("world path after backbone (no tokens):")
+    head = lm_head_module(model)
+    attached = head is not None
+    if attached:
+        frozen = not any(p.requires_grad for p in head.parameters())
+        shape = ""
+        if hasattr(head, "in_features") and hasattr(head, "out_features"):
+            shape = f"  {head.in_features}→{head.out_features}"
+        log(
+            f"  lm_head  {type(head).__name__}{shape}  "
+            f"{'frozen' if frozen else 'trainable'}  (AgentWorld token head, no LoRA)"
+        )
     if extra:
+        log("world path after backbone:")
         for name, mod in extra.items():
             log(f"  {name}")
             dump_tree(mod, log, prefix="    ")
-    else:
-        log("  (none)")
-    attached = lm_head_module(model) is not None
     if expect_lm_head == "attached":
         if attached:
-            log("lm_head: attached (observation token CE; base weights frozen, LoRA not on the table)")
+            log("lm_head: attached (observation CE goes through this table)")
         else:
             log("ERROR: lm_head missing; LLM-JEPA Stage 1 needs AgentWorld's own table")
     elif attached:
