@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Stage 1 LLM-JEPA on AgentWorld's own backbone. No fish-cut, no Instruct.
+"""Stage 1 LLM-JEPA on AgentWorld. Wiring copied from galilai-group/llm-jepa.
 
-Two losses, same recipe as galilai-group/llm-jepa finetune.py:
-  loss_ce   — write observation tokens given history+action (AgentWorld lm_head)
-  loss_jepa — 1 - cosine(Enc(h+a) last hidden, Enc(o) last hidden); both live
+Their RepresentationTrainer (finetune.py) encodes Text and Code as two
+independent chat-templated sequences, takes hidden at `len(unpad)+last_token`,
+and adds 1-cosine to a next-token CE on the full conversation. We keep that
+graph. Pairing is ours: Text = history+command, Code = observation. CE
+unmasks only the observation (not earlier assistant turns in h).
 
-No JEPA MLP, no inverse dynamics, no SimCSE/bank. 4-GPU FSDP2 + CP, max_length=65536.
+What we do not copy: HuggingFace Trainer, concatenating 3 sequences into one
+batch, padding every row to max_length, full-seq lm_head. Those blow up at
+35B / 65k. Sequential hidden-only forwards + lm_head only on labeled tokens.
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh
-  bash scripts/train_jepallm.sh --save-steps 1 --max-steps 2
-  bash scripts/train_jepallm.sh --resume
 """
 
 from __future__ import annotations
@@ -106,21 +108,62 @@ def _content(msg: dict[str, Any]) -> str:
     return c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
 
 
-def pack_ids(h_ids: list[int], a_ids: list[int], o_ids: list[int], max_length: int):
-    """Fit [h][a][o] into max_length: keep a, then o, then the tail of h."""
-    a = list(a_ids[:max_length])
-    room = max_length - len(a)
-    o = list(o_ids[: max(0, room)])
-    room = max_length - len(a) - len(o)
-    h = list(h_ids[-room:] if room > 0 else [])
-    if not h and not a:
-        if h_ids:
-            h = [h_ids[-1]]
-        elif a_ids:
-            a = [a_ids[0]]
-        if len(h) + len(a) + len(o) > max_length:
-            o = o[: max(0, max_length - len(h) - len(a))]
-    return h, a, o
+def apply_template(tokenizer, messages: list) -> str:
+    """Same as llm-jepa: chat template, no generation prompt."""
+    msgs = list(messages) if messages else [{"role": "user", "content": ""}]
+    try:
+        return tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=False
+        )
+    except Exception:
+        try:
+            alt = []
+            for m in msgs:
+                if (m or {}).get("role") == "assistant":
+                    alt.append({**m, "role": "user"})
+                else:
+                    alt.append(m)
+            return tokenizer.apply_chat_template(
+                alt, tokenize=False, add_generation_prompt=False
+            )
+        except Exception:
+            return "\n".join(_content(m) for m in msgs)
+
+
+def tokenize_ids(tokenizer, text: str) -> list[int]:
+    return list(
+        tokenizer(text, truncation=False, add_special_tokens=True)["input_ids"]
+    )
+
+
+def _fit(ids: list[int], max_length: int, *, keep: str) -> list[int]:
+    if len(ids) <= max_length:
+        return ids
+    if keep == "suffix":
+        return ids[-max_length:]
+    return ids[:max_length]
+
+
+def _find_span(haystack: list[int], needle: list[int]) -> int | None:
+    """Last occurrence (observation sits at the end of the full chat)."""
+    n = len(needle)
+    if n == 0 or n > len(haystack):
+        return None
+    for i in range(len(haystack) - n, -1, -1):
+        if haystack[i : i + n] == needle:
+            return i
+    return None
+
+
+def create_o_labels(full_ids: list[int], o_content_ids: list[int]) -> list[int]:
+    """GitHub create_masked_labels, but only the observation turn."""
+    labels = [-100] * len(full_ids)
+    start = _find_span(full_ids, o_content_ids)
+    if start is None:
+        return labels
+    for j in range(start, start + len(o_content_ids)):
+        labels[j] = full_ids[j]
+    return labels
 
 
 def encode_texts(
@@ -130,32 +173,35 @@ def encode_texts(
     o_msg: dict,
     max_length: int,
 ) -> dict[str, Any]:
-    try:
-        h_text = tokenizer.apply_chat_template(
-            h_msgs if h_msgs else [{"role": "user", "content": ""}],
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-    except Exception:
-        h_text = "\n".join(_content(m) for m in h_msgs)
-    a_text = _content(a_msg)
-    o_text = _content(o_msg)
-    h = tokenizer(
-        h_text, truncation=True, max_length=max_length, add_special_tokens=True
+    """Three sequences, same split as llm-jepa user / assistant / full.
+
+    full  — chat(h + a + o), for next-token CE on o
+    left  — chat(h + a) independently, Enc(Text)
+    right — chat([o]) independently, Enc(Code)
+    Long rows: keep the suffix of full/left (action+obs at the end); keep the
+    prefix of right. Do not pad to max_length here.
+    """
+    full_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
+        max_length,
+        keep="suffix",
     )
-    a = tokenizer(
-        a_text, truncation=True, max_length=max_length, add_special_tokens=True
+    left_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])),
+        max_length,
+        keep="suffix",
     )
-    o = tokenizer(
-        o_text, truncation=True, max_length=max_length, add_special_tokens=True
+    right_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg])),
+        max_length,
+        keep="prefix",
     )
-    h_ids, a_ids, o_ids = pack_ids(h["input_ids"], a["input_ids"], o["input_ids"], max_length)
+    o_content_ids = tokenizer.encode(_content(o_msg), add_special_tokens=False)
     return {
-        "h_ids": h_ids,
-        "a_ids": a_ids,
-        "o_ids": o_ids,
-        "joint": h_ids + a_ids + o_ids,
-        "left_len": len(h_ids) + len(a_ids),
+        "full_ids": full_ids,
+        "full_labels": create_o_labels(full_ids, o_content_ids),
+        "left_ids": left_ids,
+        "right_ids": right_ids,
     }
 
 
@@ -232,9 +278,10 @@ def _pad_len(n: int, multiple: int) -> int:
 def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> dict[str, Any]:
     import torch
 
-    def pad_rows(rows: list[list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
-        mlen = _pad_len(max(len(x) for x in rows), pad_multiple)
-        out = torch.full((len(rows), mlen), pad_id, dtype=torch.long)
+    def pad_rows(rows: list[list[int]], fill: int) -> tuple[torch.Tensor, torch.Tensor]:
+        mlen = _pad_len(max((len(x) for x in rows), default=1), pad_multiple)
+        mlen = max(mlen, 1)
+        out = torch.full((len(rows), mlen), fill, dtype=torch.long)
         mask = torch.zeros((len(rows), mlen), dtype=torch.long)
         for i, row in enumerate(rows):
             if not row:
@@ -243,21 +290,27 @@ def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> 
             mask[i, : len(row)] = 1
         return out, mask
 
-    joint_ids, joint_mask = pad_rows([ex["joint"] for ex in batch])
-    o_ids, o_mask = pad_rows([ex["o_ids"] for ex in batch])
-    left_len = torch.tensor([ex["left_len"] for ex in batch], dtype=torch.long)
-    h_len = torch.tensor([len(ex["h_ids"]) for ex in batch], dtype=torch.long)
-    a_len = torch.tensor([len(ex["a_ids"]) for ex in batch], dtype=torch.long)
-    o_len = torch.tensor([len(ex["o_ids"]) for ex in batch], dtype=torch.long)
+    full_ids, full_mask = pad_rows([ex["full_ids"] for ex in batch], pad_id)
+    left_ids, left_mask = pad_rows([ex["left_ids"] for ex in batch], pad_id)
+    right_ids, right_mask = pad_rows([ex["right_ids"] for ex in batch], pad_id)
+    labels_rows = [ex["full_labels"] for ex in batch]
+    mlen = full_ids.size(1)
+    full_labels = torch.full((len(batch), mlen), -100, dtype=torch.long)
+    for i, row in enumerate(labels_rows):
+        n = min(len(row), mlen)
+        if n:
+            full_labels[i, :n] = torch.tensor(row[:n], dtype=torch.long)
     return {
-        "joint_ids": joint_ids,
-        "joint_mask": joint_mask,
-        "o_ids": o_ids,
-        "o_mask": o_mask,
-        "left_len": left_len,
-        "h_len": h_len,
-        "a_len": a_len,
-        "o_len": o_len,
+        "full_ids": full_ids,
+        "full_mask": full_mask,
+        "full_labels": full_labels,
+        "left_ids": left_ids,
+        "left_mask": left_mask,
+        "right_ids": right_ids,
+        "right_mask": right_mask,
+        "full_len": torch.tensor([len(ex["full_ids"]) for ex in batch], dtype=torch.long),
+        "left_len": torch.tensor([len(ex["left_ids"]) for ex in batch], dtype=torch.long),
+        "right_len": torch.tensor([len(ex["right_ids"]) for ex in batch], dtype=torch.long),
     }
 
 
@@ -305,50 +358,56 @@ def full_hidden(model, input_ids, attention_mask, cp_size: int = 1):
     return gather_hidden(h, attention_mask, cp_size)
 
 
-def last_from_hidden(h, attention_mask):
+def last_token_index(input_ids, attention_mask, last_token: int):
+    """llm-jepa RepresentationTrainer._last_token_index (right padding)."""
     import torch
 
-    idx = attention_mask.long().sum(dim=1).clamp(min=1) - 1
-    idx = idx.clamp(max=h.size(1) - 1)
-    b = torch.arange(h.size(0), device=h.device)
-    return h[b, idx]
+    index = []
+    seqs = input_ids.tolist()
+    masks = attention_mask.tolist()
+    max_i = input_ids.size(1) - 1
+    for ids, mask in zip(seqs, masks):
+        unpadded = []
+        seen = False
+        for tid, m in zip(ids, mask):
+            if m != 0:
+                seen = True
+            if m == 0 and seen:
+                break
+            unpadded.append(tid)
+        index.append(min(max(len(unpadded) + last_token, 0), max_i))
+    return torch.tensor(index, device=input_ids.device, dtype=torch.long)
 
 
-def cosine_live(left, right):
-    """1 - cosine; neither side detached (LLM-JEPA Enc(Text) vs Enc(Code))."""
-    import torch.nn.functional as F
+def gather_at(hidden, index):
+    import torch
 
-    a = F.normalize(left.float(), dim=-1)
-    b = F.normalize(right.float(), dim=-1)
-    return (1.0 - (a * b).sum(dim=-1)).mean()
+    idx = index.clamp(min=0, max=hidden.size(1) - 1)
+    b = torch.arange(hidden.size(0), device=hidden.device)
+    return hidden[b, idx]
 
 
-def observation_ce(hidden, left_len, o_ids, o_mask, lm_head):
-    """CE only on observation tokens. hidden is the [h][a][o] joint last layer."""
+def jepa_cosine(user_embedding, assistant_embedding):
+    """llm-jepa default: 1 - mean(cosine). Both sides live."""
     import torch
     import torch.nn.functional as F
 
-    losses = []
-    bsz = hidden.size(0)
-    for i in range(bsz):
-        n = int(o_mask[i].sum().item())
-        left = int(left_len[i].item())
-        if n <= 0 or left < 1:
-            continue
-        start = left - 1
-        end = start + n
-        if end > hidden.size(1):
-            n = hidden.size(1) - start
-            if n <= 0:
-                continue
-            end = start + n
-        sl = hidden[i, start:end]
-        logits = lm_head(sl)
-        labels = o_ids[i, : sl.size(0)]
-        losses.append(F.cross_entropy(logits.float(), labels))
-    if not losses:
+    cosine_similarity = F.cosine_similarity(user_embedding, assistant_embedding, dim=-1)
+    return 1.0 - torch.mean(cosine_similarity)
+
+
+def shifted_ce(hidden, labels, lm_head):
+    """HF CausalLM shift: hidden[t] predicts labels[t+1]. lm_head only on labeled rows."""
+    import torch
+    import torch.nn.functional as F
+
+    pred = hidden[:, :-1]
+    tgt = labels[:, 1:]
+    mask = tgt != -100
+    if not bool(mask.any()):
         return hidden.new_zeros(())
-    return torch.stack(losses).mean()
+    logits = lm_head(pred[mask])
+    return F.cross_entropy(logits.float(), tgt[mask])
 
 
 def force_attn_implementation(model, impl: str) -> None:
@@ -390,6 +449,7 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
     tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    tok.padding_side = "right"
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
@@ -652,7 +712,7 @@ def decode_ids_texts(tokenizer, ids, mask) -> list[str]:
 
 
 def decode_o_texts(tokenizer, batch) -> list[str]:
-    return decode_ids_texts(tokenizer, batch["o_ids"], batch["o_mask"])
+    return decode_ids_texts(tokenizer, batch["right_ids"], batch["right_mask"])
 
 
 def _warmup_lambda(warmup: int):
@@ -823,8 +883,17 @@ def main() -> None:
     if log_every < 1:
         raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
-    ce_w = float(tcfg.get("ce_weight") if tcfg.get("ce_weight") is not None else 1.0)
-    jepa_w = float(tcfg.get("jepa_weight") if tcfg.get("jepa_weight") is not None else 0.1)
+    gamma = float(
+        tcfg["gamma"]
+        if tcfg.get("gamma") is not None
+        else (tcfg["ce_weight"] if tcfg.get("ce_weight") is not None else 1.0)
+    )
+    lbd = float(
+        tcfg["lbd"]
+        if tcfg.get("lbd") is not None
+        else (tcfg["jepa_weight"] if tcfg.get("jepa_weight") is not None else 0.1)
+    )
+    last_token = int(tcfg["last_token"] if tcfg.get("last_token") is not None else -3)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
@@ -839,7 +908,8 @@ def main() -> None:
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"ce_w={ce_w} jepa_w={jepa_w} save_total_limit={save_limit} resume_step={resume_step}"
+        f"gamma={gamma} lbd={lbd} last_token={last_token} "
+        f"save_total_limit={save_limit} resume_step={resume_step}"
     )
 
     ckpt_extra = {
@@ -849,7 +919,8 @@ def main() -> None:
         "max_length": max_length,
         "cp_size": cp_size,
         "lm_head": "attached_frozen_base",
-        "recipe": "llm-jepa ce+cosine",
+        "recipe": "llm-jepa RepresentationTrainer (independent Enc + last_token cosine + shifted CE)",
+        "last_token": last_token,
         "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
     }
     seen_pred: deque = deque()
@@ -938,8 +1009,9 @@ def main() -> None:
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
-        writer.add_text("train/ce_weight", str(ce_w), 0)
-        writer.add_text("train/jepa_weight", str(jepa_w), 0)
+        writer.add_text("train/gamma", str(gamma), 0)
+        writer.add_text("train/lbd", str(lbd), 0)
+        writer.add_text("train/last_token", str(last_token), 0)
 
     try:
         from tqdm.auto import tqdm
@@ -987,25 +1059,30 @@ def main() -> None:
                     continue
                 micro_seen += 1
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-                h_len = float(batch["h_len"].float().mean().item())
-                a_len = float(batch["a_len"].float().mean().item())
-                o_len = float(batch["o_len"].float().mean().item())
+                full_len = float(batch["full_len"].float().mean().item())
+                left_len = float(batch["left_len"].float().mean().item())
+                right_len = float(batch["right_len"].float().mean().item())
                 with accelerator.accumulate(model):
-                    h_joint = full_hidden(
-                        model, batch["joint_ids"], batch["joint_mask"], cp_size
+                    h_full = full_hidden(
+                        model, batch["full_ids"], batch["full_mask"], cp_size
                     )
-                    left_idx = (batch["left_len"] - 1).clamp(min=0, max=h_joint.size(1) - 1)
-                    b = torch.arange(h_joint.size(0), device=h_joint.device)
-                    h_left = h_joint[b, left_idx]
-                    ce_loss = observation_ce(
-                        h_joint, batch["left_len"], batch["o_ids"], batch["o_mask"], lm_head
+                    ce_loss = shifted_ce(h_full, batch["full_labels"], lm_head)
+                    h_left_seq = full_hidden(
+                        model, batch["left_ids"], batch["left_mask"], cp_size
                     )
                     h_right_seq = full_hidden(
-                        model, batch["o_ids"], batch["o_mask"], cp_size
+                        model, batch["right_ids"], batch["right_mask"], cp_size
                     )
-                    h_right = last_from_hidden(h_right_seq, batch["o_mask"])
-                    jepa_loss = cosine_live(h_left, h_right)
-                    loss = ce_w * ce_loss + jepa_w * jepa_loss
+                    idx_l = last_token_index(
+                        batch["left_ids"], batch["left_mask"], last_token
+                    )
+                    idx_r = last_token_index(
+                        batch["right_ids"], batch["right_mask"], last_token
+                    )
+                    h_left = gather_at(h_left_seq, idx_l)
+                    h_right = gather_at(h_right_seq, idx_r)
+                    jepa_loss = jepa_cosine(h_left, h_right)
+                    loss = gamma * ce_loss + lbd * jepa_loss
                     o_texts = decode_o_texts(tokenizer, batch)
                     for i in range(h_left.size(0)):
                         seen_pred.append(h_left[i].detach().float().cpu())
@@ -1016,9 +1093,9 @@ def main() -> None:
                     run_ce += float(ce_loss.detach().float().item())
                     run_jepa += float(jepa_loss.detach().float().item())
                     n_loss += 1
-                    run_h += h_len
-                    run_a += a_len
-                    run_o += o_len
+                    run_h += full_len
+                    run_a += left_len
+                    run_o += right_len
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         opt.step()
@@ -1041,7 +1118,7 @@ def main() -> None:
                                 emit(
                                     f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
                                     f"ce={run_ce / denom:.4f} jepa={run_jepa / denom:.4f} "
-                                    f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
+                                    f"len(full/left/right)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
                                 )
                                 if writer is not None:
                                     writer.add_scalar("train/loss", last_train_loss, step)
