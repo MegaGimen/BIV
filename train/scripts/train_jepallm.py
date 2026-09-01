@@ -462,6 +462,8 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.padding_side = "right"
+    # Card says 131k; we count full chat then _fit to 65k. Silence the false "indexing errors" warn.
+    tok.model_max_length = int(1e12)
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
@@ -917,9 +919,13 @@ def main() -> None:
     total_opt = planned if max_steps is None else min(planned, int(max_steps))
     warmup = int(tcfg.get("warmup_steps") or 50)
     warmup = max(0, min(warmup, max(total_opt - 1, 0)))
-    sched = LambdaLR(opt, _warmup_lambda(warmup))
-    for _ in range(resume_step):
-        sched.step()
+    # last_epoch = steps already done. Do not sched.step() here: that warns and
+    # skips the first warmup value because optimizer has not stepped yet.
+    sched = LambdaLR(
+        opt,
+        _warmup_lambda(warmup),
+        last_epoch=(resume_step - 1) if resume_step > 0 else -1,
+    )
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} warmup={warmup} "
