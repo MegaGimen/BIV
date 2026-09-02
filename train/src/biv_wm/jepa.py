@@ -180,6 +180,98 @@ def collapse_stats(
     }
 
 
+def _clip_text(s: str, n: int) -> str:
+    s = s if isinstance(s, str) else str(s)
+    if n <= 0 or len(s) <= n:
+        return s
+    return s[:n] + f"...[+{len(s) - n} chars]"
+
+
+def close_pair_records(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    o_texts: list[str],
+    left_texts: list[str] | None = None,
+    *,
+    threshold: float = 0.7,
+    max_pairs: int = 80,
+    snippet: int = 800,
+) -> dict[str, object]:
+    """Same pairing rules as collapse_stats; keep rows whose cosine >= threshold.
+
+    ``z_self``: two observation encodings. ``pred_self``: two left encodings
+    (history+command). ``mismatch``: left_i vs observation_j, j≠i, texts differ.
+    Exact-duplicate observations are skipped, same as collapse_stats.
+    """
+    if pred.ndim == 1:
+        pred = pred.unsqueeze(0)
+    if target.ndim == 1:
+        target = target.unsqueeze(0)
+    n = int(pred.size(0))
+    if n != len(o_texts) or n != int(target.size(0)):
+        raise ValueError(f"length mismatch pred={pred.size(0)} target={target.size(0)} texts={len(o_texts)}")
+    if left_texts is None:
+        left_texts = [""] * n
+    elif len(left_texts) != n:
+        raise ValueError(f"left_texts={len(left_texts)} n={n}")
+    p = F.normalize(pred.float(), dim=-1)
+    t = F.normalize(target.float(), dim=-1)
+    sim_pt = (p @ t.T).detach().cpu()
+    sim_tt = (t @ t.T).detach().cpu()
+    sim_pp = (p @ p.T).detach().cpu()
+    z_self: list[dict[str, object]] = []
+    pred_self: list[dict[str, object]] = []
+    mismatch: list[dict[str, object]] = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            if o_texts[i] == o_texts[j]:
+                continue
+            rec_z = {
+                "i": i,
+                "j": j,
+                "cosine": float(sim_tt[i, j]),
+                "o_i": _clip_text(o_texts[i], snippet),
+                "o_j": _clip_text(o_texts[j], snippet),
+            }
+            rec_p = {
+                "i": i,
+                "j": j,
+                "cosine": float(sim_pp[i, j]),
+                "left_i": _clip_text(left_texts[i], snippet),
+                "left_j": _clip_text(left_texts[j], snippet),
+            }
+            rec_m = {
+                "i": i,
+                "j": j,
+                "cosine": float(sim_pt[i, j]),
+                "left_i": _clip_text(left_texts[i], snippet),
+                "o_j": _clip_text(o_texts[j], snippet),
+            }
+            if i < j and rec_z["cosine"] >= threshold:
+                z_self.append(rec_z)
+            if i < j and rec_p["cosine"] >= threshold:
+                pred_self.append(rec_p)
+            if rec_m["cosine"] >= threshold:
+                mismatch.append(rec_m)
+
+    def _top(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        rows.sort(key=lambda r: float(r["cosine"]), reverse=True)
+        return rows[:max_pairs]
+
+    return {
+        "threshold": threshold,
+        "n": n,
+        "z_self": _top(z_self),
+        "pred_self": _top(pred_self),
+        "mismatch": _top(mismatch),
+        "n_z_self": len(z_self),
+        "n_pred_self": len(pred_self),
+        "n_mismatch": len(mismatch),
+    }
+
+
 def format_collapse_line(stats: dict[str, object]) -> str:
     def _cell(block: object, key: str) -> str:
         if not isinstance(block, dict):

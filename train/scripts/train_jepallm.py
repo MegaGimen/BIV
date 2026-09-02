@@ -279,7 +279,10 @@ class HaoDataset:
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         h, a, o = self.rows[idx]
-        return encode_texts(self.tokenizer, h, a, o, self.max_length)
+        enc = encode_texts(self.tokenizer, h, a, o, self.max_length)
+        enc["o_text"] = _content(o)
+        enc["left_text"] = _content(a)
+        return enc
 
 
 def _pad_len(n: int, multiple: int) -> int:
@@ -324,6 +327,8 @@ def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> 
         "full_len": torch.tensor([len(ex["full_ids"]) for ex in batch], dtype=torch.long),
         "left_len": torch.tensor([len(ex["left_ids"]) for ex in batch], dtype=torch.long),
         "right_len": torch.tensor([len(ex["right_ids"]) for ex in batch], dtype=torch.long),
+        "o_text": [ex.get("o_text", "") for ex in batch],
+        "left_text": [ex.get("left_text", "") for ex in batch],
     }
 
 

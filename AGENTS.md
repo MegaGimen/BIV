@@ -211,6 +211,15 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 期望方向：`paired_median` 升高、同时 `mismatch_median` 压低。只升配对、错配跟着升 → 万能方向。两项都低 → 还没拟合。差 ≥ 0.2 标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
 
+**底座抽查（不训练）：相近向量把原文记下来。** 32k 配方里 `save_steps=25`、`grad_accum=8`、`batch_size=1`、两组卡。一次 optimizer step 在一组卡上吃 8 条；25 step 就是这一组 200 条。两组一起吃不重复的数据时是 400 条。训练时 TensorBoard 的 `collapse/n=40` 是 `log_steps=5` × 8 条，只覆盖更短的一窗。抽查默认跑 **200 条**（25 step、一组卡、和存盘节奏对齐），硬顶 **400**（两组 25 step 的全部不重复行）。只前向、不反传、不加 LoRA，编码方式和训练一样：独立 `Enc(历史+命令)` / `Enc(观察)`，取 `last_token=-3`。余弦规则与 `collapse_stats` 相同（观察原文逐字相同的不算负例）。向量余弦 ≥ 0.7 的对会把两边文本写进 JSON（观察对观察 = `z_self`，命令对命令 = `pred_self`，命令对别人的观察 = `mismatch`）。
+
+```bash
+cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh
+# 只看一窗 40 条：bash scripts/probe_jepallm_collapse.sh --max-rows 40
+```
+
+结果在 `outputs/jepallm32k_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
+
 **TensorBoard `train/*`**
 
 | 标量 | 是什么 |
