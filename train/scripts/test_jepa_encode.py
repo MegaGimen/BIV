@@ -10,7 +10,7 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import train_jepallm as tj  # noqa: E402
+import train_jepa as tj  # noqa: E402
 
 try:
     import torch

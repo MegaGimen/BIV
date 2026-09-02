@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 # Stage 1 LLM-JEPA, 32768-length smoke: 4 GPUs as 2 groups of 2, each group
 # doing Context Parallel (cp_size=2) on different data (dp_replicate_size=2).
-# Roughly 2x throughput vs train_jepallm.sh's 65536/4-way-CP run, at the cost
+# Roughly 2x throughput vs train_jepa.sh's 65536/4-way-CP run, at the cost
 # of truncating longer rows. Separate config/output_dir/TensorBoard tag from
-# train_jepallm.sh so neither run overwrites the other. Both groups' losses
+# train_jepa.sh so neither run overwrites the other. Both groups' losses
 # are merged (all-reduced) into one combined number per log point, so
 # TensorBoard shows a single "whole job" curve, not two side-by-side runs.
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
-#   bash scripts/train_jepallm_32k.sh
-#   bash scripts/train_jepallm_32k.sh --save-steps 1 --max-steps 2
-#   bash scripts/train_jepallm_32k.sh --resume
+#   bash scripts/train_jepa_32k.sh
+#   bash scripts/train_jepa_32k.sh --save-steps 1 --max-steps 2
+#   bash scripts/train_jepa_32k.sh --resume
 #
-# Needs exactly 4 GPUs (2x2). Fewer/more: fall back to train_jepallm.sh with
+# Needs exactly 4 GPUs (2x2). Fewer/more: fall back to train_jepa.sh with
 # --max-length 32768 (single 4-way CP group, no dp_replicate speedup).
 #
 # accelerate's ParallelismConfig refuses dp_replicate>1 + cp>1 with
 # dp_shard_size==1 out of the box (raises "pure data parallelism... cannot be
-# used with... context parallelism"). train_jepallm.py's build_parallelism_config()
+# used with... context parallelism"). train_jepa.py's build_parallelism_config()
 # routes around that — see its docstring for why it's safe here. If you hit
 # that ValueError again, it means that workaround isn't being reached (e.g.
 # PARALLELISM_CONFIG_DP_REPLICATE_SIZE not set before Accelerator() runs).
@@ -26,9 +26,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG="${CONFIG:-configs/jepa/jepallm_32k.yaml}"
+CONFIG="${CONFIG:-configs/jepa/stage1_32k.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
-RUN_TAG="${RUN_TAG:-jepallm32k}"
+RUN_TAG="${RUN_TAG:-jepa32k}"
 EXTRA=()
 
 while [[ $# -gt 0 ]]; do
@@ -69,13 +69,13 @@ Stage 1 LLM-JEPA, 32768 smoke: 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
 
   cd train
   export CUDA_VISIBLE_DEVICES=0,1,2,3
-  bash scripts/train_jepallm_32k.sh
-  bash scripts/train_jepallm_32k.sh --save-steps 1 --max-steps 2
-  bash scripts/train_jepallm_32k.sh --resume
-  bash scripts/train_jepallm_32k.sh --resume outputs/jepallm32k_stage1/checkpoint-e0-s25
+  bash scripts/train_jepa_32k.sh
+  bash scripts/train_jepa_32k.sh --save-steps 1 --max-steps 2
+  bash scripts/train_jepa_32k.sh --resume
+  bash scripts/train_jepa_32k.sh --resume outputs/jepa32k_stage1/checkpoint-e0-s25
 
-Separate from train_jepallm.sh: config=configs/jepa/jepallm_32k.yaml,
-output_dir=outputs/jepallm32k_stage1, TensorBoard tag=jepallm32k-<stamp> — one
+Separate from train_jepa.sh: config=configs/jepa/stage1_32k.yaml,
+output_dir=outputs/jepa32k_stage1, TensorBoard tag=jepa32k-<stamp> — one
 single run. Both dp_replicate groups' losses are all-reduced into one number
 before each log point, so the curve represents the *whole* job's data (both
 groups combined), not one group's local view; the x-axis is step*2 so it lines
@@ -130,7 +130,7 @@ if [[ "$NGPU" -ne 4 ]]; then
   echo "WARNING: 2x2 needs exactly 4 GPUs (got $NGPU). Falling back to a single"
   echo "         ${NGPU}-way CP group (no dp_replicate speedup)."
   export PARALLEL=fsdp2_cp
-  exec bash "$ROOT/scripts/train_jepallm.sh" --config "$CONFIG" --max-length "$MAX_LENGTH" "${EXTRA[@]}"
+  exec bash "$ROOT/scripts/train_jepa.sh" --config "$CONFIG" --max-length "$MAX_LENGTH" "${EXTRA[@]}"
 fi
 
 CP_SIZE=2
@@ -164,7 +164,7 @@ LAUNCH=(
 )
 
 TRAIN_PY=(
-  scripts/train_jepallm.py
+  scripts/train_jepa.py
   --config "$CONFIG"
   --max-length "$MAX_LENGTH"
   --cp-size "$CP_SIZE"

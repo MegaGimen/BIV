@@ -3,13 +3,13 @@
 # Default 200 rows = 25 optimizer steps × grad_accum 8 on one replica group.
 #
 #   cd train
-#   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepallm_collapse.sh
-#   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh
+#   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG="${CONFIG:-configs/jepa/jepallm_32k.yaml}"
+CONFIG="${CONFIG:-configs/jepa/stage1_32k.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
 MAX_ROWS="${MAX_ROWS:-200}"
 EXTRA=()
@@ -28,14 +28,14 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Forward-only JEPA collapse probe (no training).
 
-  CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepallm_collapse.sh
-  CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh
-  bash scripts/probe_jepallm_collapse.sh --max-rows 40
-  bash scripts/probe_jepallm_collapse.sh --close-threshold 0.85
+  CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
+  CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh
+  bash scripts/probe_jepa_collapse.sh --max-rows 40
+  bash scripts/probe_jepa_collapse.sh --close-threshold 0.85
 
 1 GPU: plain python (no accelerate mesh). 2–3 GPUs: FSDP2+CP.
-4 GPUs: same 2x2 as train_jepallm_32k.sh.
-Writes outputs/jepallm32k_collapse_probe/collapse_probe-<stamp>.json
+4 GPUs: same 2x2 as train_jepa_32k.sh.
+Writes outputs/jepa32k_collapse_probe/collapse_probe-<stamp>.json
 EOF
       exit 0
       ;;
@@ -71,7 +71,7 @@ unset BIV_CP_SIZE || true
 unset BIV_PARALLEL || true
 
 TRAIN_PY=(
-  scripts/probe_jepallm_collapse.py
+  scripts/probe_jepa_collapse.py
   --config "$CONFIG"
   --max-length "$MAX_LENGTH"
   --max-rows "$MAX_ROWS"

@@ -16,9 +16,8 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── jepa/jepallm.yaml              # Qwen3.5-35B Stage 1 LLM-JEPA (live)
-│   ├── jepa/jepallm_32k.yaml          # 32768 / 2x2 CP smoke variant
-│   ├── jepa/stage1.yaml               # old MLP JEPA (not this branch's entry)
+│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 (live)
+│   ├── jepa/stage1_32k.yaml           # 32768 / 2x2 CP smoke variant
 │   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
 │   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (other branch)
@@ -27,8 +26,8 @@ train/
 │   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
-│   ├── probe.py / compare.py / cut_stage1.py / train_jepa.py
-│   ├── train_jepallm.py / train_jepallm.sh / train_jepallm_32k.sh
+│   ├── probe.py / compare.py / cut_stage1.py
+│   ├── train_jepa.py / train_jepa.sh / train_jepa_32k.sh
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── stat.py                        # AgentWorld seqlen truncation stats
 │   ├── trainmodel.sh                  # step 5: TRL single/multi-GPU
@@ -44,9 +43,10 @@ Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: two separate, unmodified 4
 (AgentWorld hosts JEPA; Instruct hosts the agent + draft/scorer/W), not a fish-cut single backbone —
 `compare.py` showed AgentWorld/Instruct deltas vs Base are dense and overlapping everywhere, not the
 low-entropy split fish-cut assumes, so `probe.py`/`cut_stage1.py` are now diagnostic-only, not part of
-the live pipeline. Stage 1 (`train_jepallm.py`) loads AgentWorld directly (auto-downloaded via
-`merge/download.py`) and trains LoRA with LLM-JEPA's two losses (observation CE + last-hidden cosine).
-Old MLP + SimCSE (`train_jepa.py`) stays in-tree for comparison only. Mix JSONL is the existing
+the live pipeline. Stage 1 (`train_jepa.py` / `train_jepa.sh`) loads AgentWorld directly
+(auto-downloaded via `merge/download.py`) and trains LoRA with LLM-JEPA's two losses
+(observation CE + last-hidden cosine). This branch is named **jepa**, not jepallm.
+Mix JSONL is the existing
 `wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`). See `AGENTS.md` "模型架构" / "训练全过程"
 for the full two-backbone + connector + Stage 2 argmax/softmax-CE design.
 
@@ -64,19 +64,19 @@ python train/scripts/compare.py
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
 
 # Stage 1 LLM-JEPA on AgentWorld's own backbone, no cut. model_dir in
-# configs/jepa/jepallm.yaml is a hub id, auto-downloaded into merge/output/cache.
+# configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh   # 65536, FSDP2+CP
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
 # Optional 32768 / 2x2 CP smoke (separate output_dir / TB prefix):
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm_32k.sh
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa_32k.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
 # --resume picks newest adapter-only ckpt (epoch, then step). Do not resume
-# old outputs/jepa_stage1 MLP checkpoints. Override: --save-steps N --log-steps N
+# MLP-era checkpoints that still contain jepa.pt. Override: --save-steps N --log-steps N
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by
-`train_jepallm.py`. Old `train_jepa.sh` is the replaced MLP+SimCSE recipe.
+`train_jepa.py`.
 
 ## Pipeline (Muse Glimmer-30B — TRL; other branch)
 

@@ -2,7 +2,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
-当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepallm.py`。旧 MLP 脚本 `train/scripts/train_jepa.py`（配方停在 `12751879`）留作对照，不要和新跑混。姐妹分支 `agentworld-JEPALLM-Qwen3.5-35B-A3B` 是同一套 LLM-JEPA 配方的对照线。
+当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 
@@ -153,7 +153,7 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-**Stage 1 直接读 AgentWorld 自己的 checkpoint，不经过任何切鱼步骤。** `train_jepallm.py` 用 `merge/download.py` 的 `resolve_model(role="world")` 解析 `configs/jepa/jepallm.yaml` 里的 `model_dir`（默认 `Qwen/Qwen-AgentWorld-35B-A3B`），缺失会自动下载进 `merge/output/cache`。**`lm_head` 留在活模块里**（AgentWorld 自己那张表）：主干 `forward` 只出隐藏状态（65k 全序列乘词表会爆显存），写字路只对观察标签那些位置再乘这张表，移位方式和 HuggingFace CausalLM 相同。对齐路是两次独立前向：`Enc(chat(h+a))` 和 `Enc(chat(o))`，各取 `last_token`（默认 `-3`），`1 - cosine`，两边都带梯度。三段序列分开跑、按 batch 实际长度 pad，不把三条拼成一个 3 倍 batch（那是他们 2k 序列上的写法）。LoRA 打在**全部 40 层**。启动时打印架构：`biv_wm.arch.log_world_architecture(..., expect_lm_head="attached")`。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh`（4 卡 FSDP2+CP，序列 65536）。检查点节奏与原来相同：2 个 epoch、每 25 步滚存 `checkpoint-e{epoch}-s{step}`（只留最新 3 个）、每个 epoch 结束永久存 `checkpoint-epoch{N}-end-s{step}`。损失和坍缩检查共用 `log_steps`（默认 5）。`--resume` 在 `output_dir`（默认 `outputs/jepallm_stage1`）里按 epoch 再 steps 选最新完整检查点。FSDP 下只 gather LoRA 到 CPU 再写 `adapter_model.safetensors`，没有 `jepa.pt` / `inv.pt`。控制台和 TensorBoard 前缀一律 `jepallm`。旧脚本 `train_jepa.sh` 仍在，是被替换掉的 MLP+SimCSE 配方，不要和新跑混对照。官方对照代码在 `train/vendor/llm-jepa/`（不进训练循环）。数据仍用 `wm_code` / `wm_os`（`mix_v2` 优先；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。主干 LoRA `5e-5`，warmup 50 步后恒定。
+**Stage 1 直接读 AgentWorld 自己的 checkpoint，不经过任何切鱼步骤。** `train_jepa.py` 用 `merge/download.py` 的 `resolve_model(role="world")` 解析 `configs/jepa/stage1.yaml` 里的 `model_dir`（默认 `Qwen/Qwen-AgentWorld-35B-A3B`），缺失会自动下载进 `merge/output/cache`。**`lm_head` 留在活模块里**（AgentWorld 自己那张表）：主干 `forward` 只出隐藏状态（65k 全序列乘词表会爆显存），写字路只对观察标签那些位置再乘这张表，移位方式和 HuggingFace CausalLM 相同。对齐路是两次独立前向：`Enc(chat(h+a))` 和 `Enc(chat(o))`，各取 `last_token`（默认 `-3`），`1 - cosine`，两边都带梯度。三段序列分开跑、按 batch 实际长度 pad，不把三条拼成一个 3 倍 batch（那是他们 2k 序列上的写法）。LoRA 打在**全部 40 层**。启动时打印架构：`biv_wm.arch.log_world_architecture(..., expect_lm_head="attached")`。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP，序列 65536）。检查点节奏与原来相同：2 个 epoch、每 25 步滚存 `checkpoint-e{epoch}-s{step}`（只留最新 3 个）、每个 epoch 结束永久存 `checkpoint-epoch{N}-end-s{step}`。损失和坍缩检查共用 `log_steps`（默认 5）。`--resume` 在 `output_dir`（默认 `outputs/jepa_stage1`）里按 epoch 再 steps 选最新完整检查点。FSDP 下只 gather LoRA 到 CPU 再写 `adapter_model.safetensors`，没有 `jepa.pt` / `inv.pt`。控制台和 TensorBoard 前缀一律 `jepa`。MLP+SimCSE 配方已经从本线入口拿掉；若 `outputs/jepa_stage1` 里还有带 `jepa.pt` 的旧检查点，不要 `--resume` 那些。姐妹分支的脚本名才是 `train_jepallm.sh`。官方对照代码在 `train/vendor/llm-jepa/`（不进训练循环）。数据仍用 `wm_code` / `wm_os`（`mix_v2` 优先；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。主干 LoRA `5e-5`，warmup 50 步后恒定。
 
 Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读任何切鱼输出），挂上草稿头 / 打分器 / \(W\)；Stage 1 训好的 AgentWorld LoRA 作为另一份独立权重加载进来，整段冻死，前向时对 `(h, 候选命令)` 编一遍，末尾隐藏向量当 \(\hat z\)，不参与 Stage 2 任何一步的参数更新。
 
@@ -174,7 +174,7 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 
 套的是 [LLM-JEPA](https://arxiv.org/abs/2509.14252) 的 `RepresentationTrainer` 接线，配对换成我们的转移：左边 = 历史+命令（他们的 issue / Text），右边 = 真观察（他们的 diff / Code）。对照代码在 `train/vendor/llm-jepa/finetune.py`，训练**不调用**那份脚本；35B 仍走本仓库的 FSDP2+CP，三段序列分开前向、不整段过词表。
 
-- **Step 1.** `model_dir` 解析成 AgentWorld（`train/configs/jepa/jepallm.yaml`）。**`lm_head` 留着**：底座冻住，LoRA 不打在这张表上，但写字损失的梯度穿过它回到骨干 LoRA。`forward` 主干只出隐藏状态。启动时确认 `lm_head: attached`。
+- **Step 1.** `model_dir` 解析成 AgentWorld（`train/configs/jepa/stage1.yaml`）。**`lm_head` 留着**：底座冻住，LoRA 不打在这张表上，但写字损失的梯度穿过它回到骨干 LoRA。`forward` 主干只出隐藏状态。启动时确认 `lm_head: attached`。
 - **Step 2.** 每个 \((h,a,o)\) 做成三段，和他们 user / assistant / full 一样各自走 chat 模板：完整对话给交叉熵，`chat(h+a)` 给左边，`chat(o)` 给右边。mix JSONL 里 user = 工具调用、assistant = 真观察。观察必须单独编码，不能从完整序列里抠。
 - **Step 3.** 两路损失加在一起，一次反传：
 
@@ -182,13 +182,13 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
   \texttt{loss} = \gamma\cdot\texttt{lm\_loss} + \lambda\cdot\texttt{jepa\_loss}
   \]
 
-  `lm_loss`：HuggingFace 那种移位交叉熵，标签只解开观察正文。`jepa_loss`：`1 - mean(cosine(Enc(left)[last_token], Enc(right)[last_token]))`，**目标不 detach**。默认 \(\gamma=1\)、\(\lambda=0.1\)（他们的 `--gamma` / `--lbd`），Qwen 的 `last_token=-3`。没有 JEPA MLP、没有逆动力学、没有 SimCSE/bank。可训练的只有全部 40 层 LoRA（`rank=16`，`lr=5e-5`）。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh`（不要加 `--resume` 才是从零开）。冒烟：`bash scripts/train_jepallm.sh --save-steps 1 --max-steps 2`。不要 `--resume` 旧的 `jepa_stage1` 检查点。训完这一步，AgentWorld+LoRA 整体冻死，Stage 2 只查询、不更新。
+  `lm_loss`：HuggingFace 那种移位交叉熵，标签只解开观察正文。`jepa_loss`：`1 - mean(cosine(Enc(left)[last_token], Enc(right)[last_token]))`，**目标不 detach**。默认 \(\gamma=1\)、\(\lambda=0.1\)（他们的 `--gamma` / `--lbd`），Qwen 的 `last_token=-3`。没有 JEPA MLP、没有逆动力学、没有 SimCSE/bank。可训练的只有全部 40 层 LoRA（`rank=16`，`lr=5e-5`）。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开）。冒烟：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。不要 `--resume` 带 `jepa.pt` 的旧 MLP 检查点。训完这一步，AgentWorld+LoRA 整体冻死，Stage 2 只查询、不更新。
 
-**32768 speed variant（截断，只为快速验证配方，不是正式跑）。** `train_jepallm_32k.sh` + `configs/jepa/jepallm_32k.yaml`：4 卡切成两组各 2 卡，每组内部按 `cp_size=2` 切序列，两组吃不同数据（`dp_replicate_size=2`）。比 65536/4 卡整组 CP 快一倍左右，代价是长样本被切得更狠。`output_dir=outputs/jepallm32k_stage1`、TensorBoard 前缀 `jepallm32k-`、控制台前缀 `[jepallm32k]`，和 65536 跑的 `outputs/jepallm_stage1` / `jepallm-` 互不覆盖。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm_32k.sh`。两组各吃不同数据靠 `dp_replicate_info()`（`train_jepallm.py`）读 accelerate 的设备网格，第一次跑起来时终端会打印每个 rank 的 `dp_replicate rank=x/2`——GPU0/1 应该是 `0/2`、GPU2/3 应该是 `1/2`，不是这样说明这套映射没猜对，需要另外核实。这条路径没在这台开发机上跑过，第一次在 GPU 机上跑请顺手看一眼这行日志。
+**32768 speed variant（截断，只为快速验证配方，不是正式跑）。** `train_jepa_32k.sh` + `configs/jepa/stage1_32k.yaml`：4 卡切成两组各 2 卡，每组内部按 `cp_size=2` 切序列，两组吃不同数据（`dp_replicate_size=2`）。比 65536/4 卡整组 CP 快一倍左右，代价是长样本被切得更狠。`output_dir=outputs/jepa32k_stage1`、TensorBoard 前缀 `jepa32k-`、控制台前缀 `[jepa32k]`，和 65536 跑的 `outputs/jepa_stage1` / `jepa-` 互不覆盖。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa_32k.sh`。两组各吃不同数据靠 `dp_replicate_info()`（`train_jepa.py`）读 accelerate 的设备网格，第一次跑起来时终端会打印每个 rank 的 `dp_replicate rank=x/2`——GPU0/1 应该是 `0/2`、GPU2/3 应该是 `1/2`，不是这样说明这套映射没猜对，需要另外核实。这条路径没在这台开发机上跑过，第一次在 GPU 机上跑请顺手看一眼这行日志。
 
-accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_size>1` 又开了 `cp_size>1`，就要求 `dp_shard_size` 也必须 `>1`（否则报"pure data parallelism...cannot be used with...context parallelism"），按这条字面要求得 8 卡才能凑出「两组各自 CP+同步梯度」。但往下看它自己怎么建 FSDP 用的网格（`fsdp_dim_names`／`dp_shard_cp_dim_names`）：`cp` 自己就会被折进那张切分维度表，跟现在已经跑通的单组 4 卡 CP（`dp_shard=1, cp=4`）用的是同一套机制，只是没叠 `dp_replicate` 这层。所以 `train_jepallm.py` 的 `build_parallelism_config()` 手动绕开这条校验：构造时先塞个假的 `dp_shard_size=2` 骗过检查，构造完再把它改回真实值 `1`——后面用到的都是实时读属性，不受这次事后修改影响。没在 GPU 上验证过这个绕法，出问题应该是 `fully_shard` 直接报网格形状不对，不会静默训错。
+accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_size>1` 又开了 `cp_size>1`，就要求 `dp_shard_size` 也必须 `>1`（否则报"pure data parallelism...cannot be used with...context parallelism"），按这条字面要求得 8 卡才能凑出「两组各自 CP+同步梯度」。但往下看它自己怎么建 FSDP 用的网格（`fsdp_dim_names`／`dp_shard_cp_dim_names`）：`cp` 自己就会被折进那张切分维度表，跟现在已经跑通的单组 4 卡 CP（`dp_shard=1, cp=4`）用的是同一套机制，只是没叠 `dp_replicate` 这层。所以 `train_jepa.py` 的 `build_parallelism_config()` 手动绕开这条校验：构造时先塞个假的 `dp_shard_size=2` 骗过检查，构造完再把它改回真实值 `1`——后面用到的都是实时读属性，不受这次事后修改影响。没在 GPU 上验证过这个绕法，出问题应该是 `fully_shard` 直接报网格形状不对，不会静默训错。
 
-**只有一份 TensorBoard 记录，代表两组合起来的整个任务，不是两份并行实验。** 之前试过每组各写各的 `-g0`/`-g1` 两条曲线，但那看起来像"跑了两份独立实验"，不是用户要的东西：用户要的是"card0 跑 5 步、card1 同时跑 5 步，合起来代表跑了 10 步"这种合并视图，方便直接跟不开并行的单卡曲线对比。做法是 `merge_group_stats()`（`train_jepallm.py`）：每次到 `log_steps`，**所有 rank**（不只是 is_main）都要跑一次 `accelerator.reduce(..., reduction="sum")`，把这一窗口内两组各自的 `running/run_ce/run_jepa/run_h/run_a/run_o/n_loss` 累加值加总。因为同一个 CP 组内每张卡的本地值完全相同（CP 是在算 loss 之前就把隐藏状态 all-gather 好了，loss 本身没被切），全局求和之后再取比值（比如 `running_g/denom_g`）会自动抵消 `cp_size` 这个重复因子，正好落在"两组真实平均"上——不需要额外除以 `dp_size`。只有 `is_main` 用这个合并后的值写一份 `SummaryWriter`（目录仍是单一的 `jepallm32k-<stamp>`，没有 `-g0`/`-g1` 后缀）。x 轴也换成 `eff_step = step * dp_size`（"单卡等效步数"），这样这条曲线走到 6816×2=13632 时，正好能跟不开并行、直接用 65536 序列跑的那条曲线在同一把 x 轴刻度上对比。`collapse/*` 也用同一个 `eff_step`，同一份记录里所有标量共享一套 x 轴。存档用的文件名（`checkpoint-e{epoch}-s{step}`）和 resume 逻辑仍然用没乘过 `dp_size` 的原始 `step`，跟这份"给人看的"x 轴是两回事，不要混着比。
+**只有一份 TensorBoard 记录，代表两组合起来的整个任务，不是两份并行实验。** 之前试过每组各写各的 `-g0`/`-g1` 两条曲线，但那看起来像"跑了两份独立实验"，不是用户要的东西：用户要的是"card0 跑 5 步、card1 同时跑 5 步，合起来代表跑了 10 步"这种合并视图，方便直接跟不开并行的单卡曲线对比。做法是 `merge_group_stats()`（`train_jepa.py`）：每次到 `log_steps`，**所有 rank**（不只是 is_main）都要跑一次 `accelerator.reduce(..., reduction="sum")`，把这一窗口内两组各自的 `running/run_ce/run_jepa/run_h/run_a/run_o/n_loss` 累加值加总。因为同一个 CP 组内每张卡的本地值完全相同（CP 是在算 loss 之前就把隐藏状态 all-gather 好了，loss 本身没被切），全局求和之后再取比值（比如 `running_g/denom_g`）会自动抵消 `cp_size` 这个重复因子，正好落在"两组真实平均"上——不需要额外除以 `dp_size`。只有 `is_main` 用这个合并后的值写一份 `SummaryWriter`（目录仍是单一的 `jepa32k-<stamp>`，没有 `-g0`/`-g1` 后缀）。x 轴也换成 `eff_step = step * dp_size`（"单卡等效步数"），这样这条曲线走到 6816×2=13632 时，正好能跟不开并行、直接用 65536 序列跑的那条曲线在同一把 x 轴刻度上对比。`collapse/*` 也用同一个 `eff_step`，同一份记录里所有标量共享一套 x 轴。存档用的文件名（`checkpoint-e{epoch}-s{step}`）和 resume 逻辑仍然用没乘过 `dp_size` 的原始 `step`，跟这份"给人看的"x 轴是两回事，不要混着比。
 
 **两组的 step 不会错位，不是靠运气。** `ReplicaSampler` 切数据前先按 `(n // dp_size) * dp_size` 截掉多出来的尾巴，保证每组分到的行数完全相等（最多扔掉 `dp_size-1` 行/epoch），`steps_per_epoch` 对两组永远算出同一个数，`save_steps`/`log_steps` 触发的 `step` 在所有 rank 上是同一个整数，不需要临时协商。另外加了 `assert_equal_loader_len()` 作为保险丝：训练开始前用一次 `all_gather_object` 把所有 rank 的 `len(loader)` 收集起来，只要有一个不一样就直接报错退出（把哪个 rank 长度是多少打出来），不会等到训到一半、某组数据先耗尽、another 组的梯度同步集合通信永远等不到对端，卡死在那里都不知道为什么。
 
@@ -198,7 +198,7 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 **Stage 1 坍缩检查（和损失一起，每 `log_steps` 步，默认 5）**
 
-这些数字**不是**再跑一遍前向。训练每条样本时已经算出了左边向量 \(\hat z\)（独立编码的历史+命令，`last_token` 位置）和右边向量 \(z^*\)（独立编码的观察），主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计。同一份结果出现三处：终端一行 `[jepallm] collapse ...`、`output_dir/collapse.json`、TensorBoard 的 `collapse/*`。
+这些数字**不是**再跑一遍前向。训练每条样本时已经算出了左边向量 \(\hat z\)（独立编码的历史+命令，`last_token` 位置）和右边向量 \(z^*\)（独立编码的观察），主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计。同一份结果出现三处：终端一行 `[jepa] collapse ...`、`output_dir/collapse.json`、TensorBoard 的 `collapse/*`。
 
 | 字段 | TensorBoard | 在问什么 |
 |------|-------------|----------|
@@ -216,14 +216,14 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 ```bash
 cd train
-CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepallm_collapse.sh          # 1 卡：直接 python，不开 CP
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh    # 4 卡：和训练一样 2x2
-# 只看一窗 40 条：bash scripts/probe_jepallm_collapse.sh --max-rows 40
+CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh          # 1 卡：直接 python，不开 CP
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh    # 4 卡：和训练一样 2x2
+# 只看一窗 40 条：bash scripts/probe_jepa_collapse.sh --max-rows 40
 ```
 
 1 卡时不要再走 `qwen35_moe_fsdp2_cp.yaml`：那份 yaml 写死了 `num_processes: 4` / `cp_size: 4`，进程只有 1 个时会报 `Mesh should not be bigger than default world size 1, but found 4 ranks`。脚本会清掉训练留下的 `PARALLELISM_CONFIG_*`。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
 
-结果在 `outputs/jepallm32k_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
+结果在 `outputs/jepa32k_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
 
 **症候怎么修（Consensus 对原文之后，还没在本仓库训过）。** 抽查看见三层叠在一起：独立 `Enc(观察)` 丢掉命令上下文；`last_token` 读出被 `execute_bash`/`cd`/`rm` 套话吸住；单点余弦再把左边贴进这团。顺序仍是先对照读出、再换目标编码、最后换损失形状；**主刀是目标编码，不是 mean-pool。不要先加 IDM。** HTML 在 `refs/papers/`，分组见 `refs/README.md` 的 Y 节。
 
@@ -245,7 +245,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh    # 4 卡�
 
 下一步实验（未跑；信息够开工，不够宣称训好）。最小开工是第二刀：\(z_t=\mathrm{Enc}(h_{\le t},a_{<t})\)，预测 \(z_{t+1}=\mathrm{Enc}(h_{\le t},a_{<t},o_t)\)（整段对话一起编，不是单独编 \(o\)），预测器只吃 \(z_t\) 和这一步动作，不许回看原文历史，观察只当监督（写进 \(z_{t+1}\) 那段对话，不再单独当靶）。用贯穿例子走一遍：第一行 `ls` 之后 \(h\) 里有「目录里有 `a.txt`」，这就是下一行 `rm a.txt` 那一步的 \(z_t\)；这一步的 \(z_{t+1}\) 编的是 \(h+\)`rm a.txt`+`gone`，带着「`a.txt` 没了」。另一条轨迹删的是 `b.txt`，即使沙箱同样回一句 `gone`，两条历史不同，两个 \(z_{t+1}\) 就该分开——同质化就是这样被拆开的，不是靠把 `gone` 编得更细。第一刀只做读出对照（`last_token` / mean-pool / 观察跨度池化），看 `z_self`、有效秩、配对−错配；mean-pool 若不动，按 Wang 的 prompt 侧结果是预期，不阻塞第二刀。第三刀在配对已经拉开之后再加 VICReg 或 LeWM 式高斯；第四刀才是分布头；第五刀才是可回传的 \(\Delta z\)（见下一段，为什么排第五、和旧 `InverseDyn` 差在哪）。终端信念怎么写成最小状态（路径、依赖、进程）仍开放，先用 `Enc(h,a)` 向量当信念，不要等文字 schema。Harbor 仍是最终裁判。
 
-**失败案例：旧 `InverseDyn` 为什么没用，升级版该接哪个。** `train/src/biv_wm/jepa.py` 的 `InverseDyn` 和 `train/scripts/train_jepa.py`（约第 1127、1133 行）现在还在仓库里，是被放弃的配方，不要直接重新启用。它在同一个贯穿例子上做的是：\(c=\mathrm{Enc}(h)\)（只编「目录里有 `a.txt`」），\(z=\mathrm{Enc}(o)\)（只编 `gone`，且这次前向整段包在 `torch.no_grad()` 里），把 \(c\) 和 \(z\) 拼起来喂一个小 MLP，去贴 \(u=\mathrm{Enc}(a)\)（`rm a.txt` 的编码）。这条路有两个致命问题：(1) 产出 \(z\) 的那次前向被 `no_grad` 焊死，逆动力学损失再怎么降，梯度都够不到编码器，等于没在训练编码器；(2) 目标本身还是独立 `Enc(o)`，删 `a.txt` 和删 `b.txt` 打回同一句 `gone`，\(z\) 几乎是同一个点，逆动力学在猜一个根本没有信息量的输入，这是同质化问题、不是逆动力学能力问题。
+**失败案例：旧 `InverseDyn` 为什么没用，升级版该接哪个。** `train/src/biv_wm/jepa.py` 里的 `InverseDyn` 还在，是被放弃的配方，不要接到现在的 `train_jepa.py` 上。它在同一个贯穿例子上做的是：\(c=\mathrm{Enc}(h)\)（只编「目录里有 `a.txt`」），\(z=\mathrm{Enc}(o)\)（只编 `gone`，且这次前向整段包在 `torch.no_grad()` 里），把 \(c\) 和 \(z\) 拼起来喂一个小 MLP，去贴 \(u=\mathrm{Enc}(a)\)（`rm a.txt` 的编码）。这条路有两个致命问题：(1) 产出 \(z\) 的那次前向被 `no_grad` 焊死，逆动力学损失再怎么降，梯度都够不到编码器，等于没在训练编码器；(2) 目标本身还是独立 `Enc(o)`，删 `a.txt` 和删 `b.txt` 打回同一句 `gone`，\(z\) 几乎是同一个点，逆动力学在猜一个根本没有信息量的输入，这是同质化问题、不是逆动力学能力问题。
 
 Delta-JEPA（[2606.31232](https://arxiv.org/abs/2606.31232)）的 LDAD 是同一个几何位置上的升级版，三处都不一样：用**差值** \(\Delta z=z_{t+1}-z_t\) 而不是拼接 \([z_t,z_{t+1}]\)（论文消融：拼接会让解码器抄 \(z_{t+1}\) 里混进的动作味道，不一定真的在看转移；四个环境上差值解码全部更强）；还原**真动作**本身而不是猜「命令的编码向量」；两次编码**都留梯度**，不 `no_grad`、不停梯度。落在贯穿例子上：\(z_t\) 编「还有 `a.txt`」，\(z_{t+1}\) 编「没了」（这时已经是历史中介的版本，两次编码都带梯度），差值就是「从有到无」这一截，解码器拿这一截去还原 `rm a.txt` 这条命令字符串本身。若两步编成同一个点，差值是零，还原不出命令，编码器当场被罚。
 
@@ -263,7 +263,7 @@ Delta-JEPA（[2606.31232](https://arxiv.org/abs/2606.31232)）的 LDAD 是同一
 
 **JEPA 怎么防坍缩（LLM-JEPA 的 CE 锚在我们身上没生效）。**
 
-图像 JEPA 常用 EMA 教师和学生停梯度。我们 35B、只训 LoRA 时，完整教师存不下。LLM-JEPA 论文把「旁边始终挂着把右边写成字」当成挡坍的理由；我们 32k 跑里观察 CE 已经很低，`z_self` 仍然 ~0.91，配对和错配一起升。生成锚救不了独立 `Enc(o)` 的 last-token 套话。该换读出和目标编码，见上一节，不要再加一套 IDM 当第一刀。旧的 `train_jepa.sh`（MLP + inv + simcse + bank）留着对照，新跑走 `train_jepallm.sh`。
+图像 JEPA 常用 EMA 教师和学生停梯度。我们 35B、只训 LoRA 时，完整教师存不下。LLM-JEPA 论文把「旁边始终挂着把右边写成字」当成挡坍的理由；我们 32k 跑里观察 CE 已经很低，`z_self` 仍然 ~0.91，配对和错配一起升。生成锚救不了独立 `Enc(o)` 的 last-token 套话。该换读出和目标编码，见上一节，不要再加一套 IDM 当第一刀。本线 live 就是 `train_jepa.sh`。姐妹分支才叫 `train_jepallm.sh`。MLP + inv + simcse + bank 已经换掉。
 
 梯度检查点保持全开。没开量化。`max_length=65536` 下关掉检查点，长尾样本会 OOM。
 
@@ -326,10 +326,10 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/proc
 # Stage 1 LLM-JEPA：直接读 AgentWorld 自己的 checkpoint（缺失自动下载），
 # 4 卡 FSDP2+CP，序列 65536。两路损失：写观察 + 左右隐藏对齐。
 cd train
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 
 # 可选：AgentWorld 词表下三段序列在 65536 会砍掉多少（CPU，只加载 tokenizer；
-# 长度写入 train/outputs/stat_cache/jepallm/，再跑会命中）
+# 长度写入 train/outputs/stat_cache/jepa/，再跑会命中）
 python scripts/stat.py --max-length 65536
 ```
 
@@ -389,7 +389,7 @@ nanobot gateway
 
 ## 灵感来源
 
-编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]。Stage 1 现在套 LLM-JEPA 的两路损失 [213]：观察 token 交叉熵挡住坍缩，左右末尾隐藏向量对齐是 JEPA 项。先前 MLP + 停梯度 + 逆动力学 + SimCSE/bank 的防坍缩尝试及其文献 [201]–[212] 是被替换掉的配方，旧脚本 `train_jepa.sh` 仍在仓库里，不是当前训练入口。
+编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]。Stage 1 现在套 LLM-JEPA 的两路损失 [213]：观察 token 交叉熵挡住坍缩，左右末尾隐藏向量对齐是 JEPA 项。先前 MLP + 停梯度 + 逆动力学 + SimCSE/bank 的防坍缩尝试及其文献 [201]–[212] 是被替换掉的配方。当前入口就是 `train_jepa.sh`。
 
 世界这一头走 JEPA：在表征空间里预测下一状态。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。把「下一潜状态」接到 Transformer 来自 [6][7]。Stage 1 的具体损失抄 LLM-JEPA [213]：给定左边（历史+命令），一边用 AgentWorld 自己的 `lm_head` 把右边（真观察）写成字，一边让两边最后一层末尾隐藏向量靠近。写字挡住「全编成一个样」，对齐是 JEPA 项本身。观察损失和命令损失仍然分家：观察写在 AgentWorld 的嘴上，命令写在 Instruct 的嘴上 [8][9][10]。
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Old MLP JEPA (not the live Stage 1). Live entry: scripts/train_jepallm.sh
-# Stage 1 JEPA on AgentWorld's own backbone (no fish-cut). 4-GPU FSDP2 +
+# Stage 1 LLM-JEPA on AgentWorld's own backbone (no fish-cut). 4-GPU FSDP2 +
 # Context Parallel, max_length=65536 (Muse recipe).
 #
 #   cd train
@@ -51,7 +50,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
+Stage 1 LLM-JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
 
   cd train
   export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -119,7 +118,7 @@ CP_SIZE=1
 LAUNCH=()
 case "$PARALLEL" in
   single)
-    echo "  single-GPU JEPA"
+    echo "  single-GPU LLM-JEPA"
     LAUNCH=(python)
     ;;
   fsdp2|fsdp)

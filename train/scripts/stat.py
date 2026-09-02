@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Truncation stats for Stage 1 LLM-JEPA (AgentWorld tokenizer, mix JSONL).
 
-Same three sequences as train_jepallm.py: full = chat(h+a+o), left = chat(h+a),
+Same three sequences as train_jepa.py: full = chat(h+a+o), left = chat(h+a),
 right = chat(o). Lengths are counted *before* the 65k fit. Retention is
 min(L, seqlen)/L; full/left keep the tail, right keeps the head.
 
@@ -10,7 +10,7 @@ min(L, seqlen)/L; full/left keep the tail, right keeps the head.
   python scripts/stat.py --max-length 65536
   python scripts/stat.py --max-length 65536 --max-samples 2000
 
-Lengths are cached under train/outputs/stat_cache/jepallm/ (untruncated
+Lengths are cached under train/outputs/stat_cache/jepa/ (untruncated
 full/left/right counts, keyed by row content + tokenizer). Rerun hits disk.
 --recompute ignores the cache. --no-cache does not read or write.
 """
@@ -34,12 +34,12 @@ for p in (str(SCRIPTS), str(SRC), str(MERGE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import train_jepallm as tj  # noqa: E402
+import train_jepa as tj  # noqa: E402
 from download import resolve_model  # noqa: E402
 
-DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "jepallm.yaml"
-DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepallm"
-RECIPE = "jepallm-seqlen-v1"
+DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
+DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepa"
+RECIPE = "jepa-seqlen-v1"
 SEQS = ("full", "left", "right")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
@@ -432,7 +432,7 @@ def main() -> None:
 
     out = args.json_out
     if out is None:
-        out_dir = tj._resolve(tcfg.get("output_dir") or "outputs/jepallm_stage1")
+        out_dir = tj._resolve(tcfg.get("output_dir") or "outputs/jepa_stage1")
         out = out_dir / f"length_stats_ml{seqlen}.json"
     else:
         out = out if out.is_absolute() else (TRAIN / out)

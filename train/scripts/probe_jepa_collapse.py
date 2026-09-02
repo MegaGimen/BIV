@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Forward-only collapse probe: same Enc(left)/Enc(right) as train_jepallm, no backward.
+"""Forward-only collapse probe: same Enc(left)/Enc(right) as train_jepa, no backward.
 
 Collects last_token vectors on up to --max-rows (default = 25 optimizer steps
 on one 2x2 replica group: 25 * grad_accum=8 = 200). Then runs collapse_stats
 and writes close-pair observation/command texts.
 
   cd train
-  CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepallm_collapse.sh
-  CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh
+  CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
+  CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ for p in (str(SRC), str(MERGE), str(SCRIPTS)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import train_jepallm as tj  # noqa: E402
+import train_jepa as tj  # noqa: E402
 from biv_wm.arch import install_hidden_only_forward  # noqa: E402
 from biv_wm.jepa import close_pair_records, collapse_stats, format_collapse_line  # noqa: E402
 from download import resolve_model  # noqa: E402
@@ -75,7 +75,7 @@ def _clear_parallelism_env() -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", type=Path, default=TRAIN / "configs/jepa/jepallm_32k.yaml")
+    p.add_argument("--config", type=Path, default=TRAIN / "configs/jepa/stage1_32k.yaml")
     p.add_argument("--model-dir", type=str, default=None)
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-length", type=int, default=None)
@@ -140,7 +140,7 @@ def main() -> None:
     )
     sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
     mix_dir = tj.resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
-    out_dir = args.out_dir or tj._resolve("outputs/jepallm32k_collapse_probe")
+    out_dir = args.out_dir or tj._resolve("outputs/jepa32k_collapse_probe")
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
