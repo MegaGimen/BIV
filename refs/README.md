@@ -592,7 +592,7 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
    [UWM-JEPA](https://arxiv.org/abs/2605.25313) teacher-forced 会让动作项死掉。
 4. **IDM 解不了同质观察。** [SMWM](https://arxiv.org/abs/2606.20104)、[Delta-JEPA](https://arxiv.org/abs/2606.31232)、[SWIRL](https://arxiv.org/abs/2602.06130) 在 \(o_t\neq o_{t+1}\) 时逼动作可辨；同一句 \(o\) 仍不适定。[AC-State](https://arxiv.org/abs/2207.08229)。
 
-实验顺序写在 `AGENTS.md`：先 mean-pool，再历史中介的 \(z^*\)，再 VICReg；Harbor 当裁判。
+实验顺序写在 `AGENTS.md`：读出只做对照，主刀是历史中介的 \(z^*\)，拉开后再 VICReg/高斯；Harbor 当裁判。
 
 ## O. 现在真正还缺的（三轮检索后剩下的硬洞）
 
