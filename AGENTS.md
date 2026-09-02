@@ -175,7 +175,7 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物
 套的是 [LLM-JEPA](https://arxiv.org/abs/2509.14252) 的 `RepresentationTrainer` 接线，配对换成我们的转移：左边 = 历史+命令（他们的 issue / Text），右边 = 真观察（他们的 diff / Code）。对照代码在 `train/vendor/llm-jepa/finetune.py`，训练**不调用**那份脚本；35B 仍走本仓库的 FSDP2+CP，三段序列分开前向、不整段过词表。
 
 - **Step 1.** `model_dir` 解析成 AgentWorld（`train/configs/jepa/stage1.yaml`）。**`lm_head` 留着**：底座冻住，LoRA 不打在这张表上，但写字损失的梯度穿过它回到骨干 LoRA。`forward` 主干只出隐藏状态。启动时确认 `lm_head: attached`。
-- **Step 2.** 每个 \((h,a,o)\) 做成三段，和他们 user / assistant / full 一样各自走 chat 模板：完整对话给交叉熵，`chat(h+a)` 给左边，`chat(o)` 给右边。mix JSONL 里 user = 工具调用、assistant = 真观察。观察必须单独编码，不能从完整序列里抠。
+- **Step 2.** 每个 \((h,a,o)\) 做成三段，和他们 user / assistant / full 一样各自走 chat 模板：完整对话给交叉熵，`chat(h+a)` 给左边，`chat(o)` 给右边。mix JSONL 里 user = 工具调用、assistant = 真观察。观察必须单独编码，不能从完整序列里抠。轨迹超窗时**从后面整回合丢掉**（a、b 已经顶满就当 c 没发生过），再对留下的前缀做 `split_hao`；绝不砍掉开头。只有第一回合本身仍超窗，才对 token 从右边切。
 - **Step 3.** 两路损失加在一起，一次反传：
 
   \[

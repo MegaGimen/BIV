@@ -2,8 +2,10 @@
 """Truncation stats for Stage 1 LLM-JEPA (AgentWorld tokenizer, mix JSONL).
 
 Same three sequences as train_jepa.py: full = chat(h+a+o), left = chat(h+a),
-right = chat(o). Lengths are counted *before* the 65k fit. Retention is
-min(L, seqlen)/L; full/left keep the tail, right keeps the head.
+right = chat(o). Lengths are counted *before* the window fit, on the original
+last-turn split (the whole trajectory). Training itself keeps the left: drop
+later complete turns until the prefix fits, then chop tokens from the right
+only if the first remaining turn is still over the window.
 
   cd train
   python scripts/stat.py
@@ -11,8 +13,9 @@ min(L, seqlen)/L; full/left keep the tail, right keeps the head.
   python scripts/stat.py --max-length 65536 --max-samples 2000
 
 Lengths are cached under train/outputs/stat_cache/jepa/ (untruncated
-full/left/right counts, keyed by row content + tokenizer). Rerun hits disk.
---recompute ignores the cache. --no-cache does not read or write.
+full/left/right plus prefix-turn fit, keyed by row content + tokenizer).
+Rerun hits disk. --recompute ignores the cache. --no-cache does not read
+or write.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
 DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepa"
-RECIPE = "jepa-seqlen-v1"
+RECIPE = "jepa-prefix-turns-v1"
 SEQS = ("full", "left", "right")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
@@ -132,7 +135,7 @@ def _print_seq(src: str, seq: str, lengths: list[int], seqlen: int) -> dict[str,
     keep = sum(1 for x in lengths if x <= seqlen)
     kept_tokens = sum(min(x, seqlen) for x in lengths)
     total_tokens = sum(lengths)
-    keep_how = "suffix (tail)" if seq in ("full", "left") else "prefix (head)"
+    keep_how = "prefix (drop later turns; chop tokens from the right if still over)"
 
     print(f"\n=== {src} / {seq}  n={n:,}  keep={keep_how} ===", flush=True)
     print(
@@ -197,9 +200,9 @@ def _print_seq(src: str, seq: str, lengths: list[int], seqlen: int) -> dict[str,
     }
 
 
-def _row_key(h, a, o) -> str:
+def _row_key(msgs) -> str:
     blob = json.dumps(
-        {"h": h, "a": a, "o": o},
+        msgs,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -212,8 +215,20 @@ def _tok_slug(model_dir: Path) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(model_dir))[-120:]
 
 
+CACHE_FIELDS = (
+    "full",
+    "left",
+    "right",
+    "fitted_full",
+    "fitted_left",
+    "fitted_right",
+    "n_turns",
+    "n_turns_kept",
+)
+
+
 class LengthCache:
-    """Append-only jsonl of {k, full, left, right} for one mix source."""
+    """Append-only jsonl of orig + prefix-turn-fit lengths for one mix source."""
 
     def __init__(self, path: Path, *, enabled: bool) -> None:
         self.path = path
@@ -227,13 +242,9 @@ class LengthCache:
                         continue
                     obj = json.loads(line)
                     k = obj.get("k")
-                    if not k:
+                    if not k or not all(name in obj for name in CACHE_FIELDS):
                         continue
-                    self.store[str(k)] = {
-                        "full": int(obj["full"]),
-                        "left": int(obj["left"]),
-                        "right": int(obj["right"]),
-                    }
+                    self.store[str(k)] = {name: int(obj[name]) for name in CACHE_FIELDS}
 
     def get(self, key: str) -> dict[str, int] | None:
         if not self.enabled:
@@ -241,7 +252,7 @@ class LengthCache:
         return self.store.get(key)
 
     def put(self, key: str, lens: dict[str, int]) -> None:
-        rec = {s: int(lens[s]) for s in SEQS}
+        rec = {name: int(lens[name]) for name in CACHE_FIELDS}
         self.store[key] = rec
         if not self.enabled:
             return
@@ -346,9 +357,13 @@ def main() -> None:
             old = json.loads(man.read_text(encoding="utf-8"))
             if old.get("recipe") != RECIPE or old.get("model_dir") != str(model_dir):
                 print(
-                    f"stat cache recipe/tokenizer mismatch at {cache_ns}; using it as a new namespace",
+                    f"stat cache recipe/tokenizer mismatch at {cache_ns}; clearing jsonl",
                     flush=True,
                 )
+                for src in sources:
+                    pth = cache_ns / f"{src}.jsonl"
+                    if pth.is_file():
+                        pth.unlink()
         man.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         if args.recompute:
             for src in sources:
@@ -373,8 +388,9 @@ def main() -> None:
         "model_dir": str(model_dir),
         "sources": {},
         "note": (
-            "lengths are untruncated AgentWorld chat-template token counts; "
-            "full/left keep suffix, right keeps prefix when L>seqlen"
+            "lengths are untruncated AgentWorld chat-template token counts "
+            "on the original last-turn split (whole trajectory); training drops "
+            "later complete turns then chops tokens from the right if still over"
         ),
     }
 
@@ -384,29 +400,73 @@ def main() -> None:
             print(f"WARNING: no rows for {src}", flush=True)
             continue
         buckets = {k: [] for k in SEQS}
+        fitted_full: list[int] = []
+        n_drop_turns = 0
+        n_first_overflow = 0
         cache = LengthCache(
             cache_ns / f"{src}.jsonl",
             enabled=use_cache,
         )
         hits = misses = 0
         bar = _tqdm(rows, desc=f"tokenize {src}", unit="row")
-        for h, a, o in bar:
-            key = _row_key(h, a, o)
-            lens = cache.get(key)
-            if lens is None:
-                lens = tj.sequence_lengths(tok, h, a, o)
-                cache.put(key, lens)
+        for msgs in bar:
+            key = _row_key(msgs)
+            rec = cache.get(key)
+            if rec is None:
+                orig = tj.split_hao(msgs)
+                if orig is None:
+                    continue
+                lens = tj.sequence_lengths(tok, *orig)
+                fitted_msgs = tj.trim_messages_keep_prefix(tok, msgs, seqlen)
+                fitted = tj.split_hao(fitted_msgs)
+                if fitted is None:
+                    continue
+                flens = tj.sequence_lengths(tok, *fitted)
+                rec = {
+                    **lens,
+                    "fitted_full": flens["full"],
+                    "fitted_left": flens["left"],
+                    "fitted_right": flens["right"],
+                    "n_turns": len(tj.complete_turn_end_indices(msgs)),
+                    "n_turns_kept": len(tj.complete_turn_end_indices(fitted_msgs)),
+                }
+                cache.put(key, rec)
                 misses += 1
             else:
                 hits += 1
             for k in SEQS:
-                buckets[k].append(lens[k])
+                buckets[k].append(rec[k])
+            fitted_full.append(rec["fitted_full"])
+            if rec["n_turns_kept"] < rec["n_turns"]:
+                n_drop_turns += 1
+            if rec["fitted_full"] > seqlen:
+                n_first_overflow += 1
             if bar is not None and hasattr(bar, "set_postfix"):
                 bar.set_postfix(hit=hits, miss=misses, refresh=False)
         print(f"  {src} cache hit={hits:,} miss={misses:,} stored={len(cache.store):,}", flush=True)
         report["sources"][src] = {}
         for seq in SEQS:
             report["sources"][src][seq] = _print_seq(src, seq, buckets[seq], seqlen)
+        n = len(fitted_full)
+        if n:
+            fit_in = sum(1 for x in fitted_full if x <= seqlen)
+            print(
+                f"  prefix-turn fit @ seqlen={seqlen}: "
+                f"dropped later turns {n_drop_turns:,}/{n:,}; "
+                f"first turn still over window {n_first_overflow:,}/{n:,}; "
+                f"fitted full median={_pct(fitted_full, 50):.1f}; "
+                f"fitted full in window {fit_in:,}/{n:,} "
+                f"({100 * fit_in / n:5.1f}%)",
+                flush=True,
+            )
+            report["sources"][src]["prefix_turn_fit"] = {
+                "n": n,
+                "dropped_later_turns": n_drop_turns,
+                "first_turn_still_over": n_first_overflow,
+                "fitted_full_median": _pct(fitted_full, 50),
+                "fitted_full_in_window": fit_in,
+                "fitted_full_in_window_pct": fit_in / n,
+            }
 
     print("\n=== mix summary @ seqlen (rows fully in window) ===", flush=True)
     for seq in SEQS:

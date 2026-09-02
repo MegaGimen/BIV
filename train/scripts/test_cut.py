@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
 
 from biv_wm.arch import collapse_block, detach_lm_head, lora_targets_world_only
 from biv_wm.cut import pick_cut, tensor_source
-from biv_wm.hao import split_hao
+from biv_wm.hao import complete_turn_end_indices, messages_through_n_turns, split_hao
 
 
 def test_pick_cut_step_at_12() -> None:
@@ -57,6 +57,12 @@ def test_split_hao() -> None:
     assert "gone" in o["content"]
     assert split_hao([]) is None
     assert split_hao([{"role": "user", "content": "x"}]) is None
+    assert complete_turn_end_indices(msgs) == [3, 5]
+    assert messages_through_n_turns(msgs, 1) == msgs[:3]
+    assert messages_through_n_turns(msgs, 2) == msgs
+    h1, a1, o1 = split_hao(messages_through_n_turns(msgs, 1))
+    assert a1["content"].startswith('{"tool":"ls"}')
+    assert "gone" not in o1["content"]
 
 
 def test_detach_lm_head() -> None:

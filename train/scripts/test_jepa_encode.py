@@ -48,6 +48,70 @@ def test_fit_keeps_suffix_or_prefix() -> None:
     assert tj._fit(ids, 20, keep="suffix") == ids
 
 
+def test_encode_texts_chops_right_not_left() -> None:
+    tok = _FakeTok()
+    h = [{"role": "user", "content": "HELLO"}]
+    a = {"role": "user", "content": "WORLD"}
+    o = {"role": "assistant", "content": "gone"}
+    raw = tj.tokenize_ids(tok, tj.apply_template(tok, h + [a, o]))
+    assert len(raw) > 8
+    row = tj.encode_texts(tok, h, a, o, max_length=8)
+    assert row["full_ids"] == raw[:8]
+    assert row["full_ids"] != raw[-8:]
+    left_raw = tj.tokenize_ids(tok, tj.apply_template(tok, h + [a]))
+    cap = min(8, len(left_raw))
+    assert row["left_ids"] == left_raw[:cap]
+
+
+def test_trim_drops_later_turns() -> None:
+    tok = _FakeTok()
+    msgs = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "aaa"},
+        {"role": "assistant", "content": "AAA"},
+        {"role": "user", "content": "bbb"},
+        {"role": "assistant", "content": "BBB"},
+        {"role": "user", "content": "ccc"},
+        {"role": "assistant", "content": "CCC"},
+    ]
+    len1 = tj.chat_token_len(tok, msgs[:3])
+    len2 = tj.chat_token_len(tok, msgs[:5])
+    len3 = tj.chat_token_len(tok, msgs)
+    assert len1 < len2 < len3
+    keep2 = tj.trim_messages_keep_prefix(tok, msgs, max_length=len2)
+    assert keep2 == msgs[:5]
+    h, a, o = tj.split_hao(keep2)
+    assert a["content"] == "bbb"
+    assert o["content"] == "BBB"
+    keep1 = tj.trim_messages_keep_prefix(tok, msgs, max_length=len1)
+    assert keep1 == msgs[:3]
+    _, a1, o1 = tj.split_hao(keep1)
+    assert a1["content"] == "aaa"
+    assert o1["content"] == "AAA"
+    keep_all = tj.trim_messages_keep_prefix(tok, msgs, max_length=len3)
+    assert keep_all == msgs
+    overflow1 = tj.trim_messages_keep_prefix(tok, msgs, max_length=max(1, len1 - 1))
+    assert overflow1 == msgs[:3]
+
+
+def test_dataset_drops_later_turn() -> None:
+    tok = _FakeTok()
+    msgs = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "aaa"},
+        {"role": "assistant", "content": "AAA"},
+        {"role": "user", "content": "bbb"},
+        {"role": "assistant", "content": "BBB"},
+        {"role": "user", "content": "ccc"},
+        {"role": "assistant", "content": "CCC"},
+    ]
+    cap = tj.chat_token_len(tok, msgs[:5])
+    ds = tj.HaoDataset([msgs], tok, cap)
+    row = ds[0]
+    assert row["o_text"] == "BBB"
+    assert row["left_text"] == "bbb"
+
+
 def test_encode_texts_three_independent_chats() -> None:
     tok = _FakeTok()
     h = [{"role": "user", "content": "ls"}]
@@ -125,6 +189,9 @@ def test_shifted_ce_only_labeled_rows() -> None:
 def main() -> None:
     test_create_o_labels_last_span()
     test_fit_keeps_suffix_or_prefix()
+    test_encode_texts_chops_right_not_left()
+    test_trim_drops_later_turns()
+    test_dataset_drops_later_turn()
     test_encode_texts_three_independent_chats()
     test_last_token_index_matches_unpad_plus_offset()
     test_jepa_cosine_both_sides_live()

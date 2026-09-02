@@ -7,6 +7,10 @@ and adds 1-cosine to a next-token CE on the full conversation. We keep that
 graph. Pairing is ours: Text = history+command, Code = observation. CE
 unmasks only the observation (not earlier assistant turns in h).
 
+Over-long trajectories drop later complete turns (keep the left, chop the
+right) so (h, a, o) is the last pair that still fits. Token lists are only
+prefix-truncated if that first remaining turn still overflows.
+
 What we do not copy: HuggingFace Trainer, concatenating 3 sequences into one
 batch, padding every row to max_length, full-seq lm_head. Those blow up at
 35B / 65k. Sequential hidden-only forwards + lm_head only on labeled tokens.
@@ -45,7 +49,11 @@ from biv_wm.ckpt import (  # noqa: E402
     rolling_name,
     write_trainer_state,
 )
-from biv_wm.hao import split_hao  # noqa: E402
+from biv_wm.hao import (  # noqa: E402
+    complete_turn_end_indices,
+    messages_through_n_turns,
+    split_hao,
+)
 from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
@@ -145,6 +153,43 @@ def _fit(ids: list[int], max_length: int, *, keep: str) -> list[int]:
     return ids[:max_length]
 
 
+def chat_token_len(tokenizer, messages: list) -> int:
+    return len(tokenize_ids(tokenizer, apply_template(tokenizer, messages)))
+
+
+def trim_messages_keep_prefix(tokenizer, messages: list, max_length: int) -> list:
+    """Drop later complete turns until the remaining chat fits in ``max_length``.
+
+    If turns are a, b, c and a+b already fills the window, the sample becomes
+    a,b — c is treated as never having happened. Never drop the left of the
+    trajectory. If even the first turn overflows, still return that first turn;
+    ``encode_texts`` then chops tokens from the right (never the left).
+    """
+    ends = complete_turn_end_indices(messages)
+    if not ends:
+        return list(messages)
+    n = len(ends)
+    last = messages[: ends[-1]]
+    if chat_token_len(tokenizer, last) <= max_length:
+        return last
+    lo, hi = 1, n - 1
+    best = 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        prefix = messages_through_n_turns(messages, mid)
+        if chat_token_len(tokenizer, prefix) <= max_length:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return messages_through_n_turns(messages, best)
+
+
+def fit_hao(tokenizer, messages: list, max_length: int):
+    """Last fitting prefix of complete turns, then ``split_hao``."""
+    return split_hao(trim_messages_keep_prefix(tokenizer, messages, max_length))
+
+
 def _find_span(haystack: list[int], needle: list[int]) -> int | None:
     """Last occurrence (observation sits at the end of the full chat)."""
     n = len(needle)
@@ -179,18 +224,18 @@ def encode_texts(
     full  — chat(h + a + o), for next-token CE on o
     left  — chat(h + a) independently, Enc(Text)
     right — chat([o]) independently, Enc(Code)
-    Long rows: keep the suffix of full/left (action+obs at the end); keep the
-    prefix of right. Do not pad to max_length here.
+    Over-long token lists (first turn still past the window after later turns
+    were dropped): chop the right, keep the left. Do not pad to max_length here.
     """
     full_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
         max_length,
-        keep="suffix",
+        keep="prefix",
     )
     left_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])),
         max_length,
-        keep="suffix",
+        keep="prefix",
     )
     right_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg])),
@@ -219,7 +264,10 @@ def sequence_lengths(tokenizer, h_msgs: list, a_msg: dict, o_msg: dict) -> dict[
 
 
 def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) -> list[list]:
-    """Read (h, a, o) rows for each source.
+    """Read mix chat ``messages`` lists (full trajectories) for each source.
+
+    Truncation to ``max_length`` happens later: drop later complete turns, then
+    ``split_hao`` on what remains. Do not pre-split to the last (a, o) here.
 
     `limit`, if set, is a *global* row budget split evenly across `sources`
     and filled by reservoir sampling (Algorithm R) within each source. This
@@ -251,7 +299,7 @@ def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) 
                 hao = split_hao(msgs) if isinstance(msgs, list) else None
                 if hao is None:
                     continue
-                item = list(hao)
+                item = msgs
                 if per_source_limit is None:
                     reservoir.append(item)
                     continue
@@ -273,12 +321,21 @@ class HaoDataset:
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self._fitted: dict[int, tuple] = {}
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        h, a, o = self.rows[idx]
+        hao = self._fitted.get(idx)
+        if hao is None:
+            hao = fit_hao(self.tokenizer, self.rows[idx], self.max_length)
+            if hao is None:
+                raise RuntimeError(
+                    f"row {idx} has no complete (h, a, o) after prefix trim"
+                )
+            self._fitted[idx] = hao
+        h, a, o = hao
         enc = encode_texts(self.tokenizer, h, a, o, self.max_length)
         enc["o_text"] = _content(o)
         enc["left_text"] = _content(a)
@@ -1042,7 +1099,7 @@ def main() -> None:
 
     train_rows = load_rows(mix_dir, sources, "train", tcfg.get("max_train_samples"))
     if not train_rows:
-        raise SystemExit(f"no (h,a,o) rows under {mix_dir}/{sources}/train.jsonl")
+        raise SystemExit(f"no mix rows under {mix_dir}/{sources}/train.jsonl")
     rank_log(f"train_rows={len(train_rows)}")
 
     train_ds = HaoDataset(train_rows, tokenizer, max_length)
