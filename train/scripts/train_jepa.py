@@ -761,8 +761,8 @@ def parse_args() -> argparse.Namespace:
         "--run-tag",
         type=str,
         default="jepa",
-        help="Console/TensorBoard prefix, e.g. jepa32k for the 32k/2x2 smoke "
-        "(keeps it from colliding with the 65536 run's TB folder).",
+        help="Console/TensorBoard prefix (default jepa). 2x2 and single-group "
+        "runs share this tag unless you override it.",
     )
     return p.parse_args()
 
@@ -984,7 +984,7 @@ def main() -> None:
     seed = int(tcfg.get("seed") or 42)
     torch.manual_seed(seed)
 
-    max_length = int(args.max_length or tcfg.get("max_length") or 65536)
+    max_length = int(args.max_length or tcfg.get("max_length") or 32768)
     pad_multiple = cp_size * 2 if cp_size > 1 else int(tcfg.get("pad_to_multiple_of") or 0)
     attn_impl = "sdpa" if cp_size > 1 else None
     distributed = accelerator.num_processes > 1

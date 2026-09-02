@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG="${CONFIG:-configs/jepa/stage1_32k.yaml}"
+CONFIG="${CONFIG:-configs/jepa/stage1.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
 MAX_ROWS="${MAX_ROWS:-200}"
 EXTRA=()
@@ -34,8 +34,8 @@ Forward-only JEPA collapse probe (no training).
   bash scripts/probe_jepa_collapse.sh --close-threshold 0.85
 
 1 GPU: plain python (no accelerate mesh). 2–3 GPUs: FSDP2+CP.
-4 GPUs: same 2x2 as train_jepa_32k.sh.
-Writes outputs/jepa32k_collapse_probe/collapse_probe-<stamp>.json
+4 GPUs: same 2x2 as train_jepa.sh.
+Writes outputs/jepa_collapse_probe/collapse_probe-<stamp>.json
 EOF
       exit 0
       ;;

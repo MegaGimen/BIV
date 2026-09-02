@@ -16,8 +16,8 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 (live)
-│   ├── jepa/stage1_32k.yaml           # 32768 / 2x2 CP smoke variant
+│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 (32768 / 2x2 CP)
+│   ├── jepa/stage1_32k.yaml           # alias of stage1.yaml
 │   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
 │   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (other branch)
@@ -66,9 +66,9 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/
 # Stage 1 LLM-JEPA on AgentWorld's own backbone, no cut. model_dir in
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
-# Optional 32768 / 2x2 CP smoke (separate output_dir / TB prefix):
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa_32k.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 32768, 2x2 CP
+# Optional 65536 / 4-way CP:
+# PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
 # --resume picks newest adapter-only ckpt (epoch, then step). Do not resume

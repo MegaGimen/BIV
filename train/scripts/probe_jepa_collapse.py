@@ -75,7 +75,7 @@ def _clear_parallelism_env() -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", type=Path, default=TRAIN / "configs/jepa/stage1_32k.yaml")
+    p.add_argument("--config", type=Path, default=TRAIN / "configs/jepa/stage1.yaml")
     p.add_argument("--model-dir", type=str, default=None)
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-length", type=int, default=None)
@@ -140,7 +140,7 @@ def main() -> None:
     )
     sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
     mix_dir = tj.resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
-    out_dir = args.out_dir or tj._resolve("outputs/jepa32k_collapse_probe")
+    out_dir = args.out_dir or tj._resolve("outputs/jepa_collapse_probe")
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()

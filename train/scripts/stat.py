@@ -257,9 +257,9 @@ def parse_args() -> argparse.Namespace:
         "--max-length",
         "--seqlen",
         type=int,
-        default=65536,
+        default=32768,
         dest="max_length",
-        help="Training window (default 65536).",
+        help="Training window (default 32768).",
     )
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--model-dir", type=str, default=None)
