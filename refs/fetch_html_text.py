@@ -229,6 +229,11 @@ PAPERS: list[tuple[str, str]] = [
     ("2304.12743", "tracefixer"),
     # note: "Towards Effectively Leveraging Execution Traces for Program Repair"
     # has no usable arXiv HTML; see ACL DOI 10.18653/v1/2025.knowledgenlp-1.17
+    # 2026-09: collapse / Δz inverse / text JEPA paradox (probe after 32k run)
+    ("2410.13232", "web-agents-world-models"),
+    ("2607.23531", "jepa-paradox-language"),
+    ("2606.31689", "scratchworld-executable-consequences"),
+    ("2606.31232", "delta-jepa-latent-difference"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
