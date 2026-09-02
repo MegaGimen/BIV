@@ -1,0 +1,1110 @@
+source: https://arxiv.org/html/2606.00091
+arxiv: https://arxiv.org/abs/2606.00091
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Scope of comparison.
+ 3. 2 Related Work
+     1. Masked Diffusion Language Models.
+     2. Joint Embedding Predictive Architectures.
+     3. Fine-tuning Diffusion Language Models.
+ 4. 3 Method
+     1. 3.1 Preliminaries: Masked Diffusion Language Models
+     2. 3.2 DLLM-JEPA: JEPA for Diffusion Language Models
+         1. View generation via noise schedule.
+         2. Encoding and prediction.
+         3. JEPA objective.
+         4. Combined training objective.
+         5. Empirical check: no representation collapse.
+     3. 3.3 Computational Advantage over LLM-JEPA
+ 5. 4 Experiments
+     1. 4.1 Experimental Setup
+         1. Models.
+         2. Tasks and metrics.
+         3. Training.
+         4. Evaluation.
+     2. 4.2 Main Results: Task Performance
+         1. Cross-architecture replication (task performance).
+     3. 4.3 Base Capability Preservation
+         1. Comparison with a parameter-anchor baseline.
+         2. MMLU sanity check (no catastrophic forgetting).
+ 6. 5 Mechanism Analysis
+     1. 5.1 Geometric–Functional Drift Dissociation on GSM8K
+         1. Cross-architecture replication of the drift pattern.
+         2. Region-specific amplification (GSM8K).
+     2. 5.2 Component ablation: asymmetric views and predictor
+ 7. 6 Limitations
+ 8. 7 Conclusion
+ 9. References
+10. A Appendix
+     1. A.1 Per-Seed Drift–Forgetting Scatter and Density Landscape
+     2. A.2 Content vs. Termination Decomposition on Django
+     3. A.3 Structural Comparison with LLM-JEPA
+     4. A.4 Ablations
+         1. λ×k\lambda\times k grid.
+         2. Single-configuration comparison.
+         3. Noise schedule ablation.
+         4. (tL,tH)(t_{L},t_{H}) sensitivity.
+         5. Multi-seed robustness.
+     5. A.5 Full Grid Search Results
+     6. A.6 Multi-Seed Results
+     7. A.7 Representation-Collapse Diagnostic
+     8. A.8 Reference Values from LLM-JEPA on Comparable Benchmarks
+     9. A.9 Stopping-Robust Evaluation Protocol
+         1. Raw vs. cleaned numbers for Dream.
+         2. 0-shot results for completeness.
+    10. A.10 Implementation and Reproducibility Details
+         1. Backbones.
+         2. JEPA module.
+         3. Optimization.
+         4. Training schedules.
+         5. Seeds.
+         6. Hardware and wall-clock.
+         7. Generation / evaluation.
+         8. Datasets.
+         9. Code and artifacts.
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2606.00091v1 [cs.CL] 24 May 2026
+
+DLLM-JEPA: Joint Embedding Predictive Architectures for
+Masked Diffusion Language Models
+
+Sangdae Nam Affiliation: VESSL AI Correspondence to: lucas@vessl.ai
+
+Abstract
+
+We introduce DLLM-JEPA, a JEPA formulation for masked diffusion language models. JEPA objectives
+have so far been applied to autoregressive LMs at the cost of explicit paired views and multiple
+gradient passes per training step. By leveraging the diffusion noise schedule, DLLM-JEPA constructs
+two views from a single input without requiring paired data, and reduces JEPA training FLOPs by 33%
+relative to LLM-JEPA’s two-gradient-view design through a single gradient pass per step.
+
+Across four tasks and two diffusion backbones, DLLM-JEPA consistently improves over diffusion-only
+fine-tuning, with modest gains in stable settings (e.g., +1.8 pp on GSM8K) and larger improvements
+under more aggressive fine-tuning, while also tightening seed-to-seed variance on the high-variance
+LLaDA-8B GSM8K cells. In addition, it does not degrade base-model performance on a held-out
+diffusion-loss probe nor on a small MMLU sanity check.
+
+We further analyze the representation dynamics induced by the objective and observe a consistent
+empirical pattern: models trained with DLLM-JEPA exhibit larger geometric drift from their
+pre-trained initialization while maintaining comparable or lower functional forgetting.
+
+These results suggest that DLLM-JEPA provides an efficient way to incorporate representation-level
+objectives into diffusion language model fine-tuning.
+
+Keywords: 
+
+Joint Embedding Predictive Architectures, Masked Diffusion Language Models, Representation
+Learning, Fine-Tuning
+
+1 Introduction
+
+The dominant paradigm for training large language models relies on input-space reconstruction:
+autoregressive (AR) next-token prediction (Brown et al., 2020; Touvron et al., 2023) or masked
+token reconstruction (Devlin et al., 2019). In contrast, vision has increasingly adopted Joint
+Embedding Predictive Architectures (JEPAs) (Assran et al., 2023; Bardes et al., 2024), which learn
+representations by predicting embeddings of one view from another—operating entirely in latent
+space. JEPAs have been shown to learn richer, more abstract representations by avoiding pixel-level
+reconstruction biases (LeCun, 2022; Littwin et al., 2024).
+
+The recent LLM-JEPA (Huang et al., 2025) represents a first step toward bringing JEPA objectives to
+language models. By treating (text, code) pairs as two views of the same underlying knowledge,
+LLM-JEPA adds a JEPA loss alongside the standard next-token prediction objective. Despite promising
+results, LLM-JEPA faces two fundamental limitations rooted in the autoregressive architecture:
+
+ 1. 1.
+   
+    Explicit view requirement. LLM-JEPA requires datasets with natural two-view structures (e.g.,
+    natural language paired with code). The authors themselves note this as a key limitation:
+    “developing a mechanism akin to data-augmentation in vision would enable JEPA objectives to be
+    used on any dataset” (Huang et al., 2025).
+
+ 2. 2.
+   
+    Computational overhead from unidirectionality. AR models process tokens left-to-right with
+    causal masking. To obtain independent embeddings for two views, LLM-JEPA requires a custom
+    block-causal attention mask and two forward passes—both carrying gradients—resulting in ∼\sim2×
+    \times the training compute of standard fine-tuning.
+
+We observe that masked diffusion language models (Nie et al., 2025; Sahoo et al., 2024; Shi et al.,
+2024) resolve both limitations naturally. Models such as LLaDA (Nie et al., 2025) employ
+bidirectional attention and learn to denoise randomly masked tokens—a process that is structurally
+analogous to JEPA’s view prediction. This insight leads to our proposed method, DLLM-JEPA, whose
+contributions can be summarized as (1) an architecturally efficient adaptation of JEPA to
+masked-diffusion LMs, (2) a consistent empirical pattern in how JEPA reshapes representations in
+bidirectional LMs, and (3) consistent task gains together with maintained base-capability:
+
+  • •
+   
+    A JEPA formulation that saves 33% of the training FLOPs. The bidirectional attention of
+    masked-diffusion models lets us generate both JEPA views from the same input via different
+    masking rates (no explicit view pairs) and process the context view in a single forward pass
+    with gradients that simultaneously yields diffusion logits and the JEPA embedding; only the
+    target view requires an additional no-gradient forward pass. The result is a JEPA training step
+    with 33% fewer FLOPs than LLM-JEPA (Table 1), standard bidirectional attention (no custom
+    block-causal mask), and applicability to any text dataset.
+
+  • •
+   
+    A consistent empirical pattern: geometric–functional drift dissociation. Layer-wise probing
+    reveals that the DLLM-JEPA objective does not appear to minimize representation change—it
+    redirects it. On GSM8K, DLLM-JEPA’s hidden-state drift from the pre-trained weights is larger
+    than the baseline’s (drift ratio 1.3–3.6×\times across configurations), yet its Wikitext
+    functional forgetting is smaller. The amplification concentrates in middle transformer
+    layers—consistent with prior interpretations of middle layers as encoding compositional
+    structure—and replicates on Dream-7B (ratio 1.28×\times). We also empirically rule out
+    representation collapse (§3, Appendix A.7). We use “dissociation” in a descriptive sense
+    throughout.
+
+  • •
+   
+    Joint task gain and base preservation. On LLaDA-8B with the Wide-tt configuration (tL=0.1,tH=
+    0.9t_{L}{=}0.1,t_{H}{=}0.9, lr 1.4×10−61.4\times 10^{-6}, gentler than the aggressive (0.2,0.7)
+    (0.2,0.7) schedule used for the main task table), DLLM-JEPA simultaneously improves GSM8K
+    accuracy and drives Wikitext diffusion loss below the pre-trained base, while an L2-to-base
+    parameter anchor achieves weak base preservation with zero task gain.
+
+  • •
+   
+    Consistent gains across 4 tasks ×\times 2 backbones. Under a single 4-shot evaluation protocol,
+    DLLM-JEPA improves every (task, architecture) combination (Table 2). The 3-seed mean
+    improvement is +1.8+1.8 pp on LLaDA-8B GSM8K under Wide-tt (±0.4\pm 0.4 vs baseline ±0.9\pm
+    0.9) and +2.6+2.6–3.03.0 pp on aggressive-schedule tasks, where DLLM-JEPA tightens a ±8.9\pm
+    8.9 pp baseline spread to ±3.9\pm 3.9 pp. Best-seed numbers (up to +18.7+18.7 pp) and available
+    multi-seed statistics are in Appendix A.6.
+
+Scope of comparison.
+
+We position LLM-JEPA as a structural motivator rather than a direct comparator: the two methods sit
+on different attention substrates, so we benchmark DLLM-JEPA against diffusion-only fine-tuning on
+the same backbones. Our focus is on how JEPA objectives can be naturally instantiated in masked
+diffusion LMs and how they affect fine-tuning dynamics.
+
+2 Related Work
+
+Masked Diffusion Language Models.
+
+Discrete diffusion models for text generation have gained attention as alternatives to
+autoregressive decoding (Austin et al., 2021; Lou et al., 2024). LLaDA (Nie et al., 2025)
+introduced a simple masked diffusion framework that achieves competitive performance with AR models
+at the 8B parameter scale. MDLM (Sahoo et al., 2024) and SEDD (Shi et al., 2024) provide further
+theoretical and empirical foundations. These models employ bidirectional attention and learn to
+reverse a forward masking process, enabling parallel token generation at inference time.
+
+Joint Embedding Predictive Architectures.
+
+I-JEPA (Assran et al., 2023) demonstrated that predicting latent representations of masked image
+patches produces superior visual features compared to pixel-level reconstruction (MAE). V-JEPA (
+Bardes et al., 2024) extended this to video. LLM-JEPA (Huang et al., 2025) adapted the framework to
+autoregressive language models, showing improvements across code generation and math reasoning
+tasks. However, LLM-JEPA requires explicit view pairs and incurs significant computational overhead
+due to the causal attention constraint.
+
+Fine-tuning Diffusion Language Models.
+
+The fine-tuning dynamics of masked diffusion language models remain relatively underexplored. Nie
+et al. (2025) demonstrate that supervised fine-tuning of LLaDA on instruction data yields strong
+instruction-following behavior, but do not analyze representation dynamics or the trade-off between
+task adaptation and base preservation. Our work uses DLLM-JEPA as a lens to probe this trade-off
+and shows that representation-level regularization reshapes it qualitatively.
+
+3 Method
+
+3.1 Preliminaries: Masked Diffusion Language Models
+
+LLaDA (Nie et al., 2025) defines a forward process that progressively masks tokens. Given a clean
+sequence x0=(x01,…,x0L)x_{0}=(x_{0}^{1},\ldots,x_{0}^{L}), the forward process at time t∈[0,1]t\in
+[0,1] independently replaces each token with a special [MASK] token with probability tt:
+
+ q⁡(xti∣x0i)={x0iwith probability ​1−t[MASK]with probability ​tq(x_{t}^{i}\mid x_{0}^{i})=\
+ begin{cases}x_{0}^{i}&\text{with probability }1-t\\ \texttt{[MASK]}&\text{with probability }t  (1)
+ \end{cases}
+
+The model fθf_{\theta} learns to predict the original tokens from the masked sequence. Letting ℳt=
+{i:xti=[MASK]}\mathcal{M}_{t}=\{i:x_{t}^{i}=\texttt{[MASK]}\} denote the set of masked positions at
+time tt, the diffusion training objective is the per-token cross-entropy over masked positions,
+
+ ℒdiff=𝔼t∼𝒰(0,1),xt∼q(⋅∣x0,t)[−1|ℳt|∑i∈ℳtlogpθ(x0i∣xt)]\mathcal{L}_{\text{diff}}=\mathbb{E}_{t
+ \sim\mathcal{U}(0,1),\,x_{t}\sim q(\cdot\mid x_{0},t)}\left[-\frac{1}{|\mathcal{M}_{t}|}\sum_  (2)
+ {i\in\mathcal{M}_{t}}\log p_{\theta}(x_{0}^{i}\mid x_{t})\right]
+
+Crucially, fθf_{\theta} employs bidirectional attention: every token can attend to every other
+token, enabling rich contextual representations from a single forward pass.
+
+3.2 DLLM-JEPA: JEPA for Diffusion Language Models
+
+Refer to caption
+Figure 1: DLLM-JEPA at a glance. Top row (training flow). A single clean input x0x_{0} is noised at
+two masking rates (tL=0.2t_{L}{=}0.2, tH=0.7t_{H}{=}0.7) to form a context view and a target
+view—no paired dataset required. The online backbone fθf_{\theta} processes the context view in a
+single forward pass with gradients that yields diffusion logits (giving ℒdiff\mathcal{L}_{\text
+{diff}}) and a pooled embedding ztLz_{t_{L}}; the target view is processed by an EMA copy fθ′f_{\
+theta^{\prime}} (decay τ=0.996\tau{=}0.996) under no_grad to produce ztHz_{t_{H}}. A predictor gϕg_
+{\phi} maps ztL→z^tHz_{t_{L}}{\to}\hat{z}_{t_{H}} and ℒJEPA\mathcal{L}_{\text{JEPA}} is the cosine
+gap to ztHz_{t_{H}}; ℒtotal=ℒdiff+λ​ℒJEPA\mathcal{L}_{\text{total}}=\mathcal{L}_{\text{diff}}+\
+lambda\mathcal{L}_{\text{JEPA}} (cost 4F/step, Table 1). A concrete masked-text example is shown in
+the middle-left. Bottom panels (observed mechanism). Fine-tuning with DLLM-JEPA increases
+hidden-state drift (1.36–3.60×\times baseline on GSM8K, concentrated in the middle transformer
+layers) yet reduces Wikitext functional forgetting (43–58%). The 3D density landscape visualizes
+the same effect over per-seed points: baseline mass peaks at high forgetting, while DLLM-JEPA mass
+extends along the drift axis yet stays closer to the zero-forgetting floor (§5).
+
+View generation via noise schedule.
+
+We generate two views of each input by sampling two masking rates from the diffusion schedule.
+Given tL<tHt_{L}<t_{H} (we use fixed tL=0.2t_{L}=0.2, tH=0.7t_{H}=0.7), we construct:
+
+ xtL\displaystyle ∼q(xt∣x0,t=tL)(context view: 20% masked)\displaystyle\sim q(x_{t}\mid x_      (3)
+ x_{t_{L}}        {0},t=t_{L})\quad\text{(context view: 20\% masked)}
+ xtH\displaystyle ∼q(xt∣x0,t=tH)(target view: 70% masked)\displaystyle\sim q(x_{t}\mid x_{0},t  (4)
+ x_{t_{H}}        =t_{H})\quad\text{(target view: 70\% masked)}
+
+The context view retains most tokens and provides a nearly complete picture, while the target view
+is heavily masked and forces prediction from a more incomplete, abstract context. Both are
+generated from the same input via different noise levels—no explicit view pairs needed.
+
+Encoding and prediction.
+
+The backbone fθf_{\theta} processes the context view xtLx_{t_{L}} to produce hidden states, from
+which we obtain:
+
+  • •
+   
+    Diffusion logits: x^0=Classifier​(fθ​(xtL))\hat{x}_{0}=\text{Classifier}(f_{\theta}(x_{t_
+    {L}})), used for the denoising objective.
+
+  • •
+   
+    JEPA embedding: ztL=Pool​(fθ​(xtL))z_{t_{L}}=\text{Pool}(f_{\theta}(x_{t_{L}})), a pooled
+    representation of the context view. We use mean pooling over non-masked, non-padding tokens
+    followed by LayerNorm; mean pooling is the standard sequence-to-vector reduction in vision
+    JEPAs (Assran et al., 2023; Bardes et al., 2024), and LayerNorm stabilizes the embedding
+    scale—collapse prevention itself rests on the EMA target, stop-gradient, predictor, and the
+    simultaneous diffusion denoising objective rather than on LayerNorm alone.
+
+The target embedding ztH=Pool​(fθ′​(xtH))z_{t_{H}}=\text{Pool}(f_{\theta^{\prime}}(x_{t_{H}})) is
+computed with an exponential moving average (EMA) copy of the backbone, fθ′f_{\theta^{\prime}},
+following I-JEPA (Assran et al., 2023) / BYOL (Grill et al., 2020) conventions. The EMA target is
+updated each step as θ′←τ​θ′+(1−τ)​θ\theta^{\prime}\leftarrow\tau\theta^{\prime}+(1-\tau)\theta
+with decay τ=0.996\tau{=}0.996, and its forward pass runs under no_grad so the target branch
+contributes no backward compute or optimizer state. The stop-gradient + EMA-target + predictor
+design provides a stable, slowly-moving prediction target and serves the standard role of
+preventing trivial-constant collapse, complementing SimSiam (Chen & He, 2021)-style
+stop-gradient-only schemes.
+
+A lightweight predictor gϕg_{\phi} consisting of kk transformer decoder layers (chosen for
+architectural consistency with LLM-JEPA’s predictor design) maps the context embedding to predict
+the target:
+
+ z^tH=gϕ​(ztL)\hat{z}_{t_{H}}=g_{\phi}(z_{t_{L}})  (5)
+
+JEPA objective.
+
+Following best practices from vision JEPAs (Assran et al., 2023), we use cosine similarity:
+
+ ℒJEPA=1−cos⁡(sg​(ztH),z^tH)\mathcal{L}_{\text{JEPA}}=1-\cos\!\big(\text{sg}(z_{t_{H}}),\;\hat  (6)
+ {z}_{t_{H}}\big)
+
+where sg​(⋅)\text{sg}(\cdot) denotes stop-gradient. Note that sg​(ztH)\text{sg}(z_{t_{H}}) is
+redundant by construction (the target encoder is an EMA copy with requires_grad=False and the
+forward is wrapped in no_grad); we keep the notation for consistency with the BYOL/I-JEPA family of
+objectives.
+
+Combined training objective.
+
+The total loss balances diffusion denoising and JEPA prediction:
+
+ ℒtotal=ℒdiff+λ⋅ℒJEPA\mathcal{L}_{\text{total}}=\mathcal{L}_{\text{diff}}+\lambda\cdot\mathcal  (7)
+ {L}_{\text{JEPA}}
+
+where λ≥0\lambda\geq 0 controls the JEPA contribution and kk determines the predictor depth.
+
+Empirical check: no representation collapse.
+
+Cosine-similarity-only JEPA objectives can in principle collapse to a trivial-constant solution. In
+our setting this is unlikely for two reasons: (i) the EMA target evolves slowly and provides a
+non-trivial prediction target; and (ii) the backbone is simultaneously optimized by the diffusion
+denoising loss ℒdiff\mathcal{L}_{\text{diff}}, which constrains the token-level output
+distribution. We verify directly on the fine-tuned checkpoints (Appendix A.7): on LLaDA-8B (D=4096D
+{=}4096), the pooled JEPA embeddings ztL,ztHz_{t_{L}},z_{t_{H}} retain an effective rank of 42–44
+(close to the pre-trained base’s 42–43) with per-dimension standard deviation 0.73–0.95 and cosine
+diversity 0.25–0.28—virtually identical to the baseline fine-tuning on the same metrics. The
+pattern is the same on Dream-7B (D=3584D{=}3584, effective rank 43–44). The JEPA objective
+therefore does not reduce the rank or shrink the variance of the representation space; it redirects
+the representation without collapsing it.
+
+3.3 Computational Advantage over LLM-JEPA
+
+
+Table 1: Per-step training cost. FF: one forward pass through the backbone; BB: one backward pass
+(≈2​F\approx 2F in FLOPs). LLM-JEPA requires gradient through both view encodings; DLLM-JEPA
+processes the target view without gradients.
+
+Method             Fwd (grad) Fwd (no grad) Backward         Total (FF) Overhead
+AR Baseline        1FF        –             1BB ≈\approx 2FF 3FF        –
+LLM-JEPA           2FF        –             2BB ≈\approx 4FF 6FF        +100%
+Diffusion Baseline 1FF        –             1BB ≈\approx 2FF 3FF        –
+DLLM-JEPA (ours)   1FF        1FF           1BB ≈\approx 2FF 4FF        +33%
+
+Causal attention forces LLM-JEPA to encode the two views through two forward passes with gradients
+under a custom block-causal mask. In contrast, the bidirectional attention in masked-diffusion
+backbones lets a single forward pass through xtLx_{t_{L}} simultaneously yield the diffusion logits
+and the context embedding ztLz_{t_{L}}; the target embedding ztHz_{t_{H}} needs one additional
+forward pass through the EMA copy of the backbone, but this forward is gradient-free (no backward
+pass, no gradient memory, no optimizer state). The bookkeeping (Table 1) gives (6​F−4​F)/6​F≈𝟑𝟑%(6F
+{-}4F)/6F\approx\mathbf{33\%} fewer training FLOPs per step. The design also uses standard
+bidirectional attention, applies to any text dataset rather than paired (text, code) data, and adds
+only a pooling layer, a lightweight predictor, and one no-grad EMA forward to the vanilla diffusion
+training loop.
+
+4 Experiments
+
+We evaluate DLLM-JEPA on four tasks spanning code generation, SQL, regex synthesis, and math
+reasoning, using two masked-diffusion backbones (LLaDA-8B and Dream-7B). Throughout, the comparison
+is DLLM-JEPA vs. diffusion-only fine-tuning on the same backbone; LLM-JEPA is used as the
+structural motivator rather than a direct head-to-head baseline.
+
+4.1 Experimental Setup
+
+Models.
+
+LLaDA-8B (Nie et al., 2025) and Dream-7B (Ye et al., 2025), two recently released masked-diffusion
+language models with different pre-training recipes and tokenizers.
+
+Tasks and metrics.
+
+  • •
+   
+    Django (Oda et al., 2015): 18,805 Python code generation pairs. Metric: whitespace-normalized
+    prefix match (Appendix A.9); 0-shot strict exact match also reported in Table 5.
+
+  • •
+   
+    Spider (Yu et al., 2018): 7,000 text-to-SQL pairs. Metric: exact match and execution match on
+    the Spider validation split (the official test set is hidden behind a leaderboard).
+
+  • •
+   
+    NL-RX-SYNTH (Locascio et al., 2016): 10,000 text-to-regex pairs. Metric: exact match and
+    functional equivalence (tested against 200 random strings).
+
+  • •
+   
+    GSM8K (Cobbe et al., 2021): 7,473 grade-school math problems with chain-of-thought answers.
+    Metric: answer accuracy.
+
+Training.
+
+All runs use full fine-tuning for 2 epochs on 8×\times NVIDIA A100 80GB GPUs with gradient
+checkpointing. We use AdamW with learning rate 1×10−51{\times}10^{-5} (primary) or 1.4×10−61.4{\
+times}10^{-6} (Wide-tt preservation-focused config), a fixed masking schedule tL=0.2,tH=0.7t_{L}{=}
+0.2,t_{H}{=}0.7 for most experiments (Wide-tt uses [0.1,0.9][0.1,0.9]), and DLLM-JEPA
+hyperparameters λ∈{0.5,1.0,2.0},k∈{1,…,5}\lambda\in\{0.5,1.0,2.0\},k\in\{1,\ldots,5\}.
+
+Evaluation.
+
+We report 0-shot and 4-shot accuracy using each model’s standard iterative unmasking generation
+with 128 diffusion steps. For Dream on code-structured tasks, whose natural output format may emit
+tokens after the answer, we additionally report the stopping-robust variant (whitespace-normalized
+prefix match for Django; truncation at the first ; plus standard Spider cleaning for Spider) to
+enable fair cross-architecture comparison; raw metrics are reported in the appendix.
+
+4.2 Main Results: Task Performance
+
+Table 2 presents DLLM-JEPA results across 4 tasks ×\times 2 architectures. Under the unified 4-shot
+protocol of Table 2, DLLM-JEPA improves every (task, architecture) cell, with gains ranging from
++1.00+1.00 to +18.73+18.73 percentage points. A finer-grained 0-shot decomposition on LLaDA-8B
+Django (Table 5) shows a larger +21.89+21.89 pp gain on the strict exact-match metric.
+
+Reporting protocol (read once). Table 2 reports task-optimal (λ,k)(\lambda,k) per (task,
+architecture) cell under a unified 4-shot evaluation protocol using the aggressive training
+schedule (tL=0.2,tH=0.7t_{L}{=}0.2,t_{H}{=}0.7). A single-config sibling (Table 8) repeats the
+comparison with (λ=1,k=3)(\lambda{=}1,k{=}3) fixed across tasks; gains remain positive throughout
+but smaller. Multi-seed (n=3n{=}3) statistics are in Table 10 (Appendix A.6); LLaDA-8B Spider and
+Dream-7B Spider/NL-RX are single-seed grids over (λ,k)(\lambda,k). Preservation results (§4.3) use
+the Wide-tt schedule (tL=0.1,tH=0.9t_{L}{=}0.1,t_{H}{=}0.9) chosen a priori; base-capability probes
+are multi-seed on MMLU; Wikitext rows for Baseline and DLLM-JEPA are single-seed point estimates
+(the L2 anchor is reported over multiple seeds).
+
+
+Table 2: Main results. Task performance across four tasks and two masked-diffusion backbones, at
+task-optimal (λ,k)(\lambda,k). Baselines and DLLM-JEPA share the same learning rate, training
+schedule, and seed within each row; (λ,k)(\lambda,k) is not applicable to the baseline (λ=0\lambda
+{=}0). All rows use a single 4-shot protocol and the same metric for both models. Spider: SQL
+execution match with semicolon-truncation cleaning; Django: whitespace-normalized prefix match
+(Appendix A.9). Fixed single (λ,k)(\lambda,k) comparison in Table 8.
+
+Task   Metric (4-shot)      LLaDA-8B                         Dream-7B
+                            BL →\rightarrow JEPA     Δ\Delta BL →\rightarrow JEPA     Δ\Delta
+GSM8K  accuracy             42.61 →\rightarrow 61.33 +18.73  34.87 →\rightarrow 46.25 +11.38
+NL-RX  func match           47.50 →\rightarrow 58.20 +10.70  42.00 →\rightarrow 46.80 +4.80
+Spider exec match (cleaned) 35.40 →\rightarrow 39.36 +3.97   20.89 →\rightarrow 25.15 +4.26
+Django ws-prefix match      74.40 →\rightarrow 75.40 +1.00   69.58 →\rightarrow 72.35 +2.77
+
+Every (task, architecture) cell shows a positive improvement under a single 4-shot evaluation
+protocol and the same metric applied to both models. The LLaDA-8B GSM8K baseline of 42.642.6 sits
+at the lower tail of a ±8.9\pm 8.9 pp seed-dependent spread induced by the aggressive training
+schedule on diffusion-only fine-tuning; DLLM-JEPA collapses that spread to ±3.9\pm 3.9 pp (Table 10
+), so the cell-level gap reflects both peak improvement and variance reduction. Seeds are matched
+across methods within each row.
+
+Cross-architecture replication (task performance).
+
+Dream-7B differs from LLaDA-8B in tokenizer, parameter count, and pre-training recipe. The same
+fine-tuning protocol applied to both yields the same direction of improvement on every task,
+supporting that the DLLM-JEPA effect is not an LLaDA-specific artifact; we emphasize that this is
+replication on one additional backbone, not a demonstration across all diffusion LMs.
+
+4.3 Base Capability Preservation
+
+A central property of DLLM-JEPA is that task gain coexists with preservation of the base model on a
+held-out diffusion-loss probe. Preservation of pre-trained capability during task adaptation is the
+classic catastrophic-forgetting question (Kirkpatrick et al., 2017); parameter-space regularizers
+such as EWC are one response, while our analysis below offers a representation-space alternative.
+We evaluate this using held-out Wikitext-103 validation text, measuring the diffusion denoising
+loss (ℒdiff\mathcal{L}_{\text{diff}} with 50% masking, deterministic seed) of each fine-tuned
+checkpoint against the pre-trained base. (DLLM-JEPA’s Wikitext loss in fact ends up slightly below
+the pre-trained base; we read this as evidence of preservation rather than a strong improvement
+claim, given that absolute Wikitext deltas are at the ∼10−3\sim\!10^{-3} scale.)
+
+Comparison with a parameter-anchor baseline.
+
+To show that DLLM-JEPA’s benefit is not reducible to simple parameter proximity, we compare against
+an L2-to-base anchor: an SFT objective with an explicit penalty λL​2​∥θ−θbase∥22\lambda_{L2}\lVert\
+theta-\theta_{\text{base}}\rVert_{2}^{2} (gradient-side injection for memory efficiency, λL​2=10−4\
+lambda_{L2}{=}10^{-4}). Both methods use the same Wide-tt configuration on LLaDA-8B GSM8K.
+
+
+Table 3: Task gain and base preservation together. LLaDA-8B GSM8K, Wide-tt configuration. DLLM-JEPA
+is the only method that raises task accuracy while pushing Wikitext loss further below the base.
+The GSM8K accuracy column is over three seeds (per-seed breakdown in Table 12); Wikitext rows for
+Baseline and DLLM-JEPA are single-seed (checkpoint-storage constraint), so we report a point
+estimate.
+
+Method                                             GSM8K 0-shot    Wikitext Δ\Delta loss (vs. base)
+Base (no fine-tuning)                              –               0.0000
+Diffusion Baseline (λ=0\lambda{=}0)                65.23 ±\pm 0.93 −0.0004-0.0004
+L2-to-base anchor (λL​2=10−4\lambda_{L2}{=}10^     65.18 ±\pm 0.87 −0.0007±0.0002-0.0007\pm 0.0002
+{-4})
+DLLM-JEPA (ours)                                   67.07 ±\pm 0.41 −0.0017\mathbf{-0.0017}
+
+Three observations emerge. (1) The diffusion baseline achieves modest task gain and essentially
+matches the base in Wikitext loss. (2) The L2 anchor further reduces Wikitext drift slightly, but
+it does not improve task performance—its GSM8K score is statistically indistinguishable from the
+baseline. (3) DLLM-JEPA is the only method to achieve both: higher GSM8K accuracy (+1.84 pp over
+baseline) together with a Wikitext Δ\Delta below either competing method. The absolute Wikitext
+differences are small (∼10−3{\sim}10^{-3}), so readers should weigh them in combination with the
+task-accuracy column rather than in isolation.
+
+MMLU sanity check (no catastrophic forgetting).
+
+As a sanity check that fine-tuning does not catastrophically degrade general capability, we also
+evaluate each Wide-tt checkpoint on MMLU (500 stratified questions; same items for every model),
+across three seeds (Table 4). Both methods stay within about half a point of the base (baseline
+57.93±0.4257.93\pm 0.42, DLLM-JEPA 57.53±0.2357.53\pm 0.23 vs. base 57.4057.40); the small mean gap
+is within seed noise, so we read MMLU as evidence against catastrophic forgetting on either method
+rather than as a comparative claim. DLLM-JEPA’s seed std is roughly half the baseline’s; this
+matches the variance-tightening we observe on the high-variance LLaDA GSM8K cells but not on
+lower-variance cells. Our preservation argument primarily rests on the Wikitext evidence (Table 3).
+
+
+Table 4: MMLU sanity check. 500-question stratified subset, three fine-tuning seeds. Both Wide-tt
+fine-tuning methods stay within about half a point of the base; the mean gap between Baseline and
+DLLM-JEPA is within seed noise.
+
+Method                              MMLU accuracy (%)
+Base (no fine-tuning)               57.40
+Diffusion Baseline (λ=0\lambda{=}0) 57.93 ±\pm 0.42
+DLLM-JEPA (ours)                    57.53 ±\pm 0.23
+
+5 Mechanism Analysis
+
+Having established that DLLM-JEPA delivers both task gains and base preservation, we next ask: what
+does the auxiliary objective do to the backbone internally? We probe the fine-tuned checkpoints by
+comparing their layer-wise hidden-state representations against the pre-trained base on 100
+Wikitext-103 samples. For each transformer layer we compute the mean-pooled representation and
+report the geometric drift 1−cos⁡⟨hℓbase,hℓFT⟩1-\cos\!\langle h^{\text{base}}_{\ell},h^{\text{FT}}_
+{\ell}\rangle averaged over samples.
+
+
+Figure 2: Geometric–functional drift dissociation for DLLM-JEPA. (A) Layer-wise geometric drift on
+LLaDA-8B fine-tuned on GSM8K (aggressive configuration). DLLM-JEPA drifts further from the base
+than the diffusion baseline throughout the network. (B) Mean drift ratio (DLLM-JEPA / baseline)
+across five (task, configuration) cells. Amplification (ratio >> 1) is clear on the three GSM8K
+cells (both LLaDA configurations and Dream-7B); NL-RX and Django are near or slightly below 1,
+indicating task-specific amplification rather than uniform drift. (C) Wikitext functional
+forgetting is reduced for DLLM-JEPA on every fine-tuning task (43–58%), opposite to the drift
+trend. (D) Per-region drift ratio (early / middle / late thirds). On GSM8K, DLLM-JEPA’s
+amplification concentrates in the middle layers, consistent with prior interpretations of
+middle-layer compositional structure. All cells are multi-seed except LLaDA-8B GSM8K Wide-tt
+(single seed, checkpoint-storage constraint).
+
+5.1 Geometric–Functional Drift Dissociation on GSM8K
+
+Figure 2(A–B) reveals a counterintuitive finding: on GSM8K, DLLM-JEPA’s hidden-state drift from the
+base is larger than the baseline’s—not smaller. On LLaDA-8B, the DLLM-JEPA / baseline drift ratio
+is 3.60×3.60\times with the gentle Wide-tt configuration and 1.36×1.36\times with the aggressive
+configuration. On NL-RX and Django (aggressive configuration) the ratio is 0.94×0.94\times and
+0.99×0.99\times respectively—near 1, meaning DLLM-JEPA’s drift amplification is task-specific, not
+uniform. Yet Figure 2(C) shows that on the three tasks where we measure Wikitext forgetting,
+DLLM-JEPA reduces functional forgetting by 43–58%.
+
+This geometric–functional drift dissociation admits a descriptive interpretation: the JEPA
+objective does not appear to minimize representation change but instead redirects it along
+task-useful axes, leaving the base model’s held-out output function largely intact.
+
+Cross-architecture replication of the drift pattern.
+
+The same direction of effect appears on Dream-7B (different parameter count, tokenizer, and
+pre-training corpus): DLLM-JEPA’s drift ratio is 1.28×1.28\times (Figure 2B, last column).
+Replication on one additional backbone is suggestive rather than conclusive.
+
+Region-specific amplification (GSM8K).
+
+The extra drift concentrates in the middle transformer layers (Figure 2D; ratios 1.64×1.64\times
+middle vs 1.38×1.38\times early / 1.18×1.18\times late under the aggressive schedule), which prior
+work associates with compositional reasoning. The pattern is sharp on GSM8K and muted on other
+tasks.
+
+5.2 Component ablation: asymmetric views and predictor
+
+Figure 3 shows the effect of removing two DLLM-JEPA design choices on LLaDA-8B GSM8K (aggressive
+schedule, seed 42). (i) Symmetric views (tL=tH=0.2t_{L}{=}t_{H}{=}0.2, same masking rate for both
+views) removes the asymmetric-noise structure of our method. (ii) No-predictor (identity map for
+gϕg_{\phi}) removes JEPA’s predictive head so the loss reduces to a plain stop-gradient two-view
+cosine consistency. The full DLLM-JEPA uses (0.2,0.7)(0.2,0.7) and a kk-layer predictor.
+
+
+Figure 3: Ablating two DLLM-JEPA components. (A) GSM8K accuracy on LLaDA-8B with aggressive
+fine-tuning. Removing asymmetric views collapses 0-shot to 38.938.9 pp — below the diffusion-only
+baseline — and removing the predictor collapses 4-shot by −16.9-16.9 pp relative to the full
+method. (B) Fractional gain over baseline: each partial configuration captures only a small (or
+negative) fraction of the full DLLM-JEPA gain.
+
+Two findings deserve emphasis. First, a symmetric-noise two-view setup, which would be a natural
+simplification, performs worse than the diffusion-only baseline: the two views must probe different
+noise levels for the JEPA objective to produce a useful signal. Second, retaining the asymmetric
+views but discarding the predictor leaves much of the 0-shot gain intact but collapses the 4-shot
+gain, indicating that DLLM-JEPA is not reducible to a simple two-view consistency regularizer —
+JEPA’s predictive structure contributes most of the few-shot benefit. Full noise-schedule
+sensitivity (tL,tHt_{L},t_{H} grid on GSM8K) and additional ablations are in Appendix A.4.
+
+Per-seed drift–forgetting scatter, joint density landscape, Django content/termination
+decomposition, and a structural comparison table to LLM-JEPA are in the appendix (§A.1–§A.3).
+
+6 Limitations
+
+We identify three limitations that temper the strength of our conclusions:
+
+(L1) Scope of comparison. We do not claim superiority over LLM-JEPA. The two methods sit on
+different attention substrates (causal vs. bidirectional), so a matched head-to-head would require
+aligning pre-training corpora, tokenizers, scales, and inference protocols—and even then the result
+would confound substrate with the JEPA objective itself. We therefore benchmark DLLM-JEPA against
+diffusion-only fine-tuning on the same backbone, and view the two methods as complementary
+instantiations of JEPA on different substrates.
+
+(L2) Preservation evidence. Our preservation argument rests primarily on held-out Wikitext-103
+diffusion loss (Table 3); the Wide-tt row is a single surviving seed (storage cleanup), so absolute
+deltas should be read alongside the direction-of-effect rather than as precise quantities. MMLU
+(Table 4) is reported as a no-catastrophic-forgetting check, not a comparative claim—the small
+Baseline / DLLM-JEPA gap on MMLU is within seed noise.
+
+(L3) Statistical and operating-point scope. The drift-dissociation and region-specific claims rest
+on three seeds per cell; the effect is largest on GSM8K, muted on NL-RX/Django, and replicated on
+one additional backbone (Dream). Our two configurations—aggressive (tL=0.2,tH=0.7CLOSE,(t_{L}{=}
+0.2,t_{H}{=}0.7, lr OPEN10−5)10^{-5}) and Wide-tt (tL=0.1,tH=0.9CLOSE,(t_{L}{=}0.1,t_{H}{=}
+0.9, lr OPEN1.4×10−6)1.4\times 10^{-6})—are illustrative operating points, not the result of a
+fully factored (lr,tL,tH)(\text{lr},t_{L},t_{H}) sweep, and all experiments are 2-epoch full-rank
+fine-tunings at the 7–8B scale; pre-training and other scales remain untested.
+
+7 Conclusion
+
+We introduced DLLM-JEPA, a JEPA formulation for masked-diffusion language models that cuts training
+FLOPs by 33% relative to LLM-JEPA’s architectural requirements while generating its two views
+automatically via the diffusion noise schedule. Under a single 4-shot protocol, DLLM-JEPA improves
+every (task, architecture) combination we evaluate, with gains up to +18.7 pp on LLaDA-8B GSM8K and
++11.4 pp on Dream-7B GSM8K, and tightens run-to-run variance on the high-variance LLaDA-8B GSM8K
+aggressive-schedule baseline. Under the Wide-tt configuration (tL=0.1,tH=0.9t_{L}{=}0.1,t_{H}{=}
+0.9, lr 1.4×10−61.4\times 10^{-6}) the method achieves task gain together with base
+preservation—raising GSM8K accuracy while driving Wikitext loss below the pre-trained base, unlike
+a parameter-level L2 anchor; MMLU stays close to base level on either method, with no evidence of
+catastrophic forgetting—and layer-wise probing uncovers a geometric–functional drift dissociation
+concentrated in middle transformer layers that replicates on Dream-7B. Future directions include
+applying DLLM-JEPA at pre-training, theoretical analysis of the dissociation mechanism, and
+adaptive scheduling of λ\lambda during training; a matched-protocol comparison with LLM-JEPA is the
+natural next step.
+
+References
+
+  • Assran et al. [2023] M. Assran, Q. Duval, I. Misra, P. Bojanowski, P. Vincent, M. Rabbat,
+    Y. LeCun, and N. Ballas. Self-supervised learning from images with a joint-embedding predictive
+    architecture. In CVPR, 2023.
+  • Austin et al. [2021] J. Austin, D. D. Johnson, J. Ho, D. Tarlow, and R. van den Berg. 
+    Structured denoising diffusion models in discrete state-spaces. In NeurIPS, 2021.
+  • Bardes et al. [2024] A. Bardes, Q. Garrido, J. Ponce, X. Chen, M. Rabbat, Y. LeCun, M. Assran,
+    and N. Ballas. Revisiting feature prediction for learning visual representations from video. 
+    arXiv preprint arXiv:2404.08471, 2024.
+  • Brown et al. [2020] T. Brown, B. Mann, N. Ryder, et al. Language models are few-shot learners. 
+    In NeurIPS, 2020.
+  • Cobbe et al. [2021] K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser,
+    M. Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman. Training verifiers to
+    solve math word problems. arXiv preprint arXiv:2110.14168, 2021.
+  • Devlin et al. [2019] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova. BERT: Pre-training of
+    deep bidirectional transformers for language understanding. In NAACL, 2019.
+  • Grill et al. [2020] J.-B. Grill, F. Strub, F. Altché, C. Tallec, P. H. Richemond,
+    E. Buchatskaya, C. Doersch, B. Ávila Pires, Z. D. Guo, M. G. Azar, B. Piot, K. Kavukcuoglu,
+    R. Munos, and M. Valko. Bootstrap your own latent: A new approach to self-supervised learning. 
+    In NeurIPS, 2020.
+  • Chen & He [2021] X. Chen and K. He. Exploring simple siamese representation learning. In CVPR,
+    2021.
+  • Kirkpatrick et al. [2017] J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins,
+    A. A. Rusu, K. Milan, J. Quan, T. Ramalho, A. Grabska-Barwinska, D. Hassabis, C. Clopath,
+    D. Kumaran, and R. Hadsell. Overcoming catastrophic forgetting in neural networks. PNAS, 114
+    (13):3521–3526, 2017.
+  • Huang et al. [2025] H. Huang, Y. LeCun, and R. Balestriero. LLM-JEPA: Large language models
+    meet joint embedding predictive architectures. arXiv preprint arXiv:2509.14252, 2025.
+  • LeCun [2022] Y. LeCun. A path towards autonomous machine intelligence. openreview.net preprint,
+    2022.
+  • Littwin et al. [2024] E. Littwin, O. Saremi, M. Advani, V. Thilak, P. Nakkiran, C. Huang, and
+    J. Susskind. How JEPA avoids noisy features: The implicit bias of deep linear self distillation
+    networks. In NeurIPS, 2024. arXiv:2407.03475.
+  • Locascio et al. [2016] N. Locascio, K. Narasimhan, E. DeLeon, N. Kushman, and R. Barzilay. 
+    Neural generation of regular expressions from natural language with minimal domain knowledge. 
+    In EMNLP, 2016.
+  • Lou et al. [2024] A. Lou, C. Meng, and S. Ermon. Discrete diffusion modeling by estimating the
+    ratios of the data distribution. In ICML, 2024.
+  • Nie et al. [2025] S. Nie, F. Zhu, Z. You, X. Zhang, J. Ou, J. Hu, J. Zhou, Y. Lin, J.-R. Wen,
+    and C. Li. Large language diffusion models. arXiv preprint arXiv:2502.09992, 2025.
+  • Sahoo et al. [2024] S. S. Sahoo, M. Arriola, Y. Schiff, A. Gokaslan, E. Marroquin, J. T. Chiu,
+    A. Rush, and V. Kuleshov. Simple and effective masked diffusion language models. In NeurIPS,
+    2024. arXiv:2406.07524.
+  • Shi et al. [2024] J. Shi, K. Han, Z. Wang, A. Doucet, and M. Titsias. Simplified and
+    generalized masked diffusion for discrete data. In NeurIPS, 2024.
+  • Touvron et al. [2023] H. Touvron, L. Martin, K. Stone, et al. Llama 2: Open foundation and
+    fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.
+  • Yu et al. [2018] T. Yu, R. Zhang, K. Yang, M. Yasunaga, D. Wang, Z. Li, J. Ma, I. Li, Q. Yao,
+    S. Roman, Z. Zhang, and D. Radev. Spider: A large-scale human-labeled dataset for complex and
+    cross-domain semantic parsing and text-to-SQL task. In EMNLP, 2018.
+  • Ye et al. [2025] J. Ye, Z. Xie, L. Zheng, J. Gao, Z. Wu, X. Jiang, Z. Li, and L. Kong. Dream
+    7B: Diffusion large language models. arXiv preprint arXiv:2508.15487, 2025.
+  • Oda et al. [2015] Y. Oda, H. Fudaba, G. Neubig, H. Hata, S. Sakti, T. Toda, and S. Nakamura. 
+    Learning to generate pseudo-code from source code using statistical machine translation. In ASE
+    , 2015.
+  • Merity et al. [2017] S. Merity, C. Xiong, J. Bradbury, and R. Socher. Pointer sentinel mixture
+    models. In ICLR, 2017.
+  • Hendrycks et al. [2021] D. Hendrycks, C. Burns, S. Basart, A. Zou, M. Mazeika, D. Song, and
+    J. Steinhardt. Measuring massive multitask language understanding. In ICLR, 2021.
+
+Appendix A Appendix
+
+A.1 Per-Seed Drift–Forgetting Scatter and Density Landscape
+
+
+Figure 4: Per-run drift vs. functional forgetting. One marker per fine-tuning run. Baselines show a
+strong positive relationship (r=+0.94r{=}+0.94); DLLM-JEPA visibly shifts below the baseline
+cluster at comparable drift levels, weakening the relationship (r=+0.75r{=}+0.75) and occupying
+region with lower forgetting at the same geometric drift.
+
+Figure 4 plots per-seed geometric drift against functional forgetting. Baseline runs show a strong
+positive drift–forgetting correlation (r=+0.94r=+0.94, 95% CI [0.76,0.99][0.76,0.99], n=10n=10);
+DLLM-JEPA runs sit below the baseline envelope at comparable drift levels, weakening the
+correlation to r=+0.75r=+0.75 (95% CI [0.23,0.94][0.23,0.94], n=10n=10). A Fisher rr-to-zz test
+gives Z=1.42Z=1.42, p=0.16p=0.16 at this sample size. We use “dissociation” for this weakened
+coupling rather than its elimination—DLLM-JEPA’s rr is still positive with a CI excluding zero.
+
+
+Figure 5: Joint (drift, forgetting) density landscape (n=10n{=}10 runs per method, exploratory).
+Gaussian-KDE surfaces over the same runs as Figure 4, baseline in red and DLLM-JEPA in blue. At
+matched drift, DLLM-JEPA’s mass sits below the baseline’s, and the baseline mass never reaches the
+low-forgetting corner that DLLM-JEPA occupies. Intended as an exploratory visualization, not a
+formal density estimate.
+
+Figure 5 re-plots the same data as a 3D density landscape. The baseline distribution is peaked at
+high forgetting (mass at Wikitext Δ​loss≳0.04\Delta\text{loss}\gtrsim 0.04); DLLM-JEPA’s mass stays
+closer to the Δ​loss=0\Delta\text{loss}=0 plane and extends further along the drift axis without a
+corresponding rise in forgetting.
+
+A.2 Content vs. Termination Decomposition on Django
+
+A finer-grained view of where the task gains come from is obtained by decomposing Django outputs
+into three categories: (i) exact match, (ii) “stopping artifact” (the correct code followed by
+trailing tokens), and (iii) genuine content error. For this decomposition we use the 0-shot
+exact-match setting on LLaDA-8B Django (single representative run).
+
+
+Table 5: Django 0-shot decomposition. Single-seed illustrative run on LLaDA-8B. DLLM-JEPA
+simultaneously reduces stopping artifacts and reduces real content errors.
+
+Category                               Baseline DLLM-JEPA Δ\Delta
+Exact match                            34.40%   56.29%    +21.89
+Stopping artifact (correct + trailing) 29.81%   11.30%    −18.52-18.52
+Content error                          35.79%   32.41%    −3.38-3.38
+Reasoning-correct total                64.21%   67.59%    +3.38
+
+The exact-match improvement (+21.89pp) decomposes into an 18.52pp reduction in stopping artifacts
+and a 3.38pp improvement in underlying content quality. DLLM-JEPA’s predictor objective provides an
+additional gradient signal about what comes next in representation space, translating into both
+sharper answer endings and cleaner content.
+
+A.3 Structural Comparison with LLM-JEPA
+
+Table 6 summarizes the architectural differences between LLM-JEPA [Huang et al., 2025] and
+DLLM-JEPA. The comparison is purely structural: these properties follow directly from the choice of
+substrate (causal vs. bidirectional attention), not from an empirical head-to-head. All
+task-performance claims in the main text are measured against diffusion-only fine-tuning.
+
+
+Table 6: Structural comparison: LLM-JEPA vs. DLLM-JEPA. Architectural differences determined by the
+underlying substrate.
+
+Property                 LLM-JEPA                              DLLM-JEPA (ours)
+Base architecture        Autoregressive                        Masked Diffusion
+Attention                Causal                                Bidirectional
+View construction        Explicit (Text ↔\leftrightarrow Code) Automatic (noise schedule)
+Requires view pairs      Yes                                   No
+Forward passes (w/ grad) 2                                     1
+Custom attention mask    Required                              Not needed
+Training FLOP overhead   +100%                                 +33%
+Applicable datasets      Multi-view only                       Any text
+
+A.4 Ablations
+
+λ×k\lambda\times k grid.
+
+Table 7 shows GSM8K accuracy across the grid on LLaDA-8B; every non-zero (λ,k)(\lambda,k)
+configuration outperforms the diffusion baseline. The best configuration is (λ=2.0,k=4)(\lambda{=}
+2.0,k{=}4).
+
+
+Table 7: GSM8K λ×k\lambda\times k grid. 0-shot accuracy on LLaDA-8B. Baseline (λ=0\lambda{=}0):
+0.402.
+
+λ\lambda \ kk  1     2     3     4     5
+0.5            0.445 0.450 0.457 0.459 0.438
+1.0            0.445 0.456 0.467 0.467 0.444
+2.0            0.437 0.460 0.473 0.488 0.453
+
+Single-configuration comparison.
+
+With a single fixed (λ=1.0,k=3)(\lambda{=}1.0,k{=}3) applied across all tasks (Table 8), DLLM-JEPA
+still improves over the diffusion baseline on every row.
+
+
+Table 8: Single fixed configuration across tasks.
+
+Task            Shot   Metric Baseline DLLM-JEPA Δ\Delta
+Django          0-shot exact  34.40    45.82     +11.42
+NL-RX           4-shot exact  11.25    18.74     +7.49
+Spider          4-shot exact  25.73    29.21     +3.48
+GSM8K (Wide-tt) 0-shot acc    65.28    66.87     +1.59
+
+Noise schedule ablation.
+
+We use two illustrative training configurations: (i) the aggressive schedule with view-generation
+(tL=0.2,tH=0.7)(t_{L}{=}0.2,t_{H}{=}0.7) and lr 10−510^{-5}, used for the main task table; and (ii)
+the Wide-tt schedule with view-generation (tL=0.1,tH=0.9)(t_{L}{=}0.1,t_{H}{=}0.9) paired with a
+lower lr (1.4×10−61.4\times 10^{-6}), used for the preservation/joint-improvement experiment in §
+4.3. The Wide-tt schedule increases DLLM-JEPA’s drift ratio on GSM8K from 1.36×1.36\times to
+3.60×3.60\times (Figure 2B) while simultaneously achieving deeper base preservation (Table 3).
+These two schedules are illustrative operating points rather than the result of a fully factored
+(lr,tL,tH)(\text{lr},t_{L},t_{H}) sweep; see Appendix A.4 for our partial sensitivity grid (within
+the aggressive lr).
+
+(tL,tH)(t_{L},t_{H}) sensitivity.
+
+Table 9 sweeps the view-generation pair on LLaDA-8B GSM8K (aggressive schedule, seed 42). The
+(0.2,0.7)(0.2,0.7) default dominates other pairs sharply on 4-shot (by +14+14 to +19+19 pp) and
+more modestly on 0-shot. Wider (0.3,0.90.3,0.9) and narrower (0.1,0.50.1,0.5) pairs both degrade;
+the symmetric case (0.2,0.2)(0.2,0.2) is reported in §5.2 and drops below the diffusion-only
+baseline entirely. These results corroborate the component-decomposition finding that asymmetric
+noise levels are load-bearing for DLLM-JEPA.
+
+
+Table 9: (tL,tH)(t_{L},t_{H}) sensitivity on LLaDA-8B GSM8K (aggressive, seed 42).
+
+(tL,tH)(t_{L},t_{H})          0-shot 4-shot
+(0.1,0.5)(0.1,0.5)            43.59  44.05
+(0.2,0.5)(0.2,0.5)            42.00  46.40
+(0.2,0.7)(0.2,0.7) (default)  44.88  61.33
+(0.3,0.9)(0.3,0.9)            40.11  42.76
+
+Multi-seed robustness.
+
+Table 10 reports 3-seed mean ±\pm std. The direction matches Table 2, with smaller means due to
+seed variance in the diffusion-only baseline. On LLaDA-8B GSM8K (aggressive), the baseline’s seed
+variance is ±8.9\pm 8.9 pp, which DLLM-JEPA narrows to ±3.9\pm 3.9 pp while remaining within the
+same upper envelope.
+
+
+Table 10: Multi-seed robustness. Mean ±\pm std over three fine-tuning seeds where available; std
+values are population standard deviations (NN-denominator).
+
+Model    Task                      Baseline →\rightarrow DLLM-JEPA              Δ\Delta
+LLaDA-8B GSM8K 4-shot (aggressive) 55.14 ±\pm 8.90 →\rightarrow 58.12 ±\pm 3.91 +2.98
+LLaDA-8B GSM8K 0-shot (Wide-tt)    65.23 ±\pm 0.93 →\rightarrow 67.07 ±\pm 0.41 +1.84
+LLaDA-8B NL-RX 4-shot (func)       45.93 ±\pm 2.70 →\rightarrow 48.52 ±\pm 4.55 +2.58
+LLaDA-8B Django 4-shot (ws-prefix) 74.63 ±\pm 0.16 →\rightarrow 74.83 ±\pm 0.56 +0.20
+Dream-7B GSM8K 4-shot              37.65 ±\pm 3.77 →\rightarrow 40.21 ±\pm 4.34 +2.56
+Dream-7B Django 4-shot (ws-prefix) 68.72 ±\pm 1.72 →\rightarrow 69.81 ±\pm 1.82 +1.09
+
+A.5 Full Grid Search Results
+
+
+Table 11: NL-RX-SYNTH λ×k\lambda\times k grid. 4-shot functional match on LLaDA-8B. Baseline:
+0.475.
+
+λ\lambda \ kk  1     2     3     4
+0.5            0.512 0.463 0.497 0.501
+1.0            0.465 0.432 0.582 0.534
+2.0            0.471 0.414 0.491 0.518
+
+Complete LLaDA-8B grids for Spider (both exact and execution match), NL-RX (exact, functional, and
+DFA-based functional match), and Django are released with the code.
+
+A.6 Multi-Seed Results
+
+
+Table 12: Multi-seed Wide-tt GSM8K. LLaDA-8B 0-shot accuracy across three seeds.
+
+Method            seed 42 seed 123 seed 777 mean ±\pm std
+Baseline FT       65.28   64.06    66.34    65.23 ±\pm 0.93
+L2-to-base anchor 65.28   64.06    66.19    65.18 ±\pm 0.87
+DLLM-JEPA         67.63   66.94    66.64    67.07 ±\pm 0.41
+
+DLLM-JEPA’s mean is higher than both baselines, with lower variance on this Wide-tt GSM8K cell
+specifically; aggregate variance behavior across all multi-seed cells is mixed (Table 10).
+Multi-seed runs on the aggressive configuration across GSM8K, NL-RX, and Django are included in the
+released artifacts; the direction of improvement is consistent with the headline numbers reported
+in Table 2, though absolute values differ by task and configuration as expected.
+
+A.7 Representation-Collapse Diagnostic
+
+To empirically rule out representation collapse in our stop-gradient JEPA setting, we compute
+pooled context/target embeddings ztL=Pool⁡(fθ​(xtL))z_{t_{L}}=\mathrm{Pool}(f_{\theta}(x_{t_{L}}))
+and ztH=Pool⁡(fθ​(xtH))z_{t_{H}}=\mathrm{Pool}(f_{\theta}(x_{t_{H}})) on 100 Wikitext-103 samples
+for each checkpoint, then report: (i) mean per-dimension standard deviation, (ii) effective rank
+reff=(∑iσi)2/∑iσi2r_{\mathrm{eff}}=(\sum_{i}\sigma_{i})^{2}/\sum_{i}\sigma_{i}^{2}, and (iii)
+cosine diversity 1−|cos⁡⟨zi,zj⟩|¯1-\overline{|\cos\langle z_{i},z_{j}\rangle|} on 5,000 random
+pairs. Collapse would manifest as reff→1r_{\mathrm{eff}}\to 1 and cos-div →0\to 0.
+
+
+Table 13: Collapse diagnostic. Measured on 100 Wikitext samples. For LLaDA-8B (D=4096D{=}4096) and
+Dream-7B (D=3584D{=}3584) across base / baseline-FT / DLLM-JEPA-FT checkpoints. Effective rank
+remains in the 41–44 range across all checkpoints, essentially matching the pre-trained base;
+cosine diversity and std are also preserved. No collapse is observed.
+
+Checkpoint                     view         std  reffr_{\mathrm{eff}} cos-div
+LLaDA base                     ztLz_{t_{L}} 0.76 42.3                 0.28
+LLaDA base                     ztHz_{t_{H}} 0.95 41.8                 0.27
+LLaDA baseline-FT (Wide-tt)    ztLz_{t_{L}} 0.77 42.8                 0.28
+LLaDA baseline-FT (Wide-tt)    ztHz_{t_{H}} 0.96 41.2                 0.28
+LLaDA DLLM-JEPA (Wide-tt)      ztLz_{t_{L}} 0.73 42.1                 0.25
+LLaDA DLLM-JEPA (Wide-tt)      ztHz_{t_{H}} 0.95 41.8                 0.27
+LLaDA baseline-FT (aggressive) ztLz_{t_{L}} 0.77 44.0                 0.31
+LLaDA DLLM-JEPA (aggressive)   ztLz_{t_{L}} 0.75 42.4                 0.28
+Dream base                     ztLz_{t_{L}} 1.43 44.1                 0.47
+Dream baseline-FT (GSM8K)      ztLz_{t_{L}} 1.33 44.0                 0.39
+Dream DLLM-JEPA (GSM8K)        ztLz_{t_{L}} 1.31 43.0                 0.39
+
+A.8 Reference Values from LLM-JEPA on Comparable Benchmarks
+
+Table 14 lists the improvements reported in LLM-JEPA [Huang et al., 2025] alongside the
+improvements we obtain with DLLM-JEPA on the same task names. This is not a matched comparison—the
+two methods use different backbones (AR vs. masked-diffusion), different model scales (1B vs.
+7–8B), different pre-training corpora, different baseline recipes, and in one case a different
+metric variant. We present the table solely as a reference point for readers familiar with the
+LLM-JEPA paper; reading it as a direct DLLM-JEPA-vs-LLM-JEPA comparison would be incorrect.
+Dream-7B is not shown here because LLM-JEPA did not evaluate it.
+
+
+Table 14: LLM-JEPA reference numbers (not a matched comparison). Values from LLM-JEPA [Huang et
+al., 2025] (Tables 2–4 therein) and DLLM-JEPA (this work), each measured against its own baseline.
+Note the model-scale gap (1B vs. 7–8B), different substrates, and the more lenient “startswith”
+metric used by LLM-JEPA on NL-RX-SYNTH.
+
+Task        Method (backbone, scale)         Metric            Baseline →\rightarrow     Δ\Delta
+                                                               method                    (pp)
+            LLM-JEPA (Llama-3.2-1B-Instruct, accuracy (3-seed) 32.4 →\rightarrow 36.4    +4.0
+            1B)
+GSM8K       DLLM-JEPA (LLaDA-8B, Wide-tt)    0-shot acc        65.2 →\rightarrow 67.1    +1.8
+                                             (3-seed)
+            DLLM-JEPA (LLaDA-8B, aggressive) 4-shot acc        55.1 →\rightarrow 58.1    +3.0
+                                             (3-seed)
+            LLM-JEPA (Llama-3.2-1B-Instruct, accuracy (3-seed) 47.5 →\rightarrow 50.6    +3.0
+Spider      1B)
+            DLLM-JEPA (LLaDA-8B)             4-shot exec (1    35.4 →\rightarrow 39.4    +4.0
+                                             seed)
+            LLM-JEPA (Llama-3.1-8B-Instruct, startswith^†      35.8 →\rightarrow 63.6    +27.8
+NL-RX-SYNTH 8B)
+            DLLM-JEPA (LLaDA-8B)             4-shot func       45.9 →\rightarrow 48.5    +2.6
+                                             (3-seed)
+
+^†startswith counts a prediction as correct if it begins with the gold regex string, irrespective
+of anything that follows; this is substantially more lenient than the functional-equivalence metric
+(our default), which tests the predicted regex against 200 randomly sampled strings and requires
+exact agreement with the gold regex’s output. Neither baseline accuracy (35.8) nor final accuracy
+(63.6) under startswith is directly comparable to our functional-equivalence numbers. For
+orientation, on our LLaDA-8B checkpoints the startswith metric gives consistently higher absolute
+numbers than the functional metric, but this is not a substitute for evaluating LLM-JEPA under a
+matched protocol.
+
+Setting the metric caveat aside, effect sizes on GSM8K and Spider fall in the same general range
+(single-digit percentage points over each paper’s own baseline). Model-scale effects (LLM-JEPA at
+1–8B, DLLM-JEPA at 7–8B) also factor into the absolute numbers; at a given scale, a larger model
+typically shows smaller absolute pp gains from the same auxiliary loss because its baseline is
+already closer to its ceiling.
+
+A.9 Stopping-Robust Evaluation Protocol
+
+Dream-7B’s natural generation for structured outputs (Python code, SQL) occasionally emits
+additional tokens after completing the answer, reflecting a generative style inherited from its
+pre-training. Under strict exact-match, this appears as a task failure despite the model having
+produced a correct answer. Because this is a model-style artifact rather than a quality difference,
+we adopt stopping-robust metrics for the tasks and models where this matters, and apply them
+uniformly to both baseline and DLLM-JEPA, and to both LLaDA-8B and Dream-7B in the main table (so
+column-to-column comparison is apples-to-apples):
+
+  • •
+   
+    Django (ws-prefix): whitespace-normalized prefix match between prediction and gold. On LLaDA-8B
+    the ws-prefix and raw exact metrics are similar; on Dream-7B, ws-prefix avoids false negatives
+    from trailing whitespace/docstrings.
+
+  • •
+   
+    Spider (exec-cleaned): truncate prediction at the first semicolon, then run the standard Spider
+    execution match against the database.
+
+Raw vs. cleaned numbers for Dream.
+
+On Dream-7B Django 4-shot, raw exact match drops after DLLM-JEPA fine-tuning (e.g., baseline 12.1%
+→\rightarrow JEPA 7.9% on a representative run), which is entirely attributable to the stopping
+artifact: the model now more often emits a longer continuation including correct code plus
+additional tokens. Under ws-prefix, the same checkpoints show consistent positive gains (Table 2).
+On Dream-7B Spider 4-shot, raw exact/exec match are near zero for both baseline and JEPA (baseline
+0.3% / 0.6%, JEPA 2.3% / 5.2%) due to the same mechanism; after SQL-cleaning, both rise into the
+20–25% range with DLLM-JEPA providing a clean +4.26 pp improvement.
+
+0-shot results for completeness.
+
+The main-table 4-shot protocol is chosen for direct LLaDA–Dream comparability. 0-shot results
+include LLaDA-8B Django exact-match 34.4% →\rightarrow 56.3% (+21.9 pp), LLaDA-8B GSM8K Wide-tt
+0-shot 65.3% →\rightarrow 67.6% (also reported in §4.3), and Dream-7B NL-RX 0-shot functional match
+(DFA) 34.7% →\rightarrow 42.4% (+7.7 pp). These are not included in the main table only to preserve
+the unified 4-shot framing.
+
+A.10 Implementation and Reproducibility Details
+
+Backbones.
+
+LLaDA-8B [Nie et al., 2025]: 32 transformer layers, hidden dim 4096. Dream-7B [Ye et al., 2025]: 28
+layers, hidden dim 3584. Both use bidirectional attention. We use the public HuggingFace
+checkpoints and trust_remote_code.
+
+JEPA module.
+
+The predictor gϕg_{\phi} is a stack of k∈{1,2,3,4,5}k\in\{1,2,3,4,5\} transformer decoder layers
+with the same hidden dimension as the backbone, randomly initialized. Pooling is mean pooling over
+non-masked, non-padding tokens followed by a single LayerNorm. The EMA target encoder is a no-grad
+deepcopy of the backbone with decay τ=0.996\tau{=}0.996, updated every optimizer step.
+
+Optimization.
+
+AdamW with β1=0.9,β2=0.999\beta_{1}{=}0.9,\beta_{2}{=}0.999, weight decay 0.010.01, cosine LR decay
+with 5% warmup. Per-device batch size 2, gradient accumulation 2 (effective batch 32 across 8
+GPUs). Gradient checkpointing enabled for memory. DeepSpeed ZeRO-2 (optimizer-state + gradient
+sharding across 8 GPUs).
+
+Training schedules.
+
+  • •
+   
+    Aggressive (main task table): lr 1×10−51{\times}10^{-5}, 2 epochs, fixed view rates (tL=0.2,tH=
+    0.7)(t_{L}{=}0.2,t_{H}{=}0.7).
+
+  • •
+   
+    Wide-tt (preservation): lr 1.4×10−61.4{\times}10^{-6}, 2 epochs, fixed view rates (tL=0.1,tH=
+    0.9)(t_{L}{=}0.1,t_{H}{=}0.9).
+
+DLLM-JEPA hyperparameters: λ∈{0.5,1.0,2.0}\lambda\in\{0.5,1.0,2.0\} (loss weight on ℒJEPA\mathcal
+{L}_{\text{JEPA}}), k∈{1,2,3,4,5}k\in\{1,2,3,4,5\} (predictor depth). Best (λ,k)(\lambda,k) per
+cell reported in Table 2; full k∈{1,…,5}k\in\{1,...,5\} grid for GSM8K in Table 7, available k∈
+{1,…,4}k\in\{1,...,4\} grid for NL-RX in Table 11.
+
+Seeds.
+
+Multi-seed results use seeds {42,123,777}\{42,123,777\}. Seeds are matched between baseline and
+DLLM-JEPA within each task / configuration cell so that any difference is attributable to the
+objective.
+
+Hardware and wall-clock.
+
+8×8\times NVIDIA A100 80GB on a single node, 80 GB HBM each. Per-run training wall-clock: GSM8K ∼\
+sim45 min (LLaDA-8B aggressive), ∼\sim1.0 h (Dream-7B aggressive), ∼\sim50 min (LLaDA-8B Wide-tt).
+Per-run evaluation wall-clock: GSM8K 0-shot ∼\sim1.5 h, 4-shot ∼\sim1.5 h (8-GPU DataParallel).
+Total compute for the experiments in this paper is approximately 800 A100-hours.
+
+Generation / evaluation.
+
+LLaDA’s iterative unmasking with 128 diffusion steps, block length 128, generation length 256
+(GSM8K) or 512 (Django/NL-RX). Greedy decoding (temperature 0). Same generation config for baseline
+and DLLM-JEPA within each row.
+
+Datasets.
+
+GSM8K [Cobbe et al., 2021], Spider [Yu et al., 2018], NL-RX-SYNTH [Locascio et al., 2016], Django [
+Oda et al., 2015] from public sources. Wikitext-103 validation [Merity et al., 2017] for held-out
+diffusion loss. MMLU [Hendrycks et al., 2021] 500-question stratified subset (approximately 8–9
+questions per subject across all 57 subjects, fixed seed) for general-capability check.
+
+Code and artifacts.
+
+All training and evaluation scripts, configuration files, and the EMA + predictor + Wikitext
+probing code will be released at the paper’s accompanying GitHub repository upon publication. The
+released bundle includes the exact (λ,k)(\lambda,k) values per cell, masking-schedule scripts, and
+seed-by-seed checkpoints used for the multi-seed tables.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

@@ -1,0 +1,1412 @@
+source: https://arxiv.org/html/2511.14868
+arxiv: https://arxiv.org/abs/2511.14868
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. Sentence Embeddings.
+     2. Finetuning LLMs for Embeddings.
+     3. Training-free LLM for Embeddings.
+ 4. 3 Methodological Preliminaries
+     1. 3.1 Mean vs. Last-token Embedding
+         1. Interpretation.
+         2. Long-context Sentence Similarity (STS) Task.
+     2. 3.2 Backward Dependency
+ 5. 4 Hierarchical Token Prepending
+     1. 4.1 Input Partitioning
+     2. 4.2 Local Prepending
+     3. 4.3 Global Prepending
+     4. 4.4 Early Exit & Readout
+ 6. 5 Experiments
+     1. 5.1 BEIR Retrieval Task
+         1. Setups.
+         2. Baselines.
+         3. Results.
+     2. 5.2 LongEmbed Retrieval Tasks
+         1. Setups.
+         2. Results.
+     3. 5.3 General Embedding Tasks
+         1. Setups.
+         2. Results.
+     4. 5.4 Ablations over Local Prepending Strategy
+         1. Effect of Hyperparameter KK.
+         2. Sentences vs. Every Few tokens.
+     5. 5.5 HTP on Finetuned Embedding Models
+ 7. 6 Conclusion
+ 8. References
+ 9. A Proofs
+     1. A.1 Transformer architectures
+         1. Notation.
+         2. Setup.
+         3. Single-head Pre-LN block.
+         4. Attention matrix.
+         5. Final normalization and readouts.
+         6. Assumptions.
+     2. A.2 Layerwise bounds and path expansion
+     3. A.3 Oversquashing bounds for last-token and mean-token readouts
+         1. Interpretation and Discussion
+10. B Experiment details
+     1. B.1 Retrieval tasks
+         1. B.1.1 LLM Architecture Setup
+         2. B.1.2 Instruction For Retrievals
+     2. B.2 General embedding tasks
+         1. B.2.1 Experiment Setup
+         2. B.2.2 General Embedding Result
+     3. B.3 Ablations
+11. C Examples
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2511.14868v1 [cs.CL] 18 Nov 2025
+
+Hierarchical Token Prepending: Enhancing Information Flow in Decoder-based LLM Embeddings
+
+Xueying Ding ^†^†thanks: Equal contribution.^†^†thanks: Work done as intern in Snap Inc. 
+Affiliation: Carnegie Mellon University     Xingyue Huang^1^1footnotemark: 1 ^2^2footnotemark: 2 
+Affiliation: University of Oxford     Mingxuan Ju Affiliation: Snap Inc.    Liam Collins 
+Affiliation: Snap Inc.    Yozen Liu    Leman Akoglu    Neil Shah    Tong Zhao
+
+Abstract
+
+Large language models produce powerful text embeddings, but their causal attention mechanism
+restricts the flow of information from later to earlier tokens, degrading representation quality.
+While recent methods attempt to solve this by prepending a single summary token, they over-compress
+information, hence harming performance on long documents. We propose Hierarchical Token Prepending
+(HTP) ^1^1 1 https://github.com/snap-research/HTP, a method that resolves two critical bottlenecks.
+To mitigate attention-level compression, HTP partitions the input into blocks and prepends
+block-level summary tokens to subsequent blocks, creating multiple pathways for backward
+information flow. To address readout-level over-squashing, we replace last-token pooling with
+mean-pooling, a choice supported by theoretical analysis. HTP achieves consistent performance gains
+across 11 retrieval datasets and 30 general embedding benchmarks, especially in long-context
+settings. As a simple, architecture-agnostic method, HTP enhances both zero-shot and finetuned
+models, offering a scalable route to superior long-document embeddings.
+
+1 Introduction
+
+Neural text embeddings play a critical role in applications such as information retrieval,
+recommendation, document clustering, etc. Notably, large language models (LLMs) have emerged as a
+powerful paradigm for embedding models, offering remarkable zero-shot capabilities and often
+surpassing traditional sentence embedding models (Muennighoff et al., 2023; Thakur et al., 2021).
+
+However, LLMs are optimized for auto-regressive token generation, not for producing sequence-level
+embeddings. Therefore, LLMs typically rely on causal attention instead of the bidirectional
+encoding used in traditional encoder-only models (Devlin et al., 2019; Liu et al., 2019). As a
+result, embedding generation suffers from restricted backward flow (Springer et al., 2025; Fu et
+al., 2024), as earlier tokens cannot access later positions in the sequence. The representations of
+earlier tokens cannot integrate later information, and hence degrade downstream performances.
+
+Multiple recent works (Springer et al., 2025; Fu et al., 2024; Xu et al., 2024) have attempted to
+introduce such backward flow with minimal or no changes to model architectures, thereby preserving
+zero-shot capabilities. Echo embedding (Springer et al., 2025) addresses the issue at the token
+level by repeating the input sequence, allowing early tokens in the second copy can attend to later
+tokens in the first. While effective, doubling the sequence is computationally infeasible for long
+documents. In contrast, token prepending (TP) (Fu et al., 2024) is a document level solution that
+dynamically rewire the end-of-sequence (EOS) representation to the beginning of the input with a
+custom <PST> token before the next layer. This allows all tokens to attend to a compressed summary
+of the full sequence, yet degrades performance on long-context tasks due to over-compression. We
+therefore ask: Can we preserve backward flow while alleviating information compression and
+maintaining scalability for long-context tasks?
+
+In this work, we investigate the information over-compression effect in long-context LLM embeddings
+generations with TP and identify two bottlenecks: (1) an attention-level bottleneck, where a single
+prepended token is forced to summarize the entire document, and (2) a readout-level bottleneck,
+where the final embedding is taken solely from the last token, resulting in an over-squashed
+representation (Barbero et al., 2024).
+
+We propose Hierarchical Token Prepending (HTP), which mitigates over-compressing by replacing a
+single global <PST> token with a hierarchy of block-level summary tokens. HTP partitions the input
+into blocks and assigns each block a designated summary token prepended to subsequent blocks,
+enabling backward flow through multiple pathways and alleviating the attention-level bottleneck.
+For the readout-level bottleneck, we replace last-token pooling with mean-pooling and show improved
+performance in long-context settings.
+
+Our contributions can be summarized as follows:
+
+  • •
+   
+    We propose Hierarchical Token Prepending (HTP), a block-level summary tokens prepending method
+    that enables backward flow with less over-compression.
+
+  • •
+   
+    We show that mean-pool readout is more suitable for long-context retrieval tasks, with
+    empirical and theoretical evidence.
+
+  • •
+   
+    HTP showcases consistent improvements over extensive evaluation across 1111 retrieval datasets
+    and 3030 general embedding tasks, under standard and long-context settings. HTP can also
+    improve performance of finetuned embedding models (e.g., NV-Embed-v2 (Lee et al., 2025)).
+
+2 Related Work
+
+Sentence Embeddings.
+
+The foundation of modern text embeddings was built on bidirectional encoders like BERT (Devlin et
+al., 2019) and RoBERTa (Liu et al., 2019). While effective for token-level tasks, their raw outputs
+proved suboptimal for sentence similarity tasks. This motivated a wave of research focused on
+specialized training strategies, including supervised finetuning with SBERT (Reimers and Gurevych,
+2019) and Sentence-T5 (Ni et al., 2022), contrastive learning with SimCSE (Gao et al., 2021) and
+SNCSE (Chanchani and Huang, 2023), and prompt-based tuning with PromptBERT (Jiang et al., 2022).
+Although powerful, these methods require extensive, task-specific training or finetuning, thus
+limiting their broader applicability.
+
+Finetuning LLMs for Embeddings.
+
+More recently, a line of work has focused on adapting decoder-only LLMs for embedding tasks through
+architectural modifications and finetuning. LLM2Vec (BehnamGhader et al., 2024) and GRIT (
+Muennighoff et al., 2025) apply contrastive finetuning to make LLM representations suitable for
+retrieval. Deelm (Li and Li, 2024) modify a decoder-only model to be bidirectional, resembling
+traditional encoders. Similarly, NVEmbed (Lee et al., 2025) and RepLLaMA (Ma et al., 2024) have
+demonstrated strong performance by specifically training LLMs for retrieval tasks. Our proposed
+method, HTP, is orthogonal to these approaches and can be applied to enhance the performance of
+these finetuned models, as we show in Section 5.4.
+
+Training-free LLM for Embeddings.
+
+A key appeal of LLMs is their ability to generate powerful embeddings in a zero-shot, training-free
+manner. Literature proposed strategies such as optimizing prompts to elicit better representations 
+(Jiang et al., 2024; Lei et al., 2024; Zhang et al., 2024; Cheng et al., 2025) and utilizing expert
+routers in MoE LLMs (Li and Zhou, 2025). However, a core challenge for all training-free methods is
+the restricted backward flow inherent from the causal attention mechanism of autoregressive models.
+
+Two recent methods directly tackle this issue. Echo Embedding (Springer et al., 2025) duplicates
+the input sequence, allowing the second copy to attend to the first, but resulting doubled sequence
+length. In contrast, Token Prepending (Fu et al., 2024) redirects a final summary token to the
+beginning of the sequence to create a global view. While more efficient, this creates an
+information bottleneck, leading to over-compression and degraded performance on long documents. Our
+work, HTP, directly addresses this bottleneck by introducing a hierarchy of block-level summary
+tokens, enabling robust backward information flow without over-compression.
+
+3 Methodological Preliminaries
+
+We begin by examining two factors critical to the quality of embeddings from decoder-only LLMs: (i)
+the choice of readout function for aggregating token representations, and (ii) the necessity of
+enabling backward dependencies in the causal attention mechanism.
+
+3.1 Mean vs. Last-token Embedding
+
+Two strategies dominate the aggregation of token embeddings are mean-pooling (averaging all token
+representations) and last-token pooling (using only the final token’s representation). While
+last-token pooling is often favored for its simplicity and alignment with the autoregressive design
+of LLMs, it creates a significant information bottleneck. Recent work suggests it is sensitive to
+prompt selection (Springer et al., 2025), and our experiments in Section 5 show it underperforms in
+retrieval tasks.
+
+To understand this performance gap, we show that mean-pooling is more robust to the
+“over-squashing” issue by distributing representational importance across all tokens instead of
+compressing it into a single position. Following sensitivity analysis adapted for decoder-only
+Transformers (Barbero et al., 2024; Topping et al., 2022), we quantify how the final embedding
+changes in response to a perturbation in an input token. Let 𝐯i(0)∈ℝd\mathbf{v}^{(0)}_{i}\in\mathbb
+{R}^{d} be the ii-th input token embedding, and 𝐲1,…,𝐲n∈ℝd\mathbf{y}_{1},\ldots,\mathbf{y}_{n}\in\
+mathbb{R}^{d} be the post-normalization representations at the final layer. We study the Jacobian
+norms ‖∂𝐲n∂𝐯i(0)‖\big\|\tfrac{\partial\mathbf{y}_{n}}{\partial\mathbf{v}^{(0)}_{i}}\big\| for
+last-token readout and ‖∂𝐲¯∂𝐯i(0)‖\big\|\tfrac{\partial\bar{\mathbf{y}}}{\partial\mathbf{v}^{(0)}_
+{i}}\big\| for mean-token readout^2^2 2 ∥⋅∥\|\cdot\| denotes the Euclidean norm on vectors and the
+induced operator norm on Jacobians., where 𝐲¯:=1n​∑j=1n𝐲j\bar{\mathbf{y}}:=\tfrac{1}{n}\sum_{j=1}^
+{n}\mathbf{y}_{j}.
+
+Theorem 3.1 (Mean vs. Last-token Embedding).
+
+In a causal, decoder-only Transformer with LL layers, there exists a depth-dependent constant KL>
+0K_{L}>0 and a nonnegative, lower-triangular, row-stochastic mixing matrix 𝐀∈ℝn×n\mathbf{A}\in\
+mathbb{R}^{n\times n} (capturing aggregate attention+residual flow across layers) such that, for
+every input position i∈[n]i\in[n],
+
+ ‖∂𝐲n∂𝐯i(0)‖⏟last-token\displaystyle\underbrace{\Big\|\     ≤KL​𝐀n,i,\displaystyle\leq\;K_{L}
+ tfrac{\partial\mathbf{y}_{n}}{\partial\mathbf{v}^{(0)}_    \,\mathbf{A}_{n,i},                 (1)
+ {i}}\Big\|}_{\text{last-token}}
+ ‖∂𝐲¯∂𝐯i(0)‖⏟mean-tokens\displaystyle\underbrace{\Big\|\    ≤KLn​∑j=1n𝐀j,i.\displaystyle\leq\;
+ tfrac{\partial\bar{\mathbf{y}}}{\partial\mathbf{v}^{(0)}_  \frac{K_{L}}{n}\sum_{j=1}^{n}\      (2)
+ {i}}\Big\|}_{\text{mean-tokens}}                           mathbf{A}_{j,i}.
+
+Interpretation.
+
+The last-token bound depends on a single entry 𝐀n,i\mathbf{A}_{n,i}, representing the influence of
+input token i on the final token nn, which can diminish rapidly with network depth. In contrast,
+the mean-pooling bound aggregates the entire column ∑j𝐀j,i\sum_{j}\mathbf{A}_{j,i} and is therefore
+topologically depth-agnostic up to the scale factor KLK_{L}, implying more robustness against
+over-squashing. We present the formal definitions and proof in Appendix A.
+
+Long-context Sentence Similarity (STS) Task.
+
+We further empirically validate the impact of over-squashing on a modified STS task, where create
+long-context inputs by concatenating sentences with similar human-annotated scores (details in
+Appendix B). As shown in Figure 1, the performance of last-token embeddings degrades sharply as
+input length increases. While methods like PromptEOL (Jiang et al., 2024) offer some mitigation,
+they still cannot match the stability and superior performance of mean-pooling.
+
+
+Figure 1: Left: Performance by embedding method across sentence lengths. Right: Performance drop of
+last-token and PromptEOL vs. mean at longer lengths.
+
+3.2 Backward Dependency
+
+The causal attention in decoder-only LLMs restricts backward information flow, as tokens cannot
+attend to subsequent positions. Input repetition methods (Springer et al., 2025; Xu et al., 2024)
+address this by allowing a “second pass” over the input, where the repeated sequence can attend to
+the original to form a more complete representation. Figure 2 showcases a masking experiment to
+isolate the effect of this backward dependency. We find that preventing the second-pass tokens from
+attending to the first-pass tokens significantly degrades STS performance, whereas masking the
+forward attention (from the first pass to the second) has a negligible impact. This result confirms
+that enabling backward information flow is critical for generating high-quality embeddings.
+
+Refer to caption
+(a) Attention Map.
+
+Condition      STS Score
+Echo Unmasked  68.00
++ Mask Area A  67.89
++ Mask Area B  54.25
+
+
+(b) Average scores across 4 STS tasks on Echo Mean Embeddings, with no-masking applied, masking
+Area A and masking Area B.
+
+
+Figure 2: Disabling second-pass backward attention significantly degrades STS performance.
+
+Refer to caption
+Figure 3: The attention map shows that End-of-Sentence (EOS) tokens are capturing information with
+more attention lookup to previous tokens.
+
+
+Figure 4: HTP partitions the input into blocks and creates a two-level summary. First, the hidden
+state of each block’s final token is copied to a local summary token (<PST>). These local summaries
+are then aggregated into a global (<B-PST>) block at the front, making them accessible to all
+tokens. A mean readout with early exiting produces the final embedding.
+
+4 Hierarchical Token Prepending
+
+To mitigate the attention and readout bottlenecks in decoder-only models, we propose Hierarchical
+Token Prepending (HTP), a training-free method that establishes multi-level backward information
+flow. As illustrated in Figure 4, HTP operates in three main stages:
+
+ 1. 1.
+   
+    Input Partitioning: The input text is segmented into semantic blocks (e.g., sentences), and
+    placeholder summary <PST> tokens are inserted to create a hierarchical structure.
+
+ 2. 2.
+   
+    Local Prepending: Between Transformer layers, the final hidden state of each block is “rewired”
+    to a corresponding local summary token, creating a block-level summary.
+
+ 3. 3.
+   
+    Global Prepending: These local summaries are then propagated to a global summary <B-PST> block
+    at the beginning of the sequence, making them accessible to all tokens.
+
+After the final layer, a mean-pooling readout is used to produce the output embedding. The
+following subsections elaborate over each step.
+
+4.1 Input Partitioning
+
+HTP begins by restructuring the input sequence to accommodate hierarchical summaries. Unlike
+methods that use a single summary token for entire text, HTP partitions the text into smaller
+semantic units to prevent information over-compression.
+
+Given an input sequence of tokens T=[t1,⋯,tn]T=[t_{1},\cdots,t_{n}], we first segment it into MM
+subsequences (S1,⋯,SM)(S_{1},\cdots,S_{M}), SmS_{m} with m∈[M]m\in[M] represents a local context.
+This partition is defined by indices 0=i0<i1<⋯<iM=n0=i_{0}<i_{1}<\cdots<i_{M}=n, s.t. Sm=
+(tim−1+1,tim−1+2,…,tim)S_{m}=(t_{i_{m-1}+1},t_{i_{m-1}+2},\dots,t_{i_{m}}) for m∈[M]m\in[M].
+
+We then augment the partitioned sequence with two types of special placeholder tokens to create the
+input sequence T′T^{\prime}:
+
+ 1. 1.
+   
+    A local summary token, <PST>m\texttt{<PST>}_{m}, is inserted before each subsequence SmS_{m}.
+
+ 2. 2.
+   
+    A block of MM global summary tokens, (<B-PST>1,…,<B-PST>M)(\texttt{<B-PST>}_{1},\dots,\texttt
+    {<B-PST>}_{M}), is prepended to the beginning of the entire sequence.
+
+Hence, the resulted augmented structure of the input sequence T′T^{\prime} is:
+
+ T′=[\displaystyle T^ <B-PST>1,…,<B-PST>M,\displaystyle\texttt{<B-PST>}_{1},\dots,\texttt       (3)
+ {\prime}=[           {<B-PST>}_{M},
+                      <PST>1,S1,…,<PST>M,SM]\displaystyle\texttt{<PST>}_{1},S_{1},\dots,\
+                      texttt{<PST>}_{M},S_{M}]\vskip-7.22743pt
+
+In practice, we define each subsequence SmS_{m} by grouping every KK sentences, leveraging their
+natural semantic boundaries. This choice is motivated by observed attention patterns in
+decoder-only models, where the EOS tokens effectively aggregate information from preceding words (
+Figure 3). Thus, the final token’s hidden state serves as an effective proxy for a sentence’s
+summary. Unless otherwise specified, we set the hyperparameter K=1K=1. An example is provided in
+Appendix C.
+
+4.2 Local Prepending
+
+After partitioning, the Local Prepending step populates the <PST> placeholders with sentence-level
+summaries. This operation is performed dynamically between the layers of the Transformer.
+
+Let 𝐯(ℓ)=(𝐯1(ℓ),…,𝐯|T′|(ℓ))\mathbf{v}^{(\ell)}=(\mathbf{v}_{1}^{(\ell)},\dots,\mathbf{v}_{|T^{\
+prime}|}^{(\ell)}) be the sequence of hidden states entering layer ℓ\ell. Since the placeholder
+tokens are not in the model’s trained vocabulary, their embeddings are randomly initialized for the
+first layer. For each subsequence layer ℓ>1\ell>1, we apply a “rewiring” function, flocalf_{\text
+{local}}, before the self-attention mechanism. This function copies the hidden state of the final
+token of each subsequence SmS_{m} to the position of its corresponding local summary token, <PST>m\
+texttt{<PST>}_{m}.
+
+Formally, let pos​(⋅)\texttt{pos}(\cdot) be a function returning a token’s index, and end​(Sm)\
+texttt{end}(S_{m}) be the final token of subsequence SmS_{m}, which is typically sentence-ending
+punctuation (e.g., ‘.’, ‘!’, ‘?’). Let 𝒫PST={pos​(<PST>m)}m=1M\mathcal{P}_{\text{PST}}=\{\text{pos}
+(\texttt{<PST>}_{m})\}_{m=1}^{M} be the set of all local summary token positions, and the mapping
+μ:𝒫PST→[M]\mu:\mathcal{P}_{\text{PST}}\to[M] returns the sentence index mm for a given token
+position i∈𝒫PSTi\in\mathcal{P}_{\text{PST}}. The rewiring function flocalf_{\text{local}} for a
+hidden state 𝐯i(ℓ)\mathbf{v}_{i}^{(\ell)} is defined as:
+
+ (flocal​(𝐯(ℓ)))i={𝐯pos​(end​(Sμ⁡(i)))(ℓ)if ​i∈𝒫PST,𝐯i(ℓ)otherwise.(\,f_{\text{local}}(\mathbf{v}^
+ {(\ell)}))_{i}=\begin{cases}\mathbf{v}^{(\ell)}_{\text{pos}(\text{end}(S_{\mu(i)}))}&\text{if }i\
+ in\mathcal{P}_{\text{PST}},\\ \mathbf{v}_{i}^{(\ell)}&\text{otherwise.}\end{cases}\
+ vskip-7.22743pt
+
+This rewired sequence, 𝐯′(ℓ)=flocal​(𝐯(ℓ))\mathbf{v}^{\prime(\ell)}=f_{\text{local}}(\mathbf{v}^{(\
+ell)}), is then fed into the attention block of layer ℓ\ell. This process ensures that each <PST>m\
+texttt{<PST>}_{m} token carries a summary of subsequence SmS_{m}, establishing a sentence-level
+backward dependency.
+
+4.3 Global Prepending
+
+Building upon the local summaries, the Global Prepending step enables document-level backward flow.
+In this stage, we propagate the sentence-level summaries from the <PST> tokens into the global 
+<B-PST> block at the start of the sequence. This hierarchical design creates multiple backward
+information pathways, mitigating the bottleneck of a single summary token.
+
+We define a second rewiring function, fglobalf_{\text{global}}, which operates on the output of the
+local prepending step, 𝐯′(ℓ)\mathbf{v}^{\prime(\ell)}. fglobalf_{\text{global}} copies the hidden
+state from each local summary token <PST>m\texttt{<PST>}_{m} to its corresponding global summary
+token <B-PST>m\texttt{<B-PST>}_{m}. Let 𝒫BPST={pos​(<B-PST>m)}m=1M\mathcal{P}_{\text{BPST}}=\{\text
+{pos}(\texttt{<B-PST>}_{m})\}_{m=1}^{M} denote the set for the global token positions, and mapping
+ν⁡(i)\nu(i) returns the sentence index mm for a position i∈𝒫BPSTi\in\mathcal{P}_{\text{BPST}}. The
+fglobalf_{\text{global}} function is then defined as:
+
+ (fglobal​(𝐯′(ℓ)))i={𝐯pos​(<PST>ν⁡(i))′(ℓ)if ​i∈𝒫BPST,𝐯′i(ℓ)otherwise.(\,f_{\text{global}}(\mathbf
+ {v}^{\prime(\ell)}))_{i}=\begin{cases}\mathbf{v}^{\prime(\ell)}_{\text{pos}(\texttt{<PST>}_{\nu
+ (i)})}&\text{if }i\in\mathcal{P}_{\text{BPST}},\\ {\mathbf{v}^{\prime}}_{i}^{(\ell)}&\text
+ {otherwise.}\end{cases}\vskip-7.22743pt
+
+The final sequence, 𝐯′′(ℓ)=fglobal(flocal(𝐯(ℓ)))\mathbf{v}^{\prime\prime(\ell)}=f_{\text{global}}
+(f_{\text{local}}(\mathbf{v}^{(\ell)})), is then fed into the attention block of layer ℓ\ell. This
+process allows any token to attend to summaries of all subsequent sentences by accessing the 
+<B-PST> block, thereby enabling a comprehensive document-level backward flow.
+
+4.4 Early Exit & Readout
+
+Consistent with recent findings that intermediate layers often produce richer semantic
+representations (Fu et al., 2024; Skean et al., 2025; Liu et al., 2024; Jin et al., 2025), we
+employ an early-exit strategy. We select the output from a predetermined intermediate layer, L′L^{\
+prime}. The final document embedding, 𝐲¯(L′)\mathbf{\bar{y}}^{(L^{\prime})}, is then computed by
+applying the mean-pooling readout, as justified in Section 3.1, over the fully rewired hidden
+states 𝐯′′(L′)\mathbf{v}^{\prime\prime(L^{\prime})}.
+
+Models     Method       ArguAna SciFact FiQA2018 NFCorpus SCIDOCS HotpotQA Trec-COVID Memory Time
+           Vanilla Mean 45.66   42.10   8.02     9.03     2.80    8.80     26.02      1.00×\ 1.00×\
+                                                                                      times  times
+           Vanilla Last 10.66   0.35    0.98     2.64     0.27    0.21     1.96       1.00×\ 1.00×\
+                                                                                      times  times
+           Echo Mean    35.99   28.93   11.60    13.07    4.67    14.41    39.13      4.00×\ 3.45×\
+Mistral-7B                                                                            times  times
+           TP w.        4.43    8.38    8.36     7.07     3.07    3.24     20.35      1.02×\ 1.04×\
+           PromptEOL                                                                  times  times
+           TP w. Mean   42.41   36.71   12.72    8.13     3.30    9.84     25.67      1.02×\ 1.15×\
+                                                                                      times  times
+           HTP (Ours)   47.06   46.67   8.77     15.51    6.08    16.02    33.65      1.12×\ 1.18×\
+                                                                                      times  times
+           Vanilla Mean 42.70   49.13   6.27     12.97    3.80    13.36    10.69      1.00×\ 1.00×\
+                                                                                      times  times
+           Vanilla Last 11.89   17.55   0.52     5.63     0.70    0.11     3.59       1.00×\ 1.00×\
+                                                                                      times  times
+           Echo Mean    32.56   40.16   10.50    14.99    4.49    20.28    19.42      4.00×\ 3.16×\
+Gemma2-9B                                                                             times  times
+           TP w.        36.91   43.33   18.45    17.66    15.70   26.17    33.65      1.05×\ 1.18×\
+           PromptEOL                                                                  times  times
+           TP w. Mean   42.14   52.73   8.89     15.02    16.50   14.94    21.22      1.06×\ 1.16×\
+                                                                                      times  times
+           HTP (Ours)   43.64   53.72   10.76    18.33    11.16   18.84    25.16      1.18×\ 1.20×\
+                                                                                      times  times
+           Vanilla Mean 34.11   27.16   3.26     3.90     4.25    3.04     11.16      1.00×\ 1.00×\
+                                                                                      times  times
+           Vanilla Last 8.80    0.01    0.20     1.74     0.13    0.02     0.92       1.00×\ 1.00×\
+                                                                                      times  times
+           Echo Mean    33.10   22.98   8.08     5.11     6.01    5.82     15.09      4.00×\ 2.85×\
+Qwen2-1.5B                                                                            times  times
+           TP w.        16.98   18.54   4.84     8.03     4.81    4.65     14.72      1.01×\ 1.02×\
+           PromptEOL                                                                  times  times
+           TP w. Mean   21.66   18.31   2.52     5.89     3.91    5.23     21.78      1.01×\ 1.03×\
+                                                                                      times  times
+           Hierarchical 36.01   28.29   4.06     5.43     4.85    5.53     18.35      1.10×\ 1.08×\
+           TP                                                                         times  times
+
+
+Table 1: NDCG@10 (in percentage) on Retrieval Tasks from MTEB Retrieval Benchmarks. We bold the top
+one and underline the runner-up. We also report the additional memory and running time incurred
+from Vanilla method.
+
+5 Experiments
+
+We conduct extensive experiments over HTP to answer following questions:
+
+ 1. Q1.
+   
+    How does HTP compare with training-free LLM embedding baselines on retrieval task?
+
+ 2. Q2.
+   
+    Does HTP perform well in general embedding benchmarks?
+
+ 3. Q3.
+   
+    What is the effect of local prepending scale on retrieval performance?
+
+ 4. Q4.
+   
+    Does HTP help with finetuned models?
+
+5.1 BEIR Retrieval Task
+
+Setups.
+
+We evaluate on a subset of commonly used BEIR (Thakur et al., 2021) retrieval datasets (Q1),
+including ArguAna (Wachsmuth et al., 2018), SciFact (Wadden et al., 2020), FiQA2018 (Maia et al.,
+2018), NFCorpus (Boteva et al., 2016), SCIDOCS (Cohan et al., 2020), HotpotQA (Yang et al., 2018),
+and TREC-COVID (Voorhees et al., 2021). We report NDCG@10, the time, and memory cost for each
+baseline methods.
+
+Baselines.
+
+We evaluate three decoder-only LLMs of varying sizes: (1) Mistral-Instruct-7B-0.3 (Jiang et al.,
+2023), (2) Gemma2-9B (Team et al., 2024), and (3) Qwen2-1.5B-Instruct (Yang et al., 2024). For each
+model, we benchmark the following embedding extraction strategies: (1) Vanilla Mean: mean pooling
+over all token embeddings; (2) Vanilla Last: using the last token’s embedding; (3) Echo Mean (
+Springer et al., 2025): duplicating the input and averaging token embeddings from the second pass;
+(4) Token Prepending (TP) (Fu et al., 2024) w. PromptEOL (Jiang et al., 2024): appending a
+summarization-in-one-word prompt and using the final token’s embedding; (5) TP w. Mean: prepended
+prompt token with mean pooling; and (6) HTP: as detailed in Section 4. For HTP, we use K=1K=1
+across all datasets. To segment the paragraphs, we use Spacy’s parser Honnibal et al. (2020).
+Except for TP w. PromptEOL, all methods incorporate instructions (details in Appendix B).
+
+For TP methods and HTP, we select TP mixing layers and early exiting layers based on embedding
+performance of separate validation retrieval datasets from BEIR Thakur et al. (2021), following
+previous practice Fu et al. (2024) (See details about early existing and token prepending layers in
+Section B.1.1).
+
+Results.
+
+Table 1 presents the overall results. To answer Q1, our HTP method demonstrates comparable or even
+superior performance to other training-free LLM embedding baselines, frequently ranking first or
+second across the datasets. In terms of memory and time efficiency, HTP requires significantly less
+than Echo Mean (Springer et al., 2025), while achieving similar performance. Compared to Token
+Prepending (TP) (Fu et al., 2024) using either PromptEOL (Jiang et al., 2024) or mean pooling, HTP
+shows slightly better performance. This improvement stems from its design, which involves inserting
+additional <PST>m\texttt{<PST>}_{m} and <B-PST>m\texttt{<B-PST>}_{m} tokens for local and global
+lookups, leading to reduced information squashing. In terms of models, Gemma2-9B achieves stronger
+performance, likely due to its larger scale. Overall, we observe that using the last token
+embedding generally results in lower retrieval performance compared to mean pooling, with the
+exception of Gemma2-9B’s TP with PromptEOL. This suggests that PromptEOL (Jiang et al., 2024) acts
+as a soft prompting technique that implicitly encourages information reorganization within the
+representation.
+
+
+Figure 5: Avg. NDCG@10 across different context lengths.
+
+Models     Method          CXT Len QMSum 2WikiMQA SumFD NQA   Avg. Time(s)
+           Vanilla Mean    512     11.98 15.29    36.81 2.50  73.0 (1.00×\times)
+           Echo Mean       512     14.27 22.50    32.03 7.05  135.0 (1.84×\times)
+Mistral-7B PromptEOL       512     4.57  7.16     6.07  2.80  90.5 (1.25×\times)
+           TP w. PromptEOL 512     5.44  6.51     5.52  1.72  94.5 (1.28×\times)
+           TP w. Mean      512     11.97 18.62    38.50 3.08  93.7 (1.27×\times)
+           HTP (Ours)      512     13.22 20.17    35.63 8.09  98.2 (1.34×\times)
+           Vanilla Mean    512     19.19 23.12    48.54 6.45  86.5 (1.00×\times)
+           Echo Mean       512     9.73  16.30    21.54 4.14  170.5 (2.01×\times)
+Gemma2-9B  PromptEOL       512     13.90 27.35    32.90 15.74 132.5 (1.56×\times)
+           TP w. PromptEOL 512     14.43 30.86    36.16 15.89 118.3 (1.40×\times)
+           TP w. Mean      512     20.45 21.73    48.88 7.04  103.0 (1.22×\times)
+           HTP (Ours)      512     21.89 22.90    47.78 10.84 107.7 (1.27×\times)
+           Vanilla Mean    8192    24.18 24.02    53.88 3.42  236.7 (1.00×\times)
+           Echo Mean       8192    17.29 29.78    39.27 8.77  818.5 (3.50×\times)
+Mistral-7B PromptEOL       8192    6.36  7.49     9.86  4.08  245.5 (1.46×\times)
+           TP w. PromptEOL 8192    4.56  6.89     6.86  3.42  256.5 (1.05×\times)
+           TP w. Mean      8192    23.08 23.11    56.50 4.78  241.0 (1.02×\times)
+           HTP (Ours)      8192    23.43 27.88    53.53 9.07  265.9 (1.50×\times)
+           Vanilla Mean    8192    29.85 34.62    66.69 7.02  322.5 (1.00×\times)
+           Echo Mean       8192    10.23 17.15    28.52 5.76  832.1 (2.58×\times)
+Gemma2-9B  PromptEOL       8192    9.66  21.84    30.74 11.91 322.7 (1.00×\times)
+           TP w. PromptEOL 8192    9.71  23.32    29.80 11.70 336.3 (1.03×\times)
+           TP w. Mean      8192    18.29 19.20    29.22 7.21  337.5 (1.03×\times)
+           HTP (Ours)      8192    30.22 35.19    67.06 10.42 350.4 (1.08×\times)
+
+
+
+Table 2: NDCG@10 (in percentage) and avg. running time on LongEmbed. we report the context length
+of 512 and an extended length of 8192.
+
+5.2 LongEmbed Retrieval Tasks
+
+Setups.
+
+We evaluate performance of models on four real-world tasks in LongEmbed (Zhu et al., 2024), which
+features documents of longer length and dispersed target information (Q1). The four tasks are
+QMSum (Zhong et al., 2021), 2WikiMultiHopQA (Ho et al., 2020), SummScreenFD (Chen et al., 2021),
+NarrativeQA (Kočiskỳ et al., 2018), and a detailed description of the dataset is in Table 13. We
+evaluate on Gemma2-9B and Mistral-instruct-7B-0.3, and over the same extraction strategies as in
+the previous section. We again report NDCG@10 and running time for the evaluation. We primarily use
+two context lengths: 512, a commonly used length in the embedding model literature (Springer et
+al., 2025; Lee et al., 2025; BehnamGhader et al., 2024), and an extended length of 8192. We also
+evaluate models with additional context lengths and report their performance for comparison. Across
+all models, we fix one single instruction prompt: “Retrieve relevant document. {text}” (except for
+PromptEOL Jiang et al. (2024) where the prompt is fixed to “The paragraph {text} means in one
+word:”). For our HTP model, we simply use K=1K=1 across all dataets.
+
+Results.
+
+Table 2 presents results for context lengths of 512 and 8192, while Figure 5 shows the average
+NDCG@10 across four datasets for a wider range of context lengths. At both context lengths, HTP
+achieves strong performance. It notably outperforms other methods at 8192, while incurring lower
+runtime than the most expensive Echo Embedding (Springer et al., 2025) (Q1). Furthermore, it shows
+improved performance with longer context lengths, likely due to local token prepending preserving
+more local information and reducing information oversquashing. Figure 5 shows that, across both
+Mistral and Gemma2 models, the top-performing methods (HTP, Vanilla, TP Mean) rely on mean
+embedding, supporting our earlier claim that it captures more information and offers greater
+stability for longer contexts.
+
+5.3 General Embedding Tasks
+
+Setups.
+
+Beyond retrieval tasks, we assess the embeddings’ quality on a wider range of downstream tasks from
+the Massive Text Embedding Benchmark (MTEB) (Muennighoff et al., 2023). We evaluate across six task
+categories: Classification (11 datasets), Reranking (3 datasets), Clustering (11 datasets), and
+Semantic Textual Similarity (STS) (5 datasets), and BEIR Retrieval tasks (7 datasets) (Q2). We
+report the average performance for each category using Mistral-Instruct-7B-0.3, and compare HTP
+with Echo Mean, PromptEOL, and TP with PromptEOL, which are described in detail in Section 5.1. For
+the Echo Mean and HTP methods, we prepend commonly used instruction-style prompts to the texts
+(except for STS), formatted as “{instruct} {text}”. For the other two methods, we use the same
+PromptEOL (Jiang et al., 2024) prompt: “The sentence means {text} in one word.” Details are
+provided in Section B.2.
+
+Task                   Echo  Prompt- TP w.     HTP
+                       Mean  EOL     PromptEOL (Ours)
+Cls (11 datasets)      66.12 68.12   69.52     68.44
+Rerank (3 datasets)    43.31 40.35   40.57     40.85
+Cluster (11 datasets)  34.07 23.10   22.11     35.39
+STS (5 datasets)       64.46 67.89   68.46     53.64
+Retrieval (7 datasets) 21.11 8.15    7.84      24.82
+
+
+Table 3: Average performance on general embedding tasks. We bold the top one and underline the
+runner-up.
+
+Results.
+
+We present the results in Table 3. To address Q2, we observe that HTP performs well on
+classification, reranking, and clustering tasks. However, it lags behind other methods on sentence
+similarity tasks. We attribute this to the fact that these tasks generally do not involve long
+sequences, as STS tasks focus on intra-sentence similarity. Hence, considering PromptEOL Jiang et
+al. (2024) excels by summarizing each sentence with a single representative token, it is much more
+suited for such fine-grained comparisons. Individual task results are in Section B.2.2.
+
+5.4 Ablations over Local Prepending Strategy
+
+Effect of Hyperparameter KK.
+
+The granularity of the input partitions, controlled by the hyperparameter KK (the number of
+sentences per summary block), presents a crucial trade-off between summary detail and coherence. To
+investigate HTP’s sensitivity to the scale of local prepending (Q3), we ablate KK on two
+short-document retrieval datasets (NFCorpus, SciFact with maximum context length of 512), and two
+long-document datasets (SummScreenFD, 2WikiMultipleQA with maximum context length of 16,382).
+
+As shown in Figure 6, the results reveal distinct trends based on context length. For short
+documents, performance degrades as KK increases, suggesting that coarser summaries may elide
+critical, fine-grained details necessary for the task. Conversely, for long documents, performance
+improves with a larger KK. We attribute this to two factors: (1) larger sentence blocks yield more
+coherent semantic summaries in lengthy, multi-topic contexts, and (2) a very small KK in a long
+document creates an excessive number of <B-PST> tokens, which can push the model into
+out-of-distribution behavior. This suggests the optimal partitioning strategy is dependent on
+document length and task granularity.
+
+
+Figure 6: Performance of HTP with various KK.
+
+Sentences vs. Every Few tokens.
+
+We also conduct an ablation to validate our choice of partitioning the input along semantic
+boundaries (i.e., sentences) rather than at arbitrary fixed-length intervals. We compare our
+standard approach against a baseline that inserts <PST> tokens every NN tokens. To ensure a fair
+comparison, we dynamically set NN for each document to match the average sentence length in tokens,
+thereby keeping the total number of inserted <PST> tokens identical between the two methods (i.e.,
+N=⌊num_tokensn_sentence⌋N=\left\lfloor\frac{\texttt{num\_tokens}}{\texttt{n\_sentence}}\right\
+rfloor).
+
+The results, shown in Figure 7 for the NFCorpus and SciFact datasets, demonstrate that
+sentence-based partitioning consistently outperforms the fixed-interval baseline. This supports our
+hypothesis that leveraging natural linguistic boundaries allows the final token of a sentence to
+capture a more meaningful and coherent semantic summary, ultimately leading to higher-quality
+representations.
+
+5.5 HTP on Finetuned Embedding Models
+
+Finally, we answer (Q4) by modifying over NV-Embed-v2 (Lee et al., 2025), a finetuned model for
+embedding tasks, and show that HTP can yield more performance. NV-Embed-v2 is a general-purpose
+embedding model based on Mistral-7B, enhanced with bi-directional attention and a novel attention
+aggregation mechanism in the final layer. As a result, we do not enable early-layer extraction or
+mean pooling as in the previous HTP setup. All other hyperparameter configurations remain the same
+as described in Section B.1.1. Table 4 presents the results of NV-Embed-v2 with existing
+training-free methods. We observe that HTP consistently boosts performance over the base
+NV-Embed-v2 model across all three datasets. This result suggests that the gains from HTP are
+orthogonal to those achieved through finetuning. Furthermore, HTP demonstrates highly competitive
+performance against the other training-free methods, demonstrating its robust utility.
+
+
+Figure 7: Comparison of Sentence vs. Every Few tokens.
+
+Model      NFCorpus FiQA2018 SciFact
+NV-Embed   45.10    62.63    80.92
++ Echo     40.88    48.35    74.08
++ TP Mean  46.60    62.68    81.64
++ HTP      47.26    64.18    82.52
+
+
+Table 4: Performance on NV-Embed. We bold the top one and underline the runner-up.
+
+6 Conclusion
+
+We introduced Hierarchical Token Prepending (HTP), a simple, training-free method that resolves
+critical information bottlenecks in LLM embeddings. Our approach is directly informed by
+theoretical and empirical analysis that pinpoints these specific failure modes. By partitioning the
+input and creating a hierarchy of block-level summary tokens, HTP establishes multiple backward
+information pathways, mitigating attention-level compression. Paired with a robust mean-pooling
+readout, HTP achieves consistent performance gains across extensive benchmarks, especially in
+long-context settings, offering a scalable approach to transforming powerful generative models into
+superior universal text encoders. Its ability to enhance both zero-shot and already finetuned
+models underscores its utility as a versatile tool for future document retrieval and analysis
+systems.
+
+Limitations
+
+While HTP significantly improves zero-shot embeddings from decoder-only LLMs, its performance is
+not expected to surpass models that are extensively finetuned specifically for retrieval tasks. Our
+initial experiments showed that HTP can enhance an existing finetuned model (NV-Embed Lee et al.
+(2025)), but a broader investigation is needed to fully understand its interaction with diverse
+model architectures and training paradigms. A deeper look into the mechanisms of backward
+dependency and token prepending is also warranted, which we leave for future work.
+
+References
+
+  • Ba et al. (2016) J. L. Ba, J. R. Kiros, and G. E. Hinton Layer normalization. External Links: 
+    1607.06450 Cited by: §A.1.
+  • Barbero et al. (2024) F. Barbero, A. Banino, S. Kapturowski, D. Kumaran, J. G. M. Araújo, A.
+    Vitvitskyi, R. Pascanu, and P. Veličković Transformers need glasses! information over-squashing
+    in language tasks. In NeurIPS, Cited by: §A.1, §A.1, §A.1, §A.1, §A.3, §A.3, §A.3, Appendix A,
+    §1, §3.1.
+  • BehnamGhader et al. (2024) P. BehnamGhader, V. Adlakha, M. Mosbach, D. Bahdanau, N. Chapados,
+    and S. Reddy LLM2vec: large language models are secretly powerful text encoders. In CoLM, Cited
+    by: §2, §5.2.
+  • Boteva et al. (2016) V. Boteva, D. Gholipour, A. Sokolov, and S. Riezler A full-text learning
+    to rank dataset for medical information retrieval. In European Conference on Information
+    Retrieval, Cited by: §5.1.
+  • Chanchani and Huang (2023) S. Chanchani and R. Huang Composition-contrastive learning for
+    sentence embeddings. In ACL, Cited by: §2.
+  • Chen et al. (2021) M. Chen, Z. Chu, S. Wiseman, and K. Gimpel SummScreen: a dataset for
+    abstractive screenplay summarization. In ACL, Cited by: §5.2.
+  • Cheng et al. (2025) Z. Cheng, Z. Wang, Y. Fu, Z. Jiang, Y. Yin, C. Wang, and Q. Gu Contrastive
+    prompting enhances sentence embeddings in llms through inference-time steering. arXiv preprint
+    arXiv:2505.12831. Cited by: §2.
+  • Cohan et al. (2020) A. Cohan, S. Feldman, I. Beltagy, D. Downey, and D. Weld SPECTER:
+    document-level representation learning using citation-informed transformers. In ACL, Cited by:
+    §5.1.
+  • Devlin et al. (2019) J. Devlin, M. Chang, K. Lee, and K. Toutanova Bert: pre-training of deep
+    bidirectional transformers for language understanding. In NAACL, Cited by: §1, §2.
+  • Fu et al. (2024) Y. Fu, Z. Cheng, Z. Jiang, Z. Wang, Y. Yin, Z. Li, and Q. Gu Token prepending:
+    a training-free approach for eliciting better sentence embeddings from llms. In ACL, Cited by:
+    §B.1.1, §1, §1, §2, §4.4, §5.1, §5.1, §5.1.
+  • Gao et al. (2021) T. Gao, X. Yao, and D. Chen SimCSE: simple contrastive learning of sentence
+    embeddings. In EMNLP, Cited by: §2.
+  • Ho et al. (2020) X. Ho, A. Duong Nguyen, S. Sugawara, and A. Aizawa Constructing a multi-hop QA
+    dataset for comprehensive evaluation of reasoning steps. In Proceedings of the 28th
+    International Conference on Computational Linguistics, Cited by: §5.2.
+  • Honnibal et al. (2020) M. Honnibal, I. Montani, S. Van Landeghem, and A. Boyd SpaCy:
+    industrial-strength natural language processing in python. External Links: Document Cited by:
+    §5.1.
+  • Jiang et al. (2023) A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot, D. de
+    las Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier, L. R. Lavaud, M. Lachaux, P. Stock,
+    T. L. Scao, T. Lavril, T. Wang, T. Lacroix, and W. E. Sayed Mistral 7b. External Links: 
+    2310.06825, Link Cited by: §5.1.
+  • Jiang et al. (2024) T. Jiang, S. Huang, Z. Luan, D. Wang, and F. Zhuang Scaling sentence
+    embeddings with large language models. In EMNLP, Cited by: §2, §3.1, §5.1, §5.1, §5.2, §5.3,
+    §5.3.
+  • Jiang et al. (2022) T. Jiang, J. Jiao, S. Huang, Z. Zhang, D. Wang, F. Zhuang, F. Wei, H.
+    Huang, D. Deng, and Q. Zhang PromptBERT: improving BERT sentence embeddings with prompts. In 
+    EMNLP, Cited by: §2.
+  • Jin et al. (2025) M. Jin, Q. Yu, J. Huang, Q. Zeng, Z. Wang, W. Hua, H. Zhao, K. Mei, Y. Meng,
+    K. Ding, F. Yang, M. Du, and Y. Zhang Exploring concept depth: how large language models
+    acquire knowledge and concept at different layers?. In Proceedings of the 31st International
+    Conference on Computational Linguistics, Cited by: §4.4.
+  • Kočiskỳ et al. (2018) T. Kočiskỳ, J. Schwarz, P. Blunsom, C. Dyer, K. M. Hermann, G. Melis, and
+    E. Grefenstette The narrativeqa reading comprehension challenge. Transactions of the
+    Association for Computational Linguistics. Cited by: §5.2.
+  • Lee et al. (2025) C. Lee, R. Roy, M. Xu, J. Raiman, M. Shoeybi, B. Catanzaro, and W. Ping 
+    NV-embed: improved techniques for training LLMs as generalist embedding models. In ICLR, Cited
+    by: 3rd item, §2, §5.2, §5.5, Limitations.
+  • Lei et al. (2024) Y. Lei, D. Wu, T. Zhou, T. Shen, Y. Cao, C. Tao, and A. Yates Meta-task
+    prompting elicits embeddings from large language models. In ACL, Cited by: §2.
+  • Li and Li (2024) X. Li and J. Li BeLLM: backward dependency enhanced large language model for
+    sentence embeddings. In NAACL, Cited by: §2.
+  • Li and Zhou (2025) Z. Li and T. Zhou Your mixture-of-experts LLM is secretly an embedding model
+    for free. In ICLR, Cited by: §2.
+  • Liu et al. (2019) Y. Liu, M. Ott, N. Goyal, J. Du, M. Joshi, D. Chen, O. Levy, M. Lewis, L.
+    Zettlemoyer, and V. Stoyanov Roberta: a robustly optimized bert pretraining approach. arXiv
+    preprint arXiv:1907.11692. Cited by: §1, §2.
+  • Liu et al. (2024) Z. Liu, C. Kong, Y. Liu, and M. Sun Fantastic semantics and where to find
+    them: investigating which layers of generative LLMs reflect lexical semantics. In Findings of
+    ACL, Cited by: §4.4.
+  • Ma et al. (2024) X. Ma, L. Wang, N. Yang, F. Wei, and J. Lin Fine-tuning llama for multi-stage
+    text retrieval. In SIGIR, Cited by: §2.
+  • Maia et al. (2018) M. Maia, S. Handschuh, A. Freitas, B. Davis, R. McDermott, M. Zarrouk, and
+    A. Balahur Www’18 open challenge: financial opinion mining and question answering. In Companion
+    proceedings of the the web conference, Cited by: §5.1.
+  • Muennighoff et al. (2025) N. Muennighoff, H. SU, L. Wang, N. Yang, F. Wei, T. Yu, A. Singh, and
+    D. Kiela Generative representational instruction tuning. In ICLR, Cited by: §2.
+  • Muennighoff et al. (2023) N. Muennighoff, N. Tazi, L. Magne, and N. Reimers MTEB: massive text
+    embedding benchmark. In EACL, Cited by: §B.2, §1, §5.3.
+  • Ni et al. (2022) J. Ni, G. Hernandez Abrego, N. Constant, J. Ma, K. Hall, D. Cer, and Y. Yang 
+    Sentence-t5: scalable sentence encoders from pre-trained text-to-text models. In ACL Findings, 
+    Cited by: §2.
+  • Reimers and Gurevych (2019) N. Reimers and I. Gurevych Sentence-bert: sentence embeddings using
+    siamese bert-networks. In EMNLP, Cited by: §2.
+  • Skean et al. (2025) O. Skean, M. R. Arefin, D. Zhao, N. N. Patel, J. Naghiyev, Y. LeCun, and R.
+    Shwartz-Ziv Layer by layer: uncovering hidden representations in language models. In ICML, 
+    Cited by: §4.4.
+  • Springer et al. (2025) J. M. Springer, S. Kotha, D. Fried, G. Neubig, and A. Raghunathan 
+    Repetition improves language model embeddings. In ICLR, Cited by: §1, §1, §2, §3.1, §3.2, §5.1,
+    §5.1, §5.2, §5.2.
+  • Su et al. (2024) J. Su, M. Ahmed, Y. Lu, S. Pan, W. Bo, and Y. Liu RoFormer: enhanced
+    transformer with rotary position embedding. Neurocomput.. Cited by: §A.1.
+  • Team et al. (2024) G. Team, M. Riviere, S. Pathak, P. G. Sessa, C. Hardin, S. Bhupatiraju, L.
+    Hussenot, T. Mesnard, B. Shahriari, A. Ramé, J. Ferret, P. Liu, P. Tafti, A. Friesen, M.
+    Casbon, S. Ramos, R. Kumar, C. L. Lan, S. Jerome, A. Tsitsulin, N. Vieillard, P. Stanczyk, S.
+    Girgin, N. Momchev, M. Hoffman, S. Thakoor, J. Grill, B. Neyshabur, O. Bachem, A. Walton, A.
+    Severyn, A. Parrish, A. Ahmad, A. Hutchison, A. Abdagic, A. Carl, A. Shen, A. Brock, A. Coenen,
+    A. Laforge, A. Paterson, B. Bastian, B. Piot, B. Wu, B. Royal, C. Chen, C. Kumar, C. Perry, C.
+    Welty, C. A. Choquette-Choo, D. Sinopalnikov, D. Weinberger, D. Vijaykumar, D. Rogozińska, D.
+    Herbison, E. Bandy, E. Wang, E. Noland, E. Moreira, E. Senter, E. Eltyshev, F. Visin, G.
+    Rasskin, G. Wei, G. Cameron, G. Martins, H. Hashemi, H. Klimczak-Plucińska, H. Batra, H. Dhand,
+    I. Nardini, J. Mein, J. Zhou, J. Svensson, J. Stanway, J. Chan, J. P. Zhou, J. Carrasqueira, J.
+    Iljazi, J. Becker, J. Fernandez, J. van Amersfoort, J. Gordon, J. Lipschultz, J. Newlan, J. Ji,
+    K. Mohamed, K. Badola, K. Black, K. Millican, K. McDonell, K. Nguyen, K. Sodhia, K. Greene, L.
+    L. Sjoesund, L. Usui, L. Sifre, L. Heuermann, L. Lago, L. McNealus, L. B. Soares, L.
+    Kilpatrick, L. Dixon, L. Martins, M. Reid, M. Singh, M. Iverson, M. Görner, M. Velloso, M.
+    Wirth, M. Davidow, M. Miller, M. Rahtz, M. Watson, M. Risdal, M. Kazemi, M. Moynihan, M. Zhang,
+    M. Kahng, M. Park, M. Rahman, M. Khatwani, N. Dao, N. Bardoliwalla, N. Devanathan, N. Dumai, N.
+    Chauhan, O. Wahltinez, P. Botarda, P. Barnes, P. Barham, P. Michel, P. Jin, P. Georgiev, P.
+    Culliton, P. Kuppala, R. Comanescu, R. Merhej, R. Jana, R. A. Rokni, R. Agarwal, R. Mullins, S.
+    Saadat, S. M. Carthy, S. Cogan, S. Perrin, S. M. R. Arnold, S. Krause, S. Dai, S. Garg, S.
+    Sheth, S. Ronstrom, S. Chan, T. Jordan, T. Yu, T. Eccles, T. Hennigan, T. Kocisky, T. Doshi, V.
+    Jain, V. Yadav, V. Meshram, V. Dharmadhikari, W. Barkley, W. Wei, W. Ye, W. Han, W. Kwon, X.
+    Xu, Z. Shen, Z. Gong, Z. Wei, V. Cotruta, P. Kirk, A. Rao, M. Giang, L. Peran, T. Warkentin, E.
+    Collins, J. Barral, Z. Ghahramani, R. Hadsell, D. Sculley, J. Banks, A. Dragan, S. Petrov, O.
+    Vinyals, J. Dean, D. Hassabis, K. Kavukcuoglu, C. Farabet, E. Buchatskaya, S. Borgeaud, N.
+    Fiedel, A. Joulin, K. Kenealy, R. Dadashi, and A. Andreev Gemma 2: improving open language
+    models at a practical size. External Links: 2408.00118, Link Cited by: §5.1.
+  • Thakur et al. (2021) N. Thakur, N. Reimers, A. Rücklé, A. Srivastava, and I. Gurevych BEIR: a
+    heterogeneous benchmark for zero-shot evaluation of information retrieval models. In NeurIPS
+    Datasets and Benchmarks Track, Cited by: §B.1.2, §B.1, §1, §5.1, §5.1.
+  • Topping et al. (2022) J. Topping, F. D. Giovanni, B. P. Chamberlain, X. Dong, and M. M.
+    Bronstein Understanding over-squashing and bottlenecks on graphs via curvature. In ICLR, Cited
+    by: Appendix A, §3.1.
+  • Voorhees et al. (2021) E. Voorhees, T. Alam, S. Bedrick, D. Demner-Fushman, W. R. Hersh, K. Lo,
+    K. Roberts, I. Soboroff, and L. L. Wang TREC-covid: constructing a pandemic information
+    retrieval test collection. In ACM SIGIR Forum, Cited by: §5.1.
+  • Wachsmuth et al. (2018) H. Wachsmuth, S. Syed, and B. Stein Retrieval of the best
+    counterargument without prior topic knowledge. In ACL, Cited by: §5.1.
+  • Wadden et al. (2020) D. Wadden, S. Lin, K. Lo, L. L. Wang, M. van Zuylen, A. Cohan, and H.
+    Hajishirzi Fact or fiction: verifying scientific claims. In EMNLP, Cited by: §5.1.
+  • Xu et al. (2024) X. Xu, C. Tao, T. Shen, C. Xu, H. Xu, G. Long, J. Lou, and S. Ma Re-reading
+    improves reasoning in large language models. In EMNLP, Cited by: §1, §3.2.
+  • Yang et al. (2024) A. Yang, B. Yang, B. Hui, B. Zheng, B. Yu, C. Zhou, C. Li, C. Li, D. Liu, F.
+    Huang, G. Dong, H. Wei, H. Lin, J. Tang, J. Wang, J. Yang, J. Tu, J. Zhang, J. Ma, J. Yang, J.
+    Xu, J. Zhou, J. Bai, J. He, J. Lin, K. Dang, K. Lu, K. Chen, K. Yang, M. Li, M. Xue, N. Ni, P.
+    Zhang, P. Wang, R. Peng, R. Men, R. Gao, R. Lin, S. Wang, S. Bai, S. Tan, T. Zhu, T. Li, T.
+    Liu, W. Ge, X. Deng, X. Zhou, X. Ren, X. Zhang, X. Wei, X. Ren, X. Liu, Y. Fan, Y. Yao, Y.
+    Zhang, Y. Wan, Y. Chu, Y. Liu, Z. Cui, Z. Zhang, Z. Guo, and Z. Fan Qwen2 technical report. 
+    External Links: 2407.10671, Link Cited by: §5.1.
+  • Yang et al. (2018) Z. Yang, P. Qi, S. Zhang, Y. Bengio, W. Cohen, R. Salakhutdinov, and C. D.
+    Manning HotpotQA: a dataset for diverse, explainable multi-hop question answering. In EMNLP, 
+    Cited by: §5.1.
+  • Zhang et al. (2024) B. Zhang, K. Chang, and C. Li Simple techniques for enhancing sentence
+    embeddings in generative language models. In ICIC, Cited by: §2.
+  • Zhong et al. (2021) M. Zhong, D. Yin, T. Yu, A. Zaidi, M. Mutuma, R. Jha, A. Hassan Awadallah,
+    A. Celikyilmaz, Y. Liu, X. Qiu, and D. Radev QMSum: A New Benchmark for Query-based
+    Multi-domain Meeting Summarization. In NAACL, Cited by: §5.2.
+  • Zhu et al. (2024) D. Zhu, L. Wang, N. Yang, Y. Song, W. Wu, F. Wei, and S. Li LongEmbed:
+    extending embedding models for long context retrieval. In EMNLP, Cited by: §B.1.2, §B.1, §5.2.
+
+Appendix A Proofs
+
+We follow Barbero et al. (2024) and study the over-squashing effect of the readout. In particular,
+we conduct sensitivity analysis original introduced in the context of graph learning (Topping et
+al., 2022), which aim to study the quantity ∂yn/∂vi(0)\partial\textbf{y}_{n}/\partial\textbf{v}_{i}
+^{(0)}, i.e., the partial derivative of final output embedding (last token) with respect to the
+ii-th token. We first define the studied decoder-only transformer architectures, which encompass
+the majority of the LLMs currently in use.
+
+A.1 Transformer architectures
+
+Notation.
+
+We write [n]={1,…,n}[n]=\{1,\dots,n\}. We use the Euclidean norm ∥⋅∥\|\cdot\| for vectors and the
+induced operator (spectral) norm for Jacobians. δi​j\delta_{ij} represents Kronecker delta: δi​j=1\
+delta_{ij}=1 if i=ji=j and 00 otherwise. We denote the ii-th standard basis vector by 𝐞i\mathbf{e}_
+{i} and the all-ones vector by 𝟏\mathbf{1}.
+
+Setup.
+
+We follow the model specification used by Barbero et al. (2024), and study decoder-only, causal
+Transformers of dd dimension on a length-nn sequence of token states 𝐯(0)=(𝐯1(0),…,𝐯n(0))\mathbf{v}
+^{(0)}=(\mathbf{v}^{(0)}_{1},\dots,\mathbf{v}^{(0)}_{n}) with 𝐯i(0)∈ℝd\mathbf{v}^{(0)}_{i}\in\
+mathbb{R}^{d}. We let 𝐐,𝐊,𝐕∈ℝn×d\mathbf{Q},\mathbf{K},\mathbf{V}\in\mathbb{R}^{n\times d} be the
+query, key, and value matrices for a sequence of nn tokens with dd-dimensional embeddings. We
+denote the ii-th token’s query, key, and value vectors by 𝐪i,𝐤i,𝐯i∈ℝd\mathbf{q}_{i},\mathbf{k}_{i},
+\mathbf{v}_{i}\in\mathbb{R}^{d}. Let 𝐩i​j∈ℝ2​e\mathbf{p}_{ij}\in\mathbb{R}^{2e} be the 2​e2e
+dimensional vectors encoding positional information between positions ii and jj. We assume
+supi,j‖𝐩i​j‖≤Pmax<∞\sup_{i,j}\|\mathbf{p}_{ij}\|\leq P_{\max}<\infty (bounded positional
+encodings), which holds for most positional schemes used in practice, such as Rotational positional
+encoding (RoPE) (Su et al., 2024).
+
+Single-head Pre-LN block.
+
+For layer ℓ∈{0,…,L−1}\ell\in\{0,\dots,L-1\} and position i∈[n]i\in[n], define
+
+ 𝐳i(ℓ)\         =𝐯i(ℓ)+∑j≤iαi​j(ℓ)​norm1(ℓ)​(𝐯j(ℓ)),\displaystyle=\mathbf{v}_{i}^{(\
+ displaystyle\  ell)}\;+\;\sum_{j\leq i}\alpha_{ij}^{(\ell)}\,\mathrm{norm}^{(\ell)}_{1}  (Attn)
+ mathbf{z}_{i}^ \!\bigl(\mathbf{v}_{j}^{(\ell)}\bigr),
+ {(\ell)}
+                =exp⁡(k⁡(𝐪i(ℓ),𝐤j(ℓ),𝐩i​j))∑w≤iexp⁡(k⁡(𝐪i(ℓ),𝐤w(ℓ),𝐩i​w)),j≤i,αi​j(ℓ)=
+ αi​j(ℓ)\       0​ if ​j>i,\displaystyle=\frac{\exp\!\Big(k\!\big(\mathbf{q}_{i}^{(\
+ displaystyle\  ell)},\,\mathbf{k}_{j}^{(\ell)},\,\mathbf{p}_{ij}\big)\Big)}{\sum_{w\leq  (Softmax)
+ alpha_{ij}^{(\ i}\exp\!\Big(k\!\big(\mathbf{q}_{i}^{(\ell)},\,\mathbf{k}_{w}^{(\ell)},
+ ell)}          \,\mathbf{p}_{iw}\big)\Big)},\quad j\leq i,\qquad\alpha_{ij}^{(\ell)}=0\
+                text{ if }j>i,
+ 𝐯i(ℓ+1)\       =𝐳i(ℓ)+ψ(ℓ)​(norm2(ℓ)​(𝐳i(ℓ))),\displaystyle=\mathbf{z}_{i}^{(\ell)}\;+
+ displaystyle\  \;\psi^{(\ell)}\!\Big(\mathrm{norm}^{(\ell)}_{2}\!\big(\mathbf{z}_{i}^    (MLP)
+ mathbf{v}_{i}^ {(\ell)}\big)\Big),
+ {(\ell+1)}
+
+where k:ℝd×ℝd×ℝ2​e→ℝk:\mathbb{R}^{d}\times\mathbb{R}^{d}\times\mathbb{R}^{2e}\to\mathbb{R} is a
+scoring function (e.g. a bilinear form with a positional bias), ψ(ℓ):ℝd→ℝd\psi^{(\ell)}:\mathbb{R}^
+{d}\to\mathbb{R}^{d} is the MLP at layer ℓ\ell, and norm1(ℓ),norm2(ℓ):ℝd→ℝd\mathrm{norm}^{(\ell)}_
+{1},\mathrm{norm}^{(\ell)}_{2}:\mathbb{R}^{d}\to\mathbb{R}^{d} are the (pre-activation)
+normalization maps (typically LayerNorm (Ba et al., 2016)). Causality is enforced by the mask j≤ij\
+leq i in (Attn)–(Softmax), hence 𝐯j(ℓ)\mathbf{v}^{(\ell)}_{j} depends only on {𝐯i(ℓ−1):i≤j}\{\
+mathbf{v}^{(\ell-1)}_{i}:i\leq j\}.
+
+Attention matrix.
+
+Let 𝚲(ℓ)∈ℝn×n\boldsymbol{\Lambda}^{(\ell)}\in\mathbb{R}^{n\times n} collect attention weights with
+(𝚲(ℓ))i​j=αi​j(ℓ)(\boldsymbol{\Lambda}^{(\ell)})_{ij}=\alpha^{(\ell)}_{ij}. Each 𝚲(ℓ)\boldsymbol{\
+Lambda}^{(\ell)} is row–stochastic (𝚲(ℓ)​𝟏=𝟏\boldsymbol{\Lambda}^{(\ell)}\mathbf{1}=\mathbf{1}) and
+lower–triangular ((𝚲(ℓ))i​j=0(\boldsymbol{\Lambda}^{(\ell)})_{ij}=0 if j>ij>i). This
+lower–triangular, row–stochastic structure is preserved under products.See Lemmas B.6–B.7 in
+Barbero et al. (2024).
+
+Final normalization and readouts.
+
+After layer LL, we set
+
+ 𝐲i=norm3​(𝐯i(L)),i∈[n].\mathbf{y}_{i}\;=\;\mathrm{norm}_{3}\!\bigl(\mathbf{v}_{i}^{(L)}\bigr),\
+ qquad i\in[n].
+
+where norm3:ℝd→ℝd\mathrm{norm}_{3}:\mathbb{R}^{d}\to\mathbb{R}^{d} is a normalization (often
+LayerNorm). For last-token embedding, the readout usually uses the last token 𝐲n\mathbf{y}_{n}; for
+mean-pooling, we set 𝐲¯=1n​∑i=1n𝐲i\bar{\mathbf{y}}=\frac{1}{n}\sum_{i=1}^{n}\mathbf{y}_{i}.
+
+Assumptions.
+
+Following Barbero et al. (2024), we adopt the following simplifications for layerwise sensitivity
+bounds. We write Lipschitz⁡(f)\operatorname{Lipschitz}(f) for the Lipschitz constant of a map ff,
+i.e., any LL such that
+
+ ‖f⁡(x)−f⁡(y)‖≤L​‖x−y‖,∀x,y.\|f(x)-f(y)\|\leq L\,\|x-y\|,\qquad\forall x,y.
+
+ 1. 1.
+   
+    During differentiation, the attention weights αi​j(ℓ)\alpha_{ij}^{(\ell)} are treated as
+    input–independent constants.
+
+ 2. 2.
+   
+    Each normalization operator has a Lipschitz bound with known scalings, with
+
+     Lipschitz⁡(norm1(ℓ))≤1β1(ℓ),Lipschitz⁡(norm2(ℓ))≤1β2(ℓ),Lipschitz⁡(norm3)≤1β3,\displaystyle\
+     operatorname{Lipschitz}\!\big(\mathrm{norm}_{1}^{(\ell)}\big)\;\leq\;\frac{1}{\beta_{1}^{(\
+     ell)}},\quad\operatorname{Lipschitz}\!\big(\mathrm{norm}_{2}^{(\ell)}\big)\;\leq\;\frac{1}{\
+     beta_{2}^{(\ell)}},\quad\operatorname{Lipschitz}\!\big(\mathrm{norm}_{3}\big)\;\leq\;\frac{1}
+     {\beta_{3}},
+
+    for some β1(ℓ),β2(ℓ),β3>0\beta_{1}^{(\ell)},\beta_{2}^{(\ell)},\beta_{3}>0.
+
+ 3. 3.
+   
+    The MLP in each layer ψ(ℓ)\psi^{(\ell)} admits a Lipschitz constant σψ(ℓ)\sigma_{\psi}^{(\
+    ell)}.
+
+Remark A.1 (Multi-head and projections).
+
+The statements below naturally extend to HH heads by stacking the single-head updates in parallel
+and absorbing the output projection into the constants σψ(ℓ)\sigma_{\psi}^{(\ell)} and β2(ℓ)\beta_
+{2}^{(\ell)}; all proofs go through with the same structure because the causal, residual, and row-
+stochastic properties are preserved.
+
+We now proceed to show the layerwise sensitivity bounds. First, we note that we follow a very
+similar proof idea shown in Barbero et al. (2024): in fact, the layerwise bounds and the last-token
+embeddings are exactly the ones shown in Theorem 5.1 and Theorem B.5 of Barbero et al. (2024) under
+mild modification. We include the results nonetheless for the sake of completeness, which aids the
+derivation of mean-token readouts.
+
+A.2 Layerwise bounds and path expansion
+
+The residual form (Attn)–(MLP) and our Lipschitz bounds imply, for j≥ij\geq i,
+
+ ‖∂𝐯j(ℓ+1)∂𝐯i(ℓ)‖\displaystyle\  =‖∂∂𝐯i(ℓ)​[ψ(ℓ)​(norm2(ℓ)​(𝐳j(ℓ)))+𝐳j(ℓ)]‖\displaystyle=\Big
+ Big\|\frac{\partial\mathbf{v}_  \|\frac{\partial}{\partial\mathbf{v}_{i}^{(\ell)}}\Big[\psi^  (4)
+ {j}^{(\ell+1)}}{\partial\mathbf {(\ell)}\!\big(\mathrm{norm}_{2}^{(\ell)}(\mathbf{z}_{j}^{(\
+ {v}_{i}^{(\ell)}}\Big\|         ell)})\big)+\mathbf{z}_{j}^{(\ell)}\Big]\Big\|
+                                 ≤(σψ(ℓ)β2(ℓ)+1)​‖∂𝐳j(ℓ)∂𝐯i(ℓ)‖\displaystyle\leq\Big(\tfrac{\
+                                 sigma_{\psi}^{(\ell)}}{\beta_{2}^{(\ell)}}+1\Big)\Big\|\frac  (5)
+                                 {\partial\mathbf{z}_{j}^{(\ell)}}{\partial\mathbf{v}_{i}^{(\
+                                 ell)}}\Big\|
+                                 =(σψ(ℓ)β2(ℓ)+1)​‖∂∂𝐯i(ℓ)​[∑m≤jαj,m(ℓ)​norm1(ℓ)​(𝐯m(ℓ))+𝐯j
+                                 (ℓ)]‖\displaystyle=\Big(\tfrac{\sigma_{\psi}^{(\ell)}}{\
+                                 beta_{2}^{(\ell)}}+1\Big)\Big\|\frac{\partial}{\partial\      (6)
+                                 mathbf{v}_{i}^{(\ell)}}\Big[\sum_{m\leq j}\alpha^{(\ell)}_
+                                 {j,m}\,\mathrm{norm}_{1}^{(\ell)}\!\big(\mathbf{v}_{m}^{(\
+                                 ell)}\big)+\mathbf{v}_{j}^{(\ell)}\Big]\Big\|
+                                 ≤(σψ(ℓ)β2(ℓ)+1)​(αj,i(ℓ)β1(ℓ)+δj,i),\displaystyle\leq\Big(\
+                                 tfrac{\sigma_{\psi}^{(\ell)}}{\beta_{2}^{(\ell)}}+1\Big)\Big  (∗\
+                                 (\tfrac{\alpha^{(\ell)}_{j,i}}{\beta_{1}^{(\ell)}}+\delta_    ast)
+                                 {j,i}\Big),
+
+and ∂𝐯j(ℓ+1)∂𝐯i(ℓ)=0\frac{\partial\mathbf{v}_{j}^{(\ell+1)}}{\partial\mathbf{v}_{i}^{(\ell)}}=0 if
+j<ij<i.
+
+Define the residual-augmented attention α¯(ℓ)∈ℝn×n\mathbf{\bar{\alpha}}^{(\ell)}\in\mathbb{R}^{n\
+times n} by
+
+ α¯j,i(ℓ):=αj,i(ℓ)β1(ℓ)+δj,ifor ​i≤j,α¯j,i(ℓ)=0​ for ​i>j,\mathbf{\bar{\alpha}}^{(\ell)}_{j,i}:=\
+ frac{\alpha^{(\ell)}_{j,i}}{\beta_{1}^{(\ell)}}+\delta_{j,i}\quad\text{for }i\leq j,\qquad\mathbf
+ {\bar{\alpha}}^{(\ell)}_{j,i}=0\text{ for }i>j,
+
+and let the row-sum be rℓ:=∑i≤jα¯j,i(ℓ)=1+1β1(ℓ)r_{\ell}:=\sum_{i\leq j}\mathbf{\bar{\alpha}}^{(\
+ell)}_{j,i}=1+\tfrac{1}{\beta_{1}^{(\ell)}} (because ∑i≤jαj,i(ℓ)=1\sum_{i\leq j}\alpha^{(\ell)}_
+{j,i}=1). Normalize
+
+ 𝐌(ℓ):=1rℓ​α¯(ℓ)⟹𝐌(ℓ)​𝟏=𝟏,\mathbf{M}^{(\ell)}:=\frac{1}{r_{\ell}}\,\mathbf{\bar{\alpha}}^{(\ell)}\
+ quad\Longrightarrow\quad\mathbf{M}^{(\ell)}\mathbf{1}=\mathbf{1},
+
+i.e., 𝐌(ℓ)\mathbf{M}^{(\ell)} is lower-triangular and row-stochastic.
+
+Lemma A.2 (Path–sum equals matrix entry).
+
+Let α¯(ℓ)\mathbf{\bar{\alpha}}^{(\ell)} and 𝐌(ℓ)=1rℓ​α¯(ℓ)\mathbf{M}^{(\ell)}=\frac{1}{r_{\ell}}\
+mathbf{\bar{\alpha}}^{(\ell)} be as above, and 𝐀:=𝐌(L−1)⋯𝐌(0)\mathbf{A}:=\mathbf{M}^{(L-1)}\cdots\
+mathbf{M}^{(0)}. For any i≤ji\leq j,
+
+ ∑k1≥i∑k2≥k1⋯∑kL≥kL−1α¯j,kL(L−1)∏ℓ=2L−1α¯kℓ,kℓ−1(ℓ−1)α¯k1,i(0)=(∏ℓ=0L−1rℓ)𝐀j,i.\sum_{k_{1}\geq i}\
+ sum_{k_{2}\geq k_{1}}\cdots\sum_{k_{L}\geq k_{L-1}}\bar{\alpha}^{(L-1)}_{j,k_{L}}\!\!\prod_{\ell=
+ 2}^{L-1}\bar{\alpha}^{(\ell-1)}_{k_{\ell},k_{\ell-1}}\,\bar{\alpha}^{(0)}_{k_{1},i}\;=\;\Big(\
+ prod_{\ell=0}^{L-1}r_{\ell}\Big)\,\mathbf{A}_{j,i}.
+
+Proof.
+
+Write the left-hand side as the (j,i)(j,i) entry of the matrix product α¯(L−1)⋯α¯(0)\mathbf{\bar{\
+alpha}}^{(L-1)}\cdots\mathbf{\bar{\alpha}}^{(0)}: by definition of matrix multiplication for
+lower-triangular matrices,
+
+ (α¯(L−1)⋯α¯(0))j,i=∑kL≥⋯≥k1α¯j,kL(L−1)⋯α¯k1,i(0),\big(\mathbf{\bar{\alpha}}^{(L-1)}\cdots\mathbf
+ {\bar{\alpha}}^{(0)}\big)_{j,i}=\sum_{k_{L}\geq\cdots\geq k_{1}}\mathbf{\bar{\alpha}}^{(L-1)}_
+ {j,k_{L}}\cdots\mathbf{\bar{\alpha}}^{(0)}_{k_{1},i},
+
+where the index constraints kℓ≥kℓ−1k_{\ell}\geq k_{\ell-1} (and j≥kLj\geq k_{L}, k1≥ik_{1}\geq i)
+are exactly those enforced by lower-triangularity. Now factor each layer’s row-sum: α¯(ℓ)=rℓ​𝐌(ℓ)\
+mathbf{\bar{\alpha}}^{(\ell)}=r_{\ell}\mathbf{M}^{(\ell)}. Hence
+
+ α¯(L−1)⋯α¯(0)=(∏ℓ=0L−1rℓ)𝐌(L−1)⋯𝐌(0)=(∏ℓ=0L−1rℓ)𝐀.\mathbf{\bar{\alpha}}^{(L-1)}\cdots\mathbf{\bar
+ {\alpha}}^{(0)}=\Big(\prod_{\ell=0}^{L-1}r_{\ell}\Big)\,\mathbf{M}^{(L-1)}\cdots\mathbf{M}^{(0)}=
+ \Big(\prod_{\ell=0}^{L-1}r_{\ell}\Big)\,\mathbf{A}.
+
+Taking the (j,i)(j,i) entry gives the claim. The nested sums are precisely the (j,i)(j,i) entry of
+the product α¯(L−1)⋯α¯(0)\mathbf{\bar{\alpha}}^{(L-1)}\cdots\mathbf{\bar{\alpha}}^{(0)} because
+lower-triangularity imposes the constraints j≥kL≥⋯≥k1≥ij\geq k_{L}\geq\cdots\geq k_{1}\geq i.
+
+∎
+
+A.3 Oversquashing bounds for last-token and mean-token readouts
+
+We are now ready to present the main results. Note that the following results for the last token
+directly correlate to Theorem B.5, Barbero et al. (2024).
+
+Theorem A.3 (Last-token vs mean-token sensitivity).
+
+Under the assumptions above, let
+
+ C:=1β3∏ℓ=0L−1(σψ(ℓ)β2(ℓ)+1),KL:=C∏ℓ=0L−1rℓ,𝐀:=𝐌(L−1)⋯𝐌(0).C\;:=\;\frac{1}{\beta_{3}}\,\prod_{\ell
+ =0}^{L-1}\Big(\frac{\sigma_{\psi}^{(\ell)}}{\beta_{2}^{(\ell)}}+1\Big),\qquad K_{L}\;:=\;C\,\
+ prod_{\ell=0}^{L-1}r_{\ell},\qquad\mathbf{A}\;:=\;\mathbf{M}^{(L-1)}\cdots\mathbf{M}^{(0)}.
+
+Then for every input position i∈[n]i\in[n]:
+
+ (a) Last   ‖∂𝐲n∂𝐯i(0)‖≤KL​𝐀n,i.\displaystyle\Big\|\frac{\mathbf{\partial y}_{n}}{\mathbf{\partial
+ token:     v}_{i}^{(0)}}\Big\|\;\leq\;K_{L}\,\mathbf{A}_{n,i}.
+ (b) Mean   ‖∂𝐲¯∂𝐯i(0)‖≤KLn​∑j=1n𝐀j,i.\displaystyle\Big\|\frac{\mathbf{\partial\bar{y}}}{\mathbf{\
+ pooling:   partial v}_{i}^{(0)}}\Big\|\;\leq\;\frac{K_{L}}{n}\sum_{j=1}^{n}\mathbf{A}_{j,i}.
+
+Proof.
+
+By the chain rule across layers, ∂𝐯n(L)/∂𝐯i(0)\mathbf{\partial v}_{n}^{(L)}/\mathbf{\partial v}_{i}
+^{(0)} equals a sum over causal paths i→k1→⋯→kL→ni\!\to\!k_{1}\!\to\!\cdots\!\to\!k_{L}\!\to\!n
+with one Jacobian factor per layer. Following the proof strategies in Theorem B.5, Barbero et al.
+(2024) and using ( ∗ ‣ A.2) at each layer and ‖∂𝐲n/∂𝐯n(L)‖≤1/β3\|\partial\mathbf{y}_{n}/\partial\
+mathbf{v}_{n}^{(L)}\|\leq 1/\beta_{3} gives
+
+ ∥∂𝐲n∂𝐯i(0)∥≤1β3∏ℓ=0L−1(σψ(ℓ)β2(ℓ)+1)∑k1≥i⋯∑kL≥kL−1α¯n,kL(L−1)∏ℓ=2L−1α¯kℓ,kℓ−1(ℓ−1)α¯k1,i(0).\Big\
+ |\frac{\mathbf{\partial y}_{n}}{\mathbf{\partial v}_{i}^{(0)}}\Big\|\;\leq\;\frac{1}{\beta_{3}}\!
+ \prod_{\ell=0}^{L-1}\!\Big(\frac{\sigma_{\psi}^{(\ell)}}{\beta_{2}^{(\ell)}}+1\Big)\!\!\sum_{k_
+ {1}\geq i}\cdots\sum_{k_{L}\geq k_{L-1}}\!\bar{\alpha}^{(L-1)}_{n,k_{L}}\!\!\prod_{\ell=2}^{L-1}\
+ bar{\alpha}^{(\ell-1)}_{k_{\ell},k_{\ell-1}}\,\bar{\alpha}^{(0)}_{k_{1},i}.
+
+Lemma A.2 converts the multi-sum to (∏ℓrℓ)​𝐀n,i\big(\prod_{\ell}r_{\ell}\big)\mathbf{A}_{n,i},
+yielding (a). For (b), by linearity:
+
+ ∂𝐲¯∂𝐯i(0)=1n​∑j=1n∂𝐲j∂𝐯i(0)⇒‖∂𝐲¯∂𝐯i(0)‖≤KLn​∑j=1n𝐀j,i.\frac{\partial\mathbf{\bar{y}}}{\mathbf{\
+ partial v}_{i}^{(0)}}=\frac{1}{n}\sum_{j=1}^{n}\frac{\partial\mathbf{y}_{j}}{\mathbf{\partial v}_
+ {i}^{(0)}}\quad\Rightarrow\quad\Big\|\frac{\partial\mathbf{\bar{y}}}{\mathbf{\partial v}_{i}^
+ {(0)}}\Big\|\leq\frac{K_{L}}{n}\sum_{j=1}^{n}\mathbf{A}_{j,i}.
+
+Here, the term ∑j=1n𝐀j,i\sum_{j=1}^{n}\mathbf{A}_{j,i} is the sum of the ii-th column of 𝐀\mathbf
+{A}.
+
+∎
+
+Interpretation and Discussion
+
+Our sensitivity bounds reveal both a depth-dependent growth factor and a structural transport term.
+The growth factor
+
+ KL=1β3⏟final norm​∏ℓ=0L−1(σψ(ℓ)β2(ℓ)+1)⏟MLP+residual per layer​∏ℓ=0L−1(1+1β1(ℓ))⏟attn+residual
+ row sumsK_{L}\;=\;\underbrace{\frac{1}{\beta_{3}}}_{\text{final norm}}\underbrace{\prod_{\ell=0}^
+ {L-1}\Big(\tfrac{\sigma_{\psi}^{(\ell)}}{\beta_{2}^{(\ell)}}+1\Big)}_{\text{MLP+residual per
+ layer}}\underbrace{\prod_{\ell=0}^{L-1}\Big(1+\tfrac{1}{\beta_{1}^{(\ell)}}\Big)}_{\text
+ {attn+residual row sums}}
+
+typically grows (often exponentially) with depth LL, scaling the magnitude of the bound. Orthogonal
+to this, the structural term 𝐀=𝐌(L−1)⋯𝐌(0)\mathbf{A}=\mathbf{M}^{(L-1)}\cdots\mathbf{M}^{(0)}
+governs how signal moves and attenuates across layers, and the choice of readout changes which part
+of 𝐀\mathbf{A} the bound depends on.
+
+With last-token readout, the sensitivity is controlled by a single entry 𝐀n,i\mathbf{A}_{n,i},
+i.e., the influence that reaches one fixed “sink” nn from source ii. Random-walk intuition suggests
+that a single entry like 𝐀n,i\mathbf{A}_{n,i} can shrink rapidly with depth. In the homogeneous
+left-drifting regime of Barbero et al. (2024), Proposition B.8, one even has 𝐀=𝐌L→𝟏​e1⊤\mathbf{A}=\
+mathbf{M}^{L}\to\mathbf{1}e_{1}^{\top}, hence 𝐀n,i→0\mathbf{A}_{n,i}\to 0 for i>1i>1.
+
+In contrast, mean-pooling depends on the entire column sum ∑j𝐀j,i\sum_{j}\mathbf{A}_{j,i}, which
+aggregates influence delivered from ii to all outputs. This aggregates total outgoing mass rather
+than betting on a single path to a single sink, and thus is structurally more robust: it does not
+suffer the same guaranteed decay as an individual matrix entry. Consequently, while KLK_{L} sets
+the overall scale of the bound, the readout choice determines whether the structural term induces
+decay (last-token) or preserves signal (mean-pooling), explaining why mean-pooling provably
+mitigates over-squashing of early tokens.
+
+Appendix B Experiment details
+
+B.1 Retrieval tasks
+
+The detailed description of the statistics of the BEIR evaluation dataset can be found in Thakur et
+al. (2021). We show the characteristics of the datasets of the real-world subsets of the LongEmbed
+Zhu et al. (2024) datasets in Table 13.
+
+B.1.1 LLM Architecture Setup
+
+Table 5 shows the LLM configuration for TP-based and HTP models. We briefly describe the version of
+LLM used, the starting and ending layers of the TP methods (following Fu et al. (2024)), and the
+early exit layer.
+
+Model            Configuration Details
+                 Mistral-7B-Instruct-v0.3
+mistral-instruct TP plan applied from layer 1 to 7
+                 Uses output from third to last layer
+
+                 Gemma-2-9b
+gemma-2-9b       TP plan applied from layer 1 to 6
+                 Uses output from second to last layer
+
+                 Qwen2.5-1.5B-Instruct
+qwen2-instruct   TP plan applied from layer 1 to 7
+                 Uses output from second to last layer
+
+
+Table 5: Summary of TP-based and HTP model configurations.
+
+B.1.2 Instruction For Retrievals
+
+Table 6 shows the instructions used in retrieval tasks for both BEIR Thakur et al. (2021) and
+LongEmbed Zhu et al. (2024).
+
+Task Name       Instruction Template
+ArguAna         Given a claim, retrieve documents that support or refute the claim
+FiQA2018        Given a financial question, retrieve user replies that best answer the question
+HotpotQA        Given a multi-hop question, retrieve documents that can help answer the question
+NFCorpus        Given a question, retrieve relevant documents that answer the question
+SCIDOCS         Given a scientific paper title, retrieve paper abstracts that are cited by the
+                given paper
+SciFact         Given a scientific claim, retrieve documents that support or refute the claim
+TREC-COVID      Given a query on COVID-19, retrieve documents that answer the query
+NarrativeQA     Retrieve the relevant document
+QMSum           Retrieve the relevant document
+2WikiMultihopQA Retrieve the relevant document
+SummScreenFD    Retrieve the relevant document
+
+
+Table 6: Instructions used for evaluation on the BEIR benchmark and LongEmbed benchmark.
+
+B.2 General embedding tasks
+
+To evaluate the generalization capabilities of HTP and baseline methods, we benchmark on a diverse
+set of 30 public datasets from the Massive Text Embedding Benchmark (MTEB) (Muennighoff et al.,
+2023). We report the average performance across four categories of tasks: Classification,
+Reranking, Clustering, and Semantic Textual Similarity (STS).
+
+The specific datasets used in our evaluation are as follows:
+
+  • •
+   
+    Classification (11 datasets): We use accuracy as the metric for AmazonCounterfactual,
+    AmazonReview, Banking77, Emotion, Imdb, MassiveIntent, MassiveScenario, MTOPDomain, MTOPIntent,
+    ToxicConversations, and TweetSentiment.
+
+  • •
+   
+    Reranking (3 datasets): We use Mean Average Precision (MAP) for AskUbuntuDupQuestions,
+    MindSmallReranking, and StackOverflowDupQuestions.
+
+  • •
+   
+    Clustering (11 datasets): We use the V-measure score for ArxivClusteringP2P,
+    ArxivClusteringS2S, BiorxivClusteringP2P, BiorxivClusteringS2S, MedrxivClusteringP2P,
+    MedrxivClusteringS2S, RedditClustering,RedditClusteringP2P, StackExchangeClustering,
+    StackExchangeClusteringP2P and TwentyNewsgroupsClustering.
+
+  • •
+   
+    STS (5 datasets): We report Spearman correlation for the standard STS12 through STS16
+    benchmarks.
+
+B.2.1 Experiment Setup
+
+Table 7 shows the instructions (prompts) used in acquiring the general embeddings.
+
+Task Name                              Instruction Template
+AmazonCounterfactualClassification     Classify a given Amazon customer review text as either
+                                       counterfactual or non-counterfactual
+AmazonPolarityClassification           Classify Amazon reviews into positive or negative sentiment
+AmazonReviewsClassification            Classify the given Amazon review into its appropriate rating
+                                       category
+Banking77Classification                Given an online banking query, find the corresponding
+                                       intents
+                                       Classify the emotion expressed in the given Twitter message
+EmotionClassification                  into one of the six emotions: anger, fear, joy, love,
+                                       sadness, and surprise
+ImdbClassification                     Classify the sentiment expressed in the given movie review
+                                       text from the IMDB dataset
+MassiveIntentClassification            Given a user utterance as query, find the user intents
+MassiveScenarioClassification          Given a user utterance as query, find the user scenarios
+MTOPDomainClassification               Classify the intent domain of the given utterance in
+                                       task-oriented conversation
+MTOPIntentClassification               Classify the intent of the given utterance in task-oriented
+                                       conversation
+ToxicConversationsClassification       Classify the given comments as either toxic or not toxic
+TweetSentimentExtractionClassification Classify the sentiment of a given tweet as either positive,
+                                       negative, or neutral
+ArxivClusteringP2P                     Identify the main and secondary category of Arxiv papers
+                                       based on the titles and abstracts
+ArxivClusteringS2S                     Identify the main and secondary category of Arxiv papers
+                                       based on the titles
+BiorxivClusteringP2P                   Identify the main category of Biorxiv papers based on the
+                                       titles and abstracts
+BiorxivClusteringS2S                   Identify the main category of Biorxiv papers based on the
+                                       titles
+MedrxivClusteringP2P                   Identify the main category of Medrxiv papers based on the
+                                       titles and abstracts
+MedrxivClusteringS2S                   Identify the main category of Medrxiv papers based on the
+                                       titles
+RedditClustering                       Identify the topic of the given Reddit posts based on the
+                                       titles
+RedditClusteringP2P                    Identify the topic of the Reddit posts based on the titles
+                                       and posts
+StackExchangeClustering                Identify the topic or theme of StackExchange posts based on
+                                       the titles
+StackExchangeClusteringP2P             Identify the topic or theme of the StackExchange posts based
+                                       on the given paragraphs
+TwentyNewsgroupsClustering             Identify the topic or theme of the given news articles
+AskUbuntuDupQuestions                  Retrieve duplicate questions from AskUbuntu forum
+MindSmallReranking                     Retrieve relevant news articles based on user browsing
+                                       history
+StackOverflowDupQuestions              Retrieve duplicate questions from StackOverflow forum
+
+
+Table 7: Prompts used for evaluation on the general embedding tasks.
+
+B.2.2 General Embedding Result
+
+We show the general embedding performance for Classification tasks in Table 8, Reranking tasks in
+Table 9, Clustering tasks in Table 10, and STS tasks in Table 11.
+
+Task                  Echo  Prompt- TP w.     HTP
+                      Mean  EOL     PromptEOL (Ours)
+AmazonCounterfactual  70.36 73.88   74.09     78.64
+Banking77             77.50 66.46   66.46     68.88
+Emotion               38.90 46.44   46.43     47.51
+IMDb                  74.17 80.20   90.20     78.35
+MassiveIntent         70.61 71.71   67.25     75.20
+MassiveScenario       75.42 72.88   69.78     76.58
+MTOPDomain            88.77 87.19   87.19     85.39
+MTOPIntent            76.28 82.43   82.43     78.05
+ToxicConversations    65.49 73.13   73.13     73.14
+TweetSentiment        50.04 48.44   61.21     49.26
+AmazonReview          39.76 46.56   46.56     41.84
+Average               66.12 68.12   69.52     68.44
+
+
+Table 8: Performance on classification tasks (%). We bold the top one and underline the runner-up
+in the average row.
+
+Task                      Echo  Prompt- TP w.     HTP
+                          Mean  EOL     PromptEOL (Ours)
+AskUbuntuDupQuestions     56.09 53.65   53.65     51.05
+MindSmallReranking        28.60 27.29   27.84     28.96
+StackOverflowDupQuestions 45.23 40.11   40.21     42.53
+Average                   43.31 40.35   40.57     40.85
+
+
+Table 9: Performance on reranking tasks (%). We bold the top one and underline the runner-up in the
+average row.
+
+Task                       Echo  Prompt- TP w.     HTP
+                           Mean  EOL     PromptEOL (Ours)
+ArxivClusteringP2P         43.18 30.98   27.46     48.48
+ArxivClusteringS2S         37.13 25.01   24.70     34.50
+BiorxivClusteringP2P       31.93 17.91   17.53     37.74
+BiorxivClusteringS2S       25.28 14.12   13.86     26.23
+MedrxivClusteringP2P       27.10 17.50   17.04     30.36
+MedrxivClusteringS2S       23.86 17.93   17.28     25.65
+RedditClustering           36.05 16.55   15.48     26.78
+RedditClusteringP2P        56.10 34.41   33.92     59.20
+StackExchangeClustering    43.11 30.27   28.88     43.53
+StackExchangeClusteringP2P 36.50 26.17   25.64     35.31
+TwentyNewsgroupsClustering 21.60 23.29   21.44     21.46
+Average                    34.71 23.10   22.11     35.39
+
+
+Table 10: Average performance on clustering tasks (%). We bold the top one and underline the
+runner-up in the average row.
+
+Task    Echo  Prompt- TP w.      HTP
+        Mean  EOL     PromptEOL  (Ours)
+STS16   76.19 70.08   70.13      57.84
+STS15   69.09 69.25   69.93      62.58
+STS14   58.27 62.39   59.40      48.28
+STS13   71.91 74.19   75.80      54.68
+STS12   46.85 63.56   65.22      44.80
+Average 64.46 67.89   68.10      53.64
+
+
+Table 11: Performance on STS tasks (%). We bold the top one and underline the runner-up in the
+average row.
+
+B.3 Ablations
+
+Table 12 shows the detailed NDCG@10 for ablation study of various KK sizes. Note that when we only
+insert one token at the end of the last sentence, HTP is equivalant to TP Mean.
+
+Methods KK NFCorpus SciFact SummFD 2WikiMQA
+TP Mean -  8.15     42.71   60.11  23.22
+        1  15.51    46.66   54.21  28.44
+        2  16.25    45.00   56.49  28.91
+        4  13.16    45.11   56.25  28.79
+HTP     8  12.24    44.93   56.73  28.71
+        12 12.31    44.88   56.57  29.55
+        20 12.27    44.85   56.61  29.31
+        32 12.27    44.85   56.23  29.24
+        64 11.80    41.36   56.74  28.90
+
+
+Table 12: Performance comparison of the TP Mean and HTP methods across different datasets and
+varying KK values.
+
+Appendix C Examples
+
+Example on ArguAna <s> Given a claim, retrieve documents that support or refute the claim Text: 
+<B-PST><B-PST><B-PST><B-PST><B-PST><B-PST>
+<B-PST><B-PST><B-PST><PST> Ending poverty through entrepreneurialism Introducing finance provides
+communities with access to startup capital. <PST> Access to financial capital is vital in several
+respects for initiating capitalism. <PST> Firstly, access to capital enables entrepreneurialism. 
+<PST> The poor have business ideas that would benefit both themselves and their community they just
+require access to capital to invest in such ideas. <PST> The Initiative ‘Lend with Care’ is
+providing access to capital to empower entrepreneurs. <PST> [1] . <PST> Secondly, the cumulative
+effect of small-scale savings and borrowing, enabled through microfinance enables individuals,
+families and communities, to enter markets - of land and property. <PST> Being able to buy property
+and land can enable personal security, dignity, and increasing returns. <PST> [1] See further
+readings: Lend with Care, 2013. </s>
+
+Dataset         Domain           # Queries # Docs Avg. Query Words Avg. Doc Words
+NarrativeQA     Literature, Film 10,449    355    9                50,474
+QMSum           Meeting          1,527     197    71               10,058
+2WikiMultihopQA Wikipedia        300       300    12               6,132
+SummScreenFD    ScreenWriting    336       336    102              5,582
+
+
+Table 13: Datasets statistics for LongEmbed.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

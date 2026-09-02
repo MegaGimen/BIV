@@ -234,6 +234,17 @@ PAPERS: list[tuple[str, str]] = [
     ("2607.23531", "jepa-paradox-language"),
     ("2606.31689", "scratchworld-executable-consequences"),
     ("2606.31232", "delta-jepa-latent-difference"),
+    ("2601.14354", "vjepa-variational-probabilistic"),
+    ("2605.11436", "agent-brace-belief-state"),
+    ("2602.06130", "swirl-latent-actions-idm"),
+    ("2606.00091", "dllm-jepa"),
+    ("2605.15394", "jepa-audit-llm-finetune"),
+    ("2511.14868", "htp-last-token-pooling"),
+    ("2105.04906", "vicreg"),
+    ("2410.19560", "c-jepa-vicreg"),
+    ("2606.05173", "predict-reconstruct-jepa-mlm"),
+    ("2605.25313", "uwm-jepa-belief-space"),
+    ("2603.20111", "var-jepa-elbo"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"

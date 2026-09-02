@@ -1,0 +1,886 @@
+source: https://arxiv.org/html/2606.05173
+arxiv: https://arxiv.org/abs/2606.05173
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+     1. Contributions.
+ 3. 2 Background and Related Work
+     1. 2.1 Reconstruction-Based SSL and Its Limitations
+     2. 2.2 JEPA and Latent Prediction
+     3. 2.3 Representation Quality Metrics
+ 4. 3 Method
+     1. 3.1 Architecture Overview
+     2. 3.2 Hybrid Pre-training Objective
+         1. Block masking (JEPA branch).
+         2. BERT masking (MLM branch).
+         3. Forward pass.
+         4. Loss functions.
+         5. EMA update.
+     3. 3.3 Token Regressor
+     4. 3.4 Sentence Pooling
+ 5. 4 Experimental Setup
+     1. 4.1 Pre-training
+         1. Data.
+         2. Model architecture.
+         3. Training.
+     2. 4.2 Downstream Evaluation: Linear Probing
+         1. Single-sentence tasks (SST-2, CoLA).
+         2. Sentence-pair tasks (MRPC, MNLI).
+         3. Regression task (STS-B).
+     3. 4.3 Representation Analysis
+ 6. 5 Results
+     1. 5.1 Downstream Task Accuracy
+     2. 5.2 Representation Geometry
+         1. 5.2.1 Uniformity
+         2. 5.2.2 Alignment–Uniformity Trade-off
+         3. 5.2.3 Spectral Analysis
+         4. 5.2.4 Probing Results
+             1. Token probe.
+             2. Semantic probe.
+             3. CoLA MCC.
+ 7. 6 Ablation Study: Pooling Strategies
+     1. Mean pooling
+     2. Max pooling
+     3. Weighted mean pooling
+     4. Attention pooling
+ 8. 7 Discussion
+     1. Why similar accuracy despite different geometry?
+     2. Attention pooling as a diagnostic tool.
+     3. Resource constraints.
+ 9. 8 Future Work
+10. 9 Conclusion
+11. References
+12. A Full Representation Analysis Tables
+13. B Alignment–Uniformity Plots
+14. C Eigenspectrum Plots
+15. D Representation Metric Definitions
+     1. 1.  Spectral Entropy [Garrido et al., 2023].
+     2. 2.  Effective Rank [Roy and Vetterli, 2007].
+     3. 3.  Stable Rank [Vershynin, 2018].
+     4. 4.  Alignment [Wang and Isola, 2020].
+     5. 5.  Uniformity [Wang and Isola, 2020].
+     6. 6.  Probe Gap [Conneau and Kiela, 2018].
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2606.05173v1 [cs.CL] 16 Apr 2026
+
+Predict and Reconstruct: Joint Objectives for
+Self-Supervised Language Representation Learning
+
+Aimen Boukhari Affiliation: École Nationale Supérieure d’Informatique (ESI), Algiers , Algeria 
+Email:  mn_boukhari@esi.dz
+
+Abstract
+
+Masked language modelling (MLM) has been the dominant pre-training objective for text encoders
+since BERT, yet it encourages representations that are strongly anchored to surface-form token
+identity rather than deeper semantic structure. Inspired by the success of Joint Embedding
+Predictive Architectures (JEPA) (LeCun, 2022) in vision and audio, we propose a hybrid pre-training
+objective that combines a JEPA-style latent-space prediction loss with an MLM reconstruction loss
+over a single shared encoder. A learnable scalar λ\lambda continuously balances the two objectives
+during training. We pre-train both a hybrid model and a pure-MLM baseline on English Wikipedia
+using identical architectures and compute budgets (NVIDIA H100). Extensive representation analysis
+across five GLUE benchmarks (SST-2, MRPC, MNLI, CoLA, STS-B) using four pooling strategies reveals
+that the hybrid encoder produces significantly more uniform embeddings (uniformity ≤−0.16\leq-0.16
+vs. −0.05-0.05 for MLM), exhibits richer spectral geometry under max pooling, encodes less
+surface-level lexical information, and achieves a better semantic-to-lexical balance. Despite
+similar linear-probe downstream accuracy, the geometric differences are consistent and significant,
+suggesting that the JEPA predictive objective reshapes the latent space in ways that standard
+accuracy metrics alone cannot capture. Code and checkpoints: https://github.com/aymen-000/
+predict-reconstruct-language-models
+
+1 Introduction
+
+Self-supervised learning (SSL) has transformed representation learning across modalities. In
+computer vision, contrastive methods such as SimCLR (Chen et al., 2020) and MoCo (He et al., 2020),
+followed by non-contrastive approaches like BYOL (Grill et al., 2020) and VICReg (Bardes et al.,
+2022), demonstrated that powerful visual features can be learned without labels. In speech and
+audio, wav2vec (Baevski et al., 2020) and data2vec (Baevski et al., 2022) showed that masked
+prediction in latent space generalises across modalities. These successes share a common principle:
+rather than reconstructing pixels or waveforms, the model learns to predict abstract
+representations of masked or future content.
+
+Yann LeCun formalised this intuition in (LeCun, 2022), arguing that reconstruction-based objectives
+are fundamentally limited because they force the model to allocate capacity to irrelevant low-level
+details. The Joint Embedding Predictive Architecture (JEPA) avoids this by having a predictor
+network match the target encoder’s latent representation of the masked region, never reconstructing
+tokens in pixel or token space. The image instantiation I-JEPA (Assran et al., 2023) demonstrated
+on ImageNet that JEPA pre-training produces representations that generalise better with fewer
+labelled examples than masked autoencoders, and that learned features are more semantically
+structured as evidenced by linear probing.
+
+In natural language processing, BERT (Devlin et al., 2019) established MLM as the standard SSL
+objective. While highly effective, MLM operates in token space: the model must predict the exact
+identity of masked tokens, incentivising the encoder to retain fine-grained lexical information at
+the expense of broader semantic structure. Several analyses have confirmed that BERT
+representations are highly contextualised yet remain sensitive to surface-form variation (
+Ethayarajh, 2019; Rogers et al., 2020). SimCSE (Gao et al., 2021) and DeCLUTR (Giorgi et al., 2021)
+improved the uniformity of BERT-derived sentence embeddings through contrastive fine-tuning,
+confirming that the MLM objective alone does not fully exploit the embedding hypersphere.
+
+A natural question therefore arises: can a JEPA-style latent prediction objective be combined with
+MLM to produce text encoders that encode semantics more robustly? A recent independent line of
+work, LLM-JEPA (Huang et al., 2025), explores applying JEPA principles to autoregressive language
+models. Our work is complementary: we study the representation geometry of small-to-medium encoders
+trained under hybrid versus pure-MLM objectives, providing the first systematic analysis using
+alignment/uniformity metrics, eigenspectrum analysis, effective rank, and probing classifiers
+across multiple GLUE tasks.
+
+Contributions.
+
+ 1. 1.
+   
+    We propose a hybrid pre-training architecture that jointly optimises a JEPA cosine prediction
+    loss and an MLM cross-entropy loss through a single shared encoder with a learnable balance
+    weight λ\lambda.
+
+ 2. 2.
+   
+    We conduct the first systematic geometric analysis of hybrid vs. MLM-only text encoders across
+    five GLUE datasets and four pooling strategies using six complementary representation metrics.
+
+ 3. 3.
+   
+    We show that hybrid training consistently improves embedding uniformity and spectral richness
+    while reducing surface-form bias, even under a small pre-training budget.
+
+ 4. 4.
+   
+    We release code and model checkpoints to facilitate reproduction and extension of this
+    analysis.
+
+2 Background and Related Work
+
+2.1 Reconstruction-Based SSL and Its Limitations
+
+Masked language modelling, introduced in BERT (Devlin et al., 2019), predicts masked tokens from
+context. This objective is effective but carries an implicit bias: the model must memorise
+token-level statistics to recover the correct token identity, encouraging representations to retain
+lexical surface form rather than semantic content. LeCun (2022) identifies reconstruction
+objectives as fundamentally misaligned with the goal of learning abstract world models: predicting
+every detail of the input wastes model capacity on unpredictable or irrelevant information. In
+vision, masked autoencoders (MAE) (He et al., 2022) achieve strong results but require fine-tuning
+to match JEPA-style methods on linear evaluation (Assran et al., 2023), consistent with the
+hypothesis that pixel reconstruction does not optimally produce semantic features.
+
+2.2 JEPA and Latent Prediction
+
+I-JEPA (Assran et al., 2023) instantiates LeCun’s JEPA framework for images: a context encoder
+processes visible patches, a predictor maps context representations to target representations, and
+the target encoder (updated via exponential moving average, EMA) produces representations of masked
+regions that the predictor must match. The loss is computed in representation space rather than
+pixel space, avoiding the reconstruction trap. V-JEPA (Bardes et al., 2024) extends this to video
+and MC-JEPA (Bardes et al., 2023) adds motion consistency. LLM-JEPA (Huang et al., 2025) recently
+proposed adapting JEPA to autoregressive language models. Our work differs in focus: we study
+encoder representation geometry rather than downstream generation quality, and provide direct
+comparison with a controlled MLM baseline.
+
+2.3 Representation Quality Metrics
+
+Wang and Isola (2020) introduced alignment and uniformity for evaluating sentence embeddings on the
+ℓ2\ell_{2}-normalised hypersphere. Roy and Vetterli (2007) defined the effective rank as the
+exponential of the Shannon entropy of the normalised singular-value distribution. Vershynin (2018)
+introduces the stable rank as a robust alternative. Garrido et al. (2023) used eigenspectrum
+analysis to compare contrastive and non-contrastive SSL objectives. Conneau and Kiela (2018)
+established the probing task framework for analysing what linguistic information is encoded in
+sentence representations, and Ethayarajh (2019) applied contextuality analysis to BERT
+representations.
+
+3 Method
+
+3.1 Architecture Overview
+
+Our architecture consists of three components: a shared encoder fθf_{\theta}, a predictor gϕg_{\
+phi}, and a target encoder f¯θ\bar{f}_{\theta} updated via EMA. The shared encoder processes input
+tokens and produces contextualised representations used for both the JEPA and MLM objectives. A
+lightweight token regressor hψh_{\psi} maps encoder outputs to vocabulary logits for the MLM
+branch. The overall architecture is illustrated in Figure 1.
+
+Refer to caption
+Figure 1: Hybrid Predict-and-Reconstruct architecture. The shared encoder produces contextual
+representations used by two branches: a predictor for the JEPA objective and a token regression
+head for the MLM objective. The target encoder is updated using exponential moving average (EMA)
+and provides stable targets for representation prediction.
+
+3.2 Hybrid Pre-training Objective
+
+Given a token sequence 𝐱\mathbf{x} of length LL, we apply two distinct masking operations.
+
+Block masking (JEPA branch).
+
+Following I-JEPA (Assran et al., 2023), we sample contiguous block masks. An encoder mask ℳenc\
+mathcal{M}_{\text{enc}} (scale [0.65,0.85][0.65,0.85]) defines the visible context; prediction
+masks {ℳpredk}k=12\{\mathcal{M}_{\text{pred}}^{k}\}_{k=1}^{2} (scale [0.10,0.25][0.10,0.25]) define
+the target regions.
+
+BERT masking (MLM branch).
+
+We apply standard BERT-style masking with probability p=0.15p=0.15: 80% of selected positions
+receive the [MASK] token, 10% are replaced by a random token, and 10% are left unchanged.
+
+Forward pass.
+
+ 𝐳\displaystyle\mathbf{z}   =fθ​(𝐱~,ℳenc)\displaystyle=f_{\theta}(\tilde{\mathbf{x}},\,\        (1)
+                            mathcal{M}_{\text{enc}})
+ 𝐡^\displaystyle\hat{\      =gϕ​(𝐳,ℳenc,ℳpred)\displaystyle=g_{\phi}(\mathbf{z},\,\mathcal{M}_  (2)
+ mathbf{h}}                 {\text{enc}},\,\mathcal{M}_{\text{pred}})
+ 𝐡\displaystyle\mathbf{h}   =f¯θ(𝐱)(no grad)\displaystyle=\bar{f}_{\theta}(\mathbf{x})\quad\    (3)
+                            text{(no grad)}
+ 𝐳full\displaystyle\mathbf  =fθ​(𝐱~)\displaystyle=f_{\theta}(\tilde{\mathbf{x}})                (4)
+ {z}_{\text{full}}
+
+where 𝐱~\tilde{\mathbf{x}} denotes the BERT-masked token sequence, 𝐡\mathbf{h} is the target
+representation, and 𝐳full\mathbf{z}_{\text{full}} is the full-sequence latent used for token
+regression.
+
+Loss functions.
+
+ ℒJEPA\displaystyle\   =1−1|ℬ|​∑(i,j)∈ℬcos⁡(𝐡^i​j,𝐡i​j)\displaystyle=1-\frac{1}{|\mathcal{B}|}
+ mathcal{L}_{\text     \sum_{(i,j)\in\mathcal{B}}\cos\!\bigl(\hat{\mathbf{h}}_{ij},\,\mathbf    (5)
+ {JEPA}}               {h}_{ij}\bigr)
+ ℒMLM\displaystyle\    =CE⁡(hψ​(𝐳full),𝐲mask)\displaystyle=\mathrm{CE}\!\bigl(h_{\psi}(\mathbf
+ mathcal{L}_{\text     {z}_{\text{full}}),\,\mathbf{y}_{\text{mask}}\bigr)                      (6)
+ {MLM}}
+ ℒ\displaystyle\       =λ​ℒJEPA+(1−λ)​ℒMLM,λ=σ⁡(w)\displaystyle=\lambda\,\mathcal{L}_{\text     (7)
+ mathcal{L}            {JEPA}}+(1-\lambda)\,\mathcal{L}_{\text{MLM}},\quad\lambda=\sigma(w)
+
+where w∈ℝw\in\mathbb{R} is a learnable scalar optimised end-to-end and σ\sigma is the sigmoid
+function.
+
+EMA update.
+
+ 𝜽¯←m​𝜽¯+(1−m)​𝜽,m∈[0.996, 1.0]\bar{\boldsymbol{\theta}}\leftarrow m\,\bar{\boldsymbol{\        (8)
+ theta}}+(1-m)\,\boldsymbol{\theta},\quad m\in[0.996,\,1.0]
+
+3.3 Token Regressor
+
+The token regressor hψh_{\psi} operates directly on the shared encoder’s latent representation:
+
+ hψ​(𝐳)=W2​LN​(GELU⁡(W1​𝐳))h_{\psi}(\mathbf{z})=W_{2}\,\mathrm{LN}\!\bigl(\mathrm{GELU}(W_{1}\  (9)
+ mathbf{z})\bigr)
+
+with W1∈ℝD×DW_{1}\in\mathbb{R}^{D\times D} , W2∈ℝD×VW_{2}\in\mathbb{R}^{D\times V} (VV = vocabulary
+size) and LN⁡(⋅)\mathrm{LN}(\cdot) denotes layer normalisation (Ba et al., 2016).Unlike a standard
+MLM head, hψh_{\psi} receives gradients from both objectives through the shared encoder weights.
+
+3.4 Sentence Pooling
+
+For downstream evaluation, token representations are aggregated via mean pooling over non-padding
+positions:
+
+ 𝐬=∑t=1L𝟏[xt≠pad]𝐳t∑t=1L𝟏[xt≠pad]\mathbf{s}=\frac{\sum_{t=1}^{L}\mathbf{1}[x_{t}\neq\texttt    (10)
+ {pad}]\,\mathbf{z}_{t}}{\sum_{t=1}^{L}\mathbf{1}[x_{t}\neq\texttt{pad}]}
+
+This matches the pooling used in all linear-probe fine-tuning experiments.
+
+4 Experimental Setup
+
+4.1 Pre-training
+
+Data.
+
+Both models are pre-trained on English Wikipedia (WikiText). All text is tokenised with the 
+bert-base-uncased tokeniser (vocabulary size 30,522) and sequences are truncated or padded to
+512 tokens.
+
+Model architecture.
+
+The model uses a transformer-based encoder with token embedding dimension demb=512d_{\text{emb}}=
+512. The predictor consists of 6 layers with embedding dimension dpred=512d_{\text{pred}}=512. A
+target encoder, with the same architecture as the main encoder, is maintained with frozen weights
+and updated via exponential moving average. The token regressor head maps the encoder outputs back
+to the vocabulary (vocab_size=30,522\text{vocab\_size}=30{,}522) for masked language modeling.
+Optimization is performed with AdamW, using a learnable scalar to balance the JEPA (cosine) and MLM
+(cross-entropy) losses.
+
+Training.
+
+Both models are trained for 3 epochs with batch size 64 on a single NVIDIA H100 GPU using bfloat16
+mixed precision and AdamW with cosine learning rate schedule (peak LR 5×10−55\times 10^{-5}, weight
+decay 0.050.05). Full hyperparameters are given in Table 1.
+
+
+Table 1: Pre-training hyperparameters.
+
+Hyperparameter     Value
+Epochs             3
+Batch size         64
+Peak LR            5×10−55\times 10^{-5}
+LR schedule        cosine
+Warmup steps       10
+Weight decay       0.05
+Precision          bfloat16
+EMA range          [0.996, 1.0]
+Encoder mask scale [0.65, 0.85]
+Pred. mask scale   [0.10, 0.25]
+Num. pred. masks   2
+Min. keep tokens   32
+MLM probability    0.15
+Hardware           NVIDIA H100
+
+4.2 Downstream Evaluation: Linear Probing
+
+We evaluate frozen encoder representations via linear probing on five GLUE tasks (Wang et al., 2018
+). The encoder is kept frozen throughout; only a lightweight head is trained. Since GLUE test
+labels are not publicly available, all results are reported on the official validation splits. No
+hyperparameter search was performed on the validation set; the same configuration was applied to
+both models.
+
+Single-sentence tasks (SST-2, CoLA).
+
+Mean-pooled representations feed a LayerNorm →\to Dropout(0.2) →\to Linear head.
+
+Sentence-pair tasks (MRPC, MNLI).
+
+Both sentences are encoded independently; the classifier receives [𝐬1;𝐬2;|𝐬1−𝐬2|;𝐬1⊙𝐬2][\mathbf{s}_
+{1};\;\mathbf{s}_{2};\;|\mathbf{s}_{1}-\mathbf{s}_{2}|;\;\mathbf{s}_{1}\odot\mathbf{s}_{2}] (
+Conneau et al., 2017).
+
+Regression task (STS-B).
+
+Cosine similarity is calibrated to the [0,5][0,5] score range via a learnable scale and bias: y^=
+σw⋅cos⁡(𝐬1,𝐬2)+bw\hat{y}=\sigma_{w}\cdot\cos(\mathbf{s}_{1},\mathbf{s}_{2})+b_{w}.
+
+Per-task fine-tuning details are given in Table 2.
+
+
+Table 2: Fine-tuning hyperparameters per task.
+
+Task  LR                     Epochs Metric
+SST-2 1×10−31\times 10^{-3}  90     Accuracy
+MRPC  1×10−31\times 10^{-3}  10     F1
+MNLI  1×10−31\times 10^{-3}  15     Acc. (matched)
+STS-B 1×10−31\times 10^{-3}  15     Spearman ρ\rho
+
+4.3 Representation Analysis
+
+We extract frozen sentence embeddings for up to 2,000 samples from each task’s validation split and
+compute six metrics:
+
+ 1. 1.
+   
+    Spectral entropy (Garrido et al., 2023): Hspec=H⁡(𝝈/‖𝝈‖1)/log⁡DH_{\text{spec}}=H(\boldsymbol{\
+    sigma}/\|\boldsymbol{\sigma}\|_{1})/\log D.
+
+ 2. 2.
+   
+    Effective rank (Roy and Vetterli, 2007): erank=exp⁡H⁡(𝝈/‖𝝈‖1)\text{erank}=\exp H(\boldsymbol{\
+    sigma}/\|\boldsymbol{\sigma}\|_{1}).
+
+ 3. 3.
+   
+    Stable rank (Vershynin, 2018): srank=‖𝐙‖F2/‖𝐙‖22\text{srank}=\|\mathbf{Z}\|_{F}^{2}/\|\mathbf
+    {Z}\|_{2}^{2}.
+
+ 4. 4.
+   
+    Alignment (Wang and Isola, 2020): mean squared ℓ2\ell_{2} distance between same-class pairs.
+
+ 5. 5.
+   
+    Uniformity (Wang and Isola, 2020): log⁡𝔼⁡[e−2​‖𝐮−𝐯‖2]\log\mathbb{E}[e^{-2\|\mathbf{u}-\mathbf
+    {v}\|^{2}}] on ℓ2\ell_{2}-normalised embeddings.
+
+ 6. 6.
+   
+    Probe gap (Conneau and Kiela, 2018): semantic probe accuracy minus token probe accuracy.
+
+All metrics are computed under four pooling strategies: mean, max, weighted mean, and attention
+pooling. Full formal definitions are given in Appendix D.
+
+5 Results
+
+5.1 Downstream Task Accuracy
+
+Table 3 reports linear-probe performance on five GLUE tasks. Both models achieve comparable
+accuracy, consistent with the known finding that MLM baselines are strong linear classifiers under
+mean-pooled representations (Gao et al., 2021).
+
+
+Table 3: Linear-probe downstream performance on GLUE validation splits. Frozen encoder; best
+per-task result in bold. Spearman ρ\rho for STS-B.
+
+Task                Hybrid MLM-only
+SST-2 (Acc.)        67.55  68.69
+MRPC (F1)           63.09  59.84
+MNLI (Acc.)         50.82  51.36
+STS-B^† (Spearman)  0.281  0.283
+
+5.2 Representation Geometry
+
+5.2.1 Uniformity
+
+The hybrid encoder consistently achieves significantly more negative uniformity scores across all
+five datasets and all four pooling strategies (Table 4). The mean uniformity under attention
+pooling is −0.54-0.54 for hybrid vs. −0.07-0.07 for MLM-only — a sevenfold difference. This
+confirms that the JEPA predictive objective prevents representational collapse and promotes a more
+isotropic use of the embedding hypersphere (Wang and Isola, 2020), analogous to findings in vision 
+(Assran et al., 2023).
+
+
+Table 4: Uniformity (↓\downarrow better) by dataset and pooling.
+
+Dataset Pooling   Hybrid                MLM
+        mean      −0.160\mathbf{-0.160} −0.052-0.052
+SST-2   max       −0.294\mathbf{-0.294} −0.090-0.090
+        weighted  −0.160\mathbf{-0.160} −0.052-0.052
+        attention −0.448\mathbf{-0.448} −0.055-0.055
+        mean      −0.134\mathbf{-0.134} −0.053-0.053
+MRPC    max       −0.262\mathbf{-0.262} −0.088-0.088
+        weighted  −0.134\mathbf{-0.134} −0.053-0.053
+        attention −0.269\mathbf{-0.269} −0.055-0.055
+        mean      −0.169\mathbf{-0.169} −0.063-0.063
+MNLI    max       −0.290\mathbf{-0.290} −0.096-0.096
+        weighted  −0.163\mathbf{-0.163} −0.063-0.063
+        attention −0.365\mathbf{-0.365} −0.067-0.067
+        mean      −0.314\mathbf{-0.314} −0.079-0.079
+CoLA    max       −0.365\mathbf{-0.365} −0.098-0.098
+        weighted  −0.314\mathbf{-0.314} −0.079-0.079
+        attention −0.955\mathbf{-0.955} −0.083-0.083
+        mean      −0.202\mathbf{-0.202} −0.067-0.067
+STS-B   max       −0.321\mathbf{-0.321} −0.102-0.102
+        weighted  −0.201\mathbf{-0.201} −0.068-0.068
+        attention −0.577\mathbf{-0.577} −0.069-0.069
+
+5.2.2 Alignment–Uniformity Trade-off
+
+The improved uniformity comes at the cost of higher within-class alignment values for hybrid
+representations. MLM-only alignment is consistently near zero (≤0.002\leq 0.002), indicating
+extremely tight class clusters, while hybrid alignment is larger (e.g. SST-2/attention: 0.20 vs.
+0.001), reflecting a more relaxed intra-class structure. This alignment-uniformity trade-off (Wang
+and Isola, 2020) directly explains why linear-probe accuracy is similar for both models: linear
+classifiers benefit primarily from tight clusters, which favours MLM-only representations. Scatter
+plots of alignment vs. uniformity and intra/inter-class distance ratios for all datasets are given
+in Appendix B.
+
+5.2.3 Spectral Analysis
+
+Under max pooling, the hybrid encoder achieves higher spectral entropy and effective rank across
+all datasets (Table 5), indicating that more embedding dimensions carry meaningful variance. The
+stable rank is also consistently higher for hybrid under max pooling.
+
+
+Table 5: Spectral metrics under max pooling. H = Hybrid; M = MLM-only. Eff. Rank (Roy and Vetterli,
+2007); Srank (Vershynin, 2018).
+
+      Spec. Ent. (↑\uparrow)  Eff. Rank (↑\uparrow)   Srank (↑\uparrow)
+Task  H           M           H           M           H        M
+SST-2 0.765       0.735       384         364         6.98     4.11
+MRPC  0.794       0.824       299         301         8.18     11.33
+MNLI  0.779       0.767       406         391         8.35     4.99
+CoLA  0.752       0.715       365         330         10.82    4.75
+STS-B 0.743       0.721       390         372         6.94     4.09
+
+5.2.4 Probing Results
+
+Token probe.
+
+The hybrid encoder consistently exhibits lower token probe accuracy (Table 6), indicating that its
+representations retain less surface-level lexical information. Across all tasks under attention
+pooling, hybrid token accuracy is 3–9 points lower than MLM-only.
+
+Semantic probe.
+
+Despite encoding less token-level information, hybrid representations achieve comparable or
+slightly higher semantic probe performance. Under max pooling on MRPC, hybrid achieves the only
+positive probe gap (+0.031+0.031), confirming that the JEPA objective promotes semantic encoding
+over lexical memorisation.
+
+CoLA MCC.
+
+The hybrid encoder achieves consistently positive MCC on CoLA (0.0520.052–0.0640.064 vs.
+−0.023-0.023–0.0100.010 for MLM), suggesting that block-span prediction induces a weak but
+reproducible syntactic sensitivity absent from token-level MLM.
+
+
+Table 6: Probing results under attention pooling. H = Hybrid; M = MLM-only.
+
+      Token (↓\downarrow) Semantic (↑\uparrow)  Gap (↑\uparrow)
+Task  H         M         H          M          H       M
+SST-2 0.663     0.754     0.643      0.635      −-0.019 −-0.119
+MRPC  0.616     0.678     0.608      0.610      −-0.008 −-0.068
+MNLI  0.685     0.740     0.326      0.333      −-0.359 −-0.407
+CoLA  0.813     0.870     0.602      0.594      −-0.211 −-0.276
+STS-B 0.592     0.654     0.187      0.193      −-0.405 −-0.460
+
+6 Ablation Study: Pooling Strategies
+
+We evaluate four pooling strategies to disentangle the effect of aggregation from the effect of the
+pre-training objective.
+
+Mean pooling
+
+(Eq. 10) is the default and matches the pooling used during fine-tuning. It provides the fairest
+comparison for downstream accuracy but yields the most compressed spectral geometry.
+
+Max pooling
+
+consistently yields the highest spectral entropy and effective rank for both models. It is the most
+discriminative strategy for the hybrid encoder on classification tasks, and the only configuration
+under which the probe gap turns positive for MRPC.
+
+Weighted mean pooling
+
+produces results nearly identical to mean pooling across all metrics. Since weights are initialised
+uniformly and evaluated inside no_grad, this serves as a useful null result confirming that
+observed geometric differences are intrinsic to the encoder rather than to the pooling arithmetic.
+
+Attention pooling
+
+amplifies differences between the two models more than any other strategy. The uniformity gap is
+widest under attention pooling (SST-2: −0.448-0.448 vs. −0.055-0.055; STS-B: −0.577-0.577 vs.
+−0.069-0.069), suggesting that the JEPA objective most strongly affects high-attention positions —
+the tokens the model considers most semantically salient.
+
+Figure 2 illustrates the pooling ablation for the hybrid encoder on SST-2.
+
+Refer to caption
+Figure 2: Spectral entropy, semantic probe accuracy, and uniformity for the hybrid encoder under
+four pooling strategies on SST-2. Max pooling maximises spectral richness; attention pooling
+maximises the uniformity advantage.
+
+7 Discussion
+
+Why similar accuracy despite different geometry?
+
+The alignment-uniformity trade-off (Wang and Isola, 2020) provides the explanation. Hybrid
+representations cover the embedding hypersphere more uniformly but do not cluster same-class points
+as tightly. Since linear classifiers benefit primarily from tight clusters, MLM’s alignment
+advantage offsets hybrid’s uniformity advantage at the linear-probe evaluation level. We expect the
+uniformity advantage to translate to downstream gains under non-linear probing, retrieval tasks, or
+longer pre-training.
+
+Attention pooling as a diagnostic tool.
+
+The amplified differences under attention pooling suggest that JEPA’s effect is concentrated at
+salient positions rather than distributed uniformly across the sequence, consistent with the
+block-masking design that forces the predictor to recover representations of contiguous spans.
+
+Resource constraints.
+
+Pre-training was intentionally limited to 3 epochs on a modest corpus to study the effect of the
+objective under a controlled compute budget. The geometric differences observed are therefore
+likely a lower bound on what is achievable at scale.
+
+8 Future Work
+
+  • •
+   
+    Alternative prediction losses. Cosine similarity enforces directional alignment but ignores
+    magnitude. Future work should evaluate smooth ℓ1\ell_{1}, VICReg (Bardes et al., 2022), or
+    Barlow Twins (Zbontar et al., 2021) losses in the JEPA branch.
+
+  • •
+   
+    Curriculum-based λ\lambda. The current λ\lambda converges slowly. A schedule starting MLM-heavy
+    and shifting to JEPA-heavy as the target encoder matures may accelerate learning.
+
+  • •
+   
+    Alternative masking strategies. Span masking (Joshi et al., 2020), whole-word masking, and
+    syntactically informed masking are natural alternatives.
+
+  • •
+   
+    Scale. Extending to BookCorpus + Wikipedia, more epochs, and larger model sizes is the most
+    direct path to assessing whether geometric advantages translate to accuracy improvements.
+
+  • •
+   
+    Non-linear probing and retrieval. Evaluating with MLP probes and semantic similarity benchmarks
+    (STS12–STS16, SICK-R) would provide a more complete picture.
+
+  • •
+   
+    Collapse monitoring. Online tracking of uniformity and effective rank during training could
+    serve as an adaptive objective-switching signal.
+
+9 Conclusion
+
+We proposed a hybrid pre-training objective that combines a JEPA-style latent prediction loss with
+masked language modelling over a single shared encoder. Through systematic representation analysis
+across five GLUE benchmarks and four pooling strategies, we showed that the hybrid objective
+consistently produces more uniform embedding distributions, richer spectral geometry, and better
+semantic-to-lexical balance compared to a controlled MLM-only baseline trained under identical
+conditions. These advantages are not captured by linear-probe accuracy alone, highlighting the
+value of geometric representation analysis as a complementary evaluation protocol. Our findings
+provide empirical support for LeCun’s hypothesis that latent-space prediction objectives lead to
+more abstract representations than token reconstruction (LeCun, 2022), and constitute a step toward
+understanding how JEPA principles can be applied to language encoders under realistic resource
+constraints.
+
+References
+
+  • Assran et al. (2023) M. Assran, Q. Duval, I. Misra, P. Bojanowski, P. Vincent, M. Rabbat, Y.
+    LeCun, and N. Ballas Self-supervised learning from images with a joint-embedding predictive
+    architecture. In CVPR 2023, Cited by: §1, §2.1, §2.2, §3.2, §5.2.1.
+  • Ba et al. (2016) J.L. Ba, J.R. Kiros, and G.E. Hinton Layer normalization. arXiv:1607.06450. 
+    Cited by: §3.3.
+  • Baevski et al. (2022) A. Baevski, W.-N. Hsu, Q. Xu, A. Babu, J. Gu, and M. Auli Data2vec: a
+    general framework for self-supervised learning in speech, vision and language. In ICML 2022, 
+    Cited by: §1.
+  • Baevski et al. (2020) A. Baevski, H. Zhou, A. Mohamed, and M. Auli Wav2vec 2.0: a framework for
+    self-supervised learning of speech representations. In NeurIPS 2020, Cited by: §1.
+  • Bardes et al. (2024) A. Bardes, Q. Garrido, J. Ponce, M. Rabbat, Y. LeCun, M. Assran, and N.
+    Ballas Revisiting feature prediction for learning visual representations from video. 
+    arXiv:2404.08471. Cited by: §2.2.
+  • Bardes et al. (2022) A. Bardes, J. Ponce, and Y. LeCun VICReg: variance-invariance-covariance
+    regularization for self-supervised learning. In ICLR 2022, Cited by: §1, 1st item.
+  • Bardes et al. (2023) A. Bardes, J. Ponce, and Y. LeCun MC-jepa: a joint-embedding predictive
+    architecture for self-supervised learning of motion and content features. arXiv preprint
+    arXiv:2307.12698. Cited by: §2.2.
+  • Chen et al. (2020) T. Chen, S. Kornblith, M. Norouzi, and G. Hinton A simple framework for
+    contrastive learning of visual representations. In ICML 2020, Cited by: §1.
+  • Conneau et al. (2017) A. Conneau, D. Kiela, H. Schwentz, L. Barrault, and A. Bordes Supervised
+    learning of universal sentence representations from natural language inference data. In EMNLP
+    2017, Cited by: §4.2.
+  • Conneau and Kiela (2018) A. Conneau and D. Kiela SentEval: an evaluation toolkit for universal
+    sentence representations. In LREC 2018, Cited by: Appendix D, §2.3, item 6.
+  • Devlin et al. (2019) J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova BERT: pre-training of
+    deep bidirectional transformers for language understanding. In NAACL 2019, Cited by: §1, §2.1.
+  • Ethayarajh (2019) K. Ethayarajh How contextual are contextualized word representations?
+    comparing the geometry of bert, elmo, and gpt-2 embeddings. In EMNLP 2019, Cited by: §1, §2.3.
+  • Gao et al. (2021) T. Gao, X. Yao, and D. Chen SimCSE: simple contrastive learning of sentence
+    embeddings. In EMNLP 2021, Cited by: §1, §5.1.
+  • Garrido et al. (2023) Q. Garrido, Y. Chen, A. Bardes, L. Najman, and Y. LeCun On the duality
+    between contrastive and non-contrastive self-supervised learning. In ICLR 2023, Cited by:
+    Appendix D, §2.3, item 1.
+  • Giorgi et al. (2021) J. Giorgi, O. Nitski, B. Wang, and G. Bader DeCLUTR: deep contrastive
+    learning for unsupervised textual representations. In ACL 2021, Cited by: §1.
+  • Grill et al. (2020) J.-B. Grill, F. Strub, F. Altché, et al. Bootstrap your own latent: a new
+    approach to self-supervised learning. In NeurIPS 2020, Cited by: §1.
+  • He et al. (2022) K. He, X. Chen, S. Xie, Y. Li, P. Dollár, and R. Girshick Masked autoencoders
+    are scalable vision learners. In CVPR 2022, Cited by: §2.1.
+  • He et al. (2020) K. He, H. Fan, Y. Wu, S. Xie, and R. Girshick Momentum contrast for
+    unsupervised visual representation learning. In CVPR 2020, Cited by: §1.
+  • Huang et al. (2025) H. Huang, Y. LeCun, and R. Balestriero LLM-jepa: large language models meet
+    joint embedding predictive architectures. arXiv preprint arXiv:2509.14252. Cited by: §1, §2.2.
+  • Joshi et al. (2020) M. Joshi, D. Chen, Y. Liu, D.S. Weld, L. Zettlemoyer, and O. Levy SpanBERT:
+    improving pre-training by representing and predicting spans. Cited by: 3rd item.
+  • LeCun (2022) Y. LeCun A path towards autonomous machine intelligence. Note: OpenReview preprint
+    Cited by: §1, §2.1, §9, Abstract.
+  • Rogers et al. (2020) A. Rogers, O. Kovaleva, and A. Rumshisky A primer in bertology: what we
+    know about how bert works. TACL 2020. Cited by: §1.
+  • Roy and Vetterli (2007) O. Roy and M. Vetterli The effective rank: a measure of effective
+    dimensionality. In EUSIPCO 2007, Cited by: Appendix D, §2.3, item 2, Table 5.
+  • Vershynin (2018) R. Vershynin High-dimensional probability. Cambridge University Press. Cited
+    by: Appendix D, §2.3, item 3, Table 5.
+  • Wang et al. (2018) A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. Bowman GLUE: a
+    multi-task benchmark and analysis platform for natural language understanding. In ICLR 2019, 
+    Cited by: §4.2.
+  • Wang and Isola (2020) T. Wang and P. Isola Understanding contrastive representation learning
+    through alignment and uniformity on the hypersphere. In ICML 2020, Cited by: Appendix D,
+    Appendix D, §2.3, item 4, item 5, §5.2.1, §5.2.2, §7.
+  • Zbontar et al. (2021) J. Zbontar, L. Jing, I. Misra, Y. LeCun, and S. Deny Barlow twins:
+    self-supervised learning via redundancy reduction. In ICML 2021, Cited by: 1st item.
+
+Appendix A Full Representation Analysis Tables
+
+Tables 7–11 report all six representation metrics for all pooling strategies across all datasets.
+H = Hybrid; M = MLM-only.
+
+
+Table 7: Full representation metrics — SST-2.
+
+          Spec. Ent.  Eff.    Srank     Uniformity              Sem. Probe  Probe Gap
+                      Rank
+Pool      H     M     H   M   H    M    H               M       H     M     H               M
+mean      0.609 0.605 242 249 4.49 4.50 −0.160\mathbf   −-0.052 0.617 0.618 −0.138\mathbf   −-0.152
+                                        {-0.160}                            {-0.138}
+max       0.765 0.735 384 364 6.98 4.11 −0.294\mathbf   −-0.090 0.600 0.595 −0.008\mathbf   −-0.045
+                                        {-0.294}                            {-0.008}
+weighted  0.609 0.605 242 249 4.49 4.50 −0.160\mathbf   −-0.052 0.617 0.619 −0.139\mathbf   −-0.149
+                                        {-0.160}                            {-0.139}
+attention 0.425 0.602 231 255 1.81 4.15 −0.448\mathbf   −-0.055 0.643 0.635 −0.019\mathbf   −-0.119
+                                        {-0.448}                            {-0.019}
+
+
+Table 8: Full representation metrics — MRPC.
+
+          Spec. Ent.  Eff.    Srank      Uniformity              Sem. Probe  Probe Gap
+                      Rank
+Pool      H     M     H   M   H    M     H               M       H     M     H               M
+mean      0.631 0.629 184 186 7.39 7.94  −0.134\mathbf   −-0.053 0.583 0.635 −-0.052         −-0.038
+                                         {-0.134}
+max       0.794 0.824 299 301 8.18 11.33 −0.262\mathbf   −-0.088 0.618 0.576 +0.031\mathbf   −-0.002
+                                         {-0.262}                            {+0.031}
+weighted  0.631 0.629 184 186 7.39 7.94  −0.134\mathbf   −-0.053 0.583 0.635 −-0.057         −-0.038
+                                         {-0.134}
+attention 0.611 0.642 198 194 4.13 8.73  −0.269\mathbf   −-0.055 0.608 0.610 −0.008\mathbf   −-0.068
+                                         {-0.269}                            {-0.008}
+
+
+Table 9: Full representation metrics — MNLI.
+
+          Spec. Ent.  Eff.    Srank     Uniformity              Sem. Probe  Probe Gap
+                      Rank
+Pool      H     M     H   M   H    M    H               M       H     M     H               M
+mean      0.607 0.597 242 245 6.06 5.83 −0.169\mathbf   −-0.063 0.362 0.354 −0.392\mathbf   −-0.410
+                                        {-0.169}                            {-0.392}
+max       0.779 0.767 406 391 8.35 4.99 −0.290\mathbf   −-0.096 0.315 0.349 −-0.310         −-0.288
+                                        {-0.290}
+weighted  0.607 0.597 242 245 6.06 5.83 −0.163\mathbf   −-0.063 0.363 0.355 −0.392\mathbf   −-0.409
+                                        {-0.163}                            {-0.392}
+attention 0.538 0.603 253 253 2.76 5.91 −0.365\mathbf   −-0.067 0.326 0.333 −-0.359         −-0.407
+                                        {-0.365}
+
+
+Table 10: Full representation metrics — CoLA. Semantic probe reports MCC.
+
+          Spec. Ent.  Eff.    Srank      Uniformity             MCC (↑\       Probe Gap
+                      Rank                                      uparrow)
+Pool      H     M     H   M   H     M    H              M       H     M       H              M
+mean      0.606 0.586 235 239 5.16  4.58 −0.314\mathbf  −-0.079 0.064 0.000   −0.246\mathbf  −-0.284
+                                         {-0.314}                             {-0.246}
+max       0.752 0.715 365 330 10.82 4.75 −0.365\mathbf  −-0.098 0.024 −-0.023 −0.224\mathbf  −-0.306
+                                         {-0.365}                             {-0.224}
+weighted  0.606 0.586 235 239 5.16  4.58 −0.314\mathbf  −-0.079 0.064 0.000   −0.246\mathbf  −-0.285
+                                         {-0.314}                             {-0.246}
+attention 0.479 0.572 221 241 2.20  3.91 −0.955\mathbf  −-0.083 0.052 0.010   −0.211\mathbf  −-0.276
+                                         {-0.955}                             {-0.211}
+
+
+Table 11: Full representation metrics — STS-B. Semantic probe reports Spearman ρ\rho.
+
+          Spec. Ent.  Eff.    Srank     Uniformity             Spearman (↑\  Probe Gap
+                      Rank                                     uparrow)
+Pool      H     M     H   M   H    M    H              M       H      M      H              M
+mean      0.581 0.588 228 235 4.83 5.53 −0.202\mathbf  −-0.067 0.284  0.224  −0.369\mathbf  −-0.449
+                                        {-0.202}                             {-0.369}
+max       0.743 0.721 390 372 6.94 4.09 −0.321\mathbf  −-0.102 0.140  0.167  −0.376\mathbf  −-0.397
+                                        {-0.321}                             {-0.376}
+weighted  0.581 0.588 227 235 4.83 5.53 −0.201\mathbf  −-0.068 0.284  0.224  −0.369\mathbf  −-0.446
+                                        {-0.201}                             {-0.369}
+attention 0.484 0.597 233 243 2.35 5.70 −0.577\mathbf  −-0.069 0.187  0.193  −0.405\mathbf  −-0.460
+                                        {-0.577}                             {-0.405}
+
+Appendix B Alignment–Uniformity Plots
+
+Refer to caption
+Figure 3: Alignment vs. uniformity and class separation — mean pooling, all datasets.
+
+Refer to caption
+Figure 4: Alignment vs. uniformity and class separation — max pooling, all datasets.
+
+Refer to caption
+Figure 5: Alignment vs. uniformity and class separation — weighted mean pooling, all datasets.
+
+Refer to caption
+Figure 6: Alignment vs. uniformity and class separation — attention pooling, all datasets. The
+uniformity gap between hybrid and MLM-only is most pronounced here, consistent with the
+quantitative results in Table 4.
+
+Appendix C Eigenspectrum Plots
+
+Refer to caption
+Figure 7: Eigenvalue spectrum — SST-2, mean pooling.
+
+Refer to caption
+Figure 8: Eigenvalue spectrum — MRPC, mean pooling.
+
+Refer to caption
+Figure 9: Eigenvalue spectrum — MNLI, mean pooling.
+
+Refer to caption
+Figure 10: Eigenvalue spectrum — CoLA, mean pooling.
+
+Appendix D Representation Metric Definitions
+
+Let 𝐙∈ℝN×D\mathbf{Z}\in\mathbb{R}^{N\times D} denote the centred embedding matrix, and let 𝝈=
+(σ1,…,σr)\boldsymbol{\sigma}=(\sigma_{1},\ldots,\sigma_{r}) be its singular values in descending
+order. All metrics are computed on frozen sentence embeddings extracted from the validation split.
+
+1.  Spectral Entropy [Garrido et al., 2023].
+
+ Hspec=H⁡(𝝈/‖𝝈‖1)log⁡D,H(p)=−∑ipilogpiH_{\text{spec}}=\frac{H\!\left(\boldsymbol{\sigma}/\|\   (11)
+ boldsymbol{\sigma}\|_{1}\right)}{\log D},\qquad H(p)=-\textstyle\sum_{i}p_{i}\log p_{i}
+
+Hspec∈[0,1]H_{\text{spec}}\in[0,1]; a value of 1 means all singular values are equal, indicating
+that every embedding dimension carries the same variance (maximally rich representation).
+
+2.  Effective Rank [Roy and Vetterli, 2007].
+
+ erank​(𝐙)=exp⁡H⁡(𝝈/‖𝝈‖1)\text{erank}(\mathbf{Z})=\exp H\!\left(\boldsymbol{\sigma}/\|\        (12)
+ boldsymbol{\sigma}\|_{1}\right)
+
+Measures the number of dimensions that effectively contribute to the variance; higher values
+indicate richer representations.
+
+3.  Stable Rank [Vershynin, 2018].
+
+ srank​(𝐙)=‖𝐙‖F2‖𝐙‖22=∑iσi2σ12\text{srank}(\mathbf{Z})=\frac{\|\mathbf{Z}\|_{F}^{2}}{\|\       (13)
+ mathbf{Z}\|_{2}^{2}}=\frac{\sum_{i}\sigma_{i}^{2}}{\sigma_{1}^{2}}
+
+A robust alternative to effective rank that is less sensitive to outlier singular values.
+
+4.  Alignment [Wang and Isola, 2020].
+
+ 𝒜⁡(f,α)=𝔼(𝐮,𝐯)∼ppos​[‖f^​(𝐮)−f^​(𝐯)‖2]α,α=2\mathcal{A}(f;\,\alpha)=\underset{(\mathbf{u},\
+ mathbf{v})\sim p_{\text{pos}}}{\mathbb{E}}\bigl[\|\hat{f}(\mathbf{u})-\hat{f}(\mathbf{v})\|^  (14)
+ {2}\bigr]^{\alpha},\quad\alpha=2
+
+where f^​(𝐱)=f⁡(𝐱)/‖f⁡(𝐱)‖2\hat{f}(\mathbf{x})=f(\mathbf{x})/\|f(\mathbf{x})\|_{2} and pposp_{\text
+{pos}} is the distribution of same-class pairs. Lower alignment means same-class representations
+cluster more tightly.
+
+5.  Uniformity [Wang and Isola, 2020].
+
+ 𝒰⁡(f,t)=log⁡𝔼𝐮,𝐯​∼i.i.d.​pdata​[e−t​‖f^​(𝐮)−f^​(𝐯)‖2],t=2\mathcal{U}(f;\,t)=\log\,\underset
+ {\mathbf{u},\mathbf{v}\overset{\text{i.i.d.}}{\sim}p_{\text{data}}}{\mathbb{E}}\bigl[e^{-t\|  (15)
+ \hat{f}(\mathbf{u})-\hat{f}(\mathbf{v})\|^{2}}\bigr],\quad t=2
+
+More negative values indicate that embeddings are spread more uniformly over the unit hypersphere,
+which prevents representational collapse.
+
+6.  Probe Gap [Conneau and Kiela, 2018].
+
+ Δprobe=accsemantic−acctoken\Delta_{\text{probe}}=\text{acc}_{\text{semantic}}-\text{acc}_{\   (16)
+ text{token}}
+
+The semantic probe trains a linear classifier to predict the downstream task label from the frozen
+embedding; the token probe predicts the most frequent non-special token in the input sentence. A
+positive gap indicates that the representation encodes task-relevant semantics more strongly than
+surface-form lexical identity.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

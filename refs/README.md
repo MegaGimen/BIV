@@ -19,6 +19,7 @@
 | C | 语言 agent 里，动作和下一状态怎样共存而不互相洗掉 | DyMo、PaW、ECHO、RWML、RAP |
 | D | 穷的时候怎样只加一层、不改底座 | O-LoRA、Ortho-LoRA、LST side-tuning、LIMA |
 | E | 官方世界模型自己怎么用底座 | Qwen-AgentWorld §6.2 |
+| Y | Stage 1 last-token JEPA 为什么 paired≈mismatch | HTP、VJEPA Thm 1、VICReg/C-JEPA、UWM-JEPA、信念中介 |
 
 文件名：`papers/{arxiv}-{slug}.txt`。文内第一行是来源 URL。
 
@@ -570,6 +571,27 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
     工具有（R 组的 γ-Progress、Curiosity-Critic、CAASL；U 组 Policy-Aware Simulator Learning 的 Error-MDP 对偶给出可证收敛的主动数据选择），
     但 [2606.19476](https://arxiv.org/abs/2606.19476) 证明在一般 MDP 上靠 in-context 预测误差估学习进度必然有偏，
     所以要把 shell 上的探索**降成非时序的实验设计问题**才有保证。
+
+## Y. Stage 1 last-token JEPA 为什么会贴成一团（32k 抽查之后）
+
+训练上 `loss_jepa` 下降但 paired≈mismatch、`z_self` 一上来就 ~0.91，不是「再加 CE」能救的。
+抽查原文见 `AGENTS.md` 底座抽查节；本目录对应 HTML 在 `papers/`。
+
+三层要分开写，混在一起会误把 IDM 当第一刀。
+
+1. **读出。** [HTP](https://arxiv.org/abs/2511.14868) 证明 decoder 的 last-token 句向量会 over-squash，mean-pool 把梯度摊开。
+   我们不同 `rm` 路径余弦 0.95，就是路径在中间、末尾是同一套 `execute_bash`。
+2. **目标不该是独立 `Enc(o)`。** [Textual Belief States](https://arxiv.org/abs/2606.27681) 的 history bypass / 严格中介；[Agent-BRACE](https://arxiv.org/abs/2605.11436) 策略只读信念。
+   [WebAgent HTML diff](https://arxiv.org/abs/2410.13232) 是网页工程，不是终端模板。[ScratchWorld](https://arxiv.org/abs/2606.31689) 警告整份重合≠学会转移。
+3. **单点回归找质心。** [JEPA Paradox](https://arxiv.org/abs/2607.23531)：文本多峰时平方误差贴条件均值。
+   [VJEPA](https://arxiv.org/abs/2601.14354) Theorem 1 的「不会坍成常数编码器」**假定 target diversity**——`Enc(o)` 已经坍了，这条保证用不上。
+   [VICReg](https://arxiv.org/abs/2105.04906) / [C-JEPA](https://arxiv.org/abs/2410.19560) / [Var-JEPA](https://arxiv.org/abs/2603.20111) 是目标已散时的防坍，不是把相同 last-token 劈开。
+   [Predict and Reconstruct](https://arxiv.org/abs/2606.05173) / [DLLM-JEPA](https://arxiv.org/abs/2606.00091) 仍是同义双视图 + 生成锚。
+   [UWM-JEPA](https://arxiv.org/abs/2605.25313)：teacher-forced 下一状态会让动作项几乎死掉，要反事实动作目标；他们没有无模拟器的 shell 配方。
+   [Representation Without Reward 的 JEPA audit](https://arxiv.org/abs/2605.15394)：接到 `lm_head` 仍可能和 exact-match 弱耦合。
+4. **IDM 解不了同质观察。** [Delta-JEPA](https://arxiv.org/abs/2606.31232)、[SWIRL](https://arxiv.org/abs/2602.06130) 能逼相邻两步可辨认；同一句 \(o\) 的逆问题不适定。[AC-State](https://arxiv.org/abs/2207.08229) 还警告一跳 IDM 合并远状态。
+
+实验顺序写在 `AGENTS.md`：先 mean-pool，再历史中介的 \(z^*\)，再 VICReg；Harbor 当裁判。
 
 ## O. 现在真正还缺的（三轮检索后剩下的硬洞）
 

@@ -6,6 +6,7 @@ on one 2x2 replica group: 25 * grad_accum=8 = 200). Then runs collapse_stats
 and writes close-pair observation/command texts.
 
   cd train
+  CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepallm_collapse.sh
   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh
 """
 

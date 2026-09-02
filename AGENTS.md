@@ -224,6 +224,26 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepallm_collapse.sh    # 4 卡�
 
 结果在 `outputs/jepallm32k_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
 
+**症候怎么修（Consensus 对原文之后，还没在本仓库训过）。** 抽查看见三层叠在一起：独立 `Enc(观察)` 丢掉命令上下文；`last_token` 读出被 `execute_bash`/`cd`/`rm` 套话吸住；单点余弦再把左边贴进这团。能动手的顺序是先换读出、再换目标编码、最后才换损失形状。**不要先加 IDM。** HTML 在 `refs/papers/`，分组见 `refs/README.md` 的 Y 节。
+
+读出被套话吸住：decoder 用最后一个 token 当句向量会 over-squash，长序列更狠；mean-pooling 把梯度摊到整段 token 上（HTP，[2511.14868](https://arxiv.org/abs/2511.14868)）。这直接对上抽查里不同 `rm` 路径余弦 0.95——路径写在中间，末尾几乎都是同一套 shell。换 mean-pool **能**让编码器看见那些中间 token；若整段观察本身就是同一句模板，它也拉不开。
+
+观察同质、必须带着历史：Textual Belief States 要求预测 \(o\) 只经过信念 \(s_t\)（严格中介），两个历史若映射到同一个 \(s\) 就会被罚（[2606.27681](https://arxiv.org/abs/2606.27681)）。Agent-BRACE 把信念写成带不确定度的原子命题，策略只读信念（[2605.11436](https://arxiv.org/abs/2605.11436)）。意思是：**目标向量不该是「单独编这句 stdout」**，该是「历史+命令之后的状态摘要」。WebAgent 的 HTML diff 是网页工程解，不是终端模板（[2410.13232](https://arxiv.org/abs/2410.13232)）。ScratchWorld 提醒完整下一状态可以留，但别用整份重合当学会了转移（[2606.31689](https://arxiv.org/abs/2606.31689)）。
+
+单点贴会找质心：JEPA Paradox 写明文本多峰时平方误差去贴条件均值（[2607.23531](https://arxiv.org/abs/2607.23531)）。VJEPA 把预测改成未来 latent 的变分分布，Theorem 1 说「全局最优不会坍成常数编码器」——但前提是 **target diversity**：不同观察 \(x_T\) 对应的 \(q(z\mid x_T)\) 必须真的不同（[2601.14354](https://arxiv.org/abs/2601.14354)）。我们抽查里 `z_self≈0.91`，这个前提已经坏了；换变分头而目标仍是坍掉的 `Enc(o)`，预测器只会去拟合无条件分布。C-JEPA / VICReg 在图像 JEPA 上用方差项挡住整个空间缩成一点（[2410.19560](https://arxiv.org/abs/2410.19560), [2105.04906](https://arxiv.org/abs/2105.04906)）；Var-JEPA 用 ELBO 代替 EMA 启发式（[2603.20111](https://arxiv.org/abs/2603.20111)）。这些都是「目标已经有点散」时的防坍；**劈不开已经相同的 last-token。** Predict-and-Reconstruct 在维基上把 JEPA 余弦和 MLM 共训，句向量更均匀，仍是同义双视图，不是命令→观察（[2606.05173](https://arxiv.org/abs/2606.05173)）。DLLM-JEPA 同理（[2606.00091](https://arxiv.org/abs/2606.00091)）。UWM-JEPA 另加一条：teacher-forced 的下一状态目标会让动作项几乎用不上（\(\|H_1\|/\|H_0\|\approx 0.03\)），换成反事实动作目标才绑上动作；他们没有无模拟器的终端配方（[2605.25313](https://arxiv.org/abs/2605.25313)）。LLM 上把 JEPA 接到 `lm_head` 仍可能和 exact-match 弱耦合（[2605.15394](https://arxiv.org/abs/2605.15394)）。
+
+逆动力学：\(\Delta z\) 还原动作能逼相邻两步不要编成同一个点（Delta-JEPA，[2606.31232](https://arxiv.org/abs/2606.31232)）；SWIRL 让前向预测必须能被 IDM 辨认（含 tool calling，[2602.06130](https://arxiv.org/abs/2602.06130)）。两者都**劈不开同一句观察**；一跳 IDM 还会合并远状态（AC-State，[2207.08229](https://arxiv.org/abs/2207.08229)）。
+
+| 改什么 | 能分开「套话不同实例」吗 | 解得了「独立 Enc(o) 同质」吗 |
+|--------|--------------------------|------------------------------|
+| mean-pool / 不要只取 `-3` | 能，若路径/文件名在中间 token | 不能，整句模板仍相同 |
+| \(z^*\leftarrow\) `Enc(h,a,o)` 或信念摘要 | 能，历史不同则向量不同 | **这就是对这一层的解** |
+| 批次 VICReg / 变分 VJEPA | 目标已散时挡住再缩成一点 | 不能；VJEPA Thm 1 要 target diversity |
+| \(\Delta z\) / IDM / SWIRL | 相邻两步别编成同一个点 | 不能；同一句 \(o\) 逆问题不适定 |
+| 观察 CE / DLLM 双视图 | 纸上的生成锚 | 我们 CE 已经很低，没救 last-token JEPA |
+
+下一步实验（未跑，按这个顺序）：(1) 只改读出，观察侧 mean-pool，对照 `last_token=-3`，看 `z_self` / `pred_self`；(2) 若仍贴在一起，\(z^*\) 改成完整对话里观察跨度的池化，或 `Enc(h,a)` 末尾当状态、观察只当监督，不要单独 `Enc(o)`；(3) 批次对 \(z^*\) 加 VICReg 方差，看 paired−mismatch 能否拉开。Harbor 仍是最终裁判。
+
 **TensorBoard `train/*`**
 
 | 标量 | 是什么 |
