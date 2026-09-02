@@ -19,7 +19,7 @@
 | C | 语言 agent 里，动作和下一状态怎样共存而不互相洗掉 | DyMo、PaW、ECHO、RWML、RAP |
 | D | 穷的时候怎样只加一层、不改底座 | O-LoRA、Ortho-LoRA、LST side-tuning、LIMA |
 | E | 官方世界模型自己怎么用底座 | Qwen-AgentWorld §6.2 |
-| Y | Stage 1 last-token JEPA 为什么 paired≈mismatch | HTP、VJEPA Thm 1、VICReg/C-JEPA、UWM-JEPA、信念中介 |
+| Y | Stage 1 last-token JEPA 为什么 paired≈mismatch | HTP、Wang 生成 vs prompt 池化、VJEPA Thm 1、辅助任务锚定、信念中介 |
 
 文件名：`papers/{arxiv}-{slug}.txt`。文内第一行是来源 URL。
 
@@ -579,17 +579,18 @@ CHT 说观察数据推不出干预层。我们的语料是**离线**的，`do(a)
 
 三层要分开写，混在一起会误把 IDM 当第一刀。
 
-1. **读出。** [HTP](https://arxiv.org/abs/2511.14868) 证明 decoder 的 last-token 句向量会 over-squash，mean-pool 把梯度摊开。
-   我们不同 `rm` 路径余弦 0.95，就是路径在中间、末尾是同一套 `execute_bash`。
-2. **目标不该是独立 `Enc(o)`。** [Textual Belief States](https://arxiv.org/abs/2606.27681) 的 history bypass / 严格中介；[Agent-BRACE](https://arxiv.org/abs/2605.11436) 策略只读信念。
-   [WebAgent HTML diff](https://arxiv.org/abs/2410.13232) 是网页工程，不是终端模板。[ScratchWorld](https://arxiv.org/abs/2606.31689) 警告整份重合≠学会转移。
-3. **单点回归找质心。** [JEPA Paradox](https://arxiv.org/abs/2607.23531)：文本多峰时平方误差贴条件均值。
-   [VJEPA](https://arxiv.org/abs/2601.14354) Theorem 1 的「不会坍成常数编码器」**假定 target diversity**——`Enc(o)` 已经坍了，这条保证用不上。
-   [VICReg](https://arxiv.org/abs/2105.04906) / [C-JEPA](https://arxiv.org/abs/2410.19560) / [Var-JEPA](https://arxiv.org/abs/2603.20111) 是目标已散时的防坍，不是把相同 last-token 劈开。
-   [Predict and Reconstruct](https://arxiv.org/abs/2606.05173) / [DLLM-JEPA](https://arxiv.org/abs/2606.00091) 仍是同义双视图 + 生成锚。
-   [UWM-JEPA](https://arxiv.org/abs/2605.25313)：teacher-forced 下一状态会让动作项几乎死掉，要反事实动作目标；他们没有无模拟器的 shell 配方。
-   [Representation Without Reward 的 JEPA audit](https://arxiv.org/abs/2605.15394)：接到 `lm_head` 仍可能和 exact-match 弱耦合。
-4. **IDM 解不了同质观察。** [Delta-JEPA](https://arxiv.org/abs/2606.31232)、[SWIRL](https://arxiv.org/abs/2602.06130) 能逼相邻两步可辨认；同一句 \(o\) 的逆问题不适定。[AC-State](https://arxiv.org/abs/2207.08229) 还警告一跳 IDM 合并远状态。
+1. **读出。** [HTP](https://arxiv.org/abs/2511.14868) 证明 decoder last-token 会 over-squash。
+   [The Truth Lies Somewhere in the Middle](https://arxiv.org/abs/2605.09969) 更细：mean-pool **生成** token 对齐更好；mean-pool **prompt** 因因果掩码不涨、还可能稀释。
+   我们的独立 `Enc(o)` 更像 prompt 侧，所以 mean-pool 是排除病灶，不是主刀。
+2. **目标不该是独立 `Enc(o)`。** [Textual Belief States](https://arxiv.org/abs/2606.27681)；[Agent-BRACE](https://arxiv.org/abs/2605.11436)。
+   GUI [task-state](https://arxiv.org/abs/2607.00502) / [IterResearch](https://arxiv.org/abs/2511.07327) 只借原则：状态是历史的受控重建。
+   [WebAgent HTML diff](https://arxiv.org/abs/2410.13232)；[ScratchWorld](https://arxiv.org/abs/2606.31689)。
+3. **单点回归找质心。** [JEPA Paradox](https://arxiv.org/abs/2607.23531)。
+   [Why Auxiliary Tasks Improve JEPA](https://arxiv.org/abs/2509.12249)：辅助定哪些差别不许塌；观察 CE 锚定的是模板等价类。
+   [VJEPA](https://arxiv.org/abs/2601.14354) Thm 1 要 target diversity。
+   [VICReg](https://arxiv.org/abs/2105.04906) / [C-JEPA](https://arxiv.org/abs/2410.19560) / [LeWM SIGReg](https://arxiv.org/abs/2603.19312) / [Sub-JEPA](https://arxiv.org/abs/2605.09241) / [Var-JEPA](https://arxiv.org/abs/2603.20111) 是几何止损。
+   [UWM-JEPA](https://arxiv.org/abs/2605.25313) teacher-forced 会让动作项死掉。
+4. **IDM 解不了同质观察。** [SMWM](https://arxiv.org/abs/2606.20104)、[Delta-JEPA](https://arxiv.org/abs/2606.31232)、[SWIRL](https://arxiv.org/abs/2602.06130) 在 \(o_t\neq o_{t+1}\) 时逼动作可辨；同一句 \(o\) 仍不适定。[AC-State](https://arxiv.org/abs/2207.08229)。
 
 实验顺序写在 `AGENTS.md`：先 mean-pool，再历史中介的 \(z^*\)，再 VICReg；Harbor 当裁判。
 

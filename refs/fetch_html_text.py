@@ -245,6 +245,13 @@ PAPERS: list[tuple[str, str]] = [
     ("2606.05173", "predict-reconstruct-jepa-mlm"),
     ("2605.25313", "uwm-jepa-belief-space"),
     ("2603.20111", "var-jepa-elbo"),
+    ("2605.09969", "truth-middle-generated-tokens"),
+    ("2603.19312", "leworldmodel-gaussian-jepa"),
+    ("2509.12249", "auxiliary-tasks-jepa"),
+    ("2606.20104", "sensorimotor-wm-inverse"),
+    ("2605.09241", "sub-jepa-subspace-gaussian"),
+    ("2607.00502", "task-state-gui-agents"),
+    ("2511.07327", "iterresearch-markovian-state"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
