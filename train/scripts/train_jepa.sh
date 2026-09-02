@@ -15,6 +15,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# Variable-length prefix turns fragment the caching allocator; keep this on
+# unless the user already set a policy.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 CONFIG="${CONFIG:-configs/jepa/stage1.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"

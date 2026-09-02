@@ -471,8 +471,19 @@ def jepa_cosine(user_embedding, assistant_embedding):
     return 1.0 - torch.mean(cosine_similarity)
 
 
-def shifted_ce(hidden, labels, lm_head):
-    """HF CausalLM shift: hidden[t] predicts labels[t+1]. lm_head only on labeled rows."""
+# AgentWorld vocab is 248320. A 25k-token observation as one [N, V] fp32
+# logits tensor is ~23 GiB and OOMs a 95 GB card that already holds the model.
+# Chunk so peak logits stay under ~1 GiB regardless of how long o is.
+CE_LOGIT_CHUNK = 512
+
+
+def shifted_ce(hidden, labels, lm_head, chunk_size: int = CE_LOGIT_CHUNK):
+    """HF CausalLM shift: hidden[t] predicts labels[t+1]. lm_head only on labeled rows.
+
+    Prefix-turn trim can leave a complete multi-ten-thousand-token observation
+    inside the window. Materializing that many vocab logits at once OOMs;
+    this is mean-token CE over chunks, same value as one shot.
+    """
     import torch
     import torch.nn.functional as F
 
@@ -481,8 +492,15 @@ def shifted_ce(hidden, labels, lm_head):
     mask = tgt != -100
     if not bool(mask.any()):
         return hidden.new_zeros(())
-    logits = lm_head(pred[mask])
-    return F.cross_entropy(logits.float(), tgt[mask])
+    h = pred[mask]
+    y = tgt[mask]
+    n = h.size(0)
+    step = max(int(chunk_size), 1)
+    total = h.new_zeros(())
+    for i in range(0, n, step):
+        logits = lm_head(h[i : i + step])
+        total = total + F.cross_entropy(logits.float(), y[i : i + step], reduction="sum")
+    return total / n
 
 
 def force_attn_implementation(model, impl: str) -> None:
@@ -1049,7 +1067,7 @@ def main() -> None:
     rank_log(f"mix={mix_dir} sources={sources}")
     rank_log(
         f"max_length={max_length} cp_size={cp_size} pad_multiple={pad_multiple} "
-        f"nproc={accelerator.num_processes} attn={attn_impl}"
+        f"ce_logit_chunk={CE_LOGIT_CHUNK} nproc={accelerator.num_processes} attn={attn_impl}"
     )
 
     model, tokenizer = load_backbone(
@@ -1340,6 +1358,7 @@ def main() -> None:
     run_jepa = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
+    run_nlab = 0.0
     last_train_loss = None
     hit_max = False
     last_log_time = time.monotonic()
@@ -1361,6 +1380,7 @@ def main() -> None:
                 full_len = float(batch["full_len"].float().mean().item())
                 left_len = float(batch["left_len"].float().mean().item())
                 right_len = float(batch["right_len"].float().mean().item())
+                n_lab = float((batch["full_labels"] != -100).sum().item())
                 with accelerator.accumulate(model):
                     h_full = full_hidden(
                         model, batch["full_ids"], batch["full_mask"], cp_size
@@ -1395,6 +1415,7 @@ def main() -> None:
                     run_h += full_len
                     run_a += left_len
                     run_o += right_len
+                    run_nlab += n_lab
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
                         opt.step()
@@ -1419,8 +1440,16 @@ def main() -> None:
                             # averaging) both groups' windowed accumulators and
                             # then taking a ratio gives the correct combined
                             # average regardless of cp_size.
-                            running_g, ce_g, jepa_g, h_g, a_g, o_g, n_g = merge_group_stats(
-                                accelerator, running, run_ce, run_jepa, run_h, run_a, run_o, float(n_loss)
+                            running_g, ce_g, jepa_g, h_g, a_g, o_g, nlab_g, n_g = merge_group_stats(
+                                accelerator,
+                                running,
+                                run_ce,
+                                run_jepa,
+                                run_h,
+                                run_a,
+                                run_o,
+                                run_nlab,
+                                float(n_loss),
                             )
                             denom_g = max(n_g, 1.0)
                             # step*dp_size = single-group-step-equivalent — lines
@@ -1445,6 +1474,7 @@ def main() -> None:
                                     f"epoch={epoch} step={step} eff_step={eff_step} loss={loss_g:.4f} "
                                     f"ce={ce_g / denom_g:.4f} jepa={jepa_g / denom_g:.4f} "
                                     f"len(full/left/right)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
+                                    f"n_ce={nlab_g / denom_g:.0f} "
                                     f"throughput≈{rows_s:.2f} rows/s {toks_s:.0f} tok/s "
                                     f"(dp_size={dp_size} groups combined)"
                                 )
@@ -1456,6 +1486,7 @@ def main() -> None:
                                     writer.add_scalar("train/len_h", h_g / denom_g, eff_step)
                                     writer.add_scalar("train/len_a", a_g / denom_g, eff_step)
                                     writer.add_scalar("train/len_o", o_g / denom_g, eff_step)
+                                    writer.add_scalar("train/n_ce", nlab_g / denom_g, eff_step)
                                     writer.add_scalar("train/rows_per_sec_global", rows_s, eff_step)
                                     writer.add_scalar("train/tokens_per_sec_global", toks_s, eff_step)
                             running = 0.0
@@ -1463,6 +1494,7 @@ def main() -> None:
                             run_jepa = 0.0
                             n_loss = 0
                             run_h = run_a = run_o = 0.0
+                            run_nlab = 0.0
                             # Unconditional: check_collapse() clears seen_pred/
                             # seen_z/seen_o on every rank internally (only
                             # is_main computes+logs stats) — skipping this on

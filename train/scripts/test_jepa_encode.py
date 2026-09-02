@@ -186,6 +186,20 @@ def test_shifted_ce_only_labeled_rows() -> None:
     assert hidden.grad is not None
 
 
+def test_shifted_ce_chunk_matches_unchunked() -> None:
+    if torch is None:
+        return
+    torch.manual_seed(0)
+    hidden = torch.randn(1, 20, 8, requires_grad=True)
+    labels = torch.full((1, 20), -100, dtype=torch.long)
+    labels[0, 2:18] = torch.arange(16) % 12
+    head = torch.nn.Linear(8, 12)
+    loss_one = tj.shifted_ce(hidden, labels, head, chunk_size=4096)
+    loss_chunk = tj.shifted_ce(hidden, labels, head, chunk_size=3)
+    assert torch.isfinite(loss_one) and torch.isfinite(loss_chunk)
+    assert abs(float(loss_one - loss_chunk)) < 1e-5
+
+
 def main() -> None:
     test_create_o_labels_last_span()
     test_fit_keeps_suffix_or_prefix()
@@ -197,6 +211,7 @@ def main() -> None:
     test_jepa_cosine_both_sides_live()
     test_collate_keeps_text_and_device_move_skips_it()
     test_shifted_ce_only_labeled_rows()
+    test_shifted_ce_chunk_matches_unchunked()
     skipped = " (torch helpers skipped)" if torch is None else ""
     print("ok" + skipped, flush=True)
 
