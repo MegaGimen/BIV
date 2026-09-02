@@ -40,6 +40,36 @@ from download import resolve_model  # noqa: E402
 # cap is one group so the dump matches what TensorBoard collapse/* sees.
 DEFAULT_MAX_ROWS = 25 * 8
 HARD_CAP = 400
+_PARALLEL_ENV = (
+    "ACCELERATE_USE_PARALLELISM_CONFIG",
+    "PARALLELISM_CONFIG_DP_REPLICATE_SIZE",
+    "PARALLELISM_CONFIG_DP_SHARD_SIZE",
+    "PARALLELISM_CONFIG_TP_SIZE",
+    "PARALLELISM_CONFIG_CP_SIZE",
+    "PARALLELISM_CONFIG_CP_BACKEND",
+    "BIV_CP_SIZE",
+    "BIV_PARALLEL",
+)
+
+
+def _visible_gpu_count() -> int:
+    xs = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+    if xs:
+        return len(xs)
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return max(int(torch.cuda.device_count()), 1)
+    except Exception:
+        pass
+    return 1
+
+
+def _clear_parallelism_env() -> None:
+    """Drop 4-GPU train leftovers so Accelerator does not build a 4-rank mesh."""
+    for key in _PARALLEL_ENV:
+        os.environ.pop(key, None)
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,18 +108,22 @@ def main() -> None:
     cfg = tj._load_yaml(cfg_path)
     tcfg = cfg.get("train") or {}
     accum = int(tcfg.get("grad_accum") or 8)
+    n_gpu = _visible_gpu_count()
     cp_size = tj.resolve_cp_size(args.cp_size)
-    if cp_size > 1:
+    if n_gpu <= 1 or cp_size <= 1:
+        cp_size = 1
+        _clear_parallelism_env()
+        accelerator = Accelerator(gradient_accumulation_steps=accum)
+    else:
         os.environ["ACCELERATE_USE_PARALLELISM_CONFIG"] = "true"
         os.environ.setdefault("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "1")
         os.environ.setdefault("PARALLELISM_CONFIG_DP_SHARD_SIZE", "1")
         os.environ.setdefault("PARALLELISM_CONFIG_TP_SIZE", "1")
         os.environ["PARALLELISM_CONFIG_CP_SIZE"] = str(cp_size)
         os.environ.setdefault("PARALLELISM_CONFIG_CP_BACKEND", "torch")
-
-    accelerator = Accelerator(
-        gradient_accumulation_steps=accum, parallelism_config=tj.build_parallelism_config()
-    )
+        accelerator = Accelerator(
+            gradient_accumulation_steps=accum, parallelism_config=tj.build_parallelism_config()
+        )
     is_main = accelerator.is_main_process
 
     def rank_log(msg: str) -> None:
