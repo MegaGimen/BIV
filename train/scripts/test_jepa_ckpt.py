@@ -86,6 +86,14 @@ def test_incomplete_skipped(tmp: Path) -> None:
     assert find_latest_ckpt(tmp) is None
 
 
+def test_adapter_only_ok_without_jepa(tmp: Path) -> None:
+    _fake_ckpt(tmp, "checkpoint-e0-s25", with_jepa=False)
+    assert ckpt_complete(tmp / "checkpoint-e0-s25", require_jepa=False) is True
+    picked = find_latest_ckpt(tmp, require_jepa=False)
+    assert picked is not None
+    assert picked.name == "checkpoint-e0-s25"
+
+
 def test_trainer_state(tmp: Path) -> None:
     p = tmp / "c"
     p.mkdir()
@@ -109,6 +117,8 @@ def main() -> None:
         test_find_latest_epoch_then_step(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_incomplete_skipped(Path(d))
+    with tempfile.TemporaryDirectory() as d:
+        test_adapter_only_ok_without_jepa(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_trainer_state(Path(d))
     print("ok", flush=True)

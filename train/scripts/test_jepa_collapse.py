@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.jepa import bank_nce_loss, collapse_stats, format_collapse_line  # noqa: E402
+from biv_wm.jepa import bank_nce_loss, close_pair_records, collapse_stats, format_collapse_line  # noqa: E402
 
 
 def test_real_align_not_collapse() -> None:
@@ -104,6 +104,20 @@ def test_bank_nce_loss_empty_bank_is_none() -> None:
     assert bank_nce_loss(pred, pred.clone(), ["x"], torch.empty(0, 4), [], temperature=0.05) is None
 
 
+def test_close_pair_records_keeps_near_obs_and_skips_exact_dup() -> None:
+    z = torch.tensor([[1.0, 0.0], [0.999, 0.04], [0.0, 1.0]])
+    pred = z.clone()
+    texts = ["obs-a", "obs-a-almost", "obs-b"]
+    left = ["rm a", "ls", "cat b"]
+    rec = close_pair_records(pred, z, texts, left, threshold=0.9, max_pairs=10)
+    assert rec["n"] == 3
+    assert int(rec["n_z_self"]) >= 1
+    assert rec["z_self"][0]["o_i"] in ("obs-a", "obs-a-almost")
+    exact = close_pair_records(pred, z, ["same", "same", "other"], left, threshold=0.0)
+    o_pairs = {(r["o_i"], r["o_j"]) for r in exact["z_self"]}
+    assert ("same", "same") not in o_pairs
+
+
 def main() -> None:
     test_real_align_not_collapse()
     test_collapse_like_constant_pred()
@@ -113,6 +127,7 @@ def main() -> None:
     test_bank_nce_loss_separated_negatives_low_loss()
     test_bank_nce_loss_masks_text_duplicates()
     test_bank_nce_loss_empty_bank_is_none()
+    test_close_pair_records_keeps_near_obs_and_skips_exact_dup()
     print("ok", flush=True)
 
 

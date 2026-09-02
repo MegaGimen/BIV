@@ -60,8 +60,8 @@ def canonical_lora_key(name: str) -> str:
     return out
 
 
-def ckpt_complete(path: Path) -> bool:
-    """Same bar as Muse: trainer_state.json + some weights (+ JEPA's jepa.pt)."""
+def ckpt_complete(path: Path, *, require_jepa: bool = True) -> bool:
+    """trainer_state.json + weights. Old MLP JEPA also needs jepa.pt."""
     if not path.is_dir():
         return False
     if not (path / "trainer_state.json").is_file():
@@ -73,14 +73,12 @@ def ckpt_complete(path: Path) -> bool:
     )
     if not has_weights:
         return False
-    jepa = path / "jepa.pt"
-    if jepa.parent == path and not jepa.is_file():
-        # Stage 1 always writes jepa.pt; if missing, not a complete JEPA ckpt.
+    if require_jepa and not (path / "jepa.pt").is_file():
         return False
     return True
 
 
-def find_latest_ckpt(out_dir: Path) -> Path | None:
+def find_latest_ckpt(out_dir: Path, *, require_jepa: bool = True) -> Path | None:
     """Newest complete ckpt. Rank key ``(epoch, step, kind)`` — epoch first, then step.
 
     Same as Muse / daemon. Rolling ``checkpoint-e{epoch}-s{step}`` uses the 0-based
@@ -92,7 +90,7 @@ def find_latest_ckpt(out_dir: Path) -> Path | None:
     best: tuple[int, int, int, Path] | None = None
     for p in out_dir.iterdir():
         parsed = parse_ckpt_name(p.name)
-        if parsed is None or not ckpt_complete(p):
+        if parsed is None or not ckpt_complete(p, require_jepa=require_jepa):
             continue
         epoch, step, kind = parsed
         key = (epoch, step, kind)

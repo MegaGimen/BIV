@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Old Stage 1: MLP JEPA + inverse dyn + SimCSE/bank. Not the live recipe.
+"""Stage 1 LLM-JEPA on AgentWorld. Wiring copied from galilai-group/llm-jepa.
 
-Live Stage 1 is ``train_jepallm.py`` (LLM-JEPA: observation CE + last-hidden
-cosine, no MLP). Keep this script for comparison only; do not resume its
-``outputs/jepa_stage1`` checkpoints into the new run.
+Their RepresentationTrainer (finetune.py) encodes Text and Code as two
+independent chat-templated sequences, takes hidden at `len(unpad)+last_token`,
+and adds 1-cosine to a next-token CE on the full conversation. We keep that
+graph. Pairing is ours: Text = history+command, Code = observation. CE
+unmasks only the observation (not earlier assistant turns in h).
 
-AgentWorld and Instruct are two separate backbones (see AGENTS.md "模型架构").
-This script only ever touches AgentWorld: c_t, u*, z* are all encoded by
-AgentWorld's own 40 layers.
+What we do not copy: HuggingFace Trainer, concatenating 3 sequences into one
+batch, padding every row to max_length, full-seq lm_head. Those blow up at
+35B / 65k. Sequential hidden-only forwards + lm_head only on labeled tokens.
 
-Encodes (h, a, o) from mix JSONL messages, predicts ẑ = JEPA(c_t, u*) vs stop-grad z*.
-Inverse dynamics Inv(c, z*)→u sits on the same step (anti-collapse). No ranking NCE.
-
-  cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
-  bash scripts/train_jepa.sh --save-steps 1 --max-steps 2   # smoke the FSDP saver
-  bash scripts/train_jepa.sh --resume                         # newest ckpt (epoch, then step)
+  cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh
 """
 
 from __future__ import annotations
@@ -25,6 +22,7 @@ import math
 import os
 import random
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +48,7 @@ from biv_wm.ckpt import (  # noqa: E402
 from biv_wm.hao import split_hao  # noqa: E402
 from download import resolve_model  # noqa: E402
 
-DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
+DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "jepallm.yaml"
 
 
 def log(msg: str) -> None:
@@ -111,6 +109,64 @@ def _content(msg: dict[str, Any]) -> str:
     return c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
 
 
+def apply_template(tokenizer, messages: list) -> str:
+    """Same as llm-jepa: chat template, no generation prompt."""
+    msgs = list(messages) if messages else [{"role": "user", "content": ""}]
+    try:
+        return tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=False
+        )
+    except Exception:
+        try:
+            alt = []
+            for m in msgs:
+                if (m or {}).get("role") == "assistant":
+                    alt.append({**m, "role": "user"})
+                else:
+                    alt.append(m)
+            return tokenizer.apply_chat_template(
+                alt, tokenize=False, add_generation_prompt=False
+            )
+        except Exception:
+            return "\n".join(_content(m) for m in msgs)
+
+
+def tokenize_ids(tokenizer, text: str) -> list[int]:
+    return list(
+        tokenizer(text, truncation=False, add_special_tokens=True)["input_ids"]
+    )
+
+
+def _fit(ids: list[int], max_length: int, *, keep: str) -> list[int]:
+    if len(ids) <= max_length:
+        return ids
+    if keep == "suffix":
+        return ids[-max_length:]
+    return ids[:max_length]
+
+
+def _find_span(haystack: list[int], needle: list[int]) -> int | None:
+    """Last occurrence (observation sits at the end of the full chat)."""
+    n = len(needle)
+    if n == 0 or n > len(haystack):
+        return None
+    for i in range(len(haystack) - n, -1, -1):
+        if haystack[i : i + n] == needle:
+            return i
+    return None
+
+
+def create_o_labels(full_ids: list[int], o_content_ids: list[int]) -> list[int]:
+    """GitHub create_masked_labels, but only the observation turn."""
+    labels = [-100] * len(full_ids)
+    start = _find_span(full_ids, o_content_ids)
+    if start is None:
+        return labels
+    for j in range(start, start + len(o_content_ids)):
+        labels[j] = full_ids[j]
+    return labels
+
+
 def encode_texts(
     tokenizer,
     h_msgs: list,
@@ -118,26 +174,48 @@ def encode_texts(
     o_msg: dict,
     max_length: int,
 ) -> dict[str, Any]:
-    try:
-        h_text = tokenizer.apply_chat_template(
-            h_msgs if h_msgs else [{"role": "user", "content": ""}],
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-    except Exception:
-        h_text = "\n".join(_content(m) for m in h_msgs)
-    a_text = _content(a_msg)
-    o_text = _content(o_msg)
-    h = tokenizer(
-        h_text, truncation=True, max_length=max_length, add_special_tokens=True
+    """Three sequences, same split as llm-jepa user / assistant / full.
+
+    full  — chat(h + a + o), for next-token CE on o
+    left  — chat(h + a) independently, Enc(Text)
+    right — chat([o]) independently, Enc(Code)
+    Long rows: keep the suffix of full/left (action+obs at the end); keep the
+    prefix of right. Do not pad to max_length here.
+    """
+    full_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
+        max_length,
+        keep="suffix",
     )
-    a = tokenizer(
-        a_text, truncation=True, max_length=max_length, add_special_tokens=True
+    left_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])),
+        max_length,
+        keep="suffix",
     )
-    o = tokenizer(
-        o_text, truncation=True, max_length=max_length, add_special_tokens=True
+    right_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg])),
+        max_length,
+        keep="prefix",
     )
-    return {"h": dict(h), "a": dict(a), "o": dict(o)}
+    o_content_ids = tokenizer.encode(_content(o_msg), add_special_tokens=False)
+    return {
+        "full_ids": full_ids,
+        "full_labels": create_o_labels(full_ids, o_content_ids),
+        "left_ids": left_ids,
+        "right_ids": right_ids,
+    }
+
+
+def sequence_lengths(tokenizer, h_msgs: list, a_msg: dict, o_msg: dict) -> dict[str, int]:
+    """Untruncated token counts for the three LLM-JEPA sequences."""
+    full = tokenize_ids(
+        tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])
+    )
+    left = tokenize_ids(
+        tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])
+    )
+    right = tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg]))
+    return {"full": len(full), "left": len(left), "right": len(right)}
 
 
 def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) -> list[list]:
@@ -201,7 +279,10 @@ class HaoDataset:
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         h, a, o = self.rows[idx]
-        return encode_texts(self.tokenizer, h, a, o, self.max_length)
+        enc = encode_texts(self.tokenizer, h, a, o, self.max_length)
+        enc["o_text"] = _content(o)
+        enc["left_text"] = _content(a)
+        return enc
 
 
 def _pad_len(n: int, multiple: int) -> int:
@@ -213,26 +294,41 @@ def _pad_len(n: int, multiple: int) -> int:
 def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> dict[str, Any]:
     import torch
 
-    def pad(key: str) -> tuple[torch.Tensor, torch.Tensor]:
-        ids = [ex[key]["input_ids"] for ex in batch]
-        mlen = _pad_len(max(len(x) for x in ids), pad_multiple)
-        out = torch.full((len(ids), mlen), pad_id, dtype=torch.long)
-        mask = torch.zeros((len(ids), mlen), dtype=torch.long)
-        for i, row in enumerate(ids):
+    def pad_rows(rows: list[list[int]], fill: int) -> tuple[torch.Tensor, torch.Tensor]:
+        mlen = _pad_len(max((len(x) for x in rows), default=1), pad_multiple)
+        mlen = max(mlen, 1)
+        out = torch.full((len(rows), mlen), fill, dtype=torch.long)
+        mask = torch.zeros((len(rows), mlen), dtype=torch.long)
+        for i, row in enumerate(rows):
+            if not row:
+                continue
             out[i, : len(row)] = torch.tensor(row, dtype=torch.long)
             mask[i, : len(row)] = 1
         return out, mask
 
-    h_ids, h_mask = pad("h")
-    a_ids, a_mask = pad("a")
-    o_ids, o_mask = pad("o")
+    full_ids, full_mask = pad_rows([ex["full_ids"] for ex in batch], pad_id)
+    left_ids, left_mask = pad_rows([ex["left_ids"] for ex in batch], pad_id)
+    right_ids, right_mask = pad_rows([ex["right_ids"] for ex in batch], pad_id)
+    labels_rows = [ex["full_labels"] for ex in batch]
+    mlen = full_ids.size(1)
+    full_labels = torch.full((len(batch), mlen), -100, dtype=torch.long)
+    for i, row in enumerate(labels_rows):
+        n = min(len(row), mlen)
+        if n:
+            full_labels[i, :n] = torch.tensor(row[:n], dtype=torch.long)
     return {
-        "h_ids": h_ids,
-        "h_mask": h_mask,
-        "a_ids": a_ids,
-        "a_mask": a_mask,
-        "o_ids": o_ids,
-        "o_mask": o_mask,
+        "full_ids": full_ids,
+        "full_mask": full_mask,
+        "full_labels": full_labels,
+        "left_ids": left_ids,
+        "left_mask": left_mask,
+        "right_ids": right_ids,
+        "right_mask": right_mask,
+        "full_len": torch.tensor([len(ex["full_ids"]) for ex in batch], dtype=torch.long),
+        "left_len": torch.tensor([len(ex["left_ids"]) for ex in batch], dtype=torch.long),
+        "right_len": torch.tensor([len(ex["right_ids"]) for ex in batch], dtype=torch.long),
+        "o_text": [ex.get("o_text", "") for ex in batch],
+        "left_text": [ex.get("left_text", "") for ex in batch],
     }
 
 
@@ -249,10 +345,17 @@ def all_gather_seq(x, group=None):
     return __import__("torch").cat(parts, dim=1)
 
 
-def last_hidden(model, input_ids, attention_mask, cp_size: int = 1):
-    """Last non-pad hidden. CP shards seq across ranks — gather before indexing."""
-    import torch
+def gather_hidden(h, attention_mask, cp_size: int = 1):
+    """CP shards seq across ranks — gather to full length before indexing."""
+    if cp_size > 1 and h.size(1) < attention_mask.size(1):
+        return all_gather_seq(h)
+    if cp_size > 1 and h.size(1) * cp_size == attention_mask.size(1):
+        return all_gather_seq(h)
+    return h
 
+
+def full_hidden(model, input_ids, attention_mask, cp_size: int = 1):
+    """Full last-layer hidden [B, S, D]. Forward is hidden-only (no full-seq logits)."""
     out = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -270,15 +373,59 @@ def last_hidden(model, input_ids, attention_mask, cp_size: int = 1):
             f"{type(out).__name__} has no hidden_states; "
             f"fields={getattr(out, '__dataclass_fields__', {})}"
         )
-    mask = attention_mask
-    if cp_size > 1 and h.size(1) < mask.size(1):
-        h = all_gather_seq(h)
-    elif cp_size > 1 and h.size(1) * cp_size == mask.size(1):
-        h = all_gather_seq(h)
-    idx = mask.long().sum(dim=1).clamp(min=1) - 1
-    idx = idx.clamp(max=h.size(1) - 1)
-    b = torch.arange(h.size(0), device=h.device)
-    return h[b, idx]
+    return gather_hidden(h, attention_mask, cp_size)
+
+
+def last_token_index(input_ids, attention_mask, last_token: int):
+    """llm-jepa RepresentationTrainer._last_token_index (right padding)."""
+    import torch
+
+    index = []
+    seqs = input_ids.tolist()
+    masks = attention_mask.tolist()
+    max_i = input_ids.size(1) - 1
+    for ids, mask in zip(seqs, masks):
+        unpadded = []
+        seen = False
+        for tid, m in zip(ids, mask):
+            if m != 0:
+                seen = True
+            if m == 0 and seen:
+                break
+            unpadded.append(tid)
+        index.append(min(max(len(unpadded) + last_token, 0), max_i))
+    return torch.tensor(index, device=input_ids.device, dtype=torch.long)
+
+
+def gather_at(hidden, index):
+    import torch
+
+    idx = index.clamp(min=0, max=hidden.size(1) - 1)
+    b = torch.arange(hidden.size(0), device=hidden.device)
+    return hidden[b, idx]
+
+
+def jepa_cosine(user_embedding, assistant_embedding):
+    """llm-jepa default: 1 - mean(cosine). Both sides live."""
+    import torch
+    import torch.nn.functional as F
+
+    cosine_similarity = F.cosine_similarity(user_embedding, assistant_embedding, dim=-1)
+    return 1.0 - torch.mean(cosine_similarity)
+
+
+def shifted_ce(hidden, labels, lm_head):
+    """HF CausalLM shift: hidden[t] predicts labels[t+1]. lm_head only on labeled rows."""
+    import torch
+    import torch.nn.functional as F
+
+    pred = hidden[:, :-1]
+    tgt = labels[:, 1:]
+    mask = tgt != -100
+    if not bool(mask.any()):
+        return hidden.new_zeros(())
+    logits = lm_head(pred[mask])
+    return F.cross_entropy(logits.float(), tgt[mask])
 
 
 def force_attn_implementation(model, impl: str) -> None:
@@ -320,6 +467,9 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
     tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    tok.padding_side = "right"
+    # Card says 131k; we count full chat then _fit to 65k. Silence the false "indexing errors" warn.
+    tok.model_max_length = int(1e12)
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
@@ -368,8 +518,15 @@ def open_tb(log_dir: Path):
     return writer
 
 
-def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Path:
-    """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval)."""
+def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None, run_tag: str = "jepallm") -> Path:
+    """AutoDL's TensorBoard panel watches ``/root/tf-logs`` (same as Muse / eval).
+
+    One writer, one run, opened by global main only — even with 2
+    dp_replicate groups. See `merge_group_stats` for why: both groups' losses
+    get all-reduced into a single combined number before anything is logged,
+    so there is exactly one curve representing the whole job, not one curve
+    per group.
+    """
     raw = (
         cli
         or os.environ.get("LOGGING_DIR")
@@ -381,13 +538,177 @@ def resolve_tb_dir(tcfg: dict[str, Any], _out_dir: Path, cli: Path | None) -> Pa
     if not root.is_absolute():
         root = _resolve(root)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return root / f"jepa-{stamp}"
+    return root / f"{run_tag}-{stamp}"
+
+
+def merge_group_stats(accelerator, *sums: float) -> tuple[float, ...]:
+    """All-reduce (sum) windowed accumulators across every rank, then return
+    them unchanged in shape — the caller still divides by its own local
+    `n_loss`-style denominator, also passed through this same call.
+
+    Why summing (not averaging) is the right op here: ranks inside one CP
+    group hold identical local values (CP all-gathers hidden states before
+    the loss, so the loss itself isn't split). So the global sum equals
+    `cp_size * (group0_sum + group1_sum)`, and the global sum of the
+    denominator (e.g. n_loss) equals `cp_size * (group0_n + group1_n)`. Taking
+    the *ratio* of the two global sums cancels the `cp_size` factor and lands
+    exactly on the combined average across both dp_replicate groups — no
+    separate "divide by dp_size" step needed, and it's correct regardless of
+    cp_size. This is the actual communication: one small collective per log
+    point (a handful of floats), so one TensorBoard record represents the
+    whole job's data, not just whichever rank happens to be global main.
+    """
+    if accelerator.num_processes <= 1:
+        return sums
+    import torch
+
+    t = torch.tensor(sums, device=accelerator.device, dtype=torch.float64)
+    t = accelerator.reduce(t, reduction="sum")
+    return tuple(t.tolist())
 
 
 def resolve_cp_size(cli: int | None) -> int:
     if cli is not None and int(cli) > 0:
         return int(cli)
     return int(os.environ.get("BIV_CP_SIZE") or os.environ.get("PARALLELISM_CONFIG_CP_SIZE") or "1")
+
+
+def build_parallelism_config():
+    """Explicit ParallelismConfig, only to route around one overly-blunt guard.
+
+    accelerate's ParallelismConfig.__post_init__ hard-blocks dp_replicate>1 +
+    cp>1 with dp_shard_size==1 ("pure DP + CP"), because in general that would
+    mean literal DDP composed with TP/CP, which they don't support. But CP
+    doesn't need that guard: accelerate's own ParallelismConfig.fsdp_dim_names
+    (consumed verbatim by fsdp2_prepare_model as `mesh[fsdp_dim_names]` passed
+    to torch's `fully_shard`) folds cp into a `dp_shard_cp` joint dim whenever
+    cp_enabled, even with dp_shard disabled — that's exactly the mechanism our
+    already-working single-group config (dp_shard=1, cp=NGPU, dp_replicate=1)
+    relies on. Adding dp_replicate>1 on top just makes fsdp_dim_names =
+    ("dp_replicate", "dp_shard_cp"), a plain 2D (replicate, shard) mesh that
+    torch's fully_shard natively treats as HSDP — grad sync across the
+    replicate dim is automatic, no manual all_reduce needed.
+
+    So: construct with a throwaway dp_shard_size=2 to satisfy __post_init__'s
+    check, then patch it back to the real value (1) — __post_init__ only runs
+    at construction, total_size/fsdp_dim_names/_sizes are live-attribute
+    properties, unaffected by the later mutation. Untested off-GPU; if this is
+    wrong, torch's fully_shard should fail loudly (wrong mesh rank/shape), not
+    silently train wrong.
+
+    Returns None when dp_replicate isn't in play, so Accelerator() falls back
+    to its normal env-var-driven construction — single-group CP (this file's
+    original, verified path) is untouched.
+    """
+    from accelerate.utils import ParallelismConfig
+
+    dp_replicate = int(os.environ.get("PARALLELISM_CONFIG_DP_REPLICATE_SIZE", "1"))
+    if dp_replicate <= 1:
+        return None
+    dp_shard = int(os.environ.get("PARALLELISM_CONFIG_DP_SHARD_SIZE", "1"))
+    cp = int(os.environ.get("PARALLELISM_CONFIG_CP_SIZE", "1"))
+    tp = int(os.environ.get("PARALLELISM_CONFIG_TP_SIZE", "1"))
+    cp_backend = os.environ.get("PARALLELISM_CONFIG_CP_BACKEND", "torch")
+    needs_hack = dp_shard <= 1 and cp > 1 and tp <= 1
+    pc = ParallelismConfig(
+        dp_replicate_size=dp_replicate,
+        dp_shard_size=2 if needs_hack else dp_shard,
+        tp_size=tp,
+        cp_size=cp,
+        cp_backend=cp_backend,
+    )
+    if needs_hack:
+        pc.dp_shard_size = dp_shard
+        pc._sizes["dp_shard"] = dp_shard
+    return pc
+
+
+def dp_replicate_info(accelerator, cp_size: int) -> tuple[int, int]:
+    """(dp_rank, dp_size) — which data-parallel replicate group this rank is in.
+
+    2 CP groups of 2 GPUs each (32k smoke) means dp_size=2: group 0 = ranks
+    0-1, group 1 = ranks 2-3. Prefers accelerate's actual device mesh (correct
+    regardless of dim ordering); falls back to rank // cp_size, which matches
+    accelerate's (dp_replicate, dp_shard, cp, tp) mesh convention. Untested
+    off-GPU — first run should log and eyeball this before trusting it.
+    """
+    mesh = getattr(accelerator, "torch_device_mesh", None)
+    try:
+        if mesh is not None and "dp_replicate" in getattr(mesh, "mesh_dim_names", ()):
+            sub = mesh["dp_replicate"]
+            return int(sub.get_local_rank()), int(sub.size())
+    except Exception:
+        pass
+    nproc = accelerator.num_processes
+    if cp_size > 0 and nproc % cp_size == 0:
+        dp_size = nproc // cp_size
+        if dp_size > 1:
+            return accelerator.process_index // cp_size, dp_size
+    return 0, 1
+
+
+class ReplicaSampler:
+    """Same global shuffle order on every rank; each dp_replicate group takes
+    a disjoint interleaved slice, so the two groups train on different data
+    (real throughput gain, not redundant compute). Ranks inside one CP group
+    share dp_rank, so they get the identical slice — required, since CP
+    splits one sample's sequence across those ranks, not the batch.
+
+    Truncates to `(n // dp_size) * dp_size` *before* slicing by dp_rank, so
+    every replicate group gets exactly the same number of rows per epoch —
+    drops at most `dp_size - 1` rows/epoch, but guarantees identical
+    `len(loader)` (hence identical steps_per_epoch) across groups. Without
+    this, `n % dp_size != 0` can leave one group's DataLoader one micro-batch
+    short; since the two groups' gradients are all-reduced every accumulation
+    boundary (a blocking collective), whichever group's loop exits its epoch
+    first would leave the other group's rank waiting on a collective call
+    that never comes — an NCCL hang, not a crash. This is what keeps
+    save_steps/log_steps from drifting between the two groups: they are the
+    same integer `step` on every rank, computed off equal-length loaders, not
+    negotiated at runtime."""
+
+    def __init__(self, n: int, dp_rank: int, dp_size: int, generator) -> None:
+        self.n = n
+        self.dp_rank = dp_rank
+        self.dp_size = dp_size
+        self.generator = generator
+
+    def __iter__(self):
+        import torch
+
+        order = torch.randperm(self.n, generator=self.generator).tolist()
+        usable = (self.n // self.dp_size) * self.dp_size
+        return iter(order[:usable][self.dp_rank :: self.dp_size])
+
+    def __len__(self) -> int:
+        return self.n // self.dp_size
+
+
+def assert_equal_loader_len(accelerator, local_len: int) -> None:
+    """Belt-and-suspenders check: every rank's local `len(loader)` must match.
+
+    ReplicaSampler already guarantees this by construction (equal split before
+    slicing), so this should never fire. It exists because a hang from
+    mismatched loader lengths (see ReplicaSampler docstring) is silent and
+    happens much later — mid-epoch, at whatever step one group's DataLoader
+    runs dry — which is a miserable thing to debug on a live 4-GPU job. This
+    turns that into a loud, immediate, pre-training error naming the actual
+    per-rank lengths, using one all_gather (negligible cost, runs once).
+    """
+    if accelerator.num_processes <= 1:
+        return
+    import torch.distributed as dist
+
+    lens = [None] * accelerator.num_processes
+    dist.all_gather_object(lens, int(local_len))
+    if len(set(lens)) > 1:
+        raise SystemExit(
+            f"loader length mismatch across ranks: {lens} "
+            f"(rank {accelerator.process_index}={local_len}) — ReplicaSampler "
+            "should make these identical; something upstream changed n or "
+            "dp_size per-rank. Fix before training: mismatched lengths hang "
+            "mid-epoch at the accumulation boundary, not at startup."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -436,6 +757,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or /root/tf-logs)",
     )
+    p.add_argument(
+        "--run-tag",
+        type=str,
+        default="jepallm",
+        help="Console/TensorBoard prefix, e.g. jepallm32k for the 32k/2x2 smoke "
+        "(keeps it from colliding with the 65536 run's TB folder).",
+    )
     return p.parse_args()
 
 
@@ -482,32 +810,23 @@ def save_adapter(unwrapped, lora_cpu: dict, path: Path) -> None:
         cfg.save_pretrained(str(path))
 
 
+
 def save_ckpt(
     accelerator,
     model,
-    jepa,
     tokenizer,
     path: Path,
     extra: dict | None = None,
     *,
     epoch: int,
     step: int,
-    inv=None,
 ) -> None:
     accelerator.wait_for_everyone()
     lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
-    jepa_cpu = {k: v.detach().cpu().contiguous().clone() for k, v in jepa.state_dict().items()}
-    inv_cpu = None
-    if inv is not None:
-        inv_cpu = {k: v.detach().cpu().contiguous().clone() for k, v in inv.state_dict().items()}
     if accelerator.is_main_process:
         path.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
         save_adapter(unwrapped, lora_cpu, path)
-        torch_mod = __import__("torch")
-        torch_mod.save(jepa_cpu, path / "jepa.pt")
-        if inv_cpu is not None:
-            torch_mod.save(inv_cpu, path / "inv.pt")
         if tokenizer is not None:
             tokenizer.save_pretrained(path)
         meta = dict(extra or {})
@@ -525,16 +844,20 @@ def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
     if raw is None:
         return None
     if raw == "auto":
-        found = find_latest_ckpt(out_dir)
+        found = find_latest_ckpt(out_dir, require_jepa=False)
         if found is None:
             raise SystemExit(f"--resume: no complete checkpoint under {out_dir}")
         return found
-    p = Path(raw)
-    if not p.is_absolute():
-        p = _resolve(p)
-    if p.is_dir() and (p / "trainer_state.json").is_file():
-        return p
-    raise SystemExit(f"--resume path is not a checkpoint: {p}")
+    pth = Path(raw)
+    if not pth.is_absolute():
+        pth = _resolve(pth)
+    if (
+        pth.is_dir()
+        and (pth / "trainer_state.json").is_file()
+        and (pth / "adapter_model.safetensors").is_file()
+    ):
+        return pth
+    raise SystemExit(f"--resume path is not a checkpoint: {pth}")
 
 
 def load_lora_into_model(model, sd: dict, log_fn) -> None:
@@ -570,8 +893,7 @@ def load_lora_into_model(model, sd: dict, log_fn) -> None:
     )
 
 
-def load_adapter_and_heads(model, jepa, inv, path: Path, log_fn) -> tuple[int, int]:
-    import torch
+def load_adapter(model, path: Path, log_fn) -> tuple[int, int]:
     from safetensors.torch import load_file
 
     adapter = path / "adapter_model.safetensors"
@@ -579,16 +901,6 @@ def load_adapter_and_heads(model, jepa, inv, path: Path, log_fn) -> tuple[int, i
         load_lora_into_model(model, load_file(str(adapter)), log_fn)
     else:
         raise SystemExit(f"resume: missing {adapter}")
-    jepa_p = path / "jepa.pt"
-    if jepa_p.is_file():
-        jepa.load_state_dict(torch.load(jepa_p, map_location="cpu"))
-        log_fn(f"resume jepa.pt from {path.name}")
-    inv_p = path / "inv.pt"
-    if inv is not None and inv_p.is_file():
-        inv.load_state_dict(torch.load(inv_p, map_location="cpu"))
-        log_fn(f"resume inv.pt from {path.name}")
-    elif inv is not None:
-        log_fn(f"no inv.pt in {path.name}; inverse head stays randomly initialized")
     state = json.loads((path / "trainer_state.json").read_text(encoding="utf-8"))
     return int(state.get("epoch") or 0), int(state.get("global_step") or 0)
 
@@ -602,11 +914,7 @@ def decode_ids_texts(tokenizer, ids, mask) -> list[str]:
 
 
 def decode_o_texts(tokenizer, batch) -> list[str]:
-    return decode_ids_texts(tokenizer, batch["o_ids"], batch["o_mask"])
-
-
-def decode_a_texts(tokenizer, batch) -> list[str]:
-    return decode_ids_texts(tokenizer, batch["a_ids"], batch["a_mask"])
+    return decode_ids_texts(tokenizer, batch["right_ids"], batch["right_mask"])
 
 
 def _warmup_lambda(warmup: int):
@@ -618,60 +926,17 @@ def _warmup_lambda(warmup: int):
     return fn
 
 
-def effective_nce_weight(
-    z_self_median: float | None,
-    *,
-    full: float,
-    floor: float,
-    anneal_start: float,
-    anneal_end: float,
-) -> float:
-    """Pace loss_simcse by *achieved* separation, not wall-clock step.
-
-    See AGENTS.md "JEPA 家族怎么防坍缩" / "130 步实测" for why: gradient-cosine
-    gating (Du et al., https://arxiv.org/abs/1812.02224) assumes an auxiliary
-    task's conflicting gradient is a signal to suppress it, but loss_simcse
-    is structurally supposed to fight loss_align/inv/bank (alignment vs
-    uniformity, https://arxiv.org/abs/2005.10242) — gating it on conflict
-    would turn off the exact force that stops the collapse. Instead this
-    schedules *how hard* loss_simcse pushes, tracking the DirectPred insight
-    that a predictor's eigenspace only stabilizes once the target statistics
-    it's chasing stop moving (https://arxiv.org/abs/2102.06810): while
-    z_self_median (this window's median cosine between two different
-    observations' z*) is still high, the target space hasn't been
-    de-crowded yet, so loss_simcse runs at full strength; once it drops to
-    an already-separated regime, loss_simcse eases to a small maintenance
-    floor instead of continuing to reshape a target the predictor is still
-    trying to converge onto.
-
-    Resuming mid-run needs no special-casing: the first collapse check
-    after --resume reports whatever z_self_median the checkpoint already
-    achieved, so an already-separated run anneals to the floor within one
-    log_steps window with no "are we resuming" branch anywhere.
-    """
-    if z_self_median is None or anneal_start <= anneal_end:
-        return full
-    frac = (z_self_median - anneal_end) / (anneal_start - anneal_end)
-    frac = max(0.0, min(1.0, frac))
-    return floor + frac * (full - floor)
-
-
 def main() -> None:
     args = parse_args()
+    run_tag = args.run_tag
 
     import torch
     from accelerate import Accelerator
     from peft import LoraConfig, get_peft_model
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
-    from biv_wm.jepa import (  # noqa: PLC0415
-        InverseDyn,
-        JEPAPred,
-        bank_nce_loss,
-        collapse_stats,
-        cosine_align_loss,
-        format_collapse_line,
-    )
+    from biv_wm.arch import install_hidden_only_forward, lm_head_module, log_world_architecture
+    from biv_wm.jepa import collapse_stats, format_collapse_line
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
     if not cfg_path.is_file():
@@ -692,7 +957,9 @@ def main() -> None:
         os.environ["PARALLELISM_CONFIG_CP_SIZE"] = str(cp_size)
         os.environ.setdefault("PARALLELISM_CONFIG_CP_BACKEND", "torch")
 
-    accelerator = Accelerator(gradient_accumulation_steps=accum)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=accum, parallelism_config=build_parallelism_config()
+    )
     is_main = accelerator.is_main_process
 
     def rank_log(msg: str) -> None:
@@ -708,7 +975,7 @@ def main() -> None:
     )
     sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
     mix_dir = resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
-    out_dir = _resolve(tcfg.get("output_dir") or "outputs/jepa_stage1")
+    out_dir = _resolve(tcfg.get("output_dir") or "outputs/jepallm_stage1")
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
@@ -739,11 +1006,6 @@ def main() -> None:
         if "lm_head" in name:
             p.requires_grad = False
 
-    from biv_wm.arch import install_hidden_only_forward, log_world_architecture
-
-    # No fish-cut, no Instruct tail: the whole AgentWorld backbone is "world".
-    # get_peft_model() below freezes every base-model param except these LoRA
-    # targets, so there is no separate freeze() call to make.
     suffixes = list(tcfg.get("target_modules") or [])
     targets = two_d_lora_targets(model, suffixes)
     if not targets:
@@ -760,17 +1022,11 @@ def main() -> None:
     model = get_peft_model(model, lora)
     if is_main and hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
-    install_hidden_only_forward(model)
-    hidden = int(getattr(getattr(model.config, "text_config", model.config), "hidden_size", 2048))
-    jepa_h = int(tcfg.get("jepa_hidden") or hidden * 2)
-    jepa = JEPAPred(dim=hidden, hidden=jepa_h)
-    inv = InverseDyn(dim=hidden, hidden=jepa_h)
+    install_hidden_only_forward(model, detach_head=False)
     resume_dir = load_resume_dir(out_dir, args.resume)
     resume_epoch, resume_step = 0, 0
     if resume_dir is not None:
-        resume_epoch, resume_step = load_adapter_and_heads(
-            model, jepa, inv, resume_dir, rank_log
-        )
+        resume_epoch, resume_step = load_adapter(model, resume_dir, rank_log)
         rank_log(
             f"resume {resume_dir.name} trainer_state epoch={resume_epoch} "
             f"global_step={resume_step} (newest by epoch, then step)"
@@ -778,9 +1034,10 @@ def main() -> None:
     if is_main:
         log_world_architecture(
             model=model,
-            extra={"jepa": jepa, "inv": inv},
+            extra={},
             model_dir=model_dir,
             log=log,
+            expect_lm_head="attached",
         )
 
     train_rows = load_rows(mix_dir, sources, "train", tcfg.get("max_train_samples"))
@@ -793,34 +1050,42 @@ def main() -> None:
     gen = torch.Generator()
     gen.manual_seed(seed)
     batch_size = int(tcfg.get("batch_size") or 1)
-    loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        generator=gen,
-        collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-        num_workers=0,
+    dp_rank, dp_size = dp_replicate_info(accelerator, cp_size)
+    log(
+        f"[rank {accelerator.process_index}/{accelerator.num_processes}] "
+        f"dp_replicate rank={dp_rank}/{dp_size} cp_size={cp_size} — "
+        f"first run: check dp_rank groups match {{0,1}} and {{2,3}} (or your GPU order), "
+        f"not all-0 or all-different."
     )
+    if dp_size > 1:
+        loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            sampler=ReplicaSampler(len(train_ds), dp_rank, dp_size, gen),
+            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+            num_workers=0,
+        )
+    else:
+        loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=gen,
+            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+            num_workers=0,
+        )
+    assert_equal_loader_len(accelerator, len(loader))
 
-    # FSDP2: one model + its optimizer in the same prepare(). JEPA is a small
-    # MLP on each rank, separate optimizer (not an FSDP module).
-    # LRs are not Muse SFT: cosine-align a new predictor on an already-trained
-    # AgentWorld, so LoRA is a small nudge and the MLP is a new head.
     backbone_lr = float(tcfg.get("lr") or 5e-5)
-    jepa_lr = float(tcfg.get("jepa_lr") or 1e-3)
     opt = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=backbone_lr,
         weight_decay=float(tcfg.get("weight_decay") or 0.01),
     )
     model, opt = accelerator.prepare(model, opt)
-    jepa = jepa.to(device=accelerator.device, dtype=dtype)
-    inv = inv.to(device=accelerator.device, dtype=dtype)
-    opt_jepa = torch.optim.AdamW(
-        list(jepa.parameters()) + list(inv.parameters()),
-        lr=jepa_lr,
-        weight_decay=float(tcfg.get("jepa_weight_decay") or 0.0),
-    )
+    lm_head = lm_head_module(accelerator.unwrap_model(model))
+    if lm_head is None:
+        raise SystemExit("LLM-JEPA Stage 1 needs AgentWorld lm_head attached")
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(
@@ -829,12 +1094,7 @@ def main() -> None:
         else (
             args.collapse_steps
             if args.collapse_steps is not None
-            else (
-                tcfg.get("log_steps")
-                or tcfg.get("logging_steps")
-                or tcfg.get("collapse_steps")
-                or 5
-            )
+            else (tcfg.get("log_steps") or tcfg.get("logging_steps") or 5)
         )
     )
     save_every = int(
@@ -845,31 +1105,17 @@ def main() -> None:
     if log_every < 1:
         raise SystemExit(f"log_steps must be >= 1, got {log_every}")
     save_limit = int(tcfg.get("save_total_limit") or 3)
-    inv_w = float(tcfg.get("inv_weight") or 0.3)
-    # Anti-collapse, part 2/3 (see AGENTS.md "JEPA 家族怎么防坍缩"): loss_simcse is
-    # the only loss whose gradient reaches the observation-encoding forward pass
-    # itself. It costs exactly ONE extra live forward per micro-batch (z1, same
-    # o_ids as z but a second dropout draw) — folded into the same backward as
-    # everything else, no separate group buffer needed: the positive is this
-    # micro-batch's own no-grad z, negatives come from the shared bank below.
-    nce_w = float(tcfg.get("nce_weight") or 0.1)
-    nce_temp = float(tcfg.get("nce_temperature") or 0.05)
-    # Pacing (AGENTS.md "130 步实测" / effective_nce_weight above): nce_w is the
-    # full-strength weight used while z_self_median is still high (target space
-    # not yet de-crowded). Once z_self_median drops to/below nce_anneal_end,
-    # the effective weight eases toward nce_weight_floor — a maintenance level
-    # that keeps the target from re-crowding without continuing to reshape it
-    # out from under the predictor. Defaulting the floor to nce_w keeps old
-    # configs that don't set it running exactly as before (no annealing).
-    nce_w_floor = float(tcfg.get("nce_weight_floor") if tcfg.get("nce_weight_floor") is not None else nce_w)
-    nce_anneal_start = float(tcfg.get("nce_anneal_start") or 0.85)
-    nce_anneal_end = float(tcfg.get("nce_anneal_end") or 0.45)
-    # Anti-collapse, part 3/3: corrected queue. Small + fresh (not the 256-deep,
-    # cross-epoch queue that blew up loss_align last time), softmax temperature
-    # instead of a hand-picked "push cosine to 0" target.
-    bank_w = float(tcfg.get("bank_weight") or 0.2)
-    bank_temp = float(tcfg.get("bank_temperature") or 0.05)
-    bank_size = max(1, int(tcfg.get("bank_size") or 64))
+    gamma = float(
+        tcfg["gamma"]
+        if tcfg.get("gamma") is not None
+        else (tcfg["ce_weight"] if tcfg.get("ce_weight") is not None else 1.0)
+    )
+    lbd = float(
+        tcfg["lbd"]
+        if tcfg.get("lbd") is not None
+        else (tcfg["jepa_weight"] if tcfg.get("jepa_weight") is not None else 0.1)
+    )
+    last_token = int(tcfg["last_token"] if tcfg.get("last_token") is not None else -3)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
     steps_per_epoch = math.ceil(len(loader) / accum)
@@ -877,19 +1123,19 @@ def main() -> None:
     total_opt = planned if max_steps is None else min(planned, int(max_steps))
     warmup = int(tcfg.get("warmup_steps") or 50)
     warmup = max(0, min(warmup, max(total_opt - 1, 0)))
-    sched = LambdaLR(opt, _warmup_lambda(warmup))
-    sched_jepa = LambdaLR(opt_jepa, _warmup_lambda(warmup))
-    for _ in range(resume_step):
-        sched.step()
-        sched_jepa.step()
+    # last_epoch = steps already done. Do not sched.step() here: that warns and
+    # skips the first warmup value because optimizer has not stepped yet.
+    sched = LambdaLR(
+        opt,
+        _warmup_lambda(warmup),
+        last_epoch=(resume_step - 1) if resume_step > 0 else -1,
+    )
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
-        f"lr_lora={backbone_lr} lr_jepa={jepa_lr} warmup={warmup} "
+        f"lr_lora={backbone_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"inv_w={inv_w} save_total_limit={save_limit} resume_step={resume_step} "
-        f"nce_w={nce_w} nce_w_floor={nce_w_floor} "
-        f"nce_anneal=[{nce_anneal_start},{nce_anneal_end}] nce_temp={nce_temp} "
-        f"bank_w={bank_w} bank_temp={bank_temp} bank_size={bank_size}"
+        f"gamma={gamma} lbd={lbd} last_token={last_token} "
+        f"save_total_limit={save_limit} resume_step={resume_step}"
     )
 
     ckpt_extra = {
@@ -898,27 +1144,16 @@ def main() -> None:
         "sources": sources,
         "max_length": max_length,
         "cp_size": cp_size,
-        "lm_head": "detached_at_runtime",
+        "dp_replicate_size": dp_size,
+        "run_tag": run_tag,
+        "lm_head": "attached_frozen_base",
+        "recipe": "llm-jepa RepresentationTrainer (independent Enc + last_token cosine + shifted CE)",
+        "last_token": last_token,
         "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
     }
     seen_pred: deque = deque()
     seen_z: deque = deque()
     seen_o: deque = deque()
-    # Inverse dynamics has the same blind spot JEPA had: nobody checked whether
-    # inv_hat (guessed command encoding) collapses too. Same paired/mismatch
-    # machinery, applied to (inv_hat, u*, a_text) instead of (pred, z*, o_text).
-    seen_invhat: deque = deque()
-    seen_u: deque = deque()
-    seen_a: deque = deque()
-    # Mutable single-element holder (not a plain float) so the nested
-    # check_collapse() closure below can update it without `nonlocal`.
-    # Every rank computes this identically off identical (CP-gathered) data
-    # (see AGENTS.md "130 步实测"), so effective_nce_weight() below reads the
-    # same value on every rank without a broadcast — required because this
-    # run has DP_REPLICATE=1: all ranks jointly compute one logical
-    # forward/backward, so a per-rank-different loss weight would desync
-    # gradients across the FSDP2+CP boundary.
-    last_z_self: list[float | None] = [None]
     writer = None
 
     def emit(msg: str) -> None:
@@ -935,41 +1170,20 @@ def main() -> None:
             seen_pred.clear()
             seen_z.clear()
             seen_o.clear()
-            seen_invhat.clear()
-            seen_u.clear()
-            seen_a.clear()
 
         if not seen_pred:
             _clear()
             return
-        # Every rank runs this (not just is_main): effective_nce_weight() needs
-        # last_z_self on every rank to keep the loss weight identical across
-        # the FSDP2+CP group. It's cheap — cosine stats over the handful of
-        # cached 2048-d vectors from this log_steps window, no extra forward.
         stats = collapse_stats(
             torch.stack(list(seen_pred)),
             torch.stack(list(seen_z)),
             list(seen_o),
         )
-        z_self_block = stats.get("z_self")
-        if isinstance(z_self_block, dict) and z_self_block.get("median") is not None:
-            last_z_self[0] = float(z_self_block["median"])
         if not is_main:
             _clear()
             return
-        emit(f"[jepa] collapse step={step_i} {format_collapse_line(stats)}")
-        inv_stats: dict[str, object] | None = None
-        if seen_invhat:
-            inv_stats = collapse_stats(
-                torch.stack(list(seen_invhat)),
-                torch.stack(list(seen_u)),
-                list(seen_a),
-            )
-            emit(f"[jepa] collapse(inv) step={step_i} {format_collapse_line(inv_stats)}")
-        payload_obj: dict[str, object] = dict(stats)
-        if inv_stats is not None:
-            payload_obj["inv"] = inv_stats
-        payload = json.dumps(payload_obj, indent=2, ensure_ascii=False) + "\n"
+        emit(f"[{run_tag}] collapse step={step_i} {format_collapse_line(stats)}")
+        payload = json.dumps(dict(stats), indent=2, ensure_ascii=False) + "\n"
         (out_dir / "collapse.json").write_text(payload, encoding="utf-8")
         (out_dir / f"collapse-s{step_i}.json").write_text(payload, encoding="utf-8")
         if writer is not None:
@@ -990,9 +1204,6 @@ def main() -> None:
             _sc("collapse/z_self_median", z_self, "median")
             _sc("collapse/pred_self_median", pred_self, "median")
             writer.add_text("collapse/verdict", str(stats.get("verdict")), step_i)
-            if inv_stats is not None:
-                _sc("collapse/inv_paired_median", inv_stats["paired"], "median")
-                _sc("collapse/inv_mismatch_median", inv_stats["mismatch"], "median")
             writer.flush()
         _clear()
 
@@ -1005,19 +1216,17 @@ def main() -> None:
         save_ckpt(
             accelerator,
             model,
-            jepa,
             tokenizer,
             dest,
             extra=extra,
             epoch=epoch_i,
             step=step_i,
-            inv=inv,
         )
         if is_main:
-            emit(f"[jepa] checkpoint ({kind}) → {dest.name}")
-            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[jepa] {m}"))
+            emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")
+            rotate_rolling(out_dir, save_limit, log=lambda m: emit(f"[{run_tag}] {m}"))
 
-    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir)
+    tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag)
     ckpt_extra["tensorboard"] = str(tb_dir)
     if is_main:
         writer = open_tb(tb_dir)
@@ -1025,18 +1234,21 @@ def main() -> None:
         writer.add_text("data/sources", ", ".join(sources), 0)
         writer.add_text("train/max_length", str(max_length), 0)
         writer.add_text("train/cp_size", str(cp_size), 0)
+        writer.add_text("train/dp_replicate_size", str(dp_size), 0)
+        writer.add_text(
+            "train/step_semantics",
+            "x-axis is step*dp_replicate_size (single-group-step-equivalent), "
+            "loss is all-reduced across both dp_replicate groups — one record "
+            "for the whole job, not one per group.",
+            0,
+        )
+        writer.add_text("train/run_tag", run_tag, 0)
         writer.add_text("train/epochs", str(epochs), 0)
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
-        writer.add_text("train/inv_weight", str(inv_w), 0)
-        writer.add_text("train/nce_weight", str(nce_w), 0)
-        writer.add_text("train/nce_weight_floor", str(nce_w_floor), 0)
-        writer.add_text("train/nce_anneal_start", str(nce_anneal_start), 0)
-        writer.add_text("train/nce_anneal_end", str(nce_anneal_end), 0)
-        writer.add_text("train/nce_temperature", str(nce_temp), 0)
-        writer.add_text("train/bank_weight", str(bank_w), 0)
-        writer.add_text("train/bank_temperature", str(bank_temp), 0)
-        writer.add_text("train/bank_size", str(bank_size), 0)
+        writer.add_text("train/gamma", str(gamma), 0)
+        writer.add_text("train/lbd", str(lbd), 0)
+        writer.add_text("train/last_token", str(last_token), 0)
 
     try:
         from tqdm.auto import tqdm
@@ -1048,7 +1260,7 @@ def main() -> None:
         pbar = tqdm(
             total=total_opt,
             initial=min(resume_step, total_opt),
-            desc="jepa",
+            desc=run_tag,
             unit="step",
             dynamic_ncols=True,
         )
@@ -1062,29 +1274,19 @@ def main() -> None:
         return
 
     model.train()
-    jepa.train()
-    inv.train()
     step = resume_step
     skip_micro = resume_step * accum
     micro_seen = 0
     opt.zero_grad(set_to_none=True)
-    opt_jepa.zero_grad(set_to_none=True)
     running = 0.0
-    run_align = run_inv = run_bank = 0.0
-    run_simcse = 0.0
-    run_nce_w_eff = 0.0
+    run_ce = 0.0
+    run_jepa = 0.0
     n_loss = 0
-    n_simcse = 0
     run_h = run_a = run_o = 0.0
     last_train_loss = None
     hit_max = False
-    # Anti-collapse buffers, see AGENTS.md "JEPA 家族怎么防坍缩". Every rank keeps
-    # its own copy (DP_REPLICATE=1: CP shards one example's sequence across
-    # ranks, it does not partition distinct examples per rank, so every rank
-    # sees the identical stream of examples and these stay in sync without an
-    # all-gather).
-    bank_z: deque = deque(maxlen=bank_size)
-    bank_o: deque = deque(maxlen=bank_size)
+    last_log_time = time.monotonic()
+    throughput_postfix: dict[str, str] = {}
 
     try:
         for epoch in range(epochs):
@@ -1095,130 +1297,52 @@ def main() -> None:
                     micro_seen += 1
                     continue
                 micro_seen += 1
-                batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-                h_len = float(batch["h_mask"].sum(dim=1).float().mean().item())
-                a_len = float(batch["a_mask"].sum(dim=1).float().mean().item())
-                o_len = float(batch["o_mask"].sum(dim=1).float().mean().item())
+                batch = {
+                    k: v.to(accelerator.device) if hasattr(v, "to") else v
+                    for k, v in batch.items()
+                }
+                full_len = float(batch["full_len"].float().mean().item())
+                left_len = float(batch["left_len"].float().mean().item())
+                right_len = float(batch["right_len"].float().mean().item())
                 with accelerator.accumulate(model):
-                    # Space-for-time, isolated retry (2026-08-31 AGENTS.md postmortem):
-                    # z (no-grad) and z1 (live, for loss_simcse below) both encode the
-                    # same o_ids with different dropout draws. Batching them into one
-                    # batch_size×2 call eliminates one full-backbone FSDP2 all-gather
-                    # round vs two separate calls. z1 is computed here (live) instead
-                    # of later so both rows share this single forward.
-                    #
-                    # KNOWN RISK: this is a batch>1 forward under Context Parallel.
-                    # probe.py --speed-advice's isolated batch=2+CP micro-test hit
-                    # "CUDA error: unspecified launch failure" on this GPU. A web
-                    # search turned up a matching signature (same error string, same
-                    # Gated DeltaNet Triton/FLA kernel family, same sm_120 consumer-
-                    # Blackwell generation) in an unrelated vLLM serving bug report —
-                    # suggests a real shape-dependent stability gap in GDN Triton
-                    # kernels on this GPU generation, not necessarily a bug in this
-                    # script. If this crashes, it is not obviously our code's fault;
-                    # set batch_o_z1: false and report which step/shape it hit.
-                    z1_precomputed = None
-                    if bool(tcfg.get("batch_o_z1", False)) and nce_w > 0:
-                        o_ids2 = torch.cat([batch["o_ids"], batch["o_ids"]], dim=0)
-                        o_mask2 = torch.cat([batch["o_mask"], batch["o_mask"]], dim=0)
-                        z_both = last_hidden(model, o_ids2, o_mask2, cp_size)
-                        bsz0 = batch["o_ids"].size(0)
-                        z = z_both[:bsz0].detach()
-                        z1_precomputed = z_both[bsz0:]
-                    else:
-                        with torch.no_grad():
-                            z = last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                    c = last_hidden(model, batch["h_ids"], batch["h_mask"], cp_size)
-                    u = last_hidden(model, batch["a_ids"], batch["a_mask"], cp_size)
-                    pred = jepa(c, u)
-                    align_loss = cosine_align_loss(pred, z)
-                    inv_hat = inv(c, z.detach())
-                    inv_loss = cosine_align_loss(inv_hat, u)
-                    o_texts = decode_o_texts(tokenizer, batch)
-                    bank_stack = torch.stack(list(bank_z)) if bank_z else None
-                    bank_texts = list(bank_o)
-                    # loss_bank: corrected queue, part 3/3 of anti-collapse (see
-                    # AGENTS.md). Cheap — bank entries are detached, no extra
-                    # forward pass, just a softmax over a small rolling buffer.
-                    bank_loss = None
-                    if bank_stack is not None:
-                        bank_loss = bank_nce_loss(pred, z, o_texts, bank_stack, bank_texts, bank_temp)
-                    loss = align_loss + inv_w * inv_loss
-                    if bank_loss is not None:
-                        loss = loss + bank_w * bank_loss
-                    # loss_simcse: anti-collapse part 1/3, the one that actually
-                    # touches the observation-encoding forward pass (see AGENTS.md
-                    # "JEPA 家族怎么防坍缩"). Costs exactly one extra live forward
-                    # (z1 — same o_ids as z, a second dropout draw) instead of
-                    # two, and reuses the same shared bank as negatives instead
-                    # of a separate group buffer: the positive is this
-                    # micro-batch's own z (already computed above), so no extra
-                    # bookkeeping or deferred backward across micro-batches.
-                    simcse_loss = None
-                    # effective_nce_w is the *paced* weight (AGENTS.md "130 步实测"),
-                    # not the raw nce_w config value — see effective_nce_weight()
-                    # above. Computed fresh every micro-batch from last_z_self,
-                    # which every rank updates identically in check_collapse().
-                    effective_nce_w = effective_nce_weight(
-                        last_z_self[0],
-                        full=nce_w,
-                        floor=nce_w_floor,
-                        anneal_start=nce_anneal_start,
-                        anneal_end=nce_anneal_end,
+                    h_full = full_hidden(
+                        model, batch["full_ids"], batch["full_mask"], cp_size
                     )
-                    if nce_w > 0 and bank_stack is not None:
-                        z1 = (
-                            z1_precomputed
-                            if z1_precomputed is not None
-                            else last_hidden(model, batch["o_ids"], batch["o_mask"], cp_size)
-                        )
-                        simcse_loss = bank_nce_loss(z1, z, o_texts, bank_stack, bank_texts, nce_temp)
-                        if simcse_loss is not None:
-                            loss = loss + effective_nce_w * simcse_loss
-                    # Every rank collects pred/z/o (not just is_main): check_collapse()
-                    # needs z_self_median on every rank so effective_nce_weight() reads
-                    # an identical value everywhere (see comment by last_z_self's
-                    # declaration). inv_hat/u/a stay is_main-only — they only feed the
-                    # inv_paired/inv_mismatch diagnostics, which only rank 0 ever
-                    # writes to TensorBoard/JSON, so the other ranks decoding a_texts
-                    # and copying inv_hat/u to CPU every micro-batch was pure waste.
-                    for i in range(pred.size(0)):
-                        seen_pred.append(pred[i].detach().float().cpu())
-                        seen_z.append(z[i].detach().float().cpu())
+                    ce_loss = shifted_ce(h_full, batch["full_labels"], lm_head)
+                    h_left_seq = full_hidden(
+                        model, batch["left_ids"], batch["left_mask"], cp_size
+                    )
+                    h_right_seq = full_hidden(
+                        model, batch["right_ids"], batch["right_mask"], cp_size
+                    )
+                    idx_l = last_token_index(
+                        batch["left_ids"], batch["left_mask"], last_token
+                    )
+                    idx_r = last_token_index(
+                        batch["right_ids"], batch["right_mask"], last_token
+                    )
+                    h_left = gather_at(h_left_seq, idx_l)
+                    h_right = gather_at(h_right_seq, idx_r)
+                    jepa_loss = jepa_cosine(h_left, h_right)
+                    loss = gamma * ce_loss + lbd * jepa_loss
+                    o_texts = batch.get("o_text") or decode_o_texts(tokenizer, batch)
+                    for i in range(h_left.size(0)):
+                        seen_pred.append(h_left[i].detach().float().cpu())
+                        seen_z.append(h_right[i].detach().float().cpu())
                         seen_o.append(o_texts[i])
-                    if is_main:
-                        a_texts = decode_a_texts(tokenizer, batch)
-                        for i in range(pred.size(0)):
-                            seen_invhat.append(inv_hat[i].detach().float().cpu())
-                            seen_u.append(u[i].detach().float().cpu())
-                            seen_a.append(a_texts[i])
                     accelerator.backward(loss)
-                    for i in range(z.size(0)):
-                        bank_z.append(z[i].detach())
-                        bank_o.append(o_texts[i])
                     running += float(loss.detach().float().item())
-                    run_align += float(align_loss.detach().float().item())
-                    run_inv += float(inv_loss.detach().float().item())
-                    if bank_loss is not None:
-                        run_bank += float(bank_loss.detach().float().item())
-                    if simcse_loss is not None:
-                        run_simcse += float(simcse_loss.detach().float().item())
-                        n_simcse += 1
-                    run_nce_w_eff += effective_nce_w
+                    run_ce += float(ce_loss.detach().float().item())
+                    run_jepa += float(jepa_loss.detach().float().item())
                     n_loss += 1
-                    run_h += h_len
-                    run_a += a_len
-                    run_o += o_len
+                    run_h += full_len
+                    run_a += left_len
+                    run_o += right_len
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), max_norm)
-                        torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm)
-                        torch.nn.utils.clip_grad_norm_(inv.parameters(), max_norm)
                         opt.step()
-                        opt_jepa.step()
                         sched.step()
-                        sched_jepa.step()
                         opt.zero_grad(set_to_none=True)
-                        opt_jepa.zero_grad(set_to_none=True)
                         step += 1
                         epoch_opt += 1
                         last_train_loss = running / max(n_loss, 1)
@@ -1228,43 +1352,68 @@ def main() -> None:
                                 epoch=f"{epoch + 1}/{epochs}",
                                 loss=f"{last_train_loss:.4f}",
                                 refresh=False,
+                                **throughput_postfix,
                             )
                         is_last_in_epoch = epoch_opt >= steps_per_epoch
                         if step % log_every == 0:
+                            # Collective: every rank must call this (it's an
+                            # all-reduce), not just is_main — see
+                            # merge_group_stats docstring for why summing (not
+                            # averaging) both groups' windowed accumulators and
+                            # then taking a ratio gives the correct combined
+                            # average regardless of cp_size.
+                            running_g, ce_g, jepa_g, h_g, a_g, o_g, n_g = merge_group_stats(
+                                accelerator, running, run_ce, run_jepa, run_h, run_a, run_o, float(n_loss)
+                            )
+                            denom_g = max(n_g, 1.0)
+                            # step*dp_size = single-group-step-equivalent — lines
+                            # this run's x-axis up with a non-parallel run's step
+                            # count (see AGENTS.md), so this is the number that
+                            # "represents having trained step*dp_size steps", not
+                            # the raw (per-group) step counter. Used for every
+                            # scalar in this run, including collapse/*, so all
+                            # tags in one TensorBoard run share the same x-axis.
+                            eff_step = step * dp_size
                             if is_main:
-                                denom = max(n_loss, 1)
-                                simcse_denom = max(n_simcse, 1)
+                                loss_g = running_g / denom_g
+                                now = time.monotonic()
+                                elapsed = max(now - last_log_time, 1e-6)
+                                rows = dp_size * accum * batch_size * log_every
+                                toks = rows * (h_g / denom_g)
+                                rows_s = rows / elapsed
+                                toks_s = toks / elapsed
+                                last_log_time = now
+                                throughput_postfix = {"rows/s": f"{rows_s:.2f}", "tok/s": f"{toks_s:.0f}"}
                                 emit(
-                                    f"epoch={epoch} step={step} loss={last_train_loss:.4f} "
-                                    f"align={run_align / denom:.4f} inv={run_inv / denom:.4f} "
-                                    f"bank={run_bank / denom:.4f} simcse={run_simcse / simcse_denom:.4f} "
-                                    f"nce_w_eff={run_nce_w_eff / denom:.4f} "
-                                    f"len(h/a/o)={run_h / denom:.0f}/{run_a / denom:.0f}/{run_o / denom:.0f}"
+                                    f"epoch={epoch} step={step} eff_step={eff_step} loss={loss_g:.4f} "
+                                    f"ce={ce_g / denom_g:.4f} jepa={jepa_g / denom_g:.4f} "
+                                    f"len(full/left/right)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
+                                    f"throughput≈{rows_s:.2f} rows/s {toks_s:.0f} tok/s "
+                                    f"(dp_size={dp_size} groups combined)"
                                 )
                                 if writer is not None:
-                                    writer.add_scalar("train/loss", last_train_loss, step)
-                                    writer.add_scalar("train/loss_align", run_align / denom, step)
-                                    writer.add_scalar("train/loss_inv", run_inv / denom, step)
-                                    writer.add_scalar("train/loss_bank", run_bank / denom, step)
-                                    if n_simcse > 0:
-                                        writer.add_scalar("train/loss_simcse", run_simcse / simcse_denom, step)
-                                    writer.add_scalar("train/nce_weight_effective", run_nce_w_eff / denom, step)
-                                    writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], step)
-                                    writer.add_scalar("train/lr_jepa", opt_jepa.param_groups[0]["lr"], step)
-                                    writer.add_scalar("train/len_h", run_h / denom, step)
-                                    writer.add_scalar("train/len_a", run_a / denom, step)
-                                    writer.add_scalar("train/len_o", run_o / denom, step)
-                                running = 0.0
-                                run_align = run_inv = run_bank = 0.0
-                                run_simcse = 0.0
-                                run_nce_w_eff = 0.0
-                                n_loss = 0
-                                n_simcse = 0
-                                run_h = run_a = run_o = 0.0
-                            check_collapse(step)
+                                    writer.add_scalar("train/loss", loss_g, eff_step)
+                                    writer.add_scalar("train/loss_ce", ce_g / denom_g, eff_step)
+                                    writer.add_scalar("train/loss_jepa", jepa_g / denom_g, eff_step)
+                                    writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], eff_step)
+                                    writer.add_scalar("train/len_h", h_g / denom_g, eff_step)
+                                    writer.add_scalar("train/len_a", a_g / denom_g, eff_step)
+                                    writer.add_scalar("train/len_o", o_g / denom_g, eff_step)
+                                    writer.add_scalar("train/rows_per_sec_global", rows_s, eff_step)
+                                    writer.add_scalar("train/tokens_per_sec_global", toks_s, eff_step)
+                            running = 0.0
+                            run_ce = 0.0
+                            run_jepa = 0.0
+                            n_loss = 0
+                            run_h = run_a = run_o = 0.0
+                            # Unconditional: check_collapse() clears seen_pred/
+                            # seen_z/seen_o on every rank internally (only
+                            # is_main computes+logs stats) — skipping this on
+                            # non-main ranks would leak those deques forever.
+                            check_collapse(eff_step)
                         if is_last_in_epoch:
                             emit(
-                                f"[jepa] epoch {epoch + 1} end: force checkpoint "
+                                f"[{run_tag}] epoch {epoch + 1} end: force checkpoint "
                                 "(permanent epoch ckpt)"
                             )
                             dump_ckpt("epoch-end", epoch + 1, step)

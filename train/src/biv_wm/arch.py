@@ -126,8 +126,12 @@ def detach_lm_head(model: Any) -> bool:
     return True
 
 
-def install_hidden_only_forward(model: Any) -> None:
-    """CausalLM.forward → language_model only (no token logits). Call via wrapped model()."""
+def install_hidden_only_forward(model: Any, *, detach_head: bool = True) -> None:
+    """CausalLM.forward → language_model only (no full-seq token logits).
+
+    ``detach_head=True`` (Stage 1 旧配方) 把 ``lm_head`` 从活模块摘掉。
+    LLM-JEPA 配方要留着这张表，只对观察段切片再乘，所以传 ``detach_head=False``。
+    """
     import inspect
 
     m = unwrap_base(model)
@@ -153,12 +157,17 @@ def install_hidden_only_forward(model: Any) -> None:
         return inner(**filt)
 
     m.forward = _fwd
-    detach_lm_head(model)
+    if detach_head:
+        detach_lm_head(model)
 
 
 def lm_head_module(model: Any) -> Any | None:
     m = unwrap_base(model)
-    return getattr(m, "lm_head", None)
+    head = getattr(m, "lm_head", None)
+    if head is not None:
+        return head
+    inner = getattr(m, "model", None)
+    return getattr(inner, "lm_head", None) if inner is not None else None
 
 
 def read_ell(model_dir: Path) -> int | None:
@@ -189,12 +198,16 @@ def log_world_architecture(
     extra: dict[str, Any],
     model_dir: Path,
     log: Callable[[str], None],
+    expect_lm_head: str = "detached",
 ) -> None:
     """Plain AgentWorld backbone, no fish-cut, no Instruct tail.
 
     Stage 1 (current plan): JEPA sits on AgentWorld's own unmodified 40
     layers. There is no ``ell``/cut_meta.json here — the whole backbone is
     "world", LoRA'd or frozen as a block, not split by layer index.
+
+    ``expect_lm_head``: ``detached`` (old cosine-MLP recipe) or ``attached``
+    (LLM-JEPA: observation token CE goes through AgentWorld's own lm_head).
     """
     lm = language_model(model)
     layers = list(getattr(lm, "layers", []))
@@ -211,14 +224,28 @@ def log_world_architecture(
     if norm is not None:
         frozen = not any(p.requires_grad for p in norm.parameters())
         log(f"  norm  {type(norm).__name__}  {'frozen' if frozen else 'trainable'}")
-    log("world path after backbone (no tokens):")
+    head = lm_head_module(model)
+    attached = head is not None
+    if attached:
+        frozen = not any(p.requires_grad for p in head.parameters())
+        shape = ""
+        if hasattr(head, "in_features") and hasattr(head, "out_features"):
+            shape = f"  {head.in_features}→{head.out_features}"
+        log(
+            f"  lm_head  {type(head).__name__}{shape}  "
+            f"{'frozen' if frozen else 'trainable'}  (AgentWorld token head, no LoRA)"
+        )
     if extra:
+        log("world path after backbone:")
         for name, mod in extra.items():
             log(f"  {name}")
             dump_tree(mod, log, prefix="    ")
-    else:
-        log("  (none)")
-    if lm_head_module(model) is not None:
+    if expect_lm_head == "attached":
+        if attached:
+            log("lm_head: attached (observation CE goes through this table)")
+        else:
+            log("ERROR: lm_head missing; LLM-JEPA Stage 1 needs AgentWorld's own table")
+    elif attached:
         log("ERROR: lm_head still attached; Stage 1 must detach it")
     else:
         log("lm_head: detached this stage (AgentWorld's own lm_head unused by JEPA)")

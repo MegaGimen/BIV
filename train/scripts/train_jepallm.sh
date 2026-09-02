@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Old MLP JEPA (not the live Stage 1). Live entry: scripts/train_jepallm.sh
-# Stage 1 JEPA on AgentWorld's own backbone (no fish-cut). 4-GPU FSDP2 +
+# Stage 1 LLM-JEPA on AgentWorld's own backbone (no fish-cut). 4-GPU FSDP2 +
 # Context Parallel, max_length=65536 (Muse recipe).
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
-#   bash scripts/train_jepa.sh
-#   bash scripts/train_jepa.sh --max-length 65536
+#   bash scripts/train_jepallm.sh
+#   bash scripts/train_jepallm.sh --max-length 65536
 #
 # Auto: 1 GPU → python; 2+ → FSDP2+CP (cp_size=#GPUs). Override: PARALLEL=single|fsdp2|fsdp2_cp
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG="${CONFIG:-configs/jepa/stage1.yaml}"
+CONFIG="${CONFIG:-configs/jepa/jepallm.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-65536}"
 EXTRA=()
 
@@ -51,15 +50,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Stage 1 JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
+Stage 1 LLM-JEPA: 4-GPU FSDP2 + Context Parallel, max_length=65536.
 
   cd train
   export CUDA_VISIBLE_DEVICES=0,1,2,3
-  bash scripts/train_jepa.sh
-  bash scripts/train_jepa.sh --max-length 65536
-  bash scripts/train_jepa.sh --save-steps 1 --max-steps 2
-  bash scripts/train_jepa.sh --resume
-  bash scripts/train_jepa.sh --resume outputs/jepa_stage1/checkpoint-e0-s25
+  bash scripts/train_jepallm.sh
+  bash scripts/train_jepallm.sh --max-length 65536
+  bash scripts/train_jepallm.sh --save-steps 1 --max-steps 2
+  bash scripts/train_jepallm.sh --resume
+  bash scripts/train_jepallm.sh --resume outputs/jepallm_stage1/checkpoint-e0-s25
 
 Env: PARALLEL=single|fsdp2|fsdp2_cp|auto  CONFIG=...  MAX_LENGTH=...
      --save-steps N       (default yaml 25; 1 smokes FSDP save)
@@ -119,7 +118,7 @@ CP_SIZE=1
 LAUNCH=()
 case "$PARALLEL" in
   single)
-    echo "  single-GPU JEPA"
+    echo "  single-GPU LLM-JEPA"
     LAUNCH=(python)
     ;;
   fsdp2|fsdp)
@@ -183,7 +182,7 @@ export BIV_CP_SIZE="$CP_SIZE"
 export BIV_PARALLEL="$PARALLEL"
 
 TRAIN_PY=(
-  scripts/train_jepa.py
+  scripts/train_jepallm.py
   --config "$CONFIG"
   --max-length "$MAX_LENGTH"
   --cp-size "$CP_SIZE"

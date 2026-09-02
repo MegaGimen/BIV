@@ -2,7 +2,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
-当前主线在分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。旧 MLP JEPA 线在 **`agentworld-JEPA-Qwen3.5-35B-A3B`**（停在 `12751879`），不要和本线混对照。
+当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepallm.py`。旧 MLP 脚本 `train/scripts/train_jepa.py`（配方停在 `12751879`）留作对照，不要和新跑混。姐妹分支 `agentworld-JEPALLM-Qwen3.5-35B-A3B` 是同一套 LLM-JEPA 配方的对照线。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 

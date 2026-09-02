@@ -16,7 +16,9 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 JEPA
+│   ├── jepa/jepallm.yaml              # Qwen3.5-35B Stage 1 LLM-JEPA (live)
+│   ├── jepa/jepallm_32k.yaml          # 32768 / 2x2 CP smoke variant
+│   ├── jepa/stage1.yaml               # old MLP JEPA (not this branch's entry)
 │   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
 │   ├── trl/muse_glimmer_30b_lora.yaml # Muse Glimmer-30B (other branch)
@@ -26,11 +28,9 @@ train/
 ├── src/biv_wm/
 ├── scripts/
 │   ├── probe.py / compare.py / cut_stage1.py / train_jepa.py
+│   ├── train_jepallm.py / train_jepallm.sh / train_jepallm_32k.sh
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
-│   ├── prepare_model.py               # step 2: download base LLM
-│   ├── tokenize_data.py               # step 3: ratio-sample + HF cache
-│   ├── train_prep_mix.py              # struct-right trunc + choice
-│   ├── stat.py                        # step 4 (optional): length stats
+│   ├── stat.py                        # AgentWorld seqlen truncation stats
 │   ├── trainmodel.sh                  # step 5: TRL single/multi-GPU
 │   ├── train_muse_trl.py              # TRL SFTTrainer entry
 │   └── eval_wm.py
@@ -44,8 +44,9 @@ Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: two separate, unmodified 4
 (AgentWorld hosts JEPA; Instruct hosts the agent + draft/scorer/W), not a fish-cut single backbone —
 `compare.py` showed AgentWorld/Instruct deltas vs Base are dense and overlapping everywhere, not the
 low-entropy split fish-cut assumes, so `probe.py`/`cut_stage1.py` are now diagnostic-only, not part of
-the live pipeline. Stage 1 (`train_jepa.py`) loads AgentWorld directly (auto-downloaded via
-`merge/download.py`) and trains LoRA + JEPA over its full backbone. Mix JSONL is the existing
+the live pipeline. Stage 1 (`train_jepallm.py`) loads AgentWorld directly (auto-downloaded via
+`merge/download.py`) and trains LoRA with LLM-JEPA's two losses (observation CE + last-hidden cosine).
+Old MLP + SimCSE (`train_jepa.py`) stays in-tree for comparison only. Mix JSONL is the existing
 `wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`). See `AGENTS.md` "模型架构" / "训练全过程"
 for the full two-backbone + connector + Stage 2 argmax/softmax-CE design.
 
@@ -62,17 +63,20 @@ python train/scripts/compare.py
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
 
-# Stage 1: JEPA on AgentWorld's own backbone, no cut. model_dir in
-# configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
+# Stage 1 LLM-JEPA on AgentWorld's own backbone, no cut. model_dir in
+# configs/jepa/jepallm.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 65536, FSDP2+CP
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm.sh   # 65536, FSDP2+CP
+# Optional 32768 / 2x2 CP smoke (separate output_dir / TB prefix):
+# CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepallm_32k.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
-# --resume picks newest (epoch, then step). Override: --save-steps N --log-steps N
+# --resume picks newest adapter-only ckpt (epoch, then step). Do not resume
+# old outputs/jepa_stage1 MLP checkpoints. Override: --save-steps N --log-steps N
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by
-`train_jepa.py` anymore.
+`train_jepallm.py`. Old `train_jepa.sh` is the replaced MLP+SimCSE recipe.
 
 ## Pipeline (Muse Glimmer-30B — TRL; other branch)
 
@@ -92,7 +96,9 @@ python scripts/prepare_model.py --check
 python scripts/tokenize_data.py
 
 # 4) Optional length / hard-trunc retention
-python scripts/stat.py --max-length 8192
+# This branch (AgentWorld / LLM-JEPA mix JSONL):
+python scripts/stat.py --max-length 65536
+# Muse branch instead reads tokenize_data.py cache (different stat.py).
 
 # 4b) Export all TB / trainer log steps → one table (long or --wide)
 python scripts/export.py --log-dir /root/tf-logs --out /tmp/muse_metrics.csv
