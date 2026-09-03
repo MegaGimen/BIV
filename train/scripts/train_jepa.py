@@ -251,6 +251,36 @@ def encode_texts(
     }
 
 
+def encode_mediated(
+    tokenizer,
+    h_msgs: list,
+    a_msg: dict,
+    o_msg: dict,
+    max_length: int,
+) -> dict[str, Any]:
+    """History-mediated pair used by the collapse probe (not the live train loss).
+
+    \(z_t=\mathrm{Enc}(h)\), \(z_{t+1}=\mathrm{Enc}(h,a,o)\). Observation is not
+    encoded alone. Truncation still chops the right of each token list.
+    """
+    state_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs))),
+        max_length,
+        keep="prefix",
+    )
+    next_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
+        max_length,
+        keep="prefix",
+    )
+    return {
+        "state_ids": state_ids,
+        "next_ids": next_ids,
+        "a_text": _content(a_msg),
+        "o_text": _content(o_msg),
+    }
+
+
 def sequence_lengths(tokenizer, h_msgs: list, a_msg: dict, o_msg: dict) -> dict[str, int]:
     """Untruncated token counts for the three LLM-JEPA sequences."""
     full = tokenize_ids(
@@ -317,10 +347,19 @@ def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) 
 
 
 class HaoDataset:
-    def __init__(self, rows: list, tokenizer, max_length: int) -> None:
+    def __init__(
+        self,
+        rows: list,
+        tokenizer,
+        max_length: int,
+        encoding: str = "llm-jepa",
+    ) -> None:
+        if encoding not in ("llm-jepa", "mediated"):
+            raise ValueError(f"encoding must be llm-jepa or mediated, got {encoding!r}")
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.encoding = encoding
         self._fitted: dict[int, tuple] = {}
 
     def __len__(self) -> int:
@@ -336,6 +375,8 @@ class HaoDataset:
                 )
             self._fitted[idx] = hao
         h, a, o = hao
+        if self.encoding == "mediated":
+            return encode_mediated(self.tokenizer, h, a, o, self.max_length)
         enc = encode_texts(self.tokenizer, h, a, o, self.max_length)
         enc["o_text"] = _content(o)
         enc["left_text"] = _content(a)
@@ -386,6 +427,36 @@ def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> 
         "right_len": torch.tensor([len(ex["right_ids"]) for ex in batch], dtype=torch.long),
         "o_text": [ex.get("o_text", "") for ex in batch],
         "left_text": [ex.get("left_text", "") for ex in batch],
+    }
+
+
+def collate_mediated(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> dict[str, Any]:
+    """Pad \(z_t=\mathrm{Enc}(h)\) / \(z_{t+1}=\mathrm{Enc}(h,a,o)\). No history strings."""
+    import torch
+
+    def pad_rows(rows: list[list[int]], fill: int) -> tuple[torch.Tensor, torch.Tensor]:
+        mlen = _pad_len(max((len(x) for x in rows), default=1), pad_multiple)
+        mlen = max(mlen, 1)
+        out = torch.full((len(rows), mlen), fill, dtype=torch.long)
+        mask = torch.zeros((len(rows), mlen), dtype=torch.long)
+        for i, row in enumerate(rows):
+            if not row:
+                continue
+            out[i, : len(row)] = torch.tensor(row, dtype=torch.long)
+            mask[i, : len(row)] = 1
+        return out, mask
+
+    state_ids, state_mask = pad_rows([ex["state_ids"] for ex in batch], pad_id)
+    next_ids, next_mask = pad_rows([ex["next_ids"] for ex in batch], pad_id)
+    return {
+        "state_ids": state_ids,
+        "state_mask": state_mask,
+        "next_ids": next_ids,
+        "next_mask": next_mask,
+        "state_len": torch.tensor([len(ex["state_ids"]) for ex in batch], dtype=torch.long),
+        "next_len": torch.tensor([len(ex["next_ids"]) for ex in batch], dtype=torch.long),
+        "a_text": [ex.get("a_text", "") for ex in batch],
+        "o_text": [ex.get("o_text", "") for ex in batch],
     }
 
 

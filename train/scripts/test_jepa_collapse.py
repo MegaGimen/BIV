@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,7 +13,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.jepa import bank_nce_loss, close_pair_records, collapse_stats, format_collapse_line  # noqa: E402
+from biv_wm.jepa import bank_nce_loss, close_pair_records, collapse_stats, format_close_preview, format_collapse_line  # noqa: E402
 
 
 def test_real_align_not_collapse() -> None:
@@ -118,6 +119,42 @@ def test_close_pair_records_keeps_near_obs_and_skips_exact_dup() -> None:
     assert ("same", "same") not in o_pairs
 
 
+def test_skip_texts_keeps_same_observation_as_negative() -> None:
+    z = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    pred = z.clone()
+    texts = ["gone", "gone"]
+    s_old = collapse_stats(pred, z, texts)
+    assert s_old["verdict"] == "no_mismatch_pairs"
+    s_new = collapse_stats(pred, z, texts, skip_texts=["row-0", "row-1"])
+    assert s_new["skipped_same_o"] == 0
+    assert s_new["mismatch"]["n"] == 2
+
+
+def test_compact_close_pairs_never_store_history() -> None:
+    history = "ls a.txt\n" + ("context " * 400)
+    z = torch.tensor([[1.0, 0.0], [0.999, 0.04], [0.0, 1.0]])
+    pred = z.clone()
+    rec = close_pair_records(
+        pred,
+        z,
+        ["gone", "gone-ish", "other"],
+        a_texts=["rm a.txt", "rm b.txt", "cat"],
+        skip_texts=["k0", "k1", "k2"],
+        threshold=0.9,
+        max_pairs=10,
+        snippet=40,
+        compact=True,
+    )
+    blob = json.dumps(rec)
+    assert history not in blob
+    assert "left_i" not in blob
+    assert rec["z_self"][0]["a_i"] in ("rm a.txt", "rm b.txt")
+    preview = format_close_preview(rec, n_print=2, snippet=40)
+    assert "\n" in preview
+    for line in preview.splitlines():
+        assert len(line) < 400
+
+
 def main() -> None:
     test_real_align_not_collapse()
     test_collapse_like_constant_pred()
@@ -128,6 +165,8 @@ def main() -> None:
     test_bank_nce_loss_masks_text_duplicates()
     test_bank_nce_loss_empty_bank_is_none()
     test_close_pair_records_keeps_near_obs_and_skips_exact_dup()
+    test_skip_texts_keeps_same_observation_as_negative()
+    test_compact_close_pairs_never_store_history()
     print("ok", flush=True)
 
 

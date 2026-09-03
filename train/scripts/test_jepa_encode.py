@@ -128,6 +128,38 @@ def test_encode_texts_three_independent_chats() -> None:
     assert row["full_labels"][start : start + len(o_ids)] == o_ids
 
 
+def test_encode_mediated_is_h_vs_hao() -> None:
+    tok = _FakeTok()
+    h = [{"role": "user", "content": "ls"}, {"role": "assistant", "content": "a.txt"}]
+    a = {"role": "user", "content": "rm a.txt"}
+    o = {"role": "assistant", "content": "gone"}
+    row = tj.encode_mediated(tok, h, a, o, max_length=65536)
+    assert set(row) == {"state_ids", "next_ids", "a_text", "o_text"}
+    assert row["a_text"] == "rm a.txt"
+    assert row["o_text"] == "gone"
+    assert row["state_ids"] != row["next_ids"]
+    assert len(row["next_ids"]) > len(row["state_ids"])
+    right_only = tj.tokenize_ids(tok, tj.apply_template(tok, [o]))
+    assert row["next_ids"] != right_only
+
+
+def test_dataset_mediated_has_no_history_string() -> None:
+    tok = _FakeTok()
+    msgs = [
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "aaa"},
+        {"role": "assistant", "content": "AAA"},
+        {"role": "user", "content": "rm a.txt"},
+        {"role": "assistant", "content": "gone"},
+    ]
+    ds = tj.HaoDataset([msgs], tok, 65536, encoding="mediated")
+    row = ds[0]
+    blob = " ".join(str(v) for k, v in row.items() if k not in ("state_ids", "next_ids"))
+    assert "aaa" not in blob and "AAA" not in blob
+    assert row["a_text"] == "rm a.txt"
+    assert row["o_text"] == "gone"
+
+
 def test_last_token_index_matches_unpad_plus_offset() -> None:
     if torch is None:
         return
@@ -207,6 +239,8 @@ def main() -> None:
     test_trim_drops_later_turns()
     test_dataset_drops_later_turn()
     test_encode_texts_three_independent_chats()
+    test_encode_mediated_is_h_vs_hao()
+    test_dataset_mediated_has_no_history_string()
     test_last_token_index_matches_unpad_plus_offset()
     test_jepa_cosine_both_sides_live()
     test_collate_keeps_text_and_device_move_skips_it()

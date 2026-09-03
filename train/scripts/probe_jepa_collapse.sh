@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Forward-only collapse probe. No backward, no LoRA.
+# Encodes z_t=Enc(h) and z_{t+1}=Enc(h,a,o); dumps clipped a/o only.
 # Default 200 rows = 25 optimizer steps × grad_accum 8 on one replica group.
 #
 #   cd train
@@ -16,7 +17,7 @@ EXTRA=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-rows|--close-threshold|--max-pairs|--out-dir|--config|--max-length|--model-dir|--mix-dir)
+    --max-rows|--close-threshold|--max-pairs|--out-dir|--config|--max-length|--model-dir|--mix-dir|--snippet|--print-pairs)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
       if [[ "$1" == "--config" ]]; then CONFIG="$2"
       elif [[ "$1" == "--max-length" ]]; then MAX_LENGTH="$2"
@@ -26,12 +27,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Forward-only JEPA collapse probe (no training).
+Forward-only history-mediated collapse probe (no training).
+Encodes z_t=Enc(h) and z_{t+1}=Enc(h,a,o). Close pairs print clipped a/o only.
 
   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
   CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh
   bash scripts/probe_jepa_collapse.sh --max-rows 40
   bash scripts/probe_jepa_collapse.sh --close-threshold 0.85
+  bash scripts/probe_jepa_collapse.sh --print-pairs 0
 
 1 GPU: plain python (no accelerate mesh). 2–3 GPUs: FSDP2+CP.
 4 GPUs: same 2x2 as train_jepa.sh.

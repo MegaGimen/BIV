@@ -117,13 +117,17 @@ def collapse_stats(
     pred: torch.Tensor,
     target: torch.Tensor,
     o_texts: list[str],
+    skip_texts: list[str] | None = None,
 ) -> dict[str, object]:
     """Collapse check on already-trained rows. No extra forward.
 
     Paired = pred_i vs own z*_i. Mismatch = pred_i vs z*_j after dropping
-    pairs whose observation strings are character-for-character identical
-    (those are not usable as negatives). Also report z*-vs-z* and pred-vs-pred
-    so a high paired score can be told apart from "everything lives in one cone".
+    pairs whose skip keys are identical (default key = observation string;
+    those are not usable as negatives when the target is Enc(o)). Pass a
+    unique-per-row ``skip_texts`` for history-mediated Enc(h,a,o) so two
+    rows that share stdout still count as negatives. Also report z*-vs-z*
+    and pred-vs-pred so a high paired score can be told apart from
+    "everything lives in one cone".
     """
     if pred.ndim == 1:
         pred = pred.unsqueeze(0)
@@ -132,6 +136,9 @@ def collapse_stats(
     n = int(pred.size(0))
     if n != len(o_texts) or n != int(target.size(0)):
         raise ValueError(f"length mismatch pred={pred.size(0)} target={target.size(0)} texts={len(o_texts)}")
+    keys = o_texts if skip_texts is None else skip_texts
+    if len(keys) != n:
+        raise ValueError(f"skip_texts={len(keys)} n={n}")
     p = F.normalize(pred.float(), dim=-1)
     t = F.normalize(target.float(), dim=-1)
     paired = (p * t).sum(dim=-1)
@@ -146,7 +153,7 @@ def collapse_stats(
         for j in range(n):
             if i == j:
                 continue
-            if o_texts[i] == o_texts[j]:
+            if keys[i] == keys[j]:
                 skipped_same_o += 1
                 continue
             mismatch.append(sim_pt[i, j])
@@ -187,21 +194,31 @@ def _clip_text(s: str, n: int) -> str:
     return s[:n] + f"...[+{len(s) - n} chars]"
 
 
+def _one_line(s: str, n: int) -> str:
+    """Collapse whitespace so a JSON observation cannot wrap the terminal."""
+    return _clip_text(" ".join((s if isinstance(s, str) else str(s)).split()), n)
+
+
 def close_pair_records(
     pred: torch.Tensor,
     target: torch.Tensor,
     o_texts: list[str],
     left_texts: list[str] | None = None,
     *,
+    a_texts: list[str] | None = None,
+    skip_texts: list[str] | None = None,
+    state_lens: list[int] | None = None,
+    next_lens: list[int] | None = None,
     threshold: float = 0.7,
-    max_pairs: int = 80,
-    snippet: int = 800,
+    max_pairs: int = 24,
+    snippet: int = 120,
+    compact: bool = False,
 ) -> dict[str, object]:
     """Same pairing rules as collapse_stats; keep rows whose cosine >= threshold.
 
-    ``z_self``: two observation encodings. ``pred_self``: two left encodings
-    (history+command). ``mismatch``: left_i vs observation_j, j≠i, texts differ.
-    Exact-duplicate observations are skipped, same as collapse_stats.
+    ``z_self``: two target encodings. ``pred_self``: two pred encodings.
+    ``mismatch``: pred_i vs target_j. Duplicate skip keys are dropped.
+    ``compact=True`` stores only clipped action/observation (never history).
     """
     if pred.ndim == 1:
         pred = pred.unsqueeze(0)
@@ -214,6 +231,17 @@ def close_pair_records(
         left_texts = [""] * n
     elif len(left_texts) != n:
         raise ValueError(f"left_texts={len(left_texts)} n={n}")
+    if a_texts is None:
+        a_texts = left_texts
+    elif len(a_texts) != n:
+        raise ValueError(f"a_texts={len(a_texts)} n={n}")
+    keys = o_texts if skip_texts is None else skip_texts
+    if len(keys) != n:
+        raise ValueError(f"skip_texts={len(keys)} n={n}")
+    slen = list(state_lens) if state_lens is not None else [0] * n
+    nlen = list(next_lens) if next_lens is not None else [0] * n
+    if len(slen) != n or len(nlen) != n:
+        raise ValueError("state_lens/next_lens length mismatch")
     p = F.normalize(pred.float(), dim=-1)
     t = F.normalize(target.float(), dim=-1)
     sim_pt = (p @ t.T).detach().cpu()
@@ -222,33 +250,35 @@ def close_pair_records(
     z_self: list[dict[str, object]] = []
     pred_self: list[dict[str, object]] = []
     mismatch: list[dict[str, object]] = []
+
+    def _pair_rec(i: int, j: int, cosine: float) -> dict[str, object]:
+        rec: dict[str, object] = {
+            "i": i,
+            "j": j,
+            "cosine": cosine,
+            "a_i": _one_line(a_texts[i], snippet),
+            "o_i": _one_line(o_texts[i], snippet),
+            "a_j": _one_line(a_texts[j], snippet),
+            "o_j": _one_line(o_texts[j], snippet),
+            "state_len_i": int(slen[i]),
+            "next_len_i": int(nlen[i]),
+            "state_len_j": int(slen[j]),
+            "next_len_j": int(nlen[j]),
+        }
+        if not compact:
+            rec["left_i"] = _clip_text(left_texts[i], snippet)
+            rec["left_j"] = _clip_text(left_texts[j], snippet)
+        return rec
+
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            if o_texts[i] == o_texts[j]:
+            if keys[i] == keys[j]:
                 continue
-            rec_z = {
-                "i": i,
-                "j": j,
-                "cosine": float(sim_tt[i, j]),
-                "o_i": _clip_text(o_texts[i], snippet),
-                "o_j": _clip_text(o_texts[j], snippet),
-            }
-            rec_p = {
-                "i": i,
-                "j": j,
-                "cosine": float(sim_pp[i, j]),
-                "left_i": _clip_text(left_texts[i], snippet),
-                "left_j": _clip_text(left_texts[j], snippet),
-            }
-            rec_m = {
-                "i": i,
-                "j": j,
-                "cosine": float(sim_pt[i, j]),
-                "left_i": _clip_text(left_texts[i], snippet),
-                "o_j": _clip_text(o_texts[j], snippet),
-            }
+            rec_z = _pair_rec(i, j, float(sim_tt[i, j]))
+            rec_p = _pair_rec(i, j, float(sim_pp[i, j]))
+            rec_m = _pair_rec(i, j, float(sim_pt[i, j]))
             if i < j and rec_z["cosine"] >= threshold:
                 z_self.append(rec_z)
             if i < j and rec_p["cosine"] >= threshold:
@@ -270,6 +300,41 @@ def close_pair_records(
         "n_pred_self": len(pred_self),
         "n_mismatch": len(mismatch),
     }
+
+
+def format_close_preview(
+    pairs: dict[str, object],
+    *,
+    n_print: int = 8,
+    snippet: int = 80,
+) -> str:
+    """A few one-line close pairs for the terminal. Never prints history."""
+    n_print = max(0, int(n_print))
+    if n_print == 0:
+        return ""
+    blocks = (
+        ("z_self", "z_next vs z_next"),
+        ("pred_self", "z_t vs z_t"),
+        ("mismatch", "z_t vs other z_next"),
+    )
+    lines: list[str] = []
+    for key, title in blocks:
+        rows = pairs.get(key) or []
+        if not isinstance(rows, list):
+            rows = []
+        total = int(pairs.get(f"n_{key}", len(rows)))
+        shown = min(n_print, len(rows))
+        lines.append(f"{key} ({title}) showing {shown}/{total}")
+        for rec in rows[:shown]:
+            if not isinstance(rec, dict):
+                continue
+            cos = float(rec.get("cosine") or 0.0)
+            a_i = _one_line(str(rec.get("a_i") or rec.get("left_i") or ""), snippet)
+            o_i = _one_line(str(rec.get("o_i") or ""), snippet)
+            a_j = _one_line(str(rec.get("a_j") or rec.get("left_j") or ""), snippet)
+            o_j = _one_line(str(rec.get("o_j") or ""), snippet)
+            lines.append(f"  {cos:.3f}  a={a_i} o={o_i}  ||  a={a_j} o={o_j}")
+    return "\n".join(lines)
 
 
 def format_collapse_line(stats: dict[str, object]) -> str:

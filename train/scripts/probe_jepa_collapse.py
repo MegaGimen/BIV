@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Forward-only collapse probe: same Enc(left)/Enc(right) as train_jepa, no backward.
+"""Forward-only collapse probe for history-mediated JEPA. No backward, no LoRA.
 
-Collects last_token vectors on up to --max-rows (default = 25 optimizer steps
-on one 2x2 replica group: 25 * grad_accum=8 = 200). Then runs collapse_stats
-and writes close-pair observation/command texts.
+Encodes \(z_t=\mathrm{Enc}(h)\) and \(z_{t+1}=\mathrm{Enc}(h,a,o)\) the same way
+the next Stage 1 cut does. Close pairs keep clipped action/observation only —
+never the history string.
 
   cd train
   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
@@ -13,6 +13,7 @@ and writes close-pair observation/command texts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -31,7 +32,7 @@ for p in (str(SRC), str(MERGE), str(SCRIPTS)):
 
 import train_jepa as tj  # noqa: E402
 from biv_wm.arch import install_hidden_only_forward  # noqa: E402
-from biv_wm.jepa import close_pair_records, collapse_stats, format_collapse_line  # noqa: E402
+from biv_wm.jepa import close_pair_records, collapse_stats, format_close_preview, format_collapse_line  # noqa: E402
 from download import resolve_model  # noqa: E402
 
 # 32k/2x2 yaml: save_steps=25, batch=1, accum=8, dp_replicate=2.
@@ -82,8 +83,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cp-size", type=int, default=None)
     p.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS)
     p.add_argument("--close-threshold", type=float, default=0.7)
-    p.add_argument("--max-pairs", type=int, default=80)
-    p.add_argument("--snippet", type=int, default=800)
+    p.add_argument("--max-pairs", type=int, default=24)
+    p.add_argument("--snippet", type=int, default=120)
+    p.add_argument("--print-pairs", type=int, default=8)
     p.add_argument("--out-dir", type=Path, default=None)
     p.add_argument("--cache-dir", type=Path, default=None)
     p.add_argument("--source", choices=["modelscope", "huggingface"], default=os.environ.get("MERGE_SOURCE", "modelscope"))
@@ -172,32 +174,36 @@ def main() -> None:
     rows = tj.load_rows(mix_dir, sources, "train", load_budget)
     gen = torch.Generator()
     gen.manual_seed(seed)
-    train_ds = tj.HaoDataset(rows, tokenizer, max_length)
+    train_ds = tj.HaoDataset(rows, tokenizer, max_length, encoding="mediated")
     if dp_size > 1:
         sampler = tj.ReplicaSampler(len(train_ds), dp_rank, dp_size, gen)
         loader = DataLoader(
             train_ds,
             batch_size=1,
             sampler=sampler,
-            collate_fn=lambda b: tj.collate(b, pad_id, pad_multiple),
+            collate_fn=lambda b: tj.collate_mediated(b, pad_id, pad_multiple),
         )
     else:
         loader = DataLoader(
             train_ds,
             batch_size=1,
             shuffle=False,
-            collate_fn=lambda b: tj.collate(b, pad_id, pad_multiple),
+            collate_fn=lambda b: tj.collate_mediated(b, pad_id, pad_multiple),
         )
     model, loader = accelerator.prepare(model, loader)
 
     preds: list[torch.Tensor] = []
     zs: list[torch.Tensor] = []
     o_texts: list[str] = []
-    left_texts: list[str] = []
+    a_texts: list[str] = []
+    skip_keys: list[str] = []
+    state_lens: list[int] = []
+    next_lens: list[int] = []
     n_done = 0
     rank_log(
-        f"probe max_rows={max_rows} (25 opt steps × accum {accum} on one group; "
-        f"hard cap {HARD_CAP}) last_token={last_token} cp={cp_size} dp={dp_size}"
+        f"probe mediated Enc(h) vs Enc(h,a,o) max_rows={max_rows} "
+        f"last_token={last_token} cp={cp_size} dp={dp_size} "
+        f"snippet={args.snippet} print_pairs={args.print_pairs}"
     )
     with torch.no_grad():
         for batch in loader:
@@ -206,20 +212,30 @@ def main() -> None:
             batch_t = {
                 k: v.to(accelerator.device) if hasattr(v, "to") else v for k, v in batch.items()
             }
-            h_left_seq = tj.full_hidden(model, batch_t["left_ids"], batch_t["left_mask"], cp_size)
-            h_right_seq = tj.full_hidden(model, batch_t["right_ids"], batch_t["right_mask"], cp_size)
-            idx_l = tj.last_token_index(batch_t["left_ids"], batch_t["left_mask"], last_token)
-            idx_r = tj.last_token_index(batch_t["right_ids"], batch_t["right_mask"], last_token)
-            h_left = tj.gather_at(h_left_seq, idx_l)
-            h_right = tj.gather_at(h_right_seq, idx_r)
+            h_state_seq = tj.full_hidden(model, batch_t["state_ids"], batch_t["state_mask"], cp_size)
+            h_next_seq = tj.full_hidden(model, batch_t["next_ids"], batch_t["next_mask"], cp_size)
+            idx_s = tj.last_token_index(batch_t["state_ids"], batch_t["state_mask"], last_token)
+            idx_n = tj.last_token_index(batch_t["next_ids"], batch_t["next_mask"], last_token)
+            h_state = tj.gather_at(h_state_seq, idx_s)
+            h_next = tj.gather_at(h_next_seq, idx_n)
             if is_main:
-                for i in range(h_left.size(0)):
-                    preds.append(h_left[i].detach().float().cpu())
-                    zs.append(h_right[i].detach().float().cpu())
+                for i in range(h_state.size(0)):
+                    preds.append(h_state[i].detach().float().cpu())
+                    zs.append(h_next[i].detach().float().cpu())
+                    a_texts.append(batch["a_text"][i] if "a_text" in batch else "")
                     o_texts.append(batch["o_text"][i] if "o_text" in batch else "")
-                    left_texts.append(batch["left_text"][i] if "left_text" in batch else "")
-            n_done += h_left.size(0)
-            if is_main and n_done % 10 == 0:
+                    sl = int(batch["state_len"][i]) if "state_len" in batch else 0
+                    nl = int(batch["next_len"][i]) if "next_len" in batch else 0
+                    state_lens.append(sl)
+                    next_lens.append(nl)
+                    nxt = batch_t["next_ids"][i]
+                    nmask = batch_t["next_mask"][i].bool()
+                    token_key = hashlib.sha1(
+                        repr(nxt[nmask].detach().cpu().tolist()).encode()
+                    ).hexdigest()[:16]
+                    skip_keys.append(token_key)
+            n_done += h_state.size(0)
+            if is_main and n_done % 25 == 0:
                 rank_log(f"probe encoded {n_done}/{max_rows}")
 
     accelerator.wait_for_everyone()
@@ -229,19 +245,26 @@ def main() -> None:
         raise SystemExit("probe collected 0 rows")
     pred = torch.stack(preds)
     target = torch.stack(zs)
-    stats = collapse_stats(pred, target, o_texts)
+    stats = collapse_stats(pred, target, o_texts, skip_texts=skip_keys)
     pairs = close_pair_records(
         pred,
         target,
         o_texts,
-        left_texts,
+        a_texts=a_texts,
+        skip_texts=skip_keys,
+        state_lens=state_lens,
+        next_lens=next_lens,
         threshold=float(args.close_threshold),
         max_pairs=int(args.max_pairs),
         snippet=int(args.snippet),
+        compact=True,
     )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     payload: dict[str, Any] = {
         "stamp": stamp,
+        "encoding": "mediated",
+        "z_t": "Enc(h)",
+        "z_next": "Enc(h,a,o)",
         "n_rows": len(o_texts),
         "max_rows": max_rows,
         "steps_equivalent": {"optimizer_steps_one_group": max_rows / accum, "accum": accum, "dp_size": dp_size},
@@ -249,9 +272,15 @@ def main() -> None:
         "mix_dir": str(mix_dir),
         "last_token": last_token,
         "close_threshold": float(args.close_threshold),
+        "snippet": int(args.snippet),
         "collapse": json.loads(json.dumps(stats, default=str)),
         "close_pairs": pairs,
         "collapse_line": format_collapse_line(stats),
+        "note": (
+            "paired = cosine(z_t, z_next) on the same row (did a+o move the vector). "
+            "z_self = z_next vs z_next across rows (same stdout, different h, should split). "
+            "pred_self = z_t vs z_t. Close-pair JSON stores clipped a/o only, never h."
+        ),
     }
     dest = out_dir / f"collapse_probe-{stamp}.json"
     dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -261,6 +290,9 @@ def main() -> None:
         f"close pairs threshold={args.close_threshold} "
         f"z_self={pairs['n_z_self']} pred_self={pairs['n_pred_self']} mismatch={pairs['n_mismatch']}"
     )
+    preview = format_close_preview(pairs, n_print=int(args.print_pairs), snippet=min(80, int(args.snippet)))
+    if preview:
+        rank_log(preview)
     rank_log(f"wrote {dest}")
 
 
