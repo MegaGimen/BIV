@@ -226,7 +226,7 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 期望方向：`paired_median` 升高、同时 `mismatch_median` 压低，`z_self` 从 ~0.91 掉下来。只升配对、错配跟着升 → 万能方向。两项都低 → 还没拟合。差 ≥ 0.2 标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
 
-**底座抽查（不训练）：相近向量只记下命令和观察摘要。** 编码改成方案里的历史中介：\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)，不再单独编观察。32k 配方里 `save_steps=25`、`grad_accum=8`、`batch_size=1`、两组卡。一次 optimizer step 在一组卡上吃 8 条；25 step 就是这一组 200 条。两组一起吃不重复的数据时是 400 条。训练时 TensorBoard 的 `collapse/n=40` 是 `log_steps=5` × 8 条，只覆盖更短的一窗。抽查默认跑 **200 条**（25 step、一组卡、和存盘节奏对齐），硬顶 **400**。只前向、不反传、不加 LoRA，取 `last_token=-3`。负例不再按「观察原文相同」丢掉——同一句 `gone`、不同历史要算进 `z_self`。向量余弦 ≥ 0.7 的对写入 JSON，但**只留截断后的命令 / 观察**（默认 120 字、每种最多 24 对），终端再打每种最多 8 行；历史全文不进 JSON 也不进 stdout。`paired` 在这里是同一行 \(z_t\) 和 \(z_{t+1}\) 的余弦（加了命令和观察之后向量动了没有）；`z_self` 是不同行的 \(z_{t+1}\) 彼此像不像。
+**底座抽查（不训练）：按数据集文件顺序取样，跨 `wm_code` / `wm_os` 比左右两侧各自的余弦。** 左边是预测器入口 \([z_t;u]=\mathrm{concat}(\mathrm{Enc}(h),\mathrm{Enc}(a))\)，4096 维；右边是靶 \(\mathrm{Enc}(h,a,o)\)，2048 维。同一数据源内部的对丢掉，只保留跨源对。每个 JSONL 取前 \(N\) 条完整回合（默认总共 200，两源对半分）。各侧写出余弦最高的 20 对，只留截断后的命令 / 观察，历史全文不进文件。单卡、只前向、不加 LoRA。
 
 ```bash
 cd train
@@ -237,7 +237,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 
 单卡直接 `python`，不开 FSDP、不开 CP。**这只对 `probe_jepa_collapse.sh` 成立**；正式训练仍是 `CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP），不要把 probe 的单卡改法抄进训练。训练留下的 `PARALLELISM_CONFIG_*` 会在 probe 启动时清掉，不影响正在跑的训练。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
 
-结果在 `outputs/jepa_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
+结果在 `outputs/jepa_collapse_probe/`：`left_zt_u-<stamp>.json` 和 `right_hao-<stamp>.json`（各有一份 `*-latest.json`）。
 
 **为什么必须换图（已经测过，不要当新实验重做）。** 独立 `Enc(o)` + last-token + 单点余弦叠在一起：套话吸住读出（HTP [2511.14868](https://arxiv.org/abs/2511.14868)），同一句 stdout 丢掉路径/仓库（[2606.27681](https://arxiv.org/abs/2606.27681)），平方误差再贴质心（JEPA Paradox [2607.23531](https://arxiv.org/abs/2607.23531)）。观察 CE 锚定的是模板等价类，隐藏原因可以塌（[2509.12249](https://arxiv.org/abs/2509.12249)）。mean-pool / VICReg / VJEPA 分布头都不是这一刀：prompt 侧 mean-pool 会稀释（[2605.09969](https://arxiv.org/abs/2605.09969)），几何正则要目标先散，变分头在 target 同质时拟合无条件分布。当前 Stage 1 只做上面 Step 2–3 的两件事。
 

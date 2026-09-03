@@ -212,6 +212,99 @@ def collapse_stats(
     }
 
 
+def cross_source_topk(
+    vecs: torch.Tensor,
+    sources: list[str],
+    *,
+    k: int = 20,
+) -> dict[str, object]:
+    """Highest cosine pairs whose mix sources differ. Same-source pairs dropped.
+
+    ``vecs`` is one side of the Stage 1 graph: left ``[z_t; u]`` (4096) or
+    right ``Enc(h,a,o)`` (2048). Returns a quantile summary over every
+    cross-source pair plus the top-k ``(i, j, cosine)`` with ``i < j``.
+    """
+    if vecs.ndim == 1:
+        vecs = vecs.unsqueeze(0)
+    n = int(vecs.size(0))
+    if n != len(sources):
+        raise ValueError(f"length mismatch vecs={n} sources={len(sources)}")
+    if n < 2 or k < 1:
+        return {
+            "n": n,
+            "n_cross": 0,
+            "top": [],
+            "cosine": _quantile_summary(vecs.new_empty((0,))),
+        }
+    x = F.normalize(vecs.float(), dim=-1)
+    sim = x @ x.T
+    src = list(sources)
+    triu = torch.triu(torch.ones(n, n, dtype=torch.bool, device=vecs.device), diagonal=1)
+    cross = torch.zeros(n, n, dtype=torch.bool, device=vecs.device)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if src[i] != src[j]:
+                cross[i, j] = True
+    mask = triu & cross
+    n_cross = int(mask.sum().item())
+    if n_cross == 0:
+        return {
+            "n": n,
+            "n_cross": 0,
+            "top": [],
+            "cosine": _quantile_summary(vecs.new_empty((0,))),
+        }
+    vals = sim[mask]
+    filled = sim.masked_fill(~mask, float("-inf"))
+    take = min(int(k), n_cross)
+    top_v, top_flat = torch.topk(filled.flatten(), take)
+    width = n
+    top: list[dict[str, object]] = []
+    for score, flat in zip(top_v.tolist(), top_flat.tolist()):
+        i, j = divmod(int(flat), width)
+        if i > j:
+            i, j = j, i
+        top.append({"i": i, "j": j, "cosine": float(score)})
+    return {
+        "n": n,
+        "n_cross": n_cross,
+        "top": top,
+        "cosine": _quantile_summary(vals),
+    }
+
+
+def attach_pair_snippets(
+    top: list[dict[str, object]],
+    *,
+    sources: list[str],
+    src_index: list[int],
+    a_texts: list[str],
+    o_texts: list[str],
+    snippet: int = 120,
+) -> list[dict[str, object]]:
+    """Clip action/observation onto top-k index pairs. Never stores history."""
+    out: list[dict[str, object]] = []
+    for rec in top:
+        i = int(rec["i"])
+        j = int(rec["j"])
+        out.append(
+            {
+                "cosine": float(rec["cosine"]),
+                "i": i,
+                "j": j,
+                "src_i": sources[i],
+                "src_j": sources[j],
+                "src_row_i": int(src_index[i]),
+                "src_row_j": int(src_index[j]),
+                "a_i": _one_line(a_texts[i], snippet),
+                "o_i": _one_line(o_texts[i], snippet),
+                "a_j": _one_line(a_texts[j], snippet),
+                "o_j": _one_line(o_texts[j], snippet),
+            }
+        )
+    return out
+
+
 def _clip_text(s: str, n: int) -> str:
     s = s if isinstance(s, str) else str(s)
     if n <= 0 or len(s) <= n:

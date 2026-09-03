@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Forward-only collapse probe on one GPU. No FSDP, no CP, no backward, no LoRA.
 # Training stays 4-GPU: CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
-# Encodes z_t=Enc(h) and z_{t+1}=Enc(h,a,o); dumps clipped a/o only.
+# Left [Enc(h);Enc(a)] (4096) vs right Enc(h,a,o) (2048), cross-dataset top-20.
 #
 #   cd train
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
@@ -16,7 +16,7 @@ EXTRA=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-rows|--close-threshold|--max-pairs|--out-dir|--config|--max-length|--model-dir|--mix-dir|--snippet|--print-pairs)
+    --max-rows|--top-k|--max-pairs|--out-dir|--config|--max-length|--model-dir|--mix-dir|--snippet|--print-pairs|--close-threshold)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
       if [[ "$1" == "--config" ]]; then CONFIG="$2"
       elif [[ "$1" == "--max-length" ]]; then MAX_LENGTH="$2"
@@ -26,13 +26,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Forward-only history-mediated collapse probe. One GPU, no FSDP.
+Forward-only Stage 1 probe. One GPU, no FSDP.
 
   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
   bash scripts/probe_jepa_collapse.sh --max-rows 40
   bash scripts/probe_jepa_collapse.sh --print-pairs 0
 
-Writes outputs/jepa_collapse_probe/collapse_probe-<stamp>.json
+Writes two files under outputs/jepa_collapse_probe/:
+  left_zt_u-<stamp>.json   top-20 cross-dataset cosine on [z_t; u]
+  right_hao-<stamp>.json   top-20 cross-dataset cosine on Enc(h,a,o)
+Plus *-latest.json copies. Samples are file order, first N per mix source.
 EOF
       exit 0
       ;;

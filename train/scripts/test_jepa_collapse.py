@@ -13,7 +13,15 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from biv_wm.jepa import bank_nce_loss, close_pair_records, collapse_stats, format_close_preview, format_collapse_line  # noqa: E402
+from biv_wm.jepa import (  # noqa: E402
+    attach_pair_snippets,
+    bank_nce_loss,
+    close_pair_records,
+    collapse_stats,
+    cross_source_topk,
+    format_close_preview,
+    format_collapse_line,
+)
 
 
 def test_real_align_not_collapse() -> None:
@@ -130,6 +138,46 @@ def test_skip_texts_keeps_same_observation_as_negative() -> None:
     assert s_new["mismatch"]["n"] == 2
 
 
+def test_cross_source_topk_skips_same_source_and_keeps_order() -> None:
+    vecs = torch.tensor(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.999, 0.04],
+            [0.0, 1.0],
+        ]
+    )
+    sources = ["wm_code", "wm_code", "wm_os", "wm_os"]
+    out = cross_source_topk(vecs, sources, k=3)
+    assert out["n_cross"] == 4
+    top = out["top"]
+    assert len(top) == 3
+    pairs = [{int(r["i"]), int(r["j"])} for r in top]
+    assert {0, 1} not in pairs
+    assert all(sources[int(r["i"])] != sources[int(r["j"])] for r in top)
+    cos = [float(r["cosine"]) for r in top]
+    assert cos == sorted(cos, reverse=True)
+    best = pairs[0]
+    assert 2 in best and (0 in best or 1 in best)
+
+
+def test_attach_pair_snippets_never_stores_history() -> None:
+    history = "ls a.txt\n" + ("context " * 400)
+    recs = attach_pair_snippets(
+        [{"i": 0, "j": 1, "cosine": 0.91}],
+        sources=["wm_code", "wm_os"],
+        src_index=[0, 3],
+        a_texts=["rm a.txt", "ls"],
+        o_texts=["gone", "a.txt"],
+        snippet=40,
+    )
+    blob = json.dumps(recs)
+    assert history not in blob
+    assert recs[0]["src_i"] == "wm_code"
+    assert recs[0]["src_row_j"] == 3
+    assert recs[0]["a_i"] == "rm a.txt"
+
+
 def test_compact_close_pairs_never_store_history() -> None:
     history = "ls a.txt\n" + ("context " * 400)
     z = torch.tensor([[1.0, 0.0], [0.999, 0.04], [0.0, 1.0]])
@@ -166,6 +214,8 @@ def main() -> None:
     test_bank_nce_loss_empty_bank_is_none()
     test_close_pair_records_keeps_near_obs_and_skips_exact_dup()
     test_skip_texts_keeps_same_observation_as_negative()
+    test_cross_source_topk_skips_same_source_and_keeps_order()
+    test_attach_pair_snippets_never_stores_history()
     test_compact_close_pairs_never_store_history()
     print("ok", flush=True)
 
