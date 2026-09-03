@@ -30,6 +30,7 @@ def _fake_ckpt(root: Path, name: str, *, with_jepa: bool = True) -> Path:
     (p / "adapter_model.safetensors").write_bytes(b"x")
     if with_jepa:
         (p / "jepa.pt").write_bytes(b"x")
+        (p / "ldad.pt").write_bytes(b"x")
     return p
 
 

@@ -23,7 +23,7 @@ class JEPAPred(nn.Module):
 
 
 class InverseDyn(nn.Module):
-    """(c_t, z*) → û. Same MLP box as JEPAPred; z* is stop-grad at the call site."""
+    """Abandoned concat IDM. Do not wire into train_jepa.py; use LDAD."""
 
     def __init__(self, dim: int = 2048, hidden: int | None = None) -> None:
         super().__init__()
@@ -38,10 +38,35 @@ class InverseDyn(nn.Module):
         return self.net(torch.cat([c, z], dim=-1))
 
 
+class LDAD(nn.Module):
+    """Delta-JEPA latent-difference decoder: Δz → 2048 cond, not [z_t, z_{t+1}]."""
+
+    def __init__(self, dim: int = 2048, hidden: int | None = None) -> None:
+        super().__init__()
+        hidden = int(hidden or dim * 2)
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden, bias=True),
+            nn.GELU(),
+            nn.Linear(hidden, dim, bias=True),
+        )
+        self.dim = dim
+
+    def forward(self, delta: torch.Tensor) -> torch.Tensor:
+        return self.net(delta)
+
+
 def cosine_align_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Stop-grad target. Not Stage 1 L_pred — that must keep z_{t+1} live."""
     p = F.normalize(pred.float(), dim=-1)
     t = F.normalize(target.float().detach(), dim=-1)
     return (1.0 - (p * t).sum(dim=-1)).mean()
+
+
+def pred_align_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Delta-JEPA eq (2) on the unit sphere. Both sides keep grad."""
+    p = F.normalize(pred.float(), dim=-1)
+    t = F.normalize(target.float(), dim=-1)
+    return (p - t).pow(2).sum(dim=-1).mean()
 
 
 def bank_nce_loss(

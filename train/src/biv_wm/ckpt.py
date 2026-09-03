@@ -61,7 +61,7 @@ def canonical_lora_key(name: str) -> str:
 
 
 def ckpt_complete(path: Path, *, require_jepa: bool = True) -> bool:
-    """trainer_state.json + weights. Old MLP JEPA also needs jepa.pt."""
+    """trainer_state.json + weights. Mediated Stage 1 also needs jepa.pt and ldad.pt."""
     if not path.is_dir():
         return False
     if not (path / "trainer_state.json").is_file():
@@ -73,7 +73,9 @@ def ckpt_complete(path: Path, *, require_jepa: bool = True) -> bool:
     )
     if not has_weights:
         return False
-    if require_jepa and not (path / "jepa.pt").is_file():
+    if require_jepa and (
+        not (path / "jepa.pt").is_file() or not (path / "ldad.pt").is_file()
+    ):
         return False
     return True
 

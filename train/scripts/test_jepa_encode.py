@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU checks for LLM-JEPA encode/loss helpers. No GPU, no 35B load."""
+"""CPU checks for Stage 1 encode/loss helpers. No GPU, no 35B load."""
 
 from __future__ import annotations
 
@@ -58,9 +58,9 @@ def test_encode_texts_chops_right_not_left() -> None:
     row = tj.encode_texts(tok, h, a, o, max_length=8)
     assert row["full_ids"] == raw[:8]
     assert row["full_ids"] != raw[-8:]
-    left_raw = tj.tokenize_ids(tok, tj.apply_template(tok, h + [a]))
+    left_raw = tj.tokenize_ids(tok, tj.apply_template(tok, h))
     cap = min(8, len(left_raw))
-    assert row["left_ids"] == left_raw[:cap]
+    assert row["state_ids"] == left_raw[:cap]
 
 
 def test_trim_drops_later_turns() -> None:
@@ -109,7 +109,7 @@ def test_dataset_drops_later_turn() -> None:
     ds = tj.HaoDataset([msgs], tok, cap)
     row = ds[0]
     assert row["o_text"] == "BBB"
-    assert row["left_text"] == "bbb"
+    assert row["a_text"] == "bbb"
 
 
 def test_encode_texts_three_independent_chats() -> None:
@@ -118,14 +118,29 @@ def test_encode_texts_three_independent_chats() -> None:
     a = {"role": "user", "content": "rm a.txt"}
     o = {"role": "assistant", "content": "gone"}
     row = tj.encode_texts(tok, h, a, o, max_length=65536)
-    assert set(row) == {"full_ids", "full_labels", "left_ids", "right_ids"}
-    assert row["left_ids"] != row["right_ids"]
-    assert row["full_ids"] != row["left_ids"]
+    assert set(row) == {
+        "full_ids",
+        "full_labels",
+        "state_ids",
+        "action_ids",
+        "a_label_ids",
+        "skip_key",
+        "a_text",
+        "o_text",
+    }
+    assert "right_ids" not in row
+    assert row["state_ids"] != row["full_ids"]
+    assert row["action_ids"] != row["full_ids"]
+    o_only = tj.tokenize_ids(tok, tj.apply_template(tok, [o]))
+    assert row["full_ids"] != o_only
     o_ids = tok.encode("gone", add_special_tokens=False)
     assert any(x != -100 for x in row["full_labels"])
     start = tj._find_span(row["full_ids"], o_ids)
     assert start is not None
     assert row["full_labels"][start : start + len(o_ids)] == o_ids
+    assert row["a_label_ids"] == tok.encode("rm a.txt", add_special_tokens=False)
+    assert row["a_text"] == "rm a.txt"
+    assert row["o_text"] == "gone"
 
 
 def test_encode_mediated_is_h_vs_hao() -> None:
@@ -171,16 +186,49 @@ def test_last_token_index_matches_unpad_plus_offset() -> None:
     assert int(idx2.item()) == 2
 
 
-def test_jepa_cosine_both_sides_live() -> None:
+def test_pred_align_both_sides_live() -> None:
     if torch is None:
         return
+    from biv_wm.jepa import cosine_align_loss, pred_align_loss
+
     left = torch.tensor([[1.0, 0.0]], requires_grad=True)
     right = torch.tensor([[0.0, 1.0]], requires_grad=True)
-    loss = tj.jepa_cosine(left, right)
-    assert abs(float(loss.item()) - 1.0) < 1e-5
+    loss = pred_align_loss(left, right)
     loss.backward()
     assert left.grad is not None and torch.any(left.grad != 0)
     assert right.grad is not None and torch.any(right.grad != 0)
+
+    stopped = torch.tensor([[0.0, 1.0]], requires_grad=True)
+    cosine_align_loss(left.detach().clone().requires_grad_(True), stopped).backward()
+    assert stopped.grad is None or torch.all(stopped.grad == 0)
+
+
+def test_ldad_takes_delta_not_concat() -> None:
+    if torch is None:
+        return
+    from biv_wm.jepa import LDAD
+
+    net = LDAD(dim=4, hidden=8)
+    delta = torch.randn(2, 4, requires_grad=True)
+    out = net(delta)
+    assert out.shape == (2, 4)
+    out.sum().backward()
+    assert delta.grad is not None
+
+
+def test_ldad_action_ce_first_token_from_cond() -> None:
+    if torch is None:
+        return
+    torch.manual_seed(0)
+    cond = torch.randn(1, 8, requires_grad=True)
+    a_ids = torch.tensor([[3, 5]])
+    a_mask = torch.tensor([[1, 1]])
+    embed = torch.nn.Embedding(16, 8)
+    head = torch.nn.Linear(8, 16)
+    loss = tj.ldad_action_ce(cond, a_ids, a_mask, embed, head)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert cond.grad is not None and torch.any(cond.grad != 0)
 
 
 def test_collate_keeps_text_and_device_move_skips_it() -> None:
@@ -191,16 +239,21 @@ def test_collate_keeps_text_and_device_move_skips_it() -> None:
             {
                 "full_ids": [1, 2, 3],
                 "full_labels": [-100, -100, 3],
-                "left_ids": [1, 2],
-                "right_ids": [9],
+                "state_ids": [1, 2],
+                "action_ids": [4],
+                "a_label_ids": [5, 6],
                 "o_text": "gone",
-                "left_text": "rm a.txt",
+                "a_text": "rm a.txt",
+                "skip_key": "abcd",
             }
         ],
         pad_id=0,
         pad_multiple=1,
     )
     assert batch["o_text"] == ["gone"]
+    assert batch["a_text"] == ["rm a.txt"]
+    assert batch["skip_key"] == ["abcd"]
+    assert "right_ids" not in batch
     moved = {k: v.to("cpu") if hasattr(v, "to") else v for k, v in batch.items()}
     assert moved["o_text"] == ["gone"]
     assert moved["full_ids"].shape[0] == 1
@@ -242,7 +295,9 @@ def main() -> None:
     test_encode_mediated_is_h_vs_hao()
     test_dataset_mediated_has_no_history_string()
     test_last_token_index_matches_unpad_plus_offset()
-    test_jepa_cosine_both_sides_live()
+    test_pred_align_both_sides_live()
+    test_ldad_takes_delta_not_concat()
+    test_ldad_action_ce_first_token_from_cond()
     test_collate_keeps_text_and_device_move_skips_it()
     test_shifted_ce_only_labeled_rows()
     test_shifted_ce_chunk_matches_unchunked()

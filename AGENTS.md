@@ -2,7 +2,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
-当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。**当前 Stage 1 就是改目标（\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)）+ LDAD 逆动力学**；训练循环里如果还是 `chat(h+a)` 对 `chat(o)`，把它改成文档里的图，不要再给有症状的那张图调参。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
+当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。**Live 图已经是改目标（\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)）+ LDAD 逆动力学**；不要把独立 `Enc(o)` 或旧 `InverseDyn` 接回去。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 
@@ -170,7 +170,7 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读任何切鱼输
 
 **Stage 1 — 世界（只碰 AgentWorld：中介目标 + Pred + LDAD）**
 
-这就是当前 Stage 1，不是下一步、不是对照实验。独立 `Enc(o)` 对齐已经在 32k 抽查里表现为 `collapse_like`（CE 很低、`z_self`~0.91、配对和错配一起升），**不要再改超参重跑那张图**。要改的是 `train/scripts/train_jepa.py` 的编码和损失：把 `encode_texts` 的 `left=chat(h+a)` / `right=chat(o)` 换成下面三段；把 `JEPAPred` 和 LDAD 接回去。`encode_mediated` 已经按 \(z_t=\mathrm{Enc}(h)\)、\(z_{t+1}=\mathrm{Enc}(h,a,o)\) 写好了，训练循环要吃它（再补一段独立的 `chat(a)`），不要只给 probe 用。FSDP2+CP 不变；`train/vendor/llm-jepa/` 只作历史对照，训练不调用。
+这就是当前 Stage 1，不是下一步、不是对照实验。独立 `Enc(o)` 对齐已经在 32k 抽查里表现为 `collapse_like`（CE 很低、`z_self`~0.91、配对和错配一起升），**不要再改超参重跑那张图**。Live loop 在 `train/scripts/train_jepa.py`：`encode_texts` 出 `state=chat(h)` / `action=chat([a])` / `full=chat(h,a,o)`，`JEPAPred(z_t,u)` 用 `pred_align_loss` 对齐 \(z_{t+1}\)（目标不 detach），LDAD 从 \(\Delta z\) 还原命令 token。`encode_mediated` 只给 probe。`InverseDyn` 和 `cosine_align_loss` 不要接到训练。FSDP2+CP 不变；`train/vendor/llm-jepa/` 只作历史对照，训练不调用。
 
 对照论文原文的操作如下。贯穿例子仍是：先 `ls` 看到 `a.txt`，再 `rm a.txt`，沙箱打回 `gone`。
 
@@ -202,7 +202,7 @@ Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读任何切鱼输
 
 accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_size>1` 又开了 `cp_size>1`，就要求 `dp_shard_size` 也必须 `>1`（否则报"pure data parallelism...cannot be used with...context parallelism"），按这条字面要求得 8 卡才能凑出「两组各自 CP+同步梯度」。但往下看它自己怎么建 FSDP 用的网格（`fsdp_dim_names`／`dp_shard_cp_dim_names`）：`cp` 自己就会被折进那张切分维度表，跟现在已经跑通的单组 4 卡 CP（`dp_shard=1, cp=4`）用的是同一套机制，只是没叠 `dp_replicate` 这层。所以 `train_jepa.py` 的 `build_parallelism_config()` 手动绕开这条校验：构造时先塞个假的 `dp_shard_size=2` 骗过检查，构造完再把它改回真实值 `1`——后面用到的都是实时读属性，不受这次事后修改影响。没在 GPU 上验证过这个绕法，出问题应该是 `fully_shard` 直接报网格形状不对，不会静默训错。
 
-**只有一份 TensorBoard 记录，代表两组合起来的整个任务，不是两份并行实验。** 之前试过每组各写各的 `-g0`/`-g1` 两条曲线，但那看起来像"跑了两份独立实验"，不是用户要的东西：用户要的是"card0 跑 5 步、card1 同时跑 5 步，合起来代表跑了 10 步"这种合并视图，方便直接跟不开并行的单卡曲线对比。做法是 `merge_group_stats()`（`train_jepa.py`）：每次到 `log_steps`，**所有 rank**（不只是 is_main）都要跑一次 `accelerator.reduce(..., reduction="sum")`，把这一窗口内两组各自的 `running/run_ce/run_jepa/run_h/run_a/run_o/n_loss` 累加值加总。因为同一个 CP 组内每张卡的本地值完全相同（CP 是在算 loss 之前就把隐藏状态 all-gather 好了，loss 本身没被切），全局求和之后再取比值（比如 `running_g/denom_g`）会自动抵消 `cp_size` 这个重复因子，正好落在"两组真实平均"上——不需要额外除以 `dp_size`。只有 `is_main` 用这个合并后的值写一份 `SummaryWriter`（目录仍是单一的 `jepa-<stamp>`，没有 `-g0`/`-g1` 后缀）。x 轴也换成 `eff_step = step * dp_size`（"单卡等效步数"），这样这条曲线走到 6816×2=13632 时，正好能跟不开并行、直接用 65536 序列跑的那条曲线在同一把 x 轴刻度上对比。`collapse/*` 也用同一个 `eff_step`，同一份记录里所有标量共享一套 x 轴。存档用的文件名（`checkpoint-e{epoch}-s{step}`）和 resume 逻辑仍然用没乘过 `dp_size` 的原始 `step`，跟这份"给人看的"x 轴是两回事，不要混着比。
+**只有一份 TensorBoard 记录，代表两组合起来的整个任务，不是两份并行实验。** 之前试过每组各写各的 `-g0`/`-g1` 两条曲线，但那看起来像"跑了两份独立实验"，不是用户要的东西：用户要的是"card0 跑 5 步、card1 同时跑 5 步，合起来代表跑了 10 步"这种合并视图，方便直接跟不开并行的单卡曲线对比。做法是 `merge_group_stats()`（`train_jepa.py`）：每次到 `log_steps`，**所有 rank**（不只是 is_main）都要跑一次 `accelerator.reduce(..., reduction="sum")`，把这一窗口内两组各自的 `running/run_ce/run_pred/run_inv/run_h/run_a/run_o/n_loss` 累加值加总。因为同一个 CP 组内每张卡的本地值完全相同（CP 是在算 loss 之前就把隐藏状态 all-gather 好了，loss 本身没被切），全局求和之后再取比值（比如 `running_g/denom_g`）会自动抵消 `cp_size` 这个重复因子，正好落在"两组真实平均"上——不需要额外除以 `dp_size`。只有 `is_main` 用这个合并后的值写一份 `SummaryWriter`（目录仍是单一的 `jepa-<stamp>`，没有 `-g0`/`-g1` 后缀）。x 轴也换成 `eff_step = step * dp_size`（"单卡等效步数"），这样这条曲线走到 6816×2=13632 时，正好能跟不开并行、直接用 65536 序列跑的那条曲线在同一把 x 轴刻度上对比。`collapse/*` 也用同一个 `eff_step`，同一份记录里所有标量共享一套 x 轴。存档用的文件名（`checkpoint-e{epoch}-s{step}`）和 resume 逻辑仍然用没乘过 `dp_size` 的原始 `step`，跟这份"给人看的"x 轴是两回事，不要混着比。
 
 **两组的 step 不会错位，不是靠运气。** `ReplicaSampler` 切数据前先按 `(n // dp_size) * dp_size` 截掉多出来的尾巴，保证每组分到的行数完全相等（最多扔掉 `dp_size-1` 行/epoch），`steps_per_epoch` 对两组永远算出同一个数，`save_steps`/`log_steps` 触发的 `step` 在所有 rank 上是同一个整数，不需要临时协商。另外加了 `assert_equal_loader_len()` 作为保险丝：训练开始前用一次 `all_gather_object` 把所有 rank 的 `len(loader)` 收集起来，只要有一个不一样就直接报错退出（把哪个 rank 长度是多少打出来），不会等到训到一半、某组数据先耗尽、another 组的梯度同步集合通信永远等不到对端，卡死在那里都不知道为什么。
 

@@ -44,8 +44,9 @@ Current branch **`agentworld-JEPA-Qwen3.5-35B-A3B`**: two separate, unmodified 4
 `compare.py` showed AgentWorld/Instruct deltas vs Base are dense and overlapping everywhere, not the
 low-entropy split fish-cut assumes, so `probe.py`/`cut_stage1.py` are now diagnostic-only, not part of
 the live pipeline. Stage 1 (`train_jepa.py` / `train_jepa.sh`) loads AgentWorld directly
-(auto-downloaded via `merge/download.py`) and trains LoRA with LLM-JEPA's two losses
-(observation CE + last-hidden cosine). This branch is named **jepa**, not jepallm.
+(auto-downloaded via `merge/download.py`) and trains LoRA with three losses:
+observation CE, Pred(\(z_t,u\)) vs Enc(h,a,o), and LDAD from \(\Delta z\)
+(not independent Enc(o) cosine). This branch is named **jepa**, not jepallm.
 Mix JSONL is the existing
 `wm_code` / `wm_os` from `prepare_data.py` (not `anti_forget`). See `AGENTS.md` "模型架构" / "训练全过程"
 for the full two-backbone + connector + Stage 2 argmax/softmax-CE design.
@@ -63,7 +64,7 @@ python train/scripts/compare.py
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
 
-# Stage 1 LLM-JEPA on AgentWorld's own backbone, no cut. model_dir in
+# Stage 1: mediated Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD. model_dir in
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 32768, 2x2 CP
@@ -71,8 +72,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 32768, 2x2 CP
 # PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
-# --resume picks newest adapter-only ckpt (epoch, then step). Do not resume
-# MLP-era checkpoints that still contain jepa.pt. Override: --save-steps N --log-steps N
+# --resume needs adapter + jepa.pt + ldad.pt. Do not resume Enc(o)-era
+# checkpoints. Override: --save-steps N --log-steps N
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Truncation stats for Stage 1 LLM-JEPA (AgentWorld tokenizer, mix JSONL).
+"""Truncation stats for Stage 1 JEPA (AgentWorld tokenizer, mix JSONL).
 
-Same three sequences as train_jepa.py: full = chat(h+a+o), left = chat(h+a),
-right = chat(o). Lengths are counted *before* the window fit, on the original
+Same three sequences as train_jepa.py: full = chat(h+a+o), state = chat(h),
+action = chat(a). Lengths are counted *before* the window fit, on the original
 last-turn split (the whole trajectory). Training itself keeps the left: drop
 later complete turns until the prefix fits, then chop tokens from the right
 only if the first remaining turn is still over the window.
@@ -13,7 +13,7 @@ only if the first remaining turn is still over the window.
   python scripts/stat.py --max-length 65536 --max-samples 2000
 
 Lengths are cached under train/outputs/stat_cache/jepa/ (untruncated
-full/left/right plus prefix-turn fit, keyed by row content + tokenizer).
+full/state/action plus prefix-turn fit, keyed by row content + tokenizer).
 Rerun hits disk. --recompute ignores the cache. --no-cache does not read
 or write.
 """
@@ -42,8 +42,8 @@ from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
 DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepa"
-RECIPE = "jepa-prefix-turns-v1"
-SEQS = ("full", "left", "right")
+RECIPE = "jepa-prefix-turns-v2"
+SEQS = ("full", "state", "action")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
@@ -217,11 +217,11 @@ def _tok_slug(model_dir: Path) -> str:
 
 CACHE_FIELDS = (
     "full",
-    "left",
-    "right",
+    "state",
+    "action",
     "fitted_full",
-    "fitted_left",
-    "fitted_right",
+    "fitted_state",
+    "fitted_action",
     "n_turns",
     "n_turns_kept",
 )
@@ -425,8 +425,8 @@ def main() -> None:
                 rec = {
                     **lens,
                     "fitted_full": flens["full"],
-                    "fitted_left": flens["left"],
-                    "fitted_right": flens["right"],
+                    "fitted_state": flens["state"],
+                    "fitted_action": flens["action"],
                     "n_turns": len(tj.complete_turn_end_indices(msgs)),
                     "n_turns_kept": len(tj.complete_turn_end_indices(fitted_msgs)),
                 }

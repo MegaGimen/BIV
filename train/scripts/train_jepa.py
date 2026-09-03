@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
-"""Stage 1 LLM-JEPA on AgentWorld. Wiring copied from galilai-group/llm-jepa.
+"""Stage 1 JEPA on AgentWorld: history-mediated targets + Delta-JEPA LDAD.
 
-Their RepresentationTrainer (finetune.py) encodes Text and Code as two
-independent chat-templated sequences, takes hidden at `len(unpad)+last_token`,
-and adds 1-cosine to a next-token CE on the full conversation. We keep that
-graph. Pairing is ours: Text = history+command, Code = observation. CE
-unmasks only the observation (not earlier assistant turns in h).
+z_t = Enc(chat(h)), u = Enc(chat(a)), z_{t+1} = Enc(chat(h,a,o)) last_token
+(shared with observation CE). Pred(z_t, u) aligns to z_{t+1} with both sides
+live. LDAD reconstructs the command tokens from Δz = z_{t+1} - z_t.
 
-Over-long trajectories drop later complete turns (keep the left, chop the
-right) so (h, a, o) is the last pair that still fits. Token lists are only
-prefix-truncated if that first remaining turn still overflows.
-
-What we do not copy: HuggingFace Trainer, concatenating 3 sequences into one
-batch, padding every row to max_length, full-seq lm_head. Those blow up at
-35B / 65k. Sequential hidden-only forwards + lm_head only on labeled tokens.
+Do not encode chat(o) alone. Do not reuse InverseDyn (concat + stop-grad).
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 """
@@ -29,6 +21,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
@@ -219,35 +212,39 @@ def encode_texts(
     o_msg: dict,
     max_length: int,
 ) -> dict[str, Any]:
-    """Three sequences, same split as llm-jepa user / assistant / full.
+    """Live Stage 1 sequences. Observation is never encoded alone.
 
-    full  — chat(h + a + o), for next-token CE on o
-    left  — chat(h + a) independently, Enc(Text)
-    right — chat([o]) independently, Enc(Code)
-    Over-long token lists (first turn still past the window after later turns
-    were dropped): chop the right, keep the left. Do not pad to max_length here.
+    full   — chat(h + a + o): observation CE and z_{t+1} last_token
+    state  — chat(h): z_t
+    action — chat([a]): u for Pred
+    a_label_ids — raw command content tokens for LDAD
     """
     full_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
         max_length,
         keep="prefix",
     )
-    left_ids = _fit(
-        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])),
+    state_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs))),
         max_length,
         keep="prefix",
     )
-    right_ids = _fit(
-        tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg])),
+    action_ids = _fit(
+        tokenize_ids(tokenizer, apply_template(tokenizer, [a_msg])),
         max_length,
         keep="prefix",
     )
     o_content_ids = tokenizer.encode(_content(o_msg), add_special_tokens=False)
+    a_label_ids = tokenizer.encode(_content(a_msg), add_special_tokens=False)
     return {
         "full_ids": full_ids,
         "full_labels": create_o_labels(full_ids, o_content_ids),
-        "left_ids": left_ids,
-        "right_ids": right_ids,
+        "state_ids": state_ids,
+        "action_ids": action_ids,
+        "a_label_ids": a_label_ids,
+        "skip_key": sha1(repr(state_ids).encode("utf-8")).hexdigest()[:16],
+        "a_text": _content(a_msg),
+        "o_text": _content(o_msg),
     }
 
 
@@ -258,7 +255,7 @@ def encode_mediated(
     o_msg: dict,
     max_length: int,
 ) -> dict[str, Any]:
-    """History-mediated pair used by the collapse probe (not the live train loss).
+    """History-mediated pair for the collapse probe (train uses encode_texts).
 
     \(z_t=\mathrm{Enc}(h)\), \(z_{t+1}=\mathrm{Enc}(h,a,o)\). Observation is not
     encoded alone. Truncation still chops the right of each token list.
@@ -282,15 +279,13 @@ def encode_mediated(
 
 
 def sequence_lengths(tokenizer, h_msgs: list, a_msg: dict, o_msg: dict) -> dict[str, int]:
-    """Untruncated token counts for the three LLM-JEPA sequences."""
+    """Untruncated token counts for the three Stage 1 sequences."""
     full = tokenize_ids(
         tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])
     )
-    left = tokenize_ids(
-        tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg])
-    )
-    right = tokenize_ids(tokenizer, apply_template(tokenizer, [o_msg]))
-    return {"full": len(full), "left": len(left), "right": len(right)}
+    state = tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs)))
+    action = tokenize_ids(tokenizer, apply_template(tokenizer, [a_msg]))
+    return {"full": len(full), "state": len(state), "action": len(action)}
 
 
 def load_rows(mix_dir: Path, sources: list[str], split: str, limit: int | None) -> list[list]:
@@ -352,10 +347,10 @@ class HaoDataset:
         rows: list,
         tokenizer,
         max_length: int,
-        encoding: str = "llm-jepa",
+        encoding: str = "stage1",
     ) -> None:
-        if encoding not in ("llm-jepa", "mediated"):
-            raise ValueError(f"encoding must be llm-jepa or mediated, got {encoding!r}")
+        if encoding not in ("stage1", "mediated"):
+            raise ValueError(f"encoding must be stage1 or mediated, got {encoding!r}")
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -377,10 +372,7 @@ class HaoDataset:
         h, a, o = hao
         if self.encoding == "mediated":
             return encode_mediated(self.tokenizer, h, a, o, self.max_length)
-        enc = encode_texts(self.tokenizer, h, a, o, self.max_length)
-        enc["o_text"] = _content(o)
-        enc["left_text"] = _content(a)
-        return enc
+        return encode_texts(self.tokenizer, h, a, o, self.max_length)
 
 
 def _pad_len(n: int, multiple: int) -> int:
@@ -405,8 +397,9 @@ def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> 
         return out, mask
 
     full_ids, full_mask = pad_rows([ex["full_ids"] for ex in batch], pad_id)
-    left_ids, left_mask = pad_rows([ex["left_ids"] for ex in batch], pad_id)
-    right_ids, right_mask = pad_rows([ex["right_ids"] for ex in batch], pad_id)
+    state_ids, state_mask = pad_rows([ex["state_ids"] for ex in batch], pad_id)
+    action_ids, action_mask = pad_rows([ex["action_ids"] for ex in batch], pad_id)
+    a_label_ids, a_label_mask = pad_rows([ex["a_label_ids"] for ex in batch], pad_id)
     labels_rows = [ex["full_labels"] for ex in batch]
     mlen = full_ids.size(1)
     full_labels = torch.full((len(batch), mlen), -100, dtype=torch.long)
@@ -418,15 +411,18 @@ def collate(batch: list[dict[str, Any]], pad_id: int, pad_multiple: int = 1) -> 
         "full_ids": full_ids,
         "full_mask": full_mask,
         "full_labels": full_labels,
-        "left_ids": left_ids,
-        "left_mask": left_mask,
-        "right_ids": right_ids,
-        "right_mask": right_mask,
+        "state_ids": state_ids,
+        "state_mask": state_mask,
+        "action_ids": action_ids,
+        "action_mask": action_mask,
+        "a_label_ids": a_label_ids,
+        "a_label_mask": a_label_mask,
         "full_len": torch.tensor([len(ex["full_ids"]) for ex in batch], dtype=torch.long),
-        "left_len": torch.tensor([len(ex["left_ids"]) for ex in batch], dtype=torch.long),
-        "right_len": torch.tensor([len(ex["right_ids"]) for ex in batch], dtype=torch.long),
+        "state_len": torch.tensor([len(ex["state_ids"]) for ex in batch], dtype=torch.long),
+        "action_len": torch.tensor([len(ex["action_ids"]) for ex in batch], dtype=torch.long),
         "o_text": [ex.get("o_text", "") for ex in batch],
-        "left_text": [ex.get("left_text", "") for ex in batch],
+        "a_text": [ex.get("a_text", "") for ex in batch],
+        "skip_key": [ex.get("skip_key", "") for ex in batch],
     }
 
 
@@ -534,7 +530,7 @@ def gather_at(hidden, index):
 
 
 def jepa_cosine(user_embedding, assistant_embedding):
-    """llm-jepa default: 1 - mean(cosine). Both sides live."""
+    """1 - mean(cosine). Both sides live. Kept for tests; train uses pred_align_loss."""
     import torch
     import torch.nn.functional as F
 
@@ -546,6 +542,73 @@ def jepa_cosine(user_embedding, assistant_embedding):
 # logits tensor is ~23 GiB and OOMs a 95 GB card that already holds the model.
 # Chunk so peak logits stay under ~1 GiB regardless of how long o is.
 CE_LOGIT_CHUNK = 512
+
+
+def token_ce(hidden, labels, lm_head, chunk_size: int = CE_LOGIT_CHUNK):
+    """hidden[t] predicts labels[t]. No extra shift (LDAD already aligned)."""
+    import torch
+    import torch.nn.functional as F
+
+    mask = labels != -100
+    if not bool(mask.any()):
+        return hidden.new_zeros(())
+    h = hidden[mask]
+    y = labels[mask]
+    n = h.size(0)
+    step = max(int(chunk_size), 1)
+    total = h.new_zeros(())
+    for i in range(0, n, step):
+        logits = lm_head(h[i : i + step])
+        total = total + F.cross_entropy(logits.float(), y[i : i + step], reduction="sum")
+    return total / n
+
+
+def ldad_action_ce(cond, a_ids, a_mask, embed, lm_head):
+    """Teacher-forced command tokens from LDAD cond. First token from cond alone."""
+    import torch
+
+    labels = a_ids.masked_fill(a_mask == 0, -100)
+    if not bool((labels != -100).any()):
+        return cond.new_zeros(())
+    tok_emb = embed(a_ids)
+    zeros = tok_emb.new_zeros(tok_emb.size(0), 1, tok_emb.size(-1))
+    prev = torch.cat([zeros, tok_emb[:, :-1]], dim=1)
+    hidden = cond.unsqueeze(1).to(dtype=tok_emb.dtype) + prev
+    return token_ce(hidden, labels, lm_head)
+
+
+def backbone_hidden_size(model) -> int:
+    m = model
+    getter = getattr(m, "get_base_model", None)
+    if callable(getter):
+        try:
+            m = getter()
+        except Exception:
+            pass
+    cfg = getattr(m, "config", None)
+    for obj in (cfg, getattr(cfg, "text_config", None) if cfg is not None else None):
+        if obj is None:
+            continue
+        hs = getattr(obj, "hidden_size", None)
+        if hs:
+            return int(hs)
+    return 2048
+
+
+def input_embeddings(model):
+    m = model
+    getter = getattr(m, "get_base_model", None)
+    if callable(getter):
+        try:
+            m = getter()
+        except Exception:
+            pass
+    fn = getattr(m, "get_input_embeddings", None)
+    if callable(fn):
+        emb = fn()
+        if emb is not None:
+            return emb
+    raise RuntimeError("no input embeddings on AgentWorld backbone")
 
 
 def shifted_ce(hidden, labels, lm_head, chunk_size: int = CE_LOGIT_CHUNK):
@@ -957,6 +1020,15 @@ def save_adapter(unwrapped, lora_cpu: dict, path: Path) -> None:
 
 
 
+def _load_pt(path: Path):
+    import torch
+
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+
+
 def save_ckpt(
     accelerator,
     model,
@@ -966,6 +1038,8 @@ def save_ckpt(
     *,
     epoch: int,
     step: int,
+    jepa=None,
+    ldad=None,
 ) -> None:
     accelerator.wait_for_everyone()
     lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
@@ -975,6 +1049,12 @@ def save_ckpt(
         save_adapter(unwrapped, lora_cpu, path)
         if tokenizer is not None:
             tokenizer.save_pretrained(path)
+        import torch
+
+        if jepa is not None:
+            torch.save({k: v.detach().cpu() for k, v in jepa.state_dict().items()}, path / "jepa.pt")
+        if ldad is not None:
+            torch.save({k: v.detach().cpu() for k, v in ldad.state_dict().items()}, path / "ldad.pt")
         meta = dict(extra or {})
         write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
         (path / "train_meta.json").write_text(
@@ -990,7 +1070,7 @@ def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
     if raw is None:
         return None
     if raw == "auto":
-        found = find_latest_ckpt(out_dir, require_jepa=False)
+        found = find_latest_ckpt(out_dir, require_jepa=True)
         if found is None:
             raise SystemExit(f"--resume: no complete checkpoint under {out_dir}")
         return found
@@ -1001,9 +1081,13 @@ def load_resume_dir(out_dir: Path, raw: str | None) -> Path | None:
         pth.is_dir()
         and (pth / "trainer_state.json").is_file()
         and (pth / "adapter_model.safetensors").is_file()
+        and (pth / "jepa.pt").is_file()
+        and (pth / "ldad.pt").is_file()
     ):
         return pth
-    raise SystemExit(f"--resume path is not a checkpoint: {pth}")
+    raise SystemExit(
+        f"--resume path is not a mediated Stage 1 checkpoint (need adapter + jepa.pt + ldad.pt): {pth}"
+    )
 
 
 def load_lora_into_model(model, sd: dict, log_fn) -> None:
@@ -1060,7 +1144,7 @@ def decode_ids_texts(tokenizer, ids, mask) -> list[str]:
 
 
 def decode_o_texts(tokenizer, batch) -> list[str]:
-    return decode_ids_texts(tokenizer, batch["right_ids"], batch["right_mask"])
+    return list(batch.get("o_text") or [])
 
 
 def _warmup_lambda(warmup: int):
@@ -1082,7 +1166,7 @@ def main() -> None:
     from torch.optim.lr_scheduler import LambdaLR
     from torch.utils.data import DataLoader
     from biv_wm.arch import install_hidden_only_forward, lm_head_module, log_world_architecture
-    from biv_wm.jepa import collapse_stats, format_collapse_line
+    from biv_wm.jepa import JEPAPred, LDAD, collapse_stats, format_collapse_line, pred_align_loss
 
     cfg_path = args.config if args.config.is_absolute() else (TRAIN / args.config)
     if not cfg_path.is_file():
@@ -1177,6 +1261,13 @@ def main() -> None:
             f"resume {resume_dir.name} trainer_state epoch={resume_epoch} "
             f"global_step={resume_step} (newest by epoch, then step)"
         )
+    hidden_size = backbone_hidden_size(model)
+    jepa = JEPAPred(hidden_size)
+    ldad = LDAD(hidden_size)
+    if resume_dir is not None:
+        jepa.load_state_dict(_load_pt(resume_dir / "jepa.pt"))
+        ldad.load_state_dict(_load_pt(resume_dir / "ldad.pt"))
+        rank_log(f"resume Pred+LDAD from {resume_dir.name}")
     if is_main:
         log_world_architecture(
             model=model,
@@ -1223,15 +1314,21 @@ def main() -> None:
     assert_equal_loader_len(accelerator, len(loader))
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
+    model = accelerator.prepare(model)
+    jepa = jepa.to(device=accelerator.device, dtype=dtype)
+    ldad = ldad.to(device=accelerator.device, dtype=dtype)
     opt = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        [p for p in model.parameters() if p.requires_grad]
+        + list(jepa.parameters())
+        + list(ldad.parameters()),
         lr=backbone_lr,
         weight_decay=float(tcfg.get("weight_decay") or 0.01),
     )
-    model, opt = accelerator.prepare(model, opt)
+    opt = accelerator.prepare(opt)
     lm_head = lm_head_module(accelerator.unwrap_model(model))
     if lm_head is None:
-        raise SystemExit("LLM-JEPA Stage 1 needs AgentWorld lm_head attached")
+        raise SystemExit("Stage 1 needs AgentWorld lm_head attached")
+    embed = input_embeddings(accelerator.unwrap_model(model))
 
     max_norm = float(tcfg.get("max_grad_norm") or 1.0)
     log_every = int(
@@ -1256,11 +1353,12 @@ def main() -> None:
         if tcfg.get("gamma") is not None
         else (tcfg["ce_weight"] if tcfg.get("ce_weight") is not None else 1.0)
     )
-    lbd = float(
-        tcfg["lbd"]
-        if tcfg.get("lbd") is not None
-        else (tcfg["jepa_weight"] if tcfg.get("jepa_weight") is not None else 0.1)
+    pred_lbd = float(
+        tcfg["pred_lbd"]
+        if tcfg.get("pred_lbd") is not None
+        else (tcfg["lbd"] if tcfg.get("lbd") is not None else 1.0)
     )
+    inv_lbd = float(tcfg["inv_lbd"] if tcfg.get("inv_lbd") is not None else 10.0)
     last_token = int(tcfg["last_token"] if tcfg.get("last_token") is not None else -3)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
@@ -1280,8 +1378,8 @@ def main() -> None:
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"gamma={gamma} lbd={lbd} last_token={last_token} "
-        f"save_total_limit={save_limit} resume_step={resume_step}"
+        f"gamma={gamma} pred_lbd={pred_lbd} inv_lbd={inv_lbd} last_token={last_token} "
+        f"hidden={hidden_size} save_total_limit={save_limit} resume_step={resume_step}"
     )
 
     ckpt_extra = {
@@ -1293,13 +1391,16 @@ def main() -> None:
         "dp_replicate_size": dp_size,
         "run_tag": run_tag,
         "lm_head": "attached_frozen_base",
-        "recipe": "llm-jepa RepresentationTrainer (independent Enc + last_token cosine + shifted CE)",
+        "recipe": "mediated Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD",
+        "pred_lbd": pred_lbd,
+        "inv_lbd": inv_lbd,
         "last_token": last_token,
         "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
     }
     seen_pred: deque = deque()
     seen_z: deque = deque()
     seen_o: deque = deque()
+    seen_skip: deque = deque()
     writer = None
 
     def emit(msg: str) -> None:
@@ -1316,6 +1417,7 @@ def main() -> None:
             seen_pred.clear()
             seen_z.clear()
             seen_o.clear()
+            seen_skip.clear()
 
         if not seen_pred:
             _clear()
@@ -1324,6 +1426,7 @@ def main() -> None:
             torch.stack(list(seen_pred)),
             torch.stack(list(seen_z)),
             list(seen_o),
+            skip_texts=list(seen_skip),
         )
         if not is_main:
             _clear()
@@ -1367,6 +1470,8 @@ def main() -> None:
             extra=extra,
             epoch=epoch_i,
             step=step_i,
+            jepa=jepa,
+            ldad=ldad,
         )
         if is_main:
             emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")
@@ -1393,7 +1498,8 @@ def main() -> None:
         writer.add_text("train/save_steps", str(save_every), 0)
         writer.add_text("train/log_steps", str(log_every), 0)
         writer.add_text("train/gamma", str(gamma), 0)
-        writer.add_text("train/lbd", str(lbd), 0)
+        writer.add_text("train/pred_lbd", str(pred_lbd), 0)
+        writer.add_text("train/inv_lbd", str(inv_lbd), 0)
         writer.add_text("train/last_token", str(last_token), 0)
 
     try:
@@ -1420,13 +1526,16 @@ def main() -> None:
         return
 
     model.train()
+    jepa.train()
+    ldad.train()
     step = resume_step
     skip_micro = resume_step * accum
     micro_seen = 0
     opt.zero_grad(set_to_none=True)
     running = 0.0
     run_ce = 0.0
-    run_jepa = 0.0
+    run_pred = 0.0
+    run_inv = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
     run_nlab = 0.0
@@ -1449,46 +1558,71 @@ def main() -> None:
                     for k, v in batch.items()
                 }
                 full_len = float(batch["full_len"].float().mean().item())
-                left_len = float(batch["left_len"].float().mean().item())
-                right_len = float(batch["right_len"].float().mean().item())
+                state_len = float(batch["state_len"].float().mean().item())
+                action_len = float(batch["action_len"].float().mean().item())
                 n_lab = float((batch["full_labels"] != -100).sum().item())
                 with accelerator.accumulate(model):
                     h_full = full_hidden(
                         model, batch["full_ids"], batch["full_mask"], cp_size
                     )
                     ce_loss = shifted_ce(h_full, batch["full_labels"], lm_head)
-                    h_left_seq = full_hidden(
-                        model, batch["left_ids"], batch["left_mask"], cp_size
+                    z_next = gather_at(
+                        h_full,
+                        last_token_index(
+                            batch["full_ids"], batch["full_mask"], last_token
+                        ),
                     )
-                    h_right_seq = full_hidden(
-                        model, batch["right_ids"], batch["right_mask"], cp_size
+                    h_state_seq = full_hidden(
+                        model, batch["state_ids"], batch["state_mask"], cp_size
                     )
-                    idx_l = last_token_index(
-                        batch["left_ids"], batch["left_mask"], last_token
+                    h_act_seq = full_hidden(
+                        model, batch["action_ids"], batch["action_mask"], cp_size
                     )
-                    idx_r = last_token_index(
-                        batch["right_ids"], batch["right_mask"], last_token
+                    z_t = gather_at(
+                        h_state_seq,
+                        last_token_index(
+                            batch["state_ids"], batch["state_mask"], last_token
+                        ),
                     )
-                    h_left = gather_at(h_left_seq, idx_l)
-                    h_right = gather_at(h_right_seq, idx_r)
-                    jepa_loss = jepa_cosine(h_left, h_right)
-                    loss = gamma * ce_loss + lbd * jepa_loss
-                    o_texts = batch.get("o_text") or decode_o_texts(tokenizer, batch)
-                    for i in range(h_left.size(0)):
-                        seen_pred.append(h_left[i].detach().float().cpu())
-                        seen_z.append(h_right[i].detach().float().cpu())
-                        seen_o.append(o_texts[i])
+                    u = gather_at(
+                        h_act_seq,
+                        last_token_index(
+                            batch["action_ids"], batch["action_mask"], last_token
+                        ),
+                    )
+                    pred = jepa(z_t, u)
+                    pred_loss = pred_align_loss(pred, z_next)
+                    delta = z_next - z_t
+                    inv_loss = ldad_action_ce(
+                        ldad(delta),
+                        batch["a_label_ids"],
+                        batch["a_label_mask"],
+                        embed,
+                        lm_head,
+                    )
+                    loss = gamma * ce_loss + pred_lbd * pred_loss + inv_lbd * inv_loss
+                    o_texts = batch.get("o_text") or []
+                    skip_keys = batch.get("skip_key") or [""] * pred.size(0)
+                    for i in range(pred.size(0)):
+                        seen_pred.append(pred[i].detach().float().cpu())
+                        seen_z.append(z_next[i].detach().float().cpu())
+                        seen_o.append(o_texts[i] if i < len(o_texts) else "")
+                        seen_skip.append(skip_keys[i] if i < len(skip_keys) else "")
                     accelerator.backward(loss)
                     running += float(loss.detach().float().item())
                     run_ce += float(ce_loss.detach().float().item())
-                    run_jepa += float(jepa_loss.detach().float().item())
+                    run_pred += float(pred_loss.detach().float().item())
+                    run_inv += float(inv_loss.detach().float().item())
                     n_loss += 1
-                    run_h += full_len
-                    run_a += left_len
-                    run_o += right_len
+                    run_h += state_len
+                    run_a += action_len
+                    run_o += full_len
                     run_nlab += n_lab
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(model.parameters(), max_norm)
+                        clip_params = [p for p in model.parameters() if p.requires_grad]
+                        clip_params.extend(jepa.parameters())
+                        clip_params.extend(ldad.parameters())
+                        accelerator.clip_grad_norm_(clip_params, max_norm)
                         opt.step()
                         sched.step()
                         opt.zero_grad(set_to_none=True)
@@ -1511,11 +1645,12 @@ def main() -> None:
                             # averaging) both groups' windowed accumulators and
                             # then taking a ratio gives the correct combined
                             # average regardless of cp_size.
-                            running_g, ce_g, jepa_g, h_g, a_g, o_g, nlab_g, n_g = merge_group_stats(
+                            running_g, ce_g, pred_g, inv_g, h_g, a_g, o_g, nlab_g, n_g = merge_group_stats(
                                 accelerator,
                                 running,
                                 run_ce,
-                                run_jepa,
+                                run_pred,
+                                run_inv,
                                 run_h,
                                 run_a,
                                 run_o,
@@ -1543,8 +1678,9 @@ def main() -> None:
                                 throughput_postfix = {"rows/s": f"{rows_s:.2f}", "tok/s": f"{toks_s:.0f}"}
                                 emit(
                                     f"epoch={epoch} step={step} eff_step={eff_step} loss={loss_g:.4f} "
-                                    f"ce={ce_g / denom_g:.4f} jepa={jepa_g / denom_g:.4f} "
-                                    f"len(full/left/right)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
+                                    f"ce={ce_g / denom_g:.4f} pred={pred_g / denom_g:.4f} "
+                                    f"inv={inv_g / denom_g:.4f} "
+                                    f"len(h/a/full)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
                                     f"n_ce={nlab_g / denom_g:.0f} "
                                     f"throughput≈{rows_s:.2f} rows/s {toks_s:.0f} tok/s "
                                     f"(dp_size={dp_size} groups combined)"
@@ -1552,7 +1688,8 @@ def main() -> None:
                                 if writer is not None:
                                     writer.add_scalar("train/loss", loss_g, eff_step)
                                     writer.add_scalar("train/loss_ce", ce_g / denom_g, eff_step)
-                                    writer.add_scalar("train/loss_jepa", jepa_g / denom_g, eff_step)
+                                    writer.add_scalar("train/loss_pred", pred_g / denom_g, eff_step)
+                                    writer.add_scalar("train/loss_inv", inv_g / denom_g, eff_step)
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], eff_step)
                                     writer.add_scalar("train/len_h", h_g / denom_g, eff_step)
                                     writer.add_scalar("train/len_a", a_g / denom_g, eff_step)
@@ -1562,7 +1699,8 @@ def main() -> None:
                                     writer.add_scalar("train/tokens_per_sec_global", toks_s, eff_step)
                             running = 0.0
                             run_ce = 0.0
-                            run_jepa = 0.0
+                            run_pred = 0.0
+                            run_inv = 0.0
                             n_loss = 0
                             run_h = run_a = run_o = 0.0
                             run_nlab = 0.0
