@@ -12,10 +12,10 @@ only if the first remaining turn is still over the window.
   python scripts/stat.py --max-length 65536
   python scripts/stat.py --max-length 65536 --max-samples 2000
 
-Lengths are cached under train/outputs/stat_cache/jepa/ (untruncated
-full/state/action plus prefix-turn fit, keyed by row content + tokenizer).
-Rerun hits disk. --recompute ignores the cache. --no-cache does not read
-or write.
+Untruncated full/state/action lengths do not depend on --seqlen; they are
+cached once per row + tokenizer. Prefix-turn fit *does* depend on the
+window and is stored per seqlen. Changing --seqlen reuses tokenize hits.
+Recipe/manifest updates never delete jsonl; only --recompute does.
 """
 
 from __future__ import annotations
@@ -42,8 +42,10 @@ from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
 DEFAULT_STAT_CACHE = TRAIN / "outputs" / "stat_cache" / "jepa"
-RECIPE = "jepa-prefix-turns-v2"
+RECIPE = "jepa-untrunc-fitted-by-seqlen-v3"
 SEQS = ("full", "state", "action")
+UNTRUNC_FIELDS = ("full", "state", "action", "n_turns")
+FITTED_FIELDS = ("fitted_full", "fitted_state", "fitted_action", "n_turns_kept")
 LENGTH_EDGES = [2048, 4096, 8192, 16384, 32768, 65536]
 RATIO_EDGES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
@@ -215,50 +217,108 @@ def _tok_slug(model_dir: Path) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(model_dir))[-120:]
 
 
-CACHE_FIELDS = (
-    "full",
-    "state",
-    "action",
-    "fitted_full",
-    "fitted_state",
-    "fitted_action",
-    "n_turns",
-    "n_turns_kept",
-)
+def _as_fitted_blob(obj: dict[str, Any]) -> dict[str, int] | None:
+    if not all(name in obj for name in FITTED_FIELDS):
+        return None
+    return {name: int(obj[name]) for name in FITTED_FIELDS}
+
+
+def parse_cache_record(obj: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Untruncated lengths are seqlen-free. Fitted blobs are keyed by window."""
+    k = obj.get("k")
+    if not k or not all(name in obj for name in UNTRUNC_FIELDS):
+        return None
+    fitted: dict[str, dict[str, int]] = {}
+    nested = obj.get("fitted")
+    if isinstance(nested, dict):
+        for sk, blob in nested.items():
+            if not isinstance(blob, dict):
+                continue
+            parsed = _as_fitted_blob(blob)
+            if parsed is None:
+                continue
+            try:
+                fitted[str(int(sk))] = parsed
+            except (TypeError, ValueError):
+                continue
+    flat = _as_fitted_blob(obj)
+    if flat is not None and obj.get("seqlen") is not None:
+        try:
+            fitted[str(int(obj["seqlen"]))] = flat
+        except (TypeError, ValueError):
+            pass
+    rec: dict[str, Any] = {name: int(obj[name]) for name in UNTRUNC_FIELDS}
+    rec["fitted"] = fitted
+    return str(k), rec
 
 
 class LengthCache:
-    """Append-only jsonl of orig + prefix-turn-fit lengths for one mix source."""
+    """Append-only jsonl. Untruncated tokenize is reused across --seqlen values."""
 
     def __init__(self, path: Path, *, enabled: bool) -> None:
         self.path = path
         self.enabled = enabled
-        self.store: dict[str, dict[str, int]] = {}
+        self.store: dict[str, dict[str, Any]] = {}
         if enabled and path.is_file():
             with path.open(encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    obj = json.loads(line)
-                    k = obj.get("k")
-                    if not k or not all(name in obj for name in CACHE_FIELDS):
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
                         continue
-                    self.store[str(k)] = {name: int(obj[name]) for name in CACHE_FIELDS}
+                    if not isinstance(obj, dict):
+                        continue
+                    parsed = parse_cache_record(obj)
+                    if parsed is None:
+                        continue
+                    key, rec = parsed
+                    prev = self.store.get(key)
+                    if prev is None:
+                        self.store[key] = rec
+                        continue
+                    merged = dict(prev)
+                    for name in UNTRUNC_FIELDS:
+                        merged[name] = rec[name]
+                    fmap = dict(prev.get("fitted") or {})
+                    fmap.update(rec.get("fitted") or {})
+                    merged["fitted"] = fmap
+                    self.store[key] = merged
 
-    def get(self, key: str) -> dict[str, int] | None:
+    def get_untrunc(self, key: str) -> dict[str, int] | None:
         if not self.enabled:
             return None
-        return self.store.get(key)
+        rec = self.store.get(key)
+        if rec is None:
+            return None
+        return {name: int(rec[name]) for name in UNTRUNC_FIELDS}
 
-    def put(self, key: str, lens: dict[str, int]) -> None:
-        rec = {name: int(lens[name]) for name in CACHE_FIELDS}
+    def get_fitted(self, key: str, seqlen: int) -> dict[str, int] | None:
+        if not self.enabled:
+            return None
+        rec = self.store.get(key)
+        if rec is None:
+            return None
+        blob = (rec.get("fitted") or {}).get(str(int(seqlen)))
+        if not isinstance(blob, dict):
+            return None
+        return dict(blob)
+
+    def put(self, key: str, untrunc: dict[str, int], seqlen: int, fitted: dict[str, int]) -> None:
+        prev = self.store.get(key) or {"fitted": {}}
+        rec: dict[str, Any] = {name: int(untrunc[name]) for name in UNTRUNC_FIELDS}
+        fmap = dict(prev.get("fitted") or {})
+        fmap[str(int(seqlen))] = {name: int(fitted[name]) for name in FITTED_FIELDS}
+        rec["fitted"] = fmap
         self.store[key] = rec
         if not self.enabled:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = {"k": key, "seqlen": int(seqlen), **rec}
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"k": key, **rec}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -357,13 +417,11 @@ def main() -> None:
             old = json.loads(man.read_text(encoding="utf-8"))
             if old.get("recipe") != RECIPE or old.get("model_dir") != str(model_dir):
                 print(
-                    f"stat cache recipe/tokenizer mismatch at {cache_ns}; clearing jsonl",
+                    f"stat cache recipe/tokenizer changed at {cache_ns}; "
+                    "keeping jsonl (untruncated tokenize is seqlen-free; "
+                    "incompatible lines are skipped)",
                     flush=True,
                 )
-                for src in sources:
-                    pth = cache_ns / f"{src}.jsonl"
-                    if pth.is_file():
-                        pth.unlink()
         man.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         if args.recompute:
             for src in sources:
@@ -407,33 +465,44 @@ def main() -> None:
             cache_ns / f"{src}.jsonl",
             enabled=use_cache,
         )
-        hits = misses = 0
+        hits_tok = misses_tok = hits_fit = misses_fit = 0
         bar = _tqdm(rows, desc=f"tokenize {src}", unit="row")
         for msgs in bar:
             key = _row_key(msgs)
-            rec = cache.get(key)
-            if rec is None:
+            untrunc = cache.get_untrunc(key)
+            fitted = cache.get_fitted(key, seqlen)
+            need_tok = untrunc is None
+            need_fit = fitted is None
+            if untrunc is None:
                 orig = tj.split_hao(msgs)
                 if orig is None:
                     continue
                 lens = tj.sequence_lengths(tok, *orig)
-                fitted_msgs = tj.trim_messages_keep_prefix(tok, msgs, seqlen)
-                fitted = tj.split_hao(fitted_msgs)
-                if fitted is None:
-                    continue
-                flens = tj.sequence_lengths(tok, *fitted)
-                rec = {
+                untrunc = {
                     **lens,
+                    "n_turns": len(tj.complete_turn_end_indices(msgs)),
+                }
+                misses_tok += 1
+            else:
+                hits_tok += 1
+            if fitted is None:
+                fitted_msgs = tj.trim_messages_keep_prefix(tok, msgs, seqlen)
+                fitted_hao = tj.split_hao(fitted_msgs)
+                if fitted_hao is None:
+                    continue
+                flens = tj.sequence_lengths(tok, *fitted_hao)
+                fitted = {
                     "fitted_full": flens["full"],
                     "fitted_state": flens["state"],
                     "fitted_action": flens["action"],
-                    "n_turns": len(tj.complete_turn_end_indices(msgs)),
                     "n_turns_kept": len(tj.complete_turn_end_indices(fitted_msgs)),
                 }
-                cache.put(key, rec)
-                misses += 1
+                misses_fit += 1
             else:
-                hits += 1
+                hits_fit += 1
+            if need_tok or need_fit:
+                cache.put(key, untrunc, seqlen, fitted)
+            rec = {**untrunc, **fitted}
             for k in SEQS:
                 buckets[k].append(rec[k])
             fitted_full.append(rec["fitted_full"])
@@ -442,8 +511,17 @@ def main() -> None:
             if rec["fitted_full"] > seqlen:
                 n_first_overflow += 1
             if bar is not None and hasattr(bar, "set_postfix"):
-                bar.set_postfix(hit=hits, miss=misses, refresh=False)
-        print(f"  {src} cache hit={hits:,} miss={misses:,} stored={len(cache.store):,}", flush=True)
+                bar.set_postfix(
+                    tok=f"{hits_tok}/{misses_tok}",
+                    fit=f"{hits_fit}/{misses_fit}",
+                    refresh=False,
+                )
+        print(
+            f"  {src} tokenize hit={hits_tok:,} miss={misses_tok:,}  "
+            f"fitted@{seqlen} hit={hits_fit:,} miss={misses_fit:,}  "
+            f"stored={len(cache.store):,}",
+            flush=True,
+        )
         report["sources"][src] = {}
         for seq in SEQS:
             report["sources"][src][seq] = _print_seq(src, seq, buckets[seq], seqlen)
