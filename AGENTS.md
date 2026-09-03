@@ -216,13 +216,12 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 ```bash
 cd train
-CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh          # 1 卡：直接 python，不开 CP
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/probe_jepa_collapse.sh    # 4 卡：和训练一样 2x2
+CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 # 只看一窗 40 条：bash scripts/probe_jepa_collapse.sh --max-rows 40
 # 终端不打近对原文：bash scripts/probe_jepa_collapse.sh --print-pairs 0
 ```
 
-1 卡时不要再走 `qwen35_moe_fsdp2_cp.yaml`：那份 yaml 写死了 `num_processes: 4` / `cp_size: 4`，进程只有 1 个时会报 `Mesh should not be bigger than default world size 1, but found 4 ranks`。脚本会清掉训练留下的 `PARALLELISM_CONFIG_*`。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
+单卡直接 `python`，不开 FSDP、不开 CP。训练留下的 `PARALLELISM_CONFIG_*` 会清掉。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
 
 结果在 `outputs/jepa_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
 
