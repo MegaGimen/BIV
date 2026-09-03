@@ -106,6 +106,7 @@ PAPERS: list[tuple[str, str]] = [
     ("2107.00793", "causal-neural-connection-cht"),
     # K. explicit latent state z in text; policy reads only z
     ("2606.27681", "textual-belief-states-strict-mediation"),
+    ("2606.31232", "delta-jepa-ldad"),
     ("2511.05963", "nextlat-compact-world-models"),
     ("2207.08229", "ac-state-control-endogenous"),
     ("2306.06561", "ifactor-identifiable-factorization"),

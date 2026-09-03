@@ -1,0 +1,934 @@
+source: https://arxiv.org/html/2606.31232
+arxiv: https://arxiv.org/abs/2606.31232
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. Introduction
+ 3. Related Work
+     1. Latent World Models
+     2. Joint Embedding Predictive Architectures
+     3. Collapse Prevention and Inverse Dynamics
+ 4. Method
+     1. Problem Formulation
+     2. Overview of Delta-JEPA
+     3. Latent Forward Dynamics Predictor
+     4. Latent Difference Action Decoder (LDAD)
+         1. Action-Supervised Displacement Mechanism.
+         2. Effects of Displacement-Based Action Decoding.
+     5. Multi-Step Action Decoding
+     6. Joint Optimization and End-to-End Training
+ 5. Experiments
+     1. Experimental Setup
+     2. Planning Performance
+     3. Ablation Study
+         1. Action Reconstruction Weight.
+         2. Displacement-Based Action Decoding.
+         3. LDAD Decoding Target.
+     4. Latent Diversity and Collapse Prevention
+     5. Action-Sensitive Latent Dynamics
+     6. Physical and State-Delta Probing
+     7. Task-Relevant Attention Patterns
+ 6. Conclusion
+ 7. References
+ 8. A Additional Probe and Attention Results
+     1. A.1 Physical State Probing
+     2. A.2 State-Delta Probing
+     3. A.3 Layer-Wise Attention Specialization
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2606.31232v1 [cs.AI] 30 Jun 2026
+
+Delta-JEPA: Learning Action-Sensitive World Models via Latent Difference Decoding
+
+Zhenghao Zhang    Yuanxiang Wang ^†^†thanks: Equal contribution as co-second authors.    Zhenyu
+Guan^1^1footnotemark: 1    Yujia Yang^1^1footnotemark: 1    Bingkang Shi^1^1footnotemark: 1    
+Tianyu Zong    Hongzhu Yi    Guoqing Chao    Xingchen Chen    Tiankun Yang    Chenxi Bao    Tao Yu 
+   Jingjing Zhou    Jungang Xu ^†^†thanks: Corresponding author.
+
+Abstract
+
+Learning visual world models for planning requires compact latent dynamics that remain sensitive to
+actions, yet reconstruction-free joint-embedding objectives can collapse to action-insensitive
+representations. We propose Delta-JEPA, an end-to-end reconstruction-free world model that augments
+latent forward prediction with a Latent Difference Action Decoder (LDAD). Unlike inverse decoders
+that infer actions from concatenated endpoint embeddings, LDAD reconstructs the executed action
+from the latent displacement between consecutive observations. This displacement-level supervision
+directly regularizes transition geometry: adjacent embeddings cannot collapse without losing action
+information, and different actions are encouraged to induce distinguishable latent changes for
+rollout-based planning. Delta-JEPA uses only latent prediction and action reconstruction, avoiding
+pixel reconstruction and distribution-matching regularizers. Across four visual continuous-control
+tasks, Delta-JEPA improves planning over JEPA-based and representation-learning world model
+baselines. Ablations show that displacement-based action decoding is consistently more effective
+than endpoint concatenation, and action-sensitivity analyses show clearer action-conditioned latent
+responses. These results indicate that supervising latent differences is a simple and effective
+mechanism for collapse-resistant and action-sensitive world model learning.
+
+^1School of Computer Science and Technology, University of Chinese Academy of Sciences, Beijing
+
+^2Institute of Information Engineering, Chinese Academy of Sciences, Beijing
+
+^3School of Computer Science and Technology, Harbin Institute of Technology, Weihai
+
+^4Faculty of Computing, Harbin Institute of Technology, Harbin
+
+^5Institute of Automation, Chinese Academy of Sciences, Beijing
+
+zhangzhenghao25@mails.ucas.ac.cn, xujg@ucas.ac.cn
+
+Introduction
+
+Building agents that can infer environment dynamics and predict future states directly from raw
+sensory observations remains a central goal in artificial intelligence (Ha and Schmidhuber 2018a;
+Ha and Schmidhuber 2018b). World models address this goal by learning an internal “imagination
+space” in which future outcomes can be forecast under candidate actions, thereby supporting
+planning and control (Hafner et al. 2019a; Wu et al. 2023). Early world models often relied on
+pixel-space reconstruction (Hafner et al. 2019b), but reconstructing high-dimensional observations
+is computationally expensive and can waste model capacity on visually detailed but
+dynamics-irrelevant information (Assran et al. 2023; Assran et al. 2025; Hauri and Zenke 2026).
+This makes reconstruction-free latent prediction an attractive alternative.
+
+Joint Embedding Predictive Architectures (JEPA) (Assran et al. 2023) offer a particularly appealing
+foundation for latent world modeling because they directly predict compact future representations
+rather than future pixels. However, this efficiency introduces a major challenge: when trained
+end-to-end with only latent prediction objectives, JEPA-based world models can easily collapse to
+trivial constant representations (Maes et al. 2026). In that case, the model achieves deceptively
+low prediction loss while destroying the representation structure needed for planning.
+
+Existing approaches typically address collapse through additional training heuristics, though these
+designs involve different tradeoffs. LeWorldModel (Maes et al. 2026), for example, uses SigReg (
+Balestriero and LeCun 2025) to stabilize end-to-end latent prediction, but it does not explicitly
+constrain the latent space to be sensitive to executed actions, allowing different actions to
+induce weakly distinguishable latent transitions. PLDM (Sobal et al. 2026) instead combines
+VICReg-style regularization with inverse dynamics, yielding a more complex multi-loss objective
+that is sensitive to hyperparameter tuning. Moreover, its inverse dynamics module decodes actions
+from concatenated adjacent latent states [zt,zt+1][z_{t},z_{t+1}]. Because the forward predictor is
+itself conditioned on the executed action, end-to-end optimization can make the next-state
+representation zt+1z_{t+1} absorb action-correlated cues that are easy for the inverse decoder to
+exploit, without requiring the model to represent the actual transition between the two states.
+
+To address these issues, we propose Delta-JEPA, an end-to-end latent world model built around the 
+Latent Difference Action Decoder (LDAD). Instead of reconstructing actions from concatenated latent
+states, LDAD predicts the executed action from the latent difference Δ​zt=zt+1−zt\Delta z_{t}=z_
+{t+1}-z_{t}. This displacement-level inverse objective encourages action-sensitive latent dynamics
+that are crucial for planning: if different actions from the same latent state lead to
+indistinguishable next embeddings, the world model cannot represent action-controllable next-state
+transitions, making latent rollouts uninformative for planning. Conversely, a latent representation
+is more controllable when different actions from the same state induce distinguishable next-state
+embeddings. By requiring the action to be recovered from Δ​zt\Delta z_{t}, LDAD encourages
+different actions to induce distinguishable latent displacements and next-state embeddings, while
+discouraging action prediction from relying on state-specific cues rather than the transition
+itself.
+
+Delta-JEPA trains this mechanism with a simple two-objective scheme: latent forward prediction
+models future representations under actions, while LDAD makes action-induced latent displacements
+predictive of their actions. This design is particularly important for planning, where candidate
+action sequences are evaluated through latent rollouts and the model must distinguish how
+alternative actions drive the environment forward. Empirically, we show that Delta-JEPA improves
+planning performance and learns more action-sensitive latent transition structure across diverse
+continuous-control tasks.
+
+The main contributions of this work are summarized as follows:
+
+  • •
+   
+    Action-Sensitive Latent Dynamics: We introduce LDAD, a displacement-based inverse objective
+    that mitigates collapse by enforcing action-distinguishable latent transitions.
+
+  • •
+   
+    Two-Objective Training Framework: We develop Delta-JEPA, an end-to-end latent world model
+    trained only with latent forward prediction and LDAD-based action reconstruction.
+
+  • •
+   
+    Empirical Validation: We evaluate Delta-JEPA on diverse continuous-control tasks and show
+    improved planning performance together with stronger action-sensitive latent dynamics.
+
+Related Work
+
+Latent World Models
+
+World models learn compact predictive models of environment dynamics that support planning and
+control from high-dimensional observations (Ha and Schmidhuber 2018b; Ha and Schmidhuber 2018a). A
+prominent line of work builds latent dynamics models for visual control, including PlaNet (Hafner
+et al. 2019b), Dreamer (Hafner et al. 2019a), and DreamerV3 (Hafner et al. 2023), which encode
+pixels into latent states and use imagined rollouts for planning or policy learning. These methods
+demonstrate the effectiveness of latent imagination, but they commonly rely on reconstruction or
+reward-driven objectives. This motivates reconstruction-free latent world models that directly
+predict compact representations and focus model capacity on control-relevant state changes.
+
+Joint Embedding Predictive Architectures
+
+Joint Embedding Predictive Architectures (JEPA) were proposed as non-generative predictive models
+that compare predictions in representation space rather than input space (LeCun and others 2022).
+I-JEPA instantiates this idea for images by predicting masked target embeddings from context
+embeddings (Assran et al. 2023), while V-JEPA extends feature prediction to videos and learns
+spatiotemporal representations without labels, text supervision, or pixel reconstruction (Bardes et
+al. 2024). For world model learning, JEPA is attractive because planning requires accurate
+predictions of how different actions lead to different future states, rather than photorealistic
+observation synthesis. However, end-to-end JEPA training with only latent prediction losses can
+admit trivial constant representations, making collapse prevention a central design issue.
+
+Collapse Prevention and Inverse Dynamics
+
+Recent JEPA-based world models introduce additional constraints to avoid feature collapse. DINO-WM 
+(Zhou et al. 2025) stabilizes latent dynamics learning by using frozen DINOv2 visual features (
+Oquab et al. 2023), but this limits task-specific adaptation of the representation. LeWorldModel
+trains end-to-end with a SigReg-style Gaussian regularizer to encourage non-collapsed latent
+features (Maes et al. 2026; Balestriero and LeCun 2025). PLDM combines predictive learning with
+VICReg-style regularization and inverse dynamics (Sobal et al. 2026; Bardes et al. 2021), but its
+action decoder operates on concatenated state embeddings, which can allow action-correlated
+endpoint cues to support inverse prediction without strongly constraining the transition itself. In
+contrast, Delta-JEPA applies inverse dynamics directly to latent displacements, using action
+reconstruction to make action-induced latent differences distinguishable while avoiding frozen
+encoders and complex multi-term regularization.
+
+Refer to caption
+Figure 1: Overview of Delta-JEPA framework. Raw observations oto_{t} and ot+1o_{t+1} are mapped to
+latent representations ztz_{t} and zt+1z_{t+1} via a shared encoder. In the forward path, the
+dynamics predictor forecasts the subsequent representation z^t+1\hat{z}_{t+1} from ztz_{t} and the
+action ata_{t}, guided by the prediction loss ℒpred\mathcal{L}_{\text{pred}}. Concurrently, the
+Latent Difference Action Decoder receives the latent displacement Δ​zt\Delta z_{t} to reconstruct
+the action a^t\hat{a}_{t}, supervised by the action loss ℒaction\mathcal{L}_{\text{action}}. This
+displacement-based action supervision encourages action-induced latent differences to be
+distinguishable, and the entire framework is optimized end-to-end via ℒ=ℒpred+λ​ℒaction\mathcal{L}=
+\mathcal{L}_{\text{pred}}+\lambda\mathcal{L}_{\text{action}}.
+
+Method
+
+Problem Formulation
+
+Following the standard paradigm of unsupervised latent world models, we focus on the problem of
+world model learning in a reward-free, offline setting (Maes et al. 2026). We are given an offline
+dataset 𝒟={(o1,a1,…,oT)}\mathcal{D}=\{(o_{1},a_{1},\dots,o_{T})\} consisting of trajectories with
+alternating high-dimensional raw image observations ot∈ℝC×H×Wo_{t}\in\mathbb{R}^{C\times H\times W}
+and continuous actions at∈ℝdaa_{t}\in\mathbb{R}^{d_{a}}. Crucially, 𝒟\mathcal{D} contains no
+task-specific reward signals and is collected by arbitrary, unknown behavior policies.
+
+Our goal is to learn a compact latent representation space 𝒵⊆ℝd\mathcal{Z}\subseteq\mathbb{R}^{d}
+with an action-sensitive latent dynamics predictor, without reconstructing pixels or using task
+rewards.
+
+Overview of Delta-JEPA
+
+As illustrated in Figure 1, Delta-JEPA consists of two coupled objectives. The latent forward
+dynamics predictor learns to forecast the next representation from the current representation and
+action, providing the rollout model required for planning. The Latent Difference Action Decoder
+(LDAD) adds an inverse-dynamics constraint on the displacement between adjacent latent states,
+requiring this displacement to recover the action that caused the transition. Together, these
+objectives train an end-to-end reconstruction-free world model that discourages collapse to
+action-insensitive representations and promotes action-sensitive next-state predictions.
+
+Latent Forward Dynamics Predictor
+
+The encoder fθf_{\theta} maps each observation oto_{t} to a latent representation zt=fθ​(ot)z_{t}=
+f_{\theta}(o_{t}). Conditioned on ztz_{t} and action ata_{t}, the dynamics predictor PϕP_{\phi}
+estimates the next latent state:
+
+ z^t+1=Pϕ​(zt,at),\hat{z}_{t+1}=P_{\phi}(z_{t},a_{t}),  (1)
+
+where z^t+1\hat{z}_{t+1} represents the predicted next latent state.
+
+We train the encoder and predictor with a mean-squared prediction loss in latent space:
+
+ ℒpred=‖z^t+1−zt+1‖22,\mathcal{L}_{\text{pred}}=\left\|\hat{z}_{t+1}-z_{t+1}\right\|_{2}^{2},  (2)
+
+where zt+1=fθ​(ot+1)z_{t+1}=f_{\theta}(o_{t+1}) is the target representation produced by the same
+encoder.
+
+Although Eq. (2) enables reconstruction-free dynamics learning, it is degenerate when used alone:
+the encoder and predictor can reduce the loss by collapsing to nearly constant representations.
+Such a solution preserves little information for planning even if the prediction loss is small.
+LDAD addresses this failure mode by adding an action-grounded constraint on the difference between
+adjacent latent states.
+
+Latent Difference Action Decoder (LDAD)
+
+LDAD imposes an inverse-dynamics constraint on the difference between adjacent latent states. Given
+two encoded observations ztz_{t} and zt+1z_{t+1}, we define the latent displacement as
+
+ Δ​zt=zt+1−zt.\Delta z_{t}=z_{t+1}-z_{t}.   (3)
+
+The decoder then predicts the executed action from this displacement:
+
+ a^t=DΘ​(Δ​zt),\hat{a}_{t}=D_{\Theta}(\Delta z_{t}),  (4)
+
+where DΘD_{\Theta} denotes the action decoder and a^t\hat{a}_{t} denotes the predicted action. The
+decoder is trained end-to-end with a mean-squared action reconstruction loss:
+
+ ℒaction=‖a^t−at‖22.\mathcal{L}_{\text{action}}=\left\|\hat{a}_{t}-a_{t}\right\|_{2}^{2}.  (5)
+
+Refer to caption
+Figure 2: Illustration of LDAD-induced action-sensitive latent geometry. Without displacement-level
+action supervision (top left), different actions from the same latent state ztz_{t} may produce
+similar next embeddings. LDAD computes each displacement Δ​zt(i)=zt+1(i)−zt\Delta z_{t}^{(i)}=z_
+{t+1}^{(i)}-z_{t}, decodes the action a^t(i)\hat{a}_{t}^{(i)}, and supervises it with ℒaction=‖a^
+t−at‖22\mathcal{L}_{\text{action}}=\|\hat{a}_{t}-a_{t}\|_{2}^{2} (bottom). This encourages
+action-conditioned transitions to occupy distinguishable directions and endpoints in latent space
+(top right).
+
+Action-Supervised Displacement Mechanism.
+
+As illustrated in Figure 2, the top-left panel shows an action-insensitive latent geometry:
+different actions from the same ztz_{t} can produce nearby next embeddings, making the latent
+transition difficult to distinguish by action. LDAD addresses this failure mode through the
+decoding pipeline shown at the bottom. For each transition, it computes the displacement Δ​zt(i)=
+zt+1(i)−zt\Delta z_{t}^{(i)}=z_{t+1}^{(i)}-z_{t}, predicts the corresponding action a^t(i)\hat{a}_
+{t}^{(i)}, and optimizes the reconstruction loss against the executed action at(i)a_{t}^{(i)}.
+Since the decoder observes only the displacement, successful action recovery requires the local
+transition geometry to encode the executed action, thereby encouraging action-induced displacements
+to become distinguishable.
+
+The top-right panel depicts the intended effect of this supervision: different actions induce
+separated transition directions and next embeddings. This geometry is particularly important for
+planning. When different candidate actions lead to similar latent endpoints, rollouts provide
+little evidence for comparing their consequences and can therefore cause the planner to select
+ambiguous or incorrect actions. By contrast, separated action-conditioned transitions make
+candidate rollouts more action-controllable and more informative for planning. The Two-Room
+trajectory visualization in Figure 5 provides empirical evidence consistent with this mechanism,
+showing trajectories with nearby initial states progressively separating under Delta-JEPA as their
+action-conditioned rollouts diverge. Complementarily, the action-response PCA in Figure 6 directly
+probes the learned predictor by fixing the starting history and varying only the action input,
+showing that Delta-JEPA produces clearly separated action-wise responses whereas LeWM remains
+concentrated near the origin.
+
+Effects of Displacement-Based Action Decoding.
+
+The displacement-based inverse objective affects the learned representation in three ways:
+
+ 1. 1.
+   
+    Anti-Collapse Effect. The action reconstruction objective discourages the encoder from mapping
+    consecutive observations to nearly identical latent vectors. If adjacent observations collapse,
+    then Δ​zt\Delta z_{t} becomes uninformative and DΘD_{\Theta} cannot recover the executed
+    action.
+
+ 2. 2.
+   
+    Reducing Dependence on Single-State Cues. A standard inverse dynamics decoder predicts actions
+    from concatenated latent states, a^t=DΘ​([zt,zt+1])\hat{a}_{t}=D_{\Theta}([z_{t},z_{t+1}]). In
+    our setting, this formulation can admit shortcuts: because the forward predictor receives ata_
+    {t} when predicting z^t+1\hat{z}_{t+1}, the learned target representation zt+1z_{t+1} may
+    contain action-correlated cues that allow the inverse decoder to recover ata_{t} without
+    strongly modeling the transition itself. LDAD reduces this risk by conditioning the decoder
+    only on the relative displacement Δ​zt\Delta z_{t}, so action reconstruction must be supported
+    by the change between adjacent latent states rather than by state-specific cues.
+
+ 3. 3.
+   
+    Action-Sensitive Latent Dynamics for Planning. For planning, the latent representation must
+    support action-conditioned latent rollouts. LDAD encourages different actions from the same
+    latent state to produce distinguishable latent displacements and next-state embeddings. As a
+    result, candidate actions can be compared through the distinct latent rollouts they induce,
+    providing more informative predictions for action selection.
+
+Multi-Step Action Decoding
+
+We implement DΘD_{\Theta} with a Transformer backbone and extend LDAD to multi-step action decoding
+to capture longer-horizon temporal structure. Given a horizon N≥1N\geq 1, the decoder reconstructs
+the sequence of actions spanning the interval from tt to t+Nt+N using the long-horizon latent
+displacement:
+
+ {a^τ}τ=tt+N−1=DΘ​(zt+N−zt).\{\hat{a}_{\tau}\}_{\tau=t}^{t+N-1}=D_{\Theta}(z_{t+N}-z_{t}).  (6)
+
+The multi-step LDAD action decoder uses a Transformer with NN learnable action queries. The
+displacement zt+N−ztz_{t+N}-z_{t} is injected into each query through Adaptive Layer Normalization
+(AdaLN), after which the Transformer layers produce the NN reconstructed continuous actions. This
+multi-step extension imposes an action-grounded dynamics constraint over longer temporal intervals
+in latent space.
+
+Joint Optimization and End-to-End Training
+
+Ultimately, the overall training objective of our framework is formulated as a joint loss
+comprising the forward prediction loss and the action reconstruction loss:
+
+ ℒ=ℒpred+λ​ℒaction,\mathcal{L}=\mathcal{L}_{\text{pred}}+\lambda\mathcal{L}_{\text{action}},  (7)
+
+where λ>0\lambda>0 is a balancing hyperparameter.
+
+Delta-JEPA uses only two objectives: latent prediction learns action-conditioned dynamics, and
+action reconstruction makes local latent transitions action-sensitive. It requires no frozen
+encoders, stop-gradient branches, or distribution-matching regularizers.
+
+
+Table 1: Planning success rate (%, higher is better) on four continuous-control environments. Bold
+numbers indicate the best performance in each environment.
+
+  Method          Two-Room               Reacher               Push-T               OGB-Cube
+   PLDM    93.73±1.0393.73_{\pm   64.33±2.1464.33_{\pm  76.13±1.7076.13_{\pm  57.27±1.5357.27_{\pm
+           1.03}                  2.14}                 1.70}                 1.53}
+   LeWM    74.93±0.4274.93_{\pm   79.87±0.9079.87_{\pm  84.53±1.5084.53_{\pm  64.13±1.8964.13_{\pm
+           0.42}                  0.90}                 1.50}                 1.89}
+ Sub-JEPA  90.60±0.5390.60_{\pm   81.00±2.4081.00_{\pm  63.73±0.1263.73_{\pm  62.67±1.4562.67_{\pm
+           0.53}                  2.40}                 0.12}                 1.45}
+Delta-JEPA 100.00±0.00\mathbf     81.33±0.50\mathbf     89.07±1.90\mathbf     79.27±1.81\mathbf
+  (Ours)   {100.00_{\pm 0.00}}    {81.33_{\pm 0.50}}    {89.07_{\pm 1.90}}    {79.27_{\pm 1.81}}
+
+Experiments
+
+Experimental Setup
+
+Environments. We evaluate Delta-JEPA on four diverse continuous-control tasks:
+
+  • •
+   
+    Push-T (Chi et al. 2025): A 2D non-prehensile manipulation task in which the agent pushes a
+    T-shaped object to a target pose through physical contact.
+
+  • •
+   
+    Reacher (Tassa et al. 2018): A continuous-control task in which the agent controls a two-link
+    planar robotic arm to reach a randomly spawned target.
+
+  • •
+   
+    Cube (Park et al. 2025): A 3D robotic manipulation task in which the agent controls a gripper
+    to relocate a cube to a target 3D position.
+
+  • •
+   
+    Two-Room (Zhou et al. 2025): A 2D continuous-navigation task in which the agent navigates
+    through a two-room maze to a designated target point.
+
+Baselines. We compare Delta-JEPA with several state-of-the-art JEPA-based and
+representation-learning world models:
+
+  • •
+   
+    LeWorldModel (LeWM) (Maes et al. 2026): Our primary baseline and foundation, which combines
+    next-step latent representation prediction with Gaussian latent-space regularization to enable
+    stable end-to-end JEPA training directly from raw pixels.
+
+  • •
+   
+    Sub-JEPA (Zhao et al. 2026): An extension of LeWM that introduces subspace Gaussian
+    regularization to further improve training stability and representation quality.
+
+  • •
+   
+    PLDM (Sobal et al. 2026): An end-to-end pixel-based world model that relies on a compound
+    objective comprising VICReg, inverse dynamics, and temporal smoothness terms, making
+    hyperparameter tuning highly cumbersome.
+
+Implementation Details. To ensure a fair comparison, we keep the evaluation protocol and the
+network architectures of our encoder and predictor consistent with those of LeWM. Specifically, the
+visual encoder fθf_{\theta} is instantiated as a randomly initialized ViT-Tiny. The dynamics
+predictor is parameterized as a 6-layer causal Transformer (16 attention heads, a head dimension of
+64, and an MLP hidden dimension of 2048), where action-conditioning features are injected through
+Adaptive Layer Normalization for state prediction. To minimize the computational overhead of action
+decoding, we implement the action decoder as a lightweight 3-layer non-causal Transformer with N=5N
+=5 learnable action queries, 8 attention heads, a head dimension of 64, and an FFN hidden dimension
+of 512.
+
+Planning Performance
+
+We first report planning success rates under an evaluation protocol consistent with LeWM. During
+training and evaluation, Delta-JEPA, PLDM, Sub-JEPA, and LeWM are trained from scratch for 50
+epochs. Specifically, Delta-JEPA is optimized with a learning rate of 5×10−55\times 10^{-5}, and
+the action reconstruction weight λ\lambda is set to 10.010.0. For PLDM, Sub-JEPA, and LeWM, we
+follow their respective official training configurations. We randomly sample 50 and 500
+trajectories from each environment to construct the validation and test sets, respectively. All
+methods reported in Table 1 are independently evaluated over 3 random seeds. The mean planning
+success rates on the test set are summarized in Table 1.
+
+Delta-JEPA achieves the highest mean planning success rate across all four environments. The
+improvement is most pronounced on OGB-Cube, where Delta-JEPA exceeds the strongest baseline by
+15.14 percentage points, and on Two-Room, where it improves over PLDM by 6.27 points. On Push-T,
+Delta-JEPA improves over LeWM by 4.54 points, indicating that LDAD benefits contact-rich
+manipulation. On Reacher, where Sub-JEPA already performs strongly, Delta-JEPA still obtains the
+best mean result with a smaller margin. Overall, these results suggest that action reconstruction
+from latent displacements helps the predictor distinguish action-dependent outcomes, leading to
+stronger planning performance across navigation and manipulation tasks.
+
+Ablation Study
+
+Action Reconstruction Weight.
+
+To evaluate the impact of the proposed LDAD, we conduct a sensitivity analysis of the action
+reconstruction weight λ\lambda in the Push-T environment. Specifically, we vary λ\lambda over the
+candidate set {0,0.1,1.0,10.0,20.0,50.0,100.0,1000.0}\{0,0.1,1.0,10.0,20.0,50.0,100.0,1000.0\}. As
+shown in Figure 3, setting λ=0\lambda=0 removes LDAD entirely, and the resulting model nearly
+collapses, yielding only a negligible planning success rate. When λ=0.1\lambda=0.1, the LDAD signal
+remains too weak to provide effective regularization, and the model still performs poorly. In
+contrast, once λ\lambda falls within a reasonable range, the planning performance becomes
+substantially higher and remains relatively stable, with the best result obtained at λ=50.0\lambda=
+50.0. Performance degrades again when the action reconstruction weight is excessively large.
+
+Refer to caption
+Figure 3: Sensitivity of Push-T planning success to the action reconstruction weight λ\lambda. The
+curve reports the mean success rate over 3 runs, and the peak performance is highlighted.
+
+Displacement-Based Action Decoding.
+
+To evaluate whether displacement-based action decoding improves downstream planning, we compare
+LDAD with a variant that reconstructs actions from the concatenated endpoint embeddings [zt,zt+1]
+[z_{t},z_{t+1}] instead of the displacement Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Both variants
+use the same training and evaluation protocol and differ only in the action-decoder input, allowing
+us to isolate how this design choice affects planning success.
+
+
+Table 2: Ablation of the action-decoder input representation. The concat variant decodes actions
+from [zt,zt+1][z_{t},z_{t+1}], whereas LDAD decodes actions from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}
+-z_{t}. Values are planning success rates (%) over three seeds.
+
+Action-Decoder        Two-Room              Reacher               Push-T              OGB-Cube
+     Input
+ [zt,zt+1][z_   95.93±0.6195.93\pm    80.27±0.8180.27\pm   76.47±2.0876.47\pm   78.60±3.2978.60\pm
+ {t},z_{t+1}]   0.61                  0.81                 2.08                 3.29
+ Δ​zt\Delta z_  100.00±0.00\mathbf    81.33±0.50\mathbf    89.07±1.90\mathbf    79.27±1.81\mathbf
+  {t} (LDAD)    {100.00\pm 0.00}      {81.33\pm 0.50}      {89.07\pm 1.90}      {79.27\pm 1.81}
+     Gain       +4.07+4.07            +1.07+1.07           +12.60+12.60         +0.67+0.67
+
+As shown in Table 2, using Δ​zt\Delta z_{t} as the action-decoder input improves planning success
+on all four environments. The gain is largest on Push-T (+12.60+12.60 points), followed by Two-Room
+(+4.07+4.07 points), while Reacher and OGB-Cube show smaller but consistent improvements. These
+results indicate that, under the same planning protocol, reconstructing actions from latent
+displacements provides a more effective training signal for action-conditioned rollouts than
+reconstructing actions from concatenated endpoint embeddings.
+
+LDAD Decoding Target.
+
+
+Table 3: Ablation of LDAD decoding targets on Reacher.
+
+         Decoded Target           Planning Success Rate (%)
+       Raw action ata_{t}         81.33±0.5081.33\pm 0.50
+     Δ\Delta finger position      64.93±1.1064.93\pm 1.10
+     Δ\Delta joint position       80.47±2.1080.47\pm 2.10
+Δ\Delta finger and joint position 76.40±1.4076.40\pm 1.40
+
+We further ablate the decoding target used by LDAD on Reacher. Besides the raw action ata_{t}, we
+replace the action reconstruction target with state-delta proxies derived from the agent state,
+including Δ\Delta finger position, Δ\Delta joint position, and their concatenation. As shown in
+Table 3, decoding raw actions performs best, while Δ\Delta joint position achieves comparable
+performance and substantially outperforms Δ\Delta finger position. This suggests that LDAD benefits
+from targets that are tightly aligned with the controllable transition structure of the agent.
+Notably, concatenating Δ\Delta finger position with Δ\Delta joint position does not further improve
+performance, indicating that adding extra state-change signals may introduce redundant or less
+action-aligned information rather than strengthening the displacement supervision.
+
+Latent Diversity and Collapse Prevention
+
+Refer to caption
+Figure 4: Evolution of the learned latent space on Push-T visualized by PCA on 2000 latent
+representations.
+
+To qualitatively examine the structure of the learned latent space on Push-T, we apply Principal
+Component Analysis (PCA) (Abdi and Williams 2010) to 2000 latent representations extracted by the
+encoder. Figure 4 presents the resulting projections at epochs 1, 4, 7, and 10. In the early stage
+of training, the representations are concentrated within a relatively compact region, suggesting
+limited latent diversity. As training progresses, they gradually expand over a broader region and
+form more discernible structures. This trend indicates that Delta-JEPA mitigates representation
+collapse and learns increasingly discriminative features.
+
+Action-Sensitive Latent Dynamics
+
+Refer to caption
+Figure 5: PCA visualization of two Two-Room latent trajectories with nearby initial states but
+different endpoints, shown across training epochs for Delta-JEPA (top) and LeWM (bottom). Blue and
+orange denote the two trajectories, and color intensity indicates temporal progression from early
+states (light) to later states (dark).
+
+We further compare Delta-JEPA and LeWM on two Two-Room trajectories selected to have nearby initial
+states but different endpoints, as shown in Figure 5. Each point denotes a latent representation;
+blue and orange indicate the two trajectories, and darker colors correspond to later timesteps.
+Delta-JEPA exhibits clear temporal compositionality: the two trajectories start close in latent
+space and gradually separate as their action-conditioned rollouts diverge. This behavior is
+consistent with the LDAD mechanism, which encourages latent displacements to preserve
+action-dependent transition information. LeWM, by contrast, separates some features but produces a
+less organized geometry, with trajectories that are more scattered and less clearly aligned with
+temporal progression or action-controllable rollout structure.
+
+Refer to caption
+Figure 6: PCA visualization of action-conditioned predictor responses on Two-Room. We sample 512
+starting histories and keep the history representation ztz_{t} fixed while replacing the final
+action with each candidate action. For each candidate action, we visualize the predicted
+displacement relative to the zero-action prediction. Each translucent point corresponds to one
+starting history under one candidate action, and each numbered marker shows the mean response of
+that candidate action across all 512 histories.
+
+To directly test whether the predictor responds consistently to action changes, we sample 512
+Two-Room starting histories and keep each history representation fixed while varying only the final
+action input. For each candidate action aa, we compute the predicted next representation z^t+1​(a)\
+hat{z}_{t+1}(a) and measure its displacement relative to the zero-action prediction, z^t+1​(a)−z^
+t+1​(0)\hat{z}_{t+1}(a)-\hat{z}_{t+1}(0). Figure 6 shows a zoomed view centered on the zero-action
+response, making the action-wise mean markers easier to distinguish. Delta-JEPA produces
+well-separated action-wise mean responses, with larger action magnitudes generally inducing larger
+predicted shifts. In contrast, LeWM’s action-wise means remain concentrated near the origin and
+substantially overlap, indicating that changing the action does not induce a stable directional
+change in its prediction. These results show that Delta-JEPA learns predictor dynamics that are
+more consistently conditioned on the action input.
+
+Refer to caption
+Figure 7: Attention rollout visualizations on Push-T (top) and Two-Room (bottom) using intermediate
+layers 4–6 of the ViT-Tiny encoder. Warmer colors indicate higher attention weights.
+
+Physical and State-Delta Probing
+
+To evaluate whether the learned representations preserve underlying environment information, we
+freeze the encoder and train linear and multi-layer perceptron probes to decode task-specific
+ground-truth physical attributes from latent states, including agent, object, and end-effector
+states. For each task, we sample 20,000 observations and split train/test data by trajectory.
+Table 4 reports the Two-Room results, and the full probe results on the remaining environments are
+provided in Appendix A.1. Lower MSE and higher rr indicate better representational quality.
+
+
+Table 4: Physical latent probing results on Two-Room. Lower MSE and higher rr indicate better
+representational quality.
+
+                                Linear                        MLP
+ Property    Method   MSE ↓\downarrow r↑r\uparrow MSE ↓\downarrow r↑r\uparrow
+              PLDM    0.0780.078      0.9600.960  0.0020.002      0.9990.999
+Agent Pos.  Sub-JEPA  0.1790.179      0.9070.907  0.0060.006      0.9970.997
+              LeWM    0.0850.085      0.9500.950  0.0020.002      0.9990.999
+           Delta-JEPA 0.0040.004      0.9980.998  0.0000.000      1.0001.000
+
+We use the same probing protocol as above to evaluate whether latent displacements encode
+environment changes. Specifically, instead of decoding physical attributes xtx_{t} from a single
+latent state ztz_{t}, we train probes to predict state changes Δ​xt=xt+1−xt\Delta x_{t}=x_{t+1}-x_
+{t} from latent displacements Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. For each task, we sample
+20,000 consecutive timestep pairs, split train/test data by trajectory, and train both linear and
+MLP probes over three random seeds. Table 5 reports the Two-Room results, and Appendix A.2 provides
+the corresponding results on Push-T, DMC Reacher, and OGB-Cube. Lower MSE and higher rr indicate
+that latent displacements better preserve the direction and magnitude of the corresponding physical
+or task-state changes.
+
+
+Table 5: State-delta probing results on Two-Room. The probe predicts Δ​xt=xt+1−xt\Delta x_{t}=x_
+{t+1}-x_{t} from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Lower MSE and higher rr indicate better
+alignment between latent displacements and physical state changes.
+
+                                        Linear                        MLP
+     Property        Method   MSE ↓\downarrow r↑r\uparrow MSE ↓\downarrow r↑r\uparrow
+                      PLDM    0.3550.355      0.8130.813  0.0950.095      0.9550.955
+Δ\Delta Agent Pos.  Sub-JEPA  0.6010.601      0.6740.674  0.1410.141      0.9280.928
+                      LeWM    0.4440.444      0.7650.765  0.0850.085      0.9580.958
+                   Delta-JEPA 0.0160.016      0.9920.992  0.0050.005      0.9970.997
+
+Task-Relevant Attention Patterns
+
+To further assess the interpretability of the learned latent representations, we visualize the
+self-attention patterns of the ViT-Tiny encoder on the Push-T and Two-Room tasks. We employ
+attention rollout on intermediate transformer blocks and report heatmaps from layers 4–6, where
+object-related cues are expected to be captured before being integrated into higher-level task
+representations. As shown in Figure 7, although the model is trained without dense pixel-level
+reconstruction or explicit object-level supervision, the attention maps concentrate on
+task-relevant regions, including the agent and the T-shaped block, while assigning relatively low
+attention to background areas. Additional layer-wise attention visualizations in Appendix A.3
+further show that different encoder layers can emphasize different task-relevant entities.
+Together, these qualitative results suggest that Delta-JEPA learns compact representations that
+preserve physically meaningful and object-centric visual structure across environments.
+
+Conclusion
+
+We proposed Delta-JEPA, a reconstruction-free latent world model that uses Latent Difference Action
+Decoding to supervise action information directly in latent displacements. By reconstructing
+actions from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}, Delta-JEPA discourages collapse and encourages
+different actions to induce distinguishable latent transitions for planning, while retaining a
+simple objective that combines latent prediction with action reconstruction. Experiments across
+four continuous-control tasks show that Delta-JEPA improves planning performance over JEPA-based
+and representation-learning baselines, and ablations confirm the advantage of displacement-based
+decoding over endpoint concatenation. Additional analyses further indicate that the learned
+representations preserve action-sensitive and physically meaningful transition structure. These
+results suggest that supervising latent differences is an effective principle for learning compact,
+collapse-resistant world models for planning.
+
+References
+
+  • Abdi and Williams (2010) H. Abdi and L. J. Williams Principal component analysis. Wiley
+    interdisciplinary reviews: computational statistics 2 (4), pp. 433–459. Cited by: Latent
+    Diversity and Collapse Prevention.
+  • Assran et al. (2023) M. Assran, Q. Duval, I. Misra, P. Bojanowski, P. Vincent, M. Rabbat, Y.
+    LeCun, and N. Ballas Self-supervised learning from images with a joint-embedding predictive
+    architecture. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+    recognition, pp. 15619–15629. Cited by: Introduction, Introduction, Joint Embedding Predictive
+    Architectures.
+  • Assran et al. (2025) M. Assran, A. Bardes, D. Fan, Q. Garrido, R. Howes, M. Muckley, A. Rizvi,
+    C. Roberts, K. Sinha, A. Zholus, et al. V-jepa 2: self-supervised video models enable
+    understanding, prediction and planning. arXiv preprint arXiv:2506.09985. Cited by: Introduction
+    .
+  • Balestriero and LeCun (2025) R. Balestriero and Y. LeCun Lejepa: provable and scalable
+    self-supervised learning without the heuristics. arXiv preprint arXiv:2511.08544. Cited by:
+    Introduction, Collapse Prevention and Inverse Dynamics.
+  • Bardes et al. (2024) A. Bardes, Q. Garrido, J. Ponce, X. Chen, M. Rabbat, Y. LeCun, M. Assran,
+    and N. Ballas Revisiting feature prediction for learning visual representations from video. 
+    arXiv preprint arXiv:2404.08471. Cited by: Joint Embedding Predictive Architectures.
+  • Bardes et al. (2021) A. Bardes, J. Ponce, and Y. LeCun Vicreg: variance-invariance-covariance
+    regularization for self-supervised learning. arXiv preprint arXiv:2105.04906. Cited by:
+    Collapse Prevention and Inverse Dynamics.
+  • Chi et al. (2025) C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S.
+    Song Diffusion policy: visuomotor policy learning via action diffusion. The International
+    Journal of Robotics Research 44 (10-11), pp. 1684–1704. Cited by: 1st item.
+  • Ha and Schmidhuber (2018a) D. Ha and J. Schmidhuber Recurrent world models facilitate policy
+    evolution. Advances in neural information processing systems 31. Cited by: Introduction, Latent
+    World Models.
+  • Ha and Schmidhuber (2018b) D. Ha and J. Schmidhuber World models. eprint arXiv: 1803.10122. 
+    Cited by: Introduction, Latent World Models.
+  • Hafner et al. (2019a) D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi Dream to control: learning
+    behaviors by latent imagination. arXiv preprint arXiv:1912.01603. Cited by: Introduction,
+    Latent World Models.
+  • Hafner et al. (2019b) D. Hafner, T. Lillicrap, I. Fischer, R. Villegas, D. Ha, H. Lee, and J.
+    Davidson Learning latent dynamics for planning from pixels. In International conference on
+    machine learning, pp. 2555–2565. Cited by: Introduction, Latent World Models.
+  • Hafner et al. (2023) D. Hafner, J. Pasukonis, J. Ba, and T. Lillicrap Mastering diverse domains
+    through world models. arXiv preprint arXiv:2301.04104. Cited by: Latent World Models.
+  • Hauri and Zenke (2026) M. Hauri and F. Zenke Dreamer-cdp: improving reconstruction-free world
+    models via continuous deterministic representation prediction. arXiv preprint arXiv:2603.07083.
+    Cited by: Introduction.
+  • LeCun et al. (2022) Y. LeCun et al. A path towards autonomous machine intelligence version 0.9.
+    2, 2022-06-27. Open Review 62 (1), pp. 1–62. Cited by: Joint Embedding Predictive Architectures
+    .
+  • Maes et al. (2026) L. Maes, Q. L. Lidec, D. Scieur, Y. LeCun, and R. Balestriero Leworldmodel:
+    stable end-to-end joint-embedding predictive architecture from pixels. arXiv preprint
+    arXiv:2603.19312. Cited by: Introduction, Introduction, Collapse Prevention and Inverse
+    Dynamics, Problem Formulation, 1st item.
+  • Oquab et al. (2023) M. Oquab, T. Darcet, T. Moutakanni, H. Vo, M. Szafraniec, V. Khalidov, P.
+    Fernandez, D. Haziza, F. Massa, A. El-Nouby, et al. Dinov2: learning robust visual features
+    without supervision. arXiv preprint arXiv:2304.07193. Cited by: Collapse Prevention and Inverse
+    Dynamics.
+  • Park et al. (2025) S. Park, K. Frans, B. Eysenbach, and S. Levine Ogbench: benchmarking offline
+    goal-conditioned rl. In International Conference on Learning Representations, Vol. 2025, 
+    pp. 94937–94982. Cited by: 3rd item.
+  • Sobal et al. (2026) U. Sobal, W. Zhang, K. Cho, R. Balestriero, T. G. Rudner, and Y. LeCun 
+    Learning from reward-free offline data: a case for planning with latent dynamics models. 
+    Advances in Neural Information Processing Systems 38, pp. 43905–43941. Cited by: Introduction,
+    Collapse Prevention and Inverse Dynamics, 3rd item.
+  • Tassa et al. (2018) Y. Tassa, Y. Doron, A. Muldal, T. Erez, Y. Li, D. d. L. Casas, D. Budden,
+    A. Abdolmaleki, J. Merel, A. Lefrancq, et al. Deepmind control suite. arXiv preprint
+    arXiv:1801.00690. Cited by: 2nd item.
+  • Wu et al. (2023) P. Wu, A. Escontrela, D. Hafner, P. Abbeel, and K. Goldberg Daydreamer: world
+    models for physical robot learning. In Conference on robot learning, pp. 2226–2240. Cited by:
+    Introduction.
+  • Zhao et al. (2026) K. Zhao, D. Nie, Y. Lin, Z. Luo, Y. Gu, D. Fan, and D. Zeng Sub-jepa:
+    subspace gaussian regularization for stable end-to-end world models. arXiv preprint
+    arXiv:2605.09241. Cited by: 2nd item.
+  • Zhou et al. (2025) G. Zhou, H. Pan, Y. Lecun, and L. Pinto DINO-wm: world models on pre-trained
+    visual features enable zero-shot planning. In International Conference on Machine Learning, 
+    pp. 79115–79135. Cited by: Collapse Prevention and Inverse Dynamics, 4th item.
+
+Appendix A Additional Probe and Attention Results
+
+This appendix provides the complete diagnostic results that complement the probing and attention
+analyses in the main text. It is organized into three parts. Appendix A.1 reports physical state
+probing results for Push-T, DMC Reacher, and OGB-Cube. Appendix A.2 reports state-delta probing
+results on the same environments. Appendix A.3 provides an additional attention visualization
+showing layer-wise specialization in the visual encoder.
+
+A.1 Physical State Probing
+
+This section extends the physical state probing analysis beyond the Two-Room results reported in
+the main text. For each environment, we freeze the visual encoder and train linear and MLP probes
+to predict ground-truth physical quantities from latent states. Tables 6–8 report the results for
+Push-T, DMC Reacher, and OGB-Cube, covering controllable agent states, robot states, and object
+states. Lower MSE and higher Pearson correlation rr indicate that the learned representation
+preserves more physical information.
+
+
+Table 6: Physical latent probing results on Push-T. Lower MSE and higher rr indicate better
+representational quality.
+
+                                    Linear                        MLP
+   Property      Method   MSE ↓\downarrow r↑r\uparrow MSE ↓\downarrow r↑r\uparrow
+                  PLDM    0.0070.007      0.9960.996  0.0000.000      1.0001.000
+Agent Location  Sub-JEPA  0.0940.094      0.9550.955  0.0030.003      0.9990.999
+                  LeWM    0.0170.017      0.9910.991  0.0000.000      1.0001.000
+               Delta-JEPA 0.0040.004      0.9980.998  0.0000.000      1.0001.000
+                  PLDM    0.0550.055      0.9740.974  0.0060.006      0.9970.997
+Block Location  Sub-JEPA  0.2500.250      0.8950.895  0.0060.006      0.9970.997
+                  LeWM    0.0410.041      0.9790.979  0.0020.002      0.9990.999
+               Delta-JEPA 0.1890.189      0.9290.929  0.0130.013      0.9940.994
+                  PLDM    0.0050.005      0.9980.998  0.0000.000      1.0001.000
+ Block Angle    Sub-JEPA  0.0240.024      0.9880.988  0.0010.001      0.9990.999
+                  LeWM    0.0040.004      0.9980.998  0.0000.000      1.0001.000
+               Delta-JEPA 0.0110.011      0.9950.995  0.0010.001      1.0001.000
+
+
+Table 7: Physical latent probing results on DMC Reacher. Lower MSE and higher rr indicate better
+representational quality.
+
+                                     Linear                        MLP
+   Property       Method   MSE ↓\downarrow r↑r\uparrow MSE ↓\downarrow r↑r\uparrow
+                   PLDM    0.0160.016      0.9920.992  0.0000.000      1.0001.000
+Finger Position  Sub-JEPA  0.7980.798      0.6320.632  0.0140.014      0.9950.995
+                   LeWM    0.2620.262      0.8690.869  0.0960.096      0.9690.969
+                Delta-JEPA 0.5200.520      0.7770.777  0.0560.056      0.9720.972
+                   PLDM    0.2150.215      0.8790.879  0.1330.133      0.9280.928
+Joint Position   Sub-JEPA  0.7600.760      0.4460.446  0.5450.545      0.6730.673
+                   LeWM    0.6300.630      0.5860.586  0.7890.789      0.5760.576
+                Delta-JEPA 0.6220.622      0.5370.537  0.5550.555      0.6510.651
+
+
+Table 8: Physical latent probing results on OGB-Cube. Lower MSE and higher rr indicate better
+representational quality.
+
+                                            Linear                        MLP
+      Property          Method   MSE ↓\downarrow r↑r\uparrow  MSE ↓\downarrow r↑r\uparrow
+                         PLDM    0.5450.545      0.5950.595   0.3040.304      0.8130.813
+   Joint Position      Sub-JEPA  0.6190.619      0.4820.482   0.9280.928      0.5110.511
+                         LeWM    0.8170.817      0.4700.470   1.4941.494      0.5180.518
+                      Delta-JEPA 0.3780.378      0.6740.674   0.6210.621      0.6520.652
+                         PLDM    0.9530.953      0.2690.269   0.6560.656      0.5950.595
+   Joint Velocity      Sub-JEPA  1.0821.082      0.0410.041   1.7971.797      0.0350.035
+                         LeWM    1.2621.262      0.0540.054   4.7654.765      0.0350.035
+                      Delta-JEPA 0.9360.936      0.2730.273   1.3041.304      0.2830.283
+                         PLDM    0.0250.025      0.9880.988   0.0030.003      0.9980.998
+End-Effector Position  Sub-JEPA  0.2260.226      0.9090.909   0.0270.027      0.9870.987
+                         LeWM    0.5150.515      0.7390.739   0.2560.256      0.8970.897
+                      Delta-JEPA 0.0070.007      0.9970.997   0.0010.001      1.0001.000
+                         PLDM    0.3630.363      0.7910.791   0.1360.136      0.9270.927
+  End-Effector Yaw     Sub-JEPA  0.9580.958      0.0750.075   1.8741.874      −0.084-0.084
+                         LeWM    1.4681.468      −0.037-0.037 1.8861.886      −0.100-0.100
+                      Delta-JEPA 1.2181.218      −0.074-0.074 1.9871.987      −0.073-0.073
+                         PLDM    0.2460.246      0.8600.860   0.0570.057      0.9710.971
+   Block Position      Sub-JEPA  0.3270.327      0.8350.835   0.0540.054      0.9730.973
+                         LeWM    0.4640.464      0.7650.765   0.2440.244      0.8850.885
+                      Delta-JEPA 0.0380.038      0.9830.983   0.0070.007      0.9970.997
+                         PLDM    0.6350.635      0.5770.577   0.2960.296      0.8390.839
+  Block Quaternion     Sub-JEPA  1.1801.180      −0.030-0.030 2.4122.412      −0.062-0.062
+                         LeWM    1.8031.803      −0.090-0.090 3.6703.670      −0.057-0.057
+                      Delta-JEPA 1.0531.053      0.2730.273   1.6191.619      0.2050.205
+                         PLDM    0.4620.462      0.7420.742   0.1900.190      0.9040.904
+      Block Yaw        Sub-JEPA  1.6961.696      0.1660.166   3.1563.156      0.0380.038
+                         LeWM    2.9272.927      −0.294-0.294 2.9452.945      −0.076-0.076
+                      Delta-JEPA 1.7581.758      0.2410.241   1.8961.896      0.2320.232
+
+A.2 State-Delta Probing
+
+This section evaluates whether latent displacements encode physical changes between consecutive
+observations. Instead of predicting state variables xtx_{t} from ztz_{t}, each probe predicts Δ​xt=
+xt+1−xt\Delta x_{t}=x_{t+1}-x_{t} from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Tables 9–11 report
+the results for Push-T, DMC Reacher, and OGB-Cube, spanning agent motion, robot motion,
+end-effector motion, and object motion. This directly tests whether the transition representation
+preserves the direction and magnitude of environment changes.
+
+
+Table 9: State-delta probing results on Push-T. The probe predicts Δ​xt=xt+1−xt\Delta x_{t}=x_{t+1}
+-x_{t} from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Lower MSE and higher rr indicate better
+alignment between latent displacements and physical state changes.
+
+                                            Linear                        MLP
+       Property          Method   MSE ↓\downarrow r↑r\uparrow MSE ↓\downarrow r↑r\uparrow
+                          PLDM    0.0610.061      0.9690.969  0.0120.012      0.9940.994
+Δ\Delta Agent Location  Sub-JEPA  0.2910.291      0.8460.846  0.0370.037      0.9810.981
+                          LeWM    0.0910.091      0.9540.954  0.0170.017      0.9910.991
+                       Delta-JEPA 0.0180.018      0.9950.995  0.0010.001      1.0001.000
+                          PLDM    0.1140.114      0.9440.944  0.0200.020      0.9910.991
+Δ\Delta Block Location  Sub-JEPA  0.3750.375      0.8070.807  0.0280.028      0.9870.987
+                          LeWM    0.0730.073      0.9660.966  0.0140.014      0.9930.993
+                       Delta-JEPA 0.1890.189      0.9270.927  0.0240.024      0.9890.989
+                          PLDM    0.1030.103      0.9500.950  0.0120.012      0.9940.994
+ Δ\Delta Block Angle    Sub-JEPA  0.3330.333      0.8230.823  0.0150.015      0.9930.993
+                          LeWM    0.0880.088      0.9590.959  0.0060.006      0.9970.997
+                       Delta-JEPA 0.1630.163      0.9240.924  0.0130.013      0.9940.994
+
+
+Table 10: State-delta probing results on DMC Reacher. The probe predicts Δ​xt=xt+1−xt\Delta x_{t}=
+x_{t+1}-x_{t} from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Lower MSE and higher rr indicate better
+alignment between latent displacements and physical state changes.
+
+                                              Linear                        MLP
+       Property           Method   MSE ↓\downarrow r↑r\uparrow  MSE ↓\downarrow r↑r\uparrow
+                           PLDM    0.6050.605      0.6540.654   0.3190.319      0.8280.828
+Δ\Delta Finger Position  Sub-JEPA  1.0071.007      0.1970.197   0.4570.457      0.7510.751
+                           LeWM    0.7840.784      0.5070.507   0.6440.644      0.6480.648
+                        Delta-JEPA 0.9000.900      0.3590.359   1.1501.150      0.4670.467
+                           PLDM    1.3661.366      0.0670.067   1.3781.378      0.2840.284
+Δ\Delta Joint Position   Sub-JEPA  1.0721.072      −0.027-0.027 1.0651.065      0.3110.311
+                           LeWM    1.4081.408      0.0170.017   1.7551.755      0.1370.137
+                        Delta-JEPA 1.0121.012      0.2070.207   0.2370.237      0.8700.870
+
+
+Table 11: State-delta probing results on OGB-Cube. The probe predicts Δ​xt=xt+1−xt\Delta x_{t}=x_
+{t+1}-x_{t} from Δ​zt=zt+1−zt\Delta z_{t}=z_{t+1}-z_{t}. Lower MSE and higher rr indicate better
+alignment between latent displacements and physical state changes.
+
+                                                    Linear                        MLP
+          Property              Method   MSE ↓\downarrow r↑r\uparrow  MSE ↓\downarrow r↑r\uparrow
+                                 PLDM    0.8510.851      0.2830.283   2.0562.056      0.2620.262
+   Δ\Delta Joint Position      Sub-JEPA  0.7440.744      0.3650.365   0.6130.613      0.5440.544
+                                 LeWM    0.7900.790      0.3550.355   0.8900.890      0.5170.517
+                              Delta-JEPA 0.3580.358      0.6860.686   0.3590.359      0.7110.711
+                                 PLDM    1.1881.188      0.0170.017   2.4782.478      0.1490.149
+   Δ\Delta Joint Velocity      Sub-JEPA  1.0761.076      0.0660.066   1.0561.056      0.2740.274
+                                 LeWM    1.1301.130      0.0550.055   1.6871.687      0.2530.253
+                              Delta-JEPA 0.8580.858      0.3910.391   0.7530.753      0.5550.555
+                                 PLDM    0.6080.608      0.6540.654   0.2610.261      0.8680.868
+Δ\Delta End-Effector Position  Sub-JEPA  0.4430.443      0.7600.760   0.1130.113      0.9390.939
+                                 LeWM    0.6780.678      0.5680.568   0.3360.336      0.8120.812
+                              Delta-JEPA 0.0100.010      0.9950.995   0.0030.003      0.9990.999
+                                 PLDM    1.1471.147      −0.012-0.012 2.5732.573      −0.039-0.039
+  Δ\Delta End-Effector Yaw     Sub-JEPA  0.8510.851      0.0830.083   1.2031.203      0.1880.188
+                                 LeWM    1.0551.055      0.0370.037   1.5781.578      −0.013-0.013
+                              Delta-JEPA 0.8510.851      0.2390.239   0.1600.160      0.9100.910
+                                 PLDM    0.8450.845      0.4170.417   1.0471.047      0.4200.420
+   Δ\Delta Block Position      Sub-JEPA  0.6140.614      0.5900.590   0.3370.337      0.7900.790
+                                 LeWM    0.6750.675      0.5260.526   0.5390.539      0.6460.646
+                              Delta-JEPA 0.1980.198      0.8860.886   0.0240.024      0.9870.987
+                                 PLDM    0.9270.927      0.0270.027   1.9211.921      0.0870.087
+  Δ\Delta Block Quaternion     Sub-JEPA  0.8270.827      −0.004-0.004 1.2901.290      0.0280.028
+                                 LeWM    0.9110.911      0.0230.023   1.2731.273      0.1080.108
+                              Delta-JEPA 0.6880.688      0.2260.226   1.0011.001      0.1590.159
+                                 PLDM    1.6681.668      −0.055-0.055 34.41834.418    −0.085-0.085
+      Δ\Delta Block Yaw        Sub-JEPA  1.5621.562      −0.012-0.012 1.6511.651      −0.025-0.025
+                                 LeWM    1.6381.638      −0.041-0.041 3.4243.424      −0.013-0.013
+                              Delta-JEPA 1.5741.574      0.0500.050   1.5921.592      0.0430.043
+
+A.3 Layer-Wise Attention Specialization
+
+This section complements the attention rollout visualizations in the main text by examining whether
+different encoder layers emphasize different task-relevant entities. We visualize OGB-Cube
+attention maps from two intermediate layers of the same encoder to compare how attention shifts
+across the visual hierarchy.
+
+Refer to caption
+Figure 8: Layer-wise specialization of attention maps on OGB-Cube. Layer 5 highlights the target
+cube, while layer 7 more prominently attends to the robotic gripper. Warmer colors indicate higher
+attention weights.
+
+As illustrated in Figure 8, different intermediate layers emphasize distinct functional components
+of the same OGB-Cube scenes. Layer 5 primarily attends to the target cube, whereas layer 7 places
+stronger emphasis on the robotic gripper. These observations indicate that the encoder
+progressively organizes task-relevant entities across layers, rather than relying on a single
+undifferentiated saliency pattern.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

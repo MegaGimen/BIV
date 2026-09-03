@@ -2,7 +2,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
-当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
+当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。**当前 Stage 1 就是改目标（\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)）+ LDAD 逆动力学**；训练循环里如果还是 `chat(h+a)` 对 `chat(o)`，把它改成文档里的图，不要再给有症状的那张图调参。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
 
@@ -91,7 +91,7 @@ Instruct 和 AgentWorld 是同一套盒子：
 | `lm_head` | 词表读出 | Instruct，保留 | 出字的嘴；经 \(W\) 吃动作向量 |
 | 线性层 \(W\) | \(2048\times 2048\)（约 \(4\times 10^6\) 参数） | 新建 | 把胜出分支的动作向量映到 Instruct `lm_head` 熟悉的门口 |
 | 草稿头 | 新模块，一个共享主干 + 两个小输出头 | 新建 | 从 Agent 分支的 \(c_t\) 提出 \(K\) 个候选：一路 \(u_k^W\) 喂给 JEPA，一路 \(u_k^A\) 喂给 \(W\)。这两个输出头顺带兼职当连接件，见下 |
-| JEPA | \(\hat z=\) 对历史+命令**单独**走 chat 模板再编码，取 `len(unpad)+last_token` 处的隐藏向量（Qwen 默认 `last_token=-3`） | Stage 1 训好，Stage 2 冻死 | 不再另挂小 MLP。接线抄 LLM-JEPA：Text 和 Code 各编一次、互不看见 |
+| JEPA | \(\hat z=\mathrm{Pred}(z_t,u)\)。\(z_t=\mathrm{Enc}(h)\)，\(u=\mathrm{Enc}(a)\)，目标 \(z_{t+1}=\mathrm{Enc}(h,a,o)\)；LDAD 从 \(\Delta z=z_{t+1}-z_t\) 还原命令 token | Stage 1 训好，Stage 2 冻死 | 预测器只吃 \(z_t\) 和动作，不许回看原文历史。**不要**独立 `Enc(o)` |
 | 打分器 | 新模块 | 新建 | 读每个候选的 \((u_k^W,\hat z_k)\)，给 \(K{+}1\) 个候选（\(K\) 个草稿 + 1 个真实分支）打分；输入层顺带兼职当连接件另一半 |
 
 **连接件焊在哪，不是单独一个模块**。草稿头的 \(u^W\) 输出头（把 Agent 分支的 \(c_t\) 翻成 World 分支/JEPA 认得的动作向量）和打分器读 \(\hat z\) 的那层输入（把 World 分支的预测换算成对选择有用的分数），各自顶着自己本来就要挂的损失去训——不是先离线做一个「让分布看起来像」的对齐、再指望它管用。这条离线对齐的路已经有反例：两个独立模型之间做到 0.97 余弦相似度的线性映射，注入进真实前向计算之后照样没用（[Pythia 多跳负结果](https://consensus.app/papers/details/3882637eac3059fa87366e0661f009b7/)）；反过来端到端地、挨着真实下游损失训连接件才有用（[Bicameral](https://consensus.app/papers/details/95cf6a71ffee5d18b78189605ec37f2d/)、[KV-Cache Alignment](https://consensus.app/papers/details/798e52a7c2835eeaa12313a7cc9d83a5/)）。AgentWorld 和 Instruct 同出一个 Base、同一套 40 层盒子，分叉前表征空间完全相同，这个起点比上面两篇论文验证过的场景都好，但好起点不能替代对的训练方法——这一点是这条设计里最容易踩空的地方，训连接件时要留意。
@@ -104,19 +104,19 @@ u_i^A \;\xrightarrow{W}\; \texttt{Instruct lm\_head} \;\to\; \text{命令 token}
 
 `lm_head` 吃的是 \(W(u_i^A)\)。World 分支的 \(h_{39}\)、打分 \(s[i]\)、\(\hat z\) 都不进 **Instruct** 这张表。Stage 1 会用 **AgentWorld 自己的** `lm_head` 写观察（见下），那是另一张表、另一条损失；命令的 token 交叉熵只打在 Instruct 的 \(W\)、`lm_head`、草稿头的 \(u^A\) 输出头上。两条 backbone 天生分开，命令交叉熵进不了 World 分支。
 
-Stage 1 的「预测下一观察」就是 **World 分支自己**把历史+命令当成一轮对话单独编码（不是从完整序列上切前缀），取 `last_token` 那个位置的隐藏向量。Stage 2 训练时对每个候选命令同样跑一遍冻住的 AgentWorld，同一套取向量规则当 \(\hat z_k\)，和真实观察的独立编码一起送进打分器。
+Stage 1 的「预测下一状态」是：World 分支把历史编成 \(z_t\)，把命令单独编成 \(u\)，预测器只吃这两个向量吐 \(\hat z\)；目标是整段对话 \(h{+}a{+}o\) 编出来的 \(z_{t+1}\)，不是单独编那句 stdout。Stage 2 查询冻住的世界模型时，对每个候选同样走 \(\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，不要再拿独立 `Enc(o)` 当 \(\hat z_k\)。
 
 ### 每个 Stage 实际接通的图
 
-**Stage 1（世界，只碰 AgentWorld）。** 配方抄 LLM-JEPA 的 `RepresentationTrainer`：两路损失同时训。左边把历史+命令单独套 chat 模板再编码（他们的 Enc(Text)），右边把真观察单独套 chat 模板再编码（他们的 Enc(Code)），向量取在 `len(unpad)+last_token`（Qwen 默认 `-3`）。写字路用 AgentWorld 自己的 `lm_head` 对完整对话做移位交叉熵，只解开观察正文那些标签。对齐是 `1 - cosine`，两边都带梯度。没有 JEPA MLP、没有逆动力学、没有 SimCSE/bank。Agent 分支、草稿、打分、Instruct `lm_head`、\(W\) 全部不参与。更新：AgentWorld 全部 40 层的 LoRA。
+**Stage 1（世界，只碰 AgentWorld）。** 当前接法是两件事同时上：把目标从独立 `Enc(o)` 改成历史中介的 \(z_t/z_{t+1}\)，再在 \(\Delta z\) 上接 Delta-JEPA 的逆动力学。写字路仍用 AgentWorld 自己的 `lm_head` 对完整对话做移位交叉熵，只解开观察正文。Agent 分支、草稿、打分、Instruct `lm_head`、\(W\) 全部不参与。更新：AgentWorld 全部 40 层 LoRA + `JEPAPred` + LDAD。操作过程见「训练全过程」Stage 1。
 
 **Stage 2（出字，两条分支都上）。** Agent 分支算出 \(c_t\) → 草稿头提出 \(K\) 个候选命令向量 \(u_k^A\)（喂 \(W\)）以及对应的命令 token 串 → 冻死的 AgentWorld 对每个候选把 \((h, a_k)\) 编一遍，末尾隐藏向量就是 \(\hat z_k\) → 打分器给 \(K{+}1\) 个候选打分 → 训练时走教师强制的真实分支解码，推理时才用 \(\arg\max\) 选出 \(u_i^A\) → \(W\) → Instruct `lm_head`。Step 1 冻两条 backbone 和 Instruct `lm_head`，只训草稿 / 打分 / \(W\)；Step 2 才小步解开 Instruct `lm_head` 和 Agent 分支。
 
 ```mermaid
 flowchart TD
     subgraph WORLD["World 分支 — Stage 1 训好，Stage 2 整段冻住"]
-        H1["历史 h + 候选命令 a_k"] --> AWBB["AgentWorld 自己的 40 层（冻）"]
-        AWBB --> ZHAT["ẑ_k = 末尾隐藏向量"]
+        H1["Enc(h) 和 Enc(a_k)"] --> PRED["Pred（冻）"]
+        PRED --> ZHAT["ẑ_k"]
     end
 
     subgraph AGENT["Agent 分支 — Instruct 自己的 40 层"]
@@ -127,7 +127,7 @@ flowchart TD
         DRAFT --> AK["候选命令 token 串"]
     end
 
-    AK --> AWBB
+    AK --> PRED
     ZHAT --> SCORER["打分器（新，可训）"]
     SCORER --> PICK["argmax 选 i（仅推理时；训练时走教师强制，见「训练全过程」Stage 2）"]
     UA --> WMAT["线性 W 2048x2048（可训）"]
@@ -138,7 +138,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    SD["Stage Data"] --> S1["Stage 1：AgentWorld + LLM-JEPA 两路损失"]
+    SD["Stage Data"] --> S1["Stage 1：中介目标 + Pred + LDAD"]
     S1 --> S2["Stage 2 Step1 门口 / Step2 嘴巴"]
     S2 --> EV["Stage Eval"]
 ```
@@ -153,36 +153,50 @@ Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉�
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
-**Stage 1 直接读 AgentWorld 自己的 checkpoint，不经过任何切鱼步骤。** `train_jepa.py` 用 `merge/download.py` 的 `resolve_model(role="world")` 解析 `configs/jepa/stage1.yaml` 里的 `model_dir`（默认 `Qwen/Qwen-AgentWorld-35B-A3B`），缺失会自动下载进 `merge/output/cache`。**`lm_head` 留在活模块里**（AgentWorld 自己那张表）：主干 `forward` 只出隐藏状态（65k 全序列乘词表会爆显存），写字路只对观察标签那些位置再乘这张表，移位方式和 HuggingFace CausalLM 相同。对齐路是两次独立前向：`Enc(chat(h+a))` 和 `Enc(chat(o))`，各取 `last_token`（默认 `-3`），`1 - cosine`，两边都带梯度。三段序列分开跑、按 batch 实际长度 pad，不把三条拼成一个 3 倍 batch（那是他们 2k 序列上的写法）。LoRA 打在**全部 40 层**。启动时打印架构：`biv_wm.arch.log_world_architecture(..., expect_lm_head="attached")`。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 2×2：组内 CP=2，两组并行；序列 32768）。检查点节奏与原来相同：2 个 epoch、每 25 步滚存 `checkpoint-e{epoch}-s{step}`（只留最新 3 个）、每个 epoch 结束永久存 `checkpoint-epoch{N}-end-s{step}`。损失和坍缩检查共用 `log_steps`（默认 5）。`--resume` 在 `output_dir`（默认 `outputs/jepa_stage1`）里按 epoch 再 steps 选最新完整检查点。FSDP 下只 gather LoRA 到 CPU 再写 `adapter_model.safetensors`，没有 `jepa.pt` / `inv.pt`。控制台和 TensorBoard 前缀一律 `jepa`。MLP+SimCSE 配方已经从本线入口拿掉；若 `outputs/jepa_stage1` 里还有带 `jepa.pt` 的旧检查点，不要 `--resume` 那些。姐妹分支的脚本名才是 `train_jepallm.sh`。官方对照代码在 `train/vendor/llm-jepa/`（不进训练循环）。数据仍用 `wm_code` / `wm_os`（`mix_v2` 优先；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。主干 LoRA `5e-5`，warmup 50 步后恒定。
+**Stage 1 直接读 AgentWorld 自己的 checkpoint，不经过任何切鱼步骤。** `train_jepa.py` 用 `merge/download.py` 的 `resolve_model(role="world")` 解析 `configs/jepa/stage1.yaml` 里的 `model_dir`（默认 `Qwen/Qwen-AgentWorld-35B-A3B`），缺失会自动下载进 `merge/output/cache`。**`lm_head` 留在活模块里**（AgentWorld 自己那张表）：主干 `forward` 只出隐藏状态（65k 全序列乘词表会爆显存），写字路只对观察标签那些位置再乘这张表，移位方式和 HuggingFace CausalLM 相同。对齐路是：`Enc(chat(h))` → \(z_t\)，`Enc(chat(a))` → \(u\)，`Enc(chat(h,a,o))` → \(z_{t+1}\)（与写字那次 full 前向共用），`JEPAPred(z_t,u)` → \(\hat z\)。LDAD 吃 \(\Delta z=z_{t+1}-z_t\)。三段序列分开跑、按 batch 实际长度 pad。**不要**再走 `Enc(chat(o))`。LoRA 打在**全部 40 层**。启动时打印架构：`biv_wm.arch.log_world_architecture(..., expect_lm_head="attached")`。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 2×2：组内 CP=2，两组并行；序列 32768）。检查点节奏与原来相同：2 个 epoch、每 25 步滚存 `checkpoint-e{epoch}-s{step}`（只留最新 3 个）、每个 epoch 结束永久存 `checkpoint-epoch{N}-end-s{step}`。损失和坍缩检查共用 `log_steps`（默认 5）。`--resume` 在 `output_dir`（默认 `outputs/jepa_stage1`）里按 epoch 再 steps 选最新完整检查点。FSDP 下 gather LoRA 到 CPU 写 `adapter_model.safetensors`，另外把 `JEPAPred` 和 LDAD 写成 `jepa.pt` / `ldad.pt`（不要写旧的 `inv.pt`）。控制台和 TensorBoard 前缀一律 `jepa`。MLP+SimCSE 和独立 `Enc(o)` 对齐都已经从配方里拿掉；若 `outputs/jepa_stage1` 里还有带旧 `jepa.pt` 或只有 adapter、没有 Pred/LDAD 的检查点，不要 `--resume` 那些。姐妹分支的脚本名才是 `train_jepallm.sh`。官方对照代码在 `train/vendor/llm-jepa/`（不进训练循环）。数据仍用 `wm_code` / `wm_os`（`mix_v2` 优先；**不要** `anti_forget`）。LoRA 只打 2D 线性叶子。FSDP wrap `Qwen3_5MoeDecoderLayer`。主干 LoRA `5e-5`，warmup 50 步后恒定。
 
-Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读任何切鱼输出），挂上草稿头 / 打分器 / \(W\)；Stage 1 训好的 AgentWorld LoRA 作为另一份独立权重加载进来，整段冻死，前向时对 `(h, 候选命令)` 编一遍，末尾隐藏向量当 \(\hat z\)，不参与 Stage 2 任何一步的参数更新。
-
-Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读 Stage 1 产物、不读任何切鱼输出），挂上草稿头 / 打分器 / \(W\)；Stage 1 训好的 JEPA（连同它挂着的 AgentWorld）作为另一份独立权重加载进来，整段冻死，前向时被当顾问查询，不参与 Stage 2 任何一步的参数更新。
+Stage 2 单独加载 Instruct 自己的完整 checkpoint（不读任何切鱼输出），挂上草稿头 / 打分器 / \(W\)；Stage 1 训好的 AgentWorld LoRA + Pred + LDAD 作为另一份独立权重加载进来，整段冻死，前向时对每个候选算 \(\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\) 当 \(\hat z_k\)，不参与 Stage 2 任何一步的参数更新。
 
 ---
 
 ## 训练全过程（Stage / Step）
 
-顺序就是实验。Stage 1 的观察 token 交叉熵打在 **AgentWorld 自己的** `lm_head` 上，用来挡住坍缩；命令仍不在这一阶段写。Instruct 的 `lm_head` 要到 Stage 2 才碰。**不再有「Stage −1 切鱼」这一步**——AgentWorld 和 Instruct 各自保留完整权重，`probe.py`/`compare.py` 只是诊断工具，不产出任何要接进训练图的切好的 checkpoint。
+顺序就是实验。Stage 1 当前就是改目标 + 逆动力学（见下），观察 token 交叉熵打在 **AgentWorld 自己的** `lm_head` 上，只负责把观察写成字，不当防坍缩的主锚。命令的嘴巴仍要到 Stage 2 才写；LDAD 还原命令是世界侧的辅助损失，梯度进 AgentWorld LoRA，不进 Instruct。**不要**再把独立 `Enc(o)` 的 LLM-JEPA 对齐当 live 配方重训一遍。**不再有「Stage −1 切鱼」这一步**——AgentWorld 和 Instruct 各自保留完整权重，`probe.py`/`compare.py` 只是诊断工具，不产出任何要接进训练图的切好的 checkpoint。
 
 **Stage Data — 切成回合**
 
 - **Step 1.** 从原始轨迹里，把每一条命令和它后面那次沙箱观察配成一对。训练原子是 \((h, a, o)\)：发命令前的历史、这条真命令、真打回来的下一观察。
 - **Step 2.** 按「上下文 / 动作 / 下一状态」来用。打乱 \(o\) 的拷贝当对照臂。
 
-**Stage 1 — 世界（只碰 AgentWorld，LLM-JEPA 两路损失）**
+**Stage 1 — 世界（只碰 AgentWorld：中介目标 + Pred + LDAD）**
 
-套的是 [LLM-JEPA](https://arxiv.org/abs/2509.14252) 的 `RepresentationTrainer` 接线，配对换成我们的转移：左边 = 历史+命令（他们的 issue / Text），右边 = 真观察（他们的 diff / Code）。对照代码在 `train/vendor/llm-jepa/finetune.py`，训练**不调用**那份脚本；35B 仍走本仓库的 FSDP2+CP，三段序列分开前向、不整段过词表。
+这就是当前 Stage 1，不是下一步、不是对照实验。独立 `Enc(o)` 对齐已经在 32k 抽查里表现为 `collapse_like`（CE 很低、`z_self`~0.91、配对和错配一起升），**不要再改超参重跑那张图**。要改的是 `train/scripts/train_jepa.py` 的编码和损失：把 `encode_texts` 的 `left=chat(h+a)` / `right=chat(o)` 换成下面三段；把 `JEPAPred` 和 LDAD 接回去。`encode_mediated` 已经按 \(z_t=\mathrm{Enc}(h)\)、\(z_{t+1}=\mathrm{Enc}(h,a,o)\) 写好了，训练循环要吃它（再补一段独立的 `chat(a)`），不要只给 probe 用。FSDP2+CP 不变；`train/vendor/llm-jepa/` 只作历史对照，训练不调用。
 
-- **Step 1.** `model_dir` 解析成 AgentWorld（`train/configs/jepa/stage1.yaml`）。**`lm_head` 留着**：底座冻住，LoRA 不打在这张表上，但写字损失的梯度穿过它回到骨干 LoRA。`forward` 主干只出隐藏状态。启动时确认 `lm_head: attached`。
-- **Step 2.** 每个 \((h,a,o)\) 做成三段，和他们 user / assistant / full 一样各自走 chat 模板：完整对话给交叉熵，`chat(h+a)` 给左边，`chat(o)` 给右边。mix JSONL 里 user = 工具调用、assistant = 真观察。观察必须单独编码，不能从完整序列里抠。轨迹超窗时**从后面整回合丢掉**（a、b 已经顶满就当 c 没发生过），再对留下的前缀做 `split_hao`；绝不砍掉开头。只有第一回合本身仍超窗，才对 token 从右边切。
-- **Step 3.** 两路损失加在一起，一次反传：
+对照论文原文的操作如下。贯穿例子仍是：先 `ls` 看到 `a.txt`，再 `rm a.txt`，沙箱打回 `gone`。
+
+- **Step 1.** `model_dir` 解析成 AgentWorld（`train/configs/jepa/stage1.yaml`）。**`lm_head` 留着**：底座冻住，LoRA 不打在这张表上，写字损失和 LDAD 的 token 交叉熵都穿过它回到骨干 LoRA。`forward` 主干只出隐藏状态。启动时确认 `lm_head: attached`。两个小模块在 `train/src/biv_wm/jepa.py`：`JEPAPred`（已有，吃 \(z_t\|u\)）和 LDAD（**不要**复用现成的 `InverseDyn`，见失败案例）。
+- **Step 2.** 每个 \((h,a,o)\) 做成三段独立 chat，Qwen `last_token=-3`：
+
+  | 张量 | 序列 | 取什么 |
+  |------|------|--------|
+  | \(z_t\) | `chat(h)` | 历史到 `ls` 那一轮为止（目录里还有 `a.txt`） |
+  | \(u\) | `chat([a])` | 只有这一步命令 `rm a.txt`，预测器拿它当动作，**不把 h 拼进去** |
+  | \(z_{t+1}\) | `chat(h+a+o)` | 同一条对话编到 `gone`；和写字路的 `full_ids` 共用一次前向 |
+
+  mix JSONL 里 user = 工具调用、assistant = 真观察。`split_hao` 不变：最后一轮 user 是 \(a\)，assistant 是 \(o\)，再往前全是 \(h\)。轨迹超窗时**从后面整回合丢掉**，再对留下的前缀做 `split_hao`；绝不砍掉开头。只有第一回合本身仍超窗，才对 token 从右边切。**禁止**再编 `chat([o])`。
+- **Step 3.** 三路损失一次反传（CE 是嘴巴，后两路才是世界）：
 
   \[
-  \texttt{loss} = \gamma\cdot\texttt{lm\_loss} + \lambda\cdot\texttt{jepa\_loss}
+  \texttt{loss} = \gamma\cdot\texttt{lm\_loss} + \lambda_{\mathrm{pred}}\cdot\mathcal{L}_{\mathrm{pred}} + \lambda_{\mathrm{inv}}\cdot\mathcal{L}_{\mathrm{action}}
   \]
 
-  `lm_loss`：HuggingFace 那种移位交叉熵，标签只解开观察正文。观察可能有两三万 token（砍掉后面回合之后，窗口里留下的是完整观察），`lm_head` 按 512 个 token 一块算 logits，避免一次摊开 `[N, 248320]` 把 95GB 卡打爆。`jepa_loss`：`1 - mean(cosine(Enc(left)[last_token], Enc(right)[last_token]))`，**目标不 detach**。默认 \(\gamma=1\)、\(\lambda=0.1\)（他们的 `--gamma` / `--lbd`），Qwen 的 `last_token=-3`。没有 JEPA MLP、没有逆动力学、没有 SimCSE/bank。可训练的只有全部 40 层 LoRA（`rank=16`，`lr=5e-5`）。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开）。冒烟：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。不要 `--resume` 带 `jepa.pt` 的旧 MLP 检查点。训完这一步，AgentWorld+LoRA 整体冻死，Stage 2 只查询、不更新。
+  1. **改目标（严格中介）。** 对照 [Textual Belief States](https://arxiv.org/abs/2606.27681) §2.2 式 (3)(4)：Encoding \(s_t\sim p(\cdot\mid h_t)\)，Predicting \(s_{t+1}\sim p(\cdot\mid s_t,a_t)\)。原文在 `refs/papers/2606.27681-textual-belief-states-strict-mediation.txt`。他们的式 (5) 是从 \(s_{t+1}\) 再写观察；我们写观察仍走 full 序列的移位 CE，不另训文字 JSON 信念、不上 fGRPO。落地：`pred = JEPAPred(z_t, u)`，预测器输入只有这两个 2048 维向量，**不得**把 `h` 的 token 或 `Enc(h+a)` 再喂进去（论文把那种叫 leaky / stateless；命题 2：预测准也不说明 \(s\) 里有东西）。\(\mathcal{L}_{\mathrm{pred}}\) 对照 [Delta-JEPA](https://arxiv.org/abs/2606.31232) 式 (1)(2)：\(\hat z_{t+1}=P_\phi(z_t,a_t)\)，\(\|\hat z_{t+1}-z_{t+1}\|_2^2\)。原文在 `refs/papers/2606.31232-delta-jepa-ldad.txt`。同一套编码器编 \(z_t\) 和 \(z_{t+1}\)，**目标不 detach**。`jepa.py` 里现成的 `cosine_align_loss` 会 `target.detach()`，**不能拿来当 \(\mathcal{L}_{\mathrm{pred}}\)**。2048 维 LLM 向量范数大，实现时先对两边做 L2 normalize 再平方误差（和旧的 `1-cosine` 同一几何，符合式 (2) 的潜空间回归）。默认 \(\lambda_{\mathrm{pred}}=1\)（论文式 (7) 里 \(\mathcal{L}_{\mathrm{pred}}\) 不另加权）。
+
+  2. **逆动力学（LDAD）。** 对照同一篇 §Method LDAD 式 (3)(4)(5)(7) 和 Figure 1：\(\Delta z_t=z_{t+1}-z_t\)，\(\hat a_t=D_\Theta(\Delta z_t)\)，\(\mathcal{L}_{\mathrm{action}}\) 还原**执行过的动作本身**。解码器只看见差值，看不见 \([z_t,z_{t+1}]\) 拼接（Table 2：四个环境差值全面强于拼接；正文写拼接会让 \(z_{t+1}\) 混进动作味道，解码器抄端点就能交差）。Table 3：还原 raw action 强于还原状态差。我们的动作是命令 token，不是 \(\mathbb{R}^{d_a}\)：\(D_\Theta\) 用一小个 MLP（或论文那种 3 层 Transformer + AdaLN）把 \(\Delta z\) 映到 2048，再乘 **AgentWorld 的** `lm_head`，对 `a` 的正文 token 做教师强制交叉熵（`tokenizer.encode(_content(a_msg))`，不要去贴 `Enc(a)`）。两次编码都留梯度，**不要** `torch.no_grad()`、不要 stop-grad。合谋（\(z_t\approx z_{t+1}\) 常数）时 \(\Delta z\approx 0\)，还原不出 `rm a.txt`，\(\mathcal{L}_{\mathrm{action}}\) 升高，梯度打回编码器。论文式 (7) 的 \(\lambda\) 默认 10，消融 \(\lambda=0\) 会塌、\(0.1\) 太弱、过大又掉；我们取 \(\lambda_{\mathrm{inv}}=10\) 起，不要先做成 0。
+
+  3. **`lm_loss`。** 仍是 HuggingFace 移位交叉熵，标签只解开观察正文。这是 AgentWorld 的嘴巴，不是防坍锚。观察可能有两三万 token，`lm_head` 按 512 个 token 一块算 logits，避免一次摊开 `[N, 248320]`。默认 \(\gamma=1\)。
+
+  可训练：全部 40 层 LoRA（`rank=16`，`lr=5e-5`）+ `JEPAPred` + LDAD。没有 SimCSE、没有 bank。`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（不要加 `--resume` 才是从零开）。冒烟：`bash scripts/train_jepa.sh --save-steps 1 --max-steps 2`。不要 `--resume` 带 `jepa.pt` 的旧 MLP 检查点，也不要把独立 `Enc(o)` 那次跑的 adapter 当这一套的热启动。训完这一步，AgentWorld+LoRA+Pred+LDAD 整体冻死，Stage 2 只查询、不更新。
 
 **Live 并行：32768 + 2×2。** `train_jepa.sh` 在 4 卡上默认走这条：两组各 2 卡，组内 `cp_size=2` 切序列，两组吃不同数据（`dp_replicate_size=2`）。比 65536/4 卡整组 CP 快一倍左右，代价是长样本被切得更狠。输出仍是 `outputs/jepa_stage1`，TensorBoard 前缀 `jepa-`，控制台前缀 `[jepa]`。`train_jepa_32k.sh` 只是这个入口的别名。命令：`cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`。两组各吃不同数据靠 `dp_replicate_info()`（`train_jepa.py`）读 accelerate 的设备网格，第一次跑起来时终端会打印每个 rank 的 `dp_replicate rank=x/2`——GPU0/1 应该是 `0/2`、GPU2/3 应该是 `1/2`，不是这样说明这套映射没猜对，需要另外核实。可选更长上下文：`PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh`（单组 4 路 CP）。
 
@@ -192,25 +206,25 @@ accelerate 的 `ParallelismConfig` 自带一条校验，只要 `dp_replicate_siz
 
 **两组的 step 不会错位，不是靠运气。** `ReplicaSampler` 切数据前先按 `(n // dp_size) * dp_size` 截掉多出来的尾巴，保证每组分到的行数完全相等（最多扔掉 `dp_size-1` 行/epoch），`steps_per_epoch` 对两组永远算出同一个数，`save_steps`/`log_steps` 触发的 `step` 在所有 rank 上是同一个整数，不需要临时协商。另外加了 `assert_equal_loader_len()` 作为保险丝：训练开始前用一次 `all_gather_object` 把所有 rank 的 `len(loader)` 收集起来，只要有一个不一样就直接报错退出（把哪个 rank 长度是多少打出来），不会等到训到一半、某组数据先耗尽、another 组的梯度同步集合通信永远等不到对端，卡死在那里都不知道为什么。
 
-写字这一路就是挡坍缩的锚：如果编码器把所有观察编成同一个方向，观察正文写不对。对齐这一路两边都活着，编码器没法把右边焊死再让预测头朝万能方向吐。这是他们成功案例里的做法，不是再叠对比损失。
+写字这一路只是 AgentWorld 的嘴巴。32k 跑已经说明：观察 CE 很低也挡不住独立 `Enc(o)` 的套话锥。防坍靠的是历史中介的 \(z_{t+1}\)（同一句 `gone`、不同 \(h\) 必须分开）加上 \(\Delta z\) 还原不出命令时的惩罚。不要再加 SimCSE/bank，也不要先做 mean-pool / VICReg / 分布头。
 
-坍缩检查只负责报，不产生梯度。损失和检查共用 `log_steps`（默认 5），存盘仍是 `save_steps`（默认 25）。检查用的是这一段已经训过的行上缓存的左边向量 / 右边向量。配对中位数明显高于错配 → 至少在见过的例子上分开了；两者都高 → 坍缩。
+坍缩检查只负责报，不产生梯度。损失和检查共用 `log_steps`（默认 5），存盘仍是 `save_steps`（默认 25）。检查缓存的是这一段已经训过的 \(\hat z\)（Pred 输出）和 \(z_{t+1}\)（`Enc(h,a,o)`）。配对中位数明显高于错配 → 至少在见过的例子上分开了；两者都高 → 坍缩。同一句 stdout、不同历史必须算进负例，不要再按观察原文相同丢掉。
 
 **Stage 1 坍缩检查（和损失一起，每 `log_steps` 步，默认 5）**
 
-这些数字**不是**再跑一遍前向。训练每条样本时已经算出了左边向量 \(\hat z\)（独立编码的历史+命令，`last_token` 位置）和右边向量 \(z^*\)（独立编码的观察），主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计。同一份结果出现三处：终端一行 `[jepa] collapse ...`、`output_dir/collapse.json`、TensorBoard 的 `collapse/*`。
+这些数字**不是**再跑一遍前向。训练每条样本时已经算出了 \(\hat z=\mathrm{Pred}(z_t,u)\) 和 \(z_{t+1}=\mathrm{Enc}(h,a,o)\)，主进程把它们缓存在 CPU 上；碰到 `log_steps` 时一边写 `train/loss*`，一边拿这一段刚训过的行做余弦统计。`collapse_stats` 的 `skip_texts` 用每行自己的历史（或 instance id），不要用观察原文——同一句 `gone` 必须能当负例。同一份结果出现三处：终端一行 `[jepa] collapse ...`、`output_dir/collapse.json`、TensorBoard 的 `collapse/*`。
 
 | 字段 | TensorBoard | 在问什么 |
 |------|-------------|----------|
 | `n` | `collapse/n` | 这一段拿了几条来比 |
-| `skipped_same_o` | `collapse/skipped_same_o` | 两条观察原文完全一样、换位时丢掉的对数 |
-| `paired_med` | `collapse/paired_median` | 左边向量靠不靠近自己这条的真观察编码。对应 `train/loss_jepa`（余弦高 ↔ 对齐损失低） |
-| `mismatch_med` / `mismatch_p90` | `collapse/mismatch_median`、`collapse/mismatch_p90` | 左边向量靠不靠近别人的真观察编码 |
-| `z_self_med` | `collapse/z_self_median` | 两条真观察编完之后彼此像不像 |
-| `pred_self_med` | `collapse/pred_self_median` | 几条左边向量彼此像不像 |
-| `verdict` | `collapse/verdict`（text） | `collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低；`no_mismatch_pairs`＝去掉相同文本后没有负例 |
+| `skipped_same_o` | `collapse/skipped_same_o` | 两条 skip key 完全一样、换位时丢掉的对数（现在不该再按 stdout 全文丢） |
+| `paired_med` | `collapse/paired_median` | \(\hat z\) 靠不靠近自己这条的 \(z_{t+1}\)。对应 `train/loss_pred` |
+| `mismatch_med` / `mismatch_p90` | `collapse/mismatch_median`、`collapse/mismatch_p90` | \(\hat z\) 靠不靠近别人的 \(z_{t+1}\) |
+| `z_self_med` | `collapse/z_self_median` | 不同行的 \(z_{t+1}\) 彼此像不像。同一句 `gone`、不同 \(h\) 这里必须能分开 |
+| `pred_self_med` | `collapse/pred_self_median` | 几条 \(\hat z\) 彼此像不像 |
+| `verdict` | `collapse/verdict`（text） | `collapse_like`＝对自己和对别人都高；`paired_ahead`＝对自己高、对别人低；`unclear`＝两个都低；`no_mismatch_pairs`＝去掉相同 skip key 后没有负例 |
 
-期望方向：`paired_median` 升高、同时 `mismatch_median` 压低。只升配对、错配跟着升 → 万能方向。两项都低 → 还没拟合。差 ≥ 0.2 标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
+期望方向：`paired_median` 升高、同时 `mismatch_median` 压低，`z_self` 从 ~0.91 掉下来。只升配对、错配跟着升 → 万能方向。两项都低 → 还没拟合。差 ≥ 0.2 标 `paired_ahead`；配对 > 0.7 且差距 < 0.05 标 `collapse_like`。
 
 **底座抽查（不训练）：相近向量只记下命令和观察摘要。** 编码改成方案里的历史中介：\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)，不再单独编观察。32k 配方里 `save_steps=25`、`grad_accum=8`、`batch_size=1`、两组卡。一次 optimizer step 在一组卡上吃 8 条；25 step 就是这一组 200 条。两组一起吃不重复的数据时是 400 条。训练时 TensorBoard 的 `collapse/n=40` 是 `log_steps=5` × 8 条，只覆盖更短的一窗。抽查默认跑 **200 条**（25 step、一组卡、和存盘节奏对齐），硬顶 **400**。只前向、不反传、不加 LoRA，取 `last_token=-3`。负例不再按「观察原文相同」丢掉——同一句 `gone`、不同历史要算进 `z_self`。向量余弦 ≥ 0.7 的对写入 JSON，但**只留截断后的命令 / 观察**（默认 120 字、每种最多 24 对），终端再打每种最多 8 行；历史全文不进 JSON 也不进 stdout。`paired` 在这里是同一行 \(z_t\) 和 \(z_{t+1}\) 的余弦（加了命令和观察之后向量动了没有）；`z_self` 是不同行的 \(z_{t+1}\) 彼此像不像。
 
@@ -225,51 +239,32 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 
 结果在 `outputs/jepa_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
 
-**症候怎么修（Consensus 对原文之后，还没在本仓库训过）。** 抽查看见三层叠在一起：独立 `Enc(观察)` 丢掉命令上下文；`last_token` 读出被 `execute_bash`/`cd`/`rm` 套话吸住；单点余弦再把左边贴进这团。计划只剩两刀：先换目标编码（历史中介），再上可回传的 \(\Delta z\)。不做读出对照（mean-pool / 观察跨度池化），不做 VICReg / 高斯几何正则，不做分布头。不要把 IDM 插到目标编码前面。HTML 在 `refs/papers/`。
+**为什么必须换图（已经测过，不要当新实验重做）。** 独立 `Enc(o)` + last-token + 单点余弦叠在一起：套话吸住读出（HTP [2511.14868](https://arxiv.org/abs/2511.14868)），同一句 stdout 丢掉路径/仓库（[2606.27681](https://arxiv.org/abs/2606.27681)），平方误差再贴质心（JEPA Paradox [2607.23531](https://arxiv.org/abs/2607.23531)）。观察 CE 锚定的是模板等价类，隐藏原因可以塌（[2509.12249](https://arxiv.org/abs/2509.12249)）。mean-pool / VICReg / VJEPA 分布头都不是这一刀：prompt 侧 mean-pool 会稀释（[2605.09969](https://arxiv.org/abs/2605.09969)），几何正则要目标先散，变分头在 target 同质时拟合无条件分布。当前 Stage 1 只做上面 Step 2–3 的两件事。
 
-读出被套话吸住：decoder 用最后一个 token 当句向量会 over-squash（HTP，[2511.14868](https://arxiv.org/abs/2511.14868)）。抽查里不同 `rm` 路径余弦 0.95，路径在中间、末尾是同一套 shell。Wang 等人把「生成出来的 token 再 mean-pool」和「把已经写好的 prompt 做 mean-pool」拆开了：前者对齐更好，后者因为因果掩码，前面的 token 看不见后面，平均反而稀释，并不比后几个 token 强（[2605.09969](https://arxiv.org/abs/2605.09969)）。我们的独立 `Enc(o)` 更像编一段已经写好的观察，不是边生成边池化，所以不另做 mean-pool / 观察跨度池化对照。注意力池化、自由文本摘要也不是解：BRACE 把信念压成单点摘要会掉准确率（[2605.11436](https://arxiv.org/abs/2605.11436)）。解法是带着历史编 \(z_{t+1}\)，不是换读出。
-
-观察同质、必须带着历史：Textual Belief States 要求预测 \(o\) 只经过信念 \(s_t\)（严格中介），两个历史若映射到同一个 \(s\) 就会被罚（[2606.27681](https://arxiv.org/abs/2606.27681)）。Agent-BRACE 把信念写成带不确定度的原子命题，策略只读信念（[2605.11436](https://arxiv.org/abs/2605.11436)）。意思是：**目标向量不该是「单独编这句 stdout」**，该是「历史+命令之后的状态摘要」。WebAgent 的 HTML diff 是网页工程解，不是终端模板（[2410.13232](https://arxiv.org/abs/2410.13232)）。ScratchWorld 提醒完整下一状态可以留，但别用整份重合当学会了转移（[2606.31689](https://arxiv.org/abs/2606.31689)）。
-
-单点贴会找质心：JEPA Paradox 写明文本多峰时平方误差去贴条件均值（[2607.23531](https://arxiv.org/abs/2607.23531)）。旁边挂着的观察 CE 也救不了：辅助任务定的是「哪些差别不许塌」；把辅助设成「把这句 stdout 写对」，编码器只要保住模板等价类就够了，隐藏原因（哪个仓库、哪条路径）可以塌（[2509.12249](https://arxiv.org/abs/2509.12249)）。这解释了 CE 已经很低、`z_self` 仍 ~0.91。VJEPA Theorem 1 的「不会坍成常数编码器」假定 target diversity（[2601.14354](https://arxiv.org/abs/2601.14354)）；独立 `Enc(o)` 把这个前提弄坏了，变分头拟合的是无条件分布，所以也不上分布头。UWM-JEPA：teacher-forced 下一状态会让动作项几乎死掉（[2605.25313](https://arxiv.org/abs/2605.25313)）。
-
-逆动力学：像素 JEPA 上，单步 IDM 能当防坍、逼表征保住动作可辨的差别（SMWM，[2606.20104](https://arxiv.org/abs/2606.20104)；Delta-JEPA，[2606.31232](https://arxiv.org/abs/2606.31232)）。同一句 stdout 反推 hidden cause 仍然不适定。GUI 的 task-state、调研 agent 的工作区重建，支持的是原则——状态是历史的受控重建，不是下一条观察的独立向量（[2607.00502](https://arxiv.org/abs/2607.00502), [2511.07327](https://arxiv.org/abs/2511.07327)），不是终端里该抄的文字工作区。
-
-| 改什么 | 能分开「套话不同实例」吗 | 解得了「独立 Enc(o) 同质」吗 |
-|--------|--------------------------|------------------------------|
-| \(z^*\leftarrow\) `Enc(h,a,o)` 或信念摘要 | 能，历史不同则向量不同 | **这就是对这一层的解** |
-| \(\Delta z\) / IDM / SWIRL | 相邻两步别编成同一个点 | 不能；同一句 \(o\) 逆问题不适定 |
-| 观察 CE / DLLM 双视图 | 纸上的生成锚 | 我们 CE 已经很低，没救 last-token JEPA |
-
-下一步实验（未跑；信息够开工，不够宣称训好）。第一刀：\(z_t=\mathrm{Enc}(h_{\le t},a_{<t})\)，预测 \(z_{t+1}=\mathrm{Enc}(h_{\le t},a_{<t},o_t)\)（整段对话一起编，不是单独编 \(o\)），预测器只吃 \(z_t\) 和这一步动作，不许回看原文历史，观察只当监督（写进 \(z_{t+1}\) 那段对话，不再单独当靶）。用贯穿例子走一遍：第一行 `ls` 之后 \(h\) 里有「目录里有 `a.txt`」，这就是下一行 `rm a.txt` 那一步的 \(z_t\)；这一步的 \(z_{t+1}\) 编的是 \(h+\)`rm a.txt`+`gone`，带着「`a.txt` 没了」。另一条轨迹删的是 `b.txt`，即使沙箱同样回一句 `gone`，两条历史不同，两个 \(z_{t+1}\) 就该分开——同质化就是这样被拆开的，不是靠把 `gone` 编得更细。第二刀才是可回传的 \(\Delta z\)（见下一段，和旧 `InverseDyn` 差在哪）。终端信念怎么写成最小状态（路径、依赖、进程）仍开放，先用 `Enc(h,a)` 向量当信念，不要等文字 schema。Harbor 仍是最终裁判。
-
-**失败案例：旧 `InverseDyn` 为什么没用，升级版该接哪个。** `train/src/biv_wm/jepa.py` 里的 `InverseDyn` 还在，是被放弃的配方，不要接到现在的 `train_jepa.py` 上。它在同一个贯穿例子上做的是：\(c=\mathrm{Enc}(h)\)（只编「目录里有 `a.txt`」），\(z=\mathrm{Enc}(o)\)（只编 `gone`，且这次前向整段包在 `torch.no_grad()` 里），把 \(c\) 和 \(z\) 拼起来喂一个小 MLP，去贴 \(u=\mathrm{Enc}(a)\)（`rm a.txt` 的编码）。这条路有两个致命问题：(1) 产出 \(z\) 的那次前向被 `no_grad` 焊死，逆动力学损失再怎么降，梯度都够不到编码器，等于没在训练编码器；(2) 目标本身还是独立 `Enc(o)`，删 `a.txt` 和删 `b.txt` 打回同一句 `gone`，\(z\) 几乎是同一个点，逆动力学在猜一个根本没有信息量的输入，这是同质化问题、不是逆动力学能力问题。
-
-Delta-JEPA（[2606.31232](https://arxiv.org/abs/2606.31232)）的 LDAD 是同一个几何位置上的升级版，三处都不一样：用**差值** \(\Delta z=z_{t+1}-z_t\) 而不是拼接 \([z_t,z_{t+1}]\)（论文消融：拼接会让解码器抄 \(z_{t+1}\) 里混进的动作味道，不一定真的在看转移；四个环境上差值解码全部更强）；还原**真动作**本身而不是猜「命令的编码向量」；两次编码**都留梯度**，不 `no_grad`、不停梯度。落在贯穿例子上：\(z_t\) 编「还有 `a.txt`」，\(z_{t+1}\) 编「没了」（这时已经是历史中介的版本，两次编码都带梯度），差值就是「从有到无」这一截，解码器拿这一截去还原 `rm a.txt` 这条命令字符串本身。若两步编成同一个点，差值是零，还原不出命令，编码器当场被罚。
-
-**这也是为什么第一刀必须先做，第二刀才轮到逆动力学。** 历史中介的 \(z\) 解决的是「同一句观察对应多种隐藏原因」；即使解决了，编码器和预测器仍可能**合谋**——两边一起商量好，把 \(z_t\) 和 \(z_{t+1}\) 都往同一个方向挪，前向损失照样很低，「文件没了」这件事没真正进向量，光看前向损失分不出来。Delta-JEPA 的差值还原就是专门挡这一手的：合谋成立的话差值会缩水、还原不出动作，逆损失立刻升高，把编码器推回去分开编。所以顺序是：先用历史中介的 \(z\) 治同质化，再用 \(\Delta z\) 还原动作治合谋；两件事分开验证，别指望一步顶两步。
+**失败案例：旧 `InverseDyn` 不要接回来。** `train/src/biv_wm/jepa.py` 的 `InverseDyn` 还在，是被放弃的配方。它在贯穿例子上做的是：\(c=\mathrm{Enc}(h)\)，\(z=\mathrm{Enc}(o)\)（整段 `torch.no_grad()`），拼接 \([c,z]\) 去贴 \(u=\mathrm{Enc}(a)\)。两个坑：(1) `no_grad` 焊死观察前向，逆损失够不到编码器；(2) 目标仍是独立 `Enc(o)`，删 `a.txt` 和删 `b.txt` 打回同一句 `gone`，输入没有信息量。Delta-JEPA 的 LDAD 三处都相反：差值不是拼接、还原真命令 token 不是贴编码、两次编码都留梯度。中介目标治的是「同一句观察对应多种隐藏原因」；LDAD 治的是编码器和预测器合谋把 \(z_t,z_{t+1}\) 焊成一点。两件事写进**同一张**损失，不要先只训其中一半、把另一半标成下一步。
 
 **TensorBoard `train/*`**
 
 | 标量 | 是什么 |
 |------|--------|
-| `train/loss` | 每 micro-batch 反传的加权和：\(\gamma\times\)CE \(+ \lambda\times\)JEPA |
+| `train/loss` | 每 micro-batch 反传的加权和：\(\gamma\times\)CE \(+ \lambda_{\mathrm{pred}}\times\mathcal{L}_{\mathrm{pred}} + \lambda_{\mathrm{inv}}\times\mathcal{L}_{\mathrm{action}}\) |
 | `train/loss_ce` | 观察 token 移位交叉熵（还没乘 \(\gamma\)） |
-| `train/loss_jepa` | 左右 `last_token` 隐藏 `1 - cosine`（还没乘 \(\lambda\)） |
+| `train/loss_pred` | \(\|\mathrm{normalize}(\hat z)-\mathrm{normalize}(z_{t+1})\|_2^2\)（还没乘 \(\lambda_{\mathrm{pred}}\)） |
+| `train/loss_inv` | LDAD 对命令 token 的交叉熵（还没乘 \(\lambda_{\mathrm{inv}}\)） |
 | `train/lr_backbone` | 主干 LoRA 的学习率，热身到 `5e-5` |
-| `train/len_h` / `len_a` / `len_o` | 这段样本里完整对话 / 左边 / 右边的非 pad token 数 |
+| `train/len_h` / `len_a` / `len_o` | 这段样本里 `chat(h)` / `chat(a)` / `chat(h,a,o)` 的非 pad token 数 |
 
-**JEPA 怎么防坍缩（LLM-JEPA 的 CE 锚在我们身上没生效）。**
+`merge_group_stats` 里把原来的 `run_jepa` 拆成 `run_pred` / `run_inv`，reduce 时一起加总。
 
-图像 JEPA 常用 EMA 教师和学生停梯度。我们 35B、只训 LoRA 时，完整教师存不下。LLM-JEPA 论文把「旁边始终挂着把右边写成字」当成挡坍的理由；我们 32k 跑里观察 CE 已经很低，`z_self` 仍然 ~0.91，配对和错配一起升。生成锚救不了独立 `Enc(o)` 的 last-token 套话。该换目标编码，见上一节。逆动力学是第二刀，不要插到目标编码前面。本线 live 就是 `train_jepa.sh`。姐妹分支才叫 `train_jepallm.sh`。MLP + inv + simcse + bank 已经换掉。
+**JEPA 怎么防坍缩。** 不用 EMA 教师（35B LoRA 存不下完整教师）。不用观察 CE 当锚（已经失败）。不用旧 `InverseDyn`。当前就是：\(z_{t+1}\) 带着历史编，预测器不回看 \(h\)，\(\Delta z\) 还原命令且两边都有梯度。本线入口 `train_jepa.sh`。姐妹分支才叫 `train_jepallm.sh`。
 
 梯度检查点保持全开。没开量化。`max_length=65536` 下关掉检查点，长尾样本会 OOM。
 
 **Stage 2 — 出字（Instruct 自己的 backbone + 草稿 / 打分 / \(W\)，冻死的 AgentWorld 当顾问）**
 
-单独加载 Instruct 自己完整的 checkpoint，不读切鱼输出；Stage 1 训好的 AgentWorld LoRA 作为另一份独立权重加载进来，整段冻死。查询接口不再是小 MLP：对每个候选把 \((h, a_k)\) 送进冻住的 AgentWorld，末尾隐藏向量就是 \(\hat z_k\)。本次不改 Stage 2 代码，只把这个接口写在这里。
+单独加载 Instruct 自己完整的 checkpoint，不读切鱼输出；Stage 1 训好的 AgentWorld LoRA + Pred + LDAD 作为另一份独立权重加载进来，整段冻死。查询接口：对每个候选算 \(\hat z_k=\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，不要独立编码观察。
 
-- **Step 1（门口）。** 冻住 Instruct backbone 和 Instruct `lm_head`。加上草稿头、打分器、\(W\)。前向：Instruct → \(c_t\) → 草稿提出 \(K\) 个候选命令 → 冻死的 AgentWorld 对每个候选编 \((h,a_k)\) 得到 \(\hat z_k\)，真实命令同样编一遍当真实分支。两条损失：
+- **Step 1（门口）。** 冻住 Instruct backbone 和 Instruct `lm_head`。加上草稿头、打分器、\(W\)。前向：Instruct → \(c_t\) → 草稿提出 \(K\) 个候选命令 → 冻死的 AgentWorld 对每个候选算 \(\hat z_k=\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，真实命令同样走一遍当真实分支。两条损失：
   - **打分器的排序损失**：\(K{+}1\) 路 softmax 交叉熵，标签是真实分支。
   - **解码器的教师强制交叉熵**：真实命令过 \(W\to\) Instruct `lm_head`。AgentWorld 全程冻死，命令交叉熵不回流到它。
 - **Step 2（嘴巴和主干）。** Instruct `lm_head` 用很小的学习率或 LoRA 解开，Instruct backbone 也开一点 LoRA。AgentWorld 永远冻死。
@@ -282,7 +277,7 @@ Delta-JEPA（[2606.31232](https://arxiv.org/abs/2606.31232)）的 LDAD 是同一
 - **Step 3.** 截断轨迹，命中观察不在上下文里：\(c_t\) / \(\hat z\) / 下一步命令是否已经当文件没了。打乱 \(o\) 的孪生作对照。
 - **Step 4.** 对照臂（与主线并行）：同一批命令行打在 Instruct 上。排序和保真度分开报。
 
-**用例子串一遍。** Stage Data 切出删除回合和恢复回合。Stage 1 吃删除：AgentWorld 编出「文件还在」和 `rm a.txt`，JEPA 对齐「没了」，训完整体冻死。Stage 2 吃恢复：Instruct 的 backbone 给出「已经没了」，草稿头提出恢复 / 再删 / 去 cat 三个候选（各自一份 \(u^W\)/\(u^A\)），冻死的 AgentWorld+JEPA 看三条未来打出 \(\hat z\)，打分器（训练时靠 \(K{+}1\) 路 softmax 交叉熵、教师强制的真实分支走交叉熵）学会给恢复这条打最高分，推理时 \(\arg\max\) 选中它，\(W(u_i^A)\) 写出 `git checkout a.txt`。Stage Eval Step 3 把删除成功的观察藏起来，问恢复是不是已经被选中。
+**用例子串一遍。** Stage Data 切出删除回合和恢复回合。Stage 1 吃删除：\(z_t\) 编「还有 `a.txt`」，\(u\) 编 `rm a.txt`，Pred 去贴「没了」的 \(z_{t+1}\)（`h+rm+gone` 一起编），LDAD 用差值还原这条 `rm`；训完整体冻死。Stage 2 吃恢复：Instruct 的 backbone 给出「已经没了」，草稿头提出恢复 / 再删 / 去 cat 三个候选，冻死的世界模型对三条各跑 Pred 打出 \(\hat z\)，打分器学会给恢复这条打最高分，推理时 \(\arg\max\) 选中它，\(W(u_i^A)\) 写出 `git checkout a.txt`。Stage Eval Step 3 把删除成功的观察藏起来，问恢复是不是已经被选中。
 
 ---
 
@@ -322,7 +317,7 @@ python train/scripts/compare.py
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir train/data/processed/mix_v2
 
 # Stage 1 LLM-JEPA：直接读 AgentWorld 自己的 checkpoint（缺失自动下载），
-# 4 卡拆成两组，组内 CP=2，两组并行；序列 32768。两路损失：写观察 + 左右隐藏对齐。
+# 4 卡拆成两组，组内 CP=2，两组并行；序列 32768。三路损失：写观察 + Pred(z_t,u) 对齐 z_{t+1} + LDAD。
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 
@@ -387,11 +382,11 @@ nanobot gateway
 
 ## 灵感来源
 
-编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]。Stage 1 现在套 LLM-JEPA 的两路损失 [213]：观察 token 交叉熵挡住坍缩，左右末尾隐藏向量对齐是 JEPA 项。先前 MLP + 停梯度 + 逆动力学 + SimCSE/bank 的防坍缩尝试及其文献 [201]–[212] 是被替换掉的配方。当前入口就是 `train_jepa.sh`。
+编号对下面 **论文链接**。[1]–[42] 是最终方案直接用到的零件；同一编号只出现一次。两条 backbone 之间连接件怎么训这一条结论额外引了 [198]–[200]。Stage 1 当前损失是三路：观察 token 交叉熵仍走 AgentWorld 的嘴 [213] 的写字半边；JEPA 项换成历史中介的 \(z_t/z_{t+1}\) [7] 加预测器 [6]，再加 Delta-JEPA 的 LDAD [206]。旧的独立 `Enc(o)` 对齐、以及 MLP + 停梯度拼接逆动力学 + SimCSE/bank [201]–[205][207]–[212]，不要接回来。当前入口就是 `train_jepa.sh`。
 
-世界这一头走 JEPA：在表征空间里预测下一状态。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。把「下一潜状态」接到 Transformer 来自 [6][7]。Stage 1 的具体损失抄 LLM-JEPA [213]：给定左边（历史+命令），一边用 AgentWorld 自己的 `lm_head` 把右边（真观察）写成字，一边让两边最后一层末尾隐藏向量靠近。写字挡住「全编成一个样」，对齐是 JEPA 项本身。观察损失和命令损失仍然分家：观察写在 AgentWorld 的嘴上，命令写在 Instruct 的嘴上 [8][9][10]。
+世界这一头走 JEPA：在表征空间里预测下一状态。潜预测的框架来自 [1][2]；视频上的同类预训练对应直觉物理 [3]。把「下一潜状态」接到 Transformer、预测器只读当前状态和动作，来自 [6][7]。Stage 1 的目标是历史中介的 \(z_t=\mathrm{Enc}(h)\)、\(z_{t+1}=\mathrm{Enc}(h,a,o)\) [7]，预测 \(\hat z=\mathrm{Pred}(z_t,u)\)；逆动力学抄 Delta-JEPA 的 LDAD，从 \(\Delta z\) 还原真命令 [206]。观察 token 交叉熵仍写在 AgentWorld 自己的 `lm_head` 上 [213] 的写字半边，只当嘴巴，不当防坍锚。观察损失和命令损失仍然分家：观察写在 AgentWorld 的嘴上，Stage 2 的命令写在 Instruct 的嘴上 [8][9][10]。
 
-出字这一头走「先在向量里提案，在潜空间里看未来，只把一个赢家写成字」。ω-EVA 是提案 → 潜未来 → 改写 [11]；I2A 先编码想象轨迹再交给策略 [12]；Coconut 让字只在最后出现 [13]。动作侧先学表征、再还原成真命令 [14]。负例在同一条轨迹内采 [15]；转移损失用排序形式 [16][17]，现在具体落地成打分器的 \(K{+}1\) 路 softmax 交叉熵（真实分支当正例，草稿当负例，不需要经过 \(\arg\max\)）。\(K\) 个草稿全部过冻住的 AgentWorld（对每个候选编 \((h,a_k)\)），\(\arg\max\) 只在推理时用一次；训练时解码器走教师强制的真实分支，和打分器的排序损失彼此独立。
+出字这一头走「先在向量里提案，在潜空间里看未来，只把一个赢家写成字」。ω-EVA 是提案 → 潜未来 → 改写 [11]；I2A 先编码想象轨迹再交给策略 [12]；Coconut 让字只在最后出现 [13]。动作侧先学表征、再还原成真命令 [14]。负例在同一条轨迹内采 [15]；转移损失用排序形式 [16][17]，现在具体落地成打分器的 \(K{+}1\) 路 softmax 交叉熵（真实分支当正例，草稿当负例，不需要经过 \(\arg\max\)）。\(K\) 个草稿全部过冻住的 AgentWorld：对每个候选算 \(\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，\(\arg\max\) 只在推理时用一次；训练时解码器走教师强制的真实分支，和打分器的排序损失彼此独立。
 
 主干**不做**同源整层替换：Layer Swapping 这条路径 [18][19][20] 试过，`compare.py` 测出来的结果是处处都动、只是幅度不同，否定了它「某些层几乎不动」的低熵前提，已经放弃，两条 backbone 各自保留、不合并（细节见「模型架构」）。末端层负责把内部状态收成具体输出这条证据 [21] 仍然支持「出字这一路窄」的设计。两条 backbone 之间的连接件走的是模型缝合（model stitching）的思路 [22][23]，具体到两个独立训练的模型之间怎么训连接件才真的管用而不是看起来像，见下一段。先冻只训头、再小步解冻主干仍按 LP-FT 的顺序走 [24][25]，只是现在冻的是 Instruct 自己完整的 backbone，不是切鱼之后的半截。世界 checkpoint 与 Harbor / TB2.1 口径来自 Qwen-AgentWorld [26]。底座是 Gated DeltaNet 与完整注意力的混合 [27]。
 
@@ -613,7 +608,7 @@ nanobot gateway
 [203] [VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning](https://consensus.app/papers/details/ce639618c566518c98a2d7af76e0234f/)
 [204] [LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics](https://consensus.app/papers/details/9eb96593274e541c950622292cd05348/)
 [205] [LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels](https://consensus.app/papers/details/38896c0cf07758818f46cbbe31bfe177/)
-[206] [Delta-JEPA: Learning Action-Sensitive World Models via Latent Difference Decoding](https://consensus.app/papers/details/113822ab3e8d5d2a998bc66dc83f69a7/)
+[206] [Delta-JEPA: Learning Action-Sensitive World Models via Latent Difference Decoding](https://arxiv.org/abs/2606.31232)
 [207] [Sensorimotor World Models: Perception for Action via Inverse Dynamics](https://consensus.app/papers/details/87c251c2d324525cb746e3761b01f7d3/)
 
 [208] [SimCSE: Simple Contrastive Learning of Sentence Embeddings](https://arxiv.org/abs/2104.08821)
