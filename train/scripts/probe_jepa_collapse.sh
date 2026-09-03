@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Forward-only collapse probe on one GPU. No FSDP, no CP, no backward, no LoRA.
+# Training stays 4-GPU: CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 # Encodes z_t=Enc(h) and z_{t+1}=Enc(h,a,o); dumps clipped a/o only.
 #
 #   cd train

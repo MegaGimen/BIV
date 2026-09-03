@@ -221,7 +221,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 # 终端不打近对原文：bash scripts/probe_jepa_collapse.sh --print-pairs 0
 ```
 
-单卡直接 `python`，不开 FSDP、不开 CP。训练留下的 `PARALLELISM_CONFIG_*` 会清掉。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
+单卡直接 `python`，不开 FSDP、不开 CP。**这只对 `probe_jepa_collapse.sh` 成立**；正式训练仍是 `CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh`（4 卡 FSDP2+CP），不要把 probe 的单卡改法抄进训练。训练留下的 `PARALLELISM_CONFIG_*` 会在 probe 启动时清掉，不影响正在跑的训练。32k 整段在单卡上可能 OOM，把 `--max-length` 降下来即可。
 
 结果在 `outputs/jepa_collapse_probe/collapse_probe-<stamp>.json`（并复制一份 `collapse_probe_latest.json`）。
 
