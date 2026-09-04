@@ -25,7 +25,7 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from compare_act import format_summary  # noqa: E402
+from compare_act import encode_prompt, format_summary  # noqa: E402
 
 
 def test_channel_delta_mean() -> None:
@@ -80,6 +80,35 @@ def test_top_p_mask_and_analyze() -> None:
     assert all(r["kind"] != "lm_head" for r in no_head)
 
 
+def test_encode_prompt_string_chat_template() -> None:
+    """Qwen tokenizers may return a string from apply_chat_template; ids must be ints."""
+
+    class _Tok:
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+            parts = [f"{m['role']}:{m['content']}" for m in messages]
+            if add_generation_prompt:
+                parts.append("assistant:")
+            return "\n".join(parts)
+
+        def __call__(self, text, truncation=False, add_special_tokens=True):
+            return {"input_ids": [ord(c) % 40 + 1 for c in text]}
+
+        def encode(self, text, add_special_tokens=True):
+            return self(text)["input_ids"]
+
+    msgs = [
+        {"role": "user", "content": "ls"},
+        {"role": "assistant", "content": "a.txt"},
+        {"role": "user", "content": "rm a.txt"},
+        {"role": "assistant", "content": "gone"},
+    ]
+    ids, pos, _note = encode_prompt(_Tok(), text=None, messages=msgs, token_mode="answer")
+    assert ids and all(isinstance(x, int) for x in ids), ids[:8]
+    assert pos and all(isinstance(i, int) for i in pos)
+    assert pos[-1] == len(ids) - 1
+    assert all(isinstance(ids[i], int) for i in pos)
+
+
 def test_summary_is_channel_not_layer_cut() -> None:
     named = {
         "language_model.layers.0.self_attn.q_proj": [2.0, 2.0],
@@ -115,6 +144,7 @@ def main() -> None:
     test_token_weighted_across_samples()
     test_hook_kind_act_modules_only()
     test_top_p_mask_and_analyze()
+    test_encode_prompt_string_chat_template()
     test_summary_is_channel_not_layer_cut()
     print("ok", flush=True)
 

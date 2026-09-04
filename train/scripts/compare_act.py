@@ -110,6 +110,46 @@ def _filter_kwargs(fn, kwargs: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in kwargs.items() if k in allowed}
 
 
+def _to_token_ids(tokenizer, raw) -> list[int]:
+    """Coerce apply_chat_template / encode output to a flat list of ints.
+
+    Qwen tokenizers on current transformers often ignore tokenize=True and
+    return the rendered string. ``list(that_string)`` is characters, which
+    later blows up in ``tokenizer.decode``.
+    """
+    if raw is None:
+        return []
+    if hasattr(raw, "tolist"):
+        raw = raw.tolist()
+    if isinstance(raw, dict):
+        raw = raw.get("input_ids", raw)
+        if hasattr(raw, "tolist"):
+            raw = raw.tolist()
+    if isinstance(raw, str):
+        return list(tokenizer(raw, truncation=False, add_special_tokens=False)["input_ids"])
+    if isinstance(raw, list):
+        if not raw:
+            return []
+        if isinstance(raw[0], list):
+            raw = raw[0]
+        if raw and isinstance(raw[0], str):
+            return list(
+                tokenizer("".join(raw), truncation=False, add_special_tokens=False)["input_ids"]
+            )
+        return [int(x) for x in raw]
+    raise TypeError(f"cannot read token ids from {type(raw)}")
+
+
+def chat_ids(tokenizer, messages: list, *, add_generation_prompt: bool) -> list[int]:
+    """Render chat to text, then tokenize — same path as train_jepa.py."""
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=add_generation_prompt
+    )
+    if isinstance(text, str):
+        return list(tokenizer(text, truncation=False, add_special_tokens=True)["input_ids"])
+    return _to_token_ids(tokenizer, text)
+
+
 def encode_prompt(
     tokenizer,
     *,
@@ -119,7 +159,7 @@ def encode_prompt(
 ) -> tuple[list[int], list[int], str]:
     """Return (input_ids, answer_positions, note)."""
     if text is not None:
-        ids = tokenizer.encode(text, add_special_tokens=True)
+        ids = _to_token_ids(tokenizer, tokenizer.encode(text, add_special_tokens=True))
         if not ids:
             raise ValueError("empty --text")
         if token_mode == "answer":
@@ -132,23 +172,15 @@ def encode_prompt(
 
     if not messages:
         raise ValueError("need --text or chat messages")
-    full = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=False
-    )
-    if isinstance(full, dict):
-        full = full["input_ids"]
-    full = list(full)
+    full = chat_ids(tokenizer, messages, add_generation_prompt=False)
+    if not full:
+        raise ValueError("empty chat tokenization")
     if token_mode == "all":
         return full, list(range(len(full))), "chat; mean over all tokens (not ACT answer mask)"
 
-    prefix = tokenizer.apply_chat_template(
-        messages[:-1], tokenize=True, add_generation_prompt=True
-    )
-    if isinstance(prefix, dict):
-        prefix = prefix["input_ids"]
-    prefix = list(prefix)
+    prefix = chat_ids(tokenizer, messages[:-1], add_generation_prompt=True)
     start = len(prefix)
-    if start >= len(full):
+    if start >= len(full) or full[: min(start, len(full))] != prefix[: min(start, len(full))]:
         start = max(0, len(full) - max(1, len(full) // 4))
         note = (
             f"chat; prefix not a prefix of full (start clamped to {start}); "
@@ -438,9 +470,8 @@ def run_compare_act(
 
     n_tokens = sum(len(ids) for ids, _, _ in jobs)
     n_answer = sum(len(pos) for _, pos, _ in jobs)
-    decoded = tokenizer.decode(
-        [jobs[0][0][i] for i in jobs[0][1]], skip_special_tokens=False
-    )
+    ans_ids = [int(jobs[0][0][i]) for i in jobs[0][1]]
+    decoded = tokenizer.decode(ans_ids, skip_special_tokens=False) if ans_ids else ""
     log(f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} ({prompt_note})")
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
