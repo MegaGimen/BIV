@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 from biv_wm.act import (  # noqa: E402
     add_abs_sum,
     analyze_channels,
+    canonical_module_key,
     channel_delta,
     finalize_running,
     hook_kind,
@@ -48,6 +49,18 @@ def test_token_weighted_across_samples() -> None:
     add_abs_sum(running, "q_proj", s2, n2)
     got = finalize_running(running)["q_proj"]
     assert abs(got[0] - 0.5) < 1e-12, got
+
+
+def test_canonical_module_key_aligns_backbones() -> None:
+    aw = "model.layers.0.linear_attn.in_proj_qkv"
+    inst = "model.language_model.layers.0.linear_attn.in_proj_qkv"
+    assert canonical_module_key(aw) == canonical_module_key(inst)
+    assert canonical_module_key(aw) == "layers.0.linear_attn.in_proj_qkv"
+    assert canonical_module_key("model.embed_tokens") == canonical_module_key(
+        "model.language_model.embed_tokens"
+    )
+    assert canonical_module_key("lm_head") == "lm_head"
+    assert layer_index(canonical_module_key(inst)) == 0
 
 
 def test_hook_kind_act_modules_only() -> None:
@@ -181,6 +194,7 @@ def test_summary_is_channel_not_layer_cut() -> None:
 def main() -> None:
     test_channel_delta_mean()
     test_token_weighted_across_samples()
+    test_canonical_module_key_aligns_backbones()
     test_hook_kind_act_modules_only()
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()

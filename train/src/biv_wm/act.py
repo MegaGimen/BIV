@@ -70,6 +70,32 @@ def layer_index(name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def canonical_module_key(name: str) -> str:
+    """Strip CausalLM vs ImageTextToText prefixes so AW/Instruct keys match.
+
+    AgentWorld CausalLM: ``model.layers.0.linear_attn.in_proj_qkv``
+    Instruct VLM: ``model.language_model.layers.0.linear_attn.in_proj_qkv``
+    Both become ``layers.0.linear_attn.in_proj_qkv``.
+    """
+    n = name
+    for p in (
+        "model.language_model.",
+        "language_model.",
+        "model.model.",
+        "model.",
+    ):
+        if n.startswith(p):
+            n = n[len(p) :]
+            break
+    if n == "lm_head" or n.endswith(".lm_head"):
+        return "lm_head"
+    if n in {"embed_tokens", "embed"} or n.endswith(".embed_tokens"):
+        return "embed_tokens"
+    if n == "norm" or (n.endswith(".norm") and "layers" not in n):
+        return "norm"
+    return n
+
+
 def hook_kind(name: str) -> str | None:
     """Which ACT bucket a ``named_modules`` path belongs to, or None to skip.
 

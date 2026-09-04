@@ -34,6 +34,7 @@ from biv_wm.act import (  # noqa: E402
     DEFAULT_TOP_P,
     add_abs_sum,
     analyze_channels,
+    canonical_module_key,
     finalize_running,
     hook_kind,
     token_abs_sum,
@@ -189,9 +190,16 @@ def _to_token_ids(tokenizer, raw) -> list[int]:
 
 def chat_ids(tokenizer, messages: list, *, add_generation_prompt: bool) -> list[int]:
     """Render chat to text, then tokenize — same path as train_jepa.py."""
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=add_generation_prompt
-    )
+    kwargs: dict[str, Any] = {
+        "tokenize": False,
+        "add_generation_prompt": add_generation_prompt,
+    }
+    try:
+        text = tokenizer.apply_chat_template(
+            messages, enable_thinking=False, **kwargs
+        )
+    except TypeError:
+        text = tokenizer.apply_chat_template(messages, **kwargs)
     if isinstance(text, str):
         return list(tokenizer(text, truncation=False, add_special_tokens=True)["input_ids"])
     return _to_token_ids(tokenizer, text)
@@ -315,11 +323,18 @@ def capture_one(
 
         return _hook
 
-    for name, mod in model.named_modules():
+    seen: set[str] = set()
+    named = list(model.named_modules())
+    named.sort(key=lambda x: (0 if "language_model." in x[0] else 1, x[0]))
+    for name, mod in named:
         kind = hook_kind(name)
         if kind is None or kind == "lm_head":
             continue
-        handles.append(mod.register_forward_hook(make_hook(name)))
+        canon = canonical_module_key(name)
+        if canon in seen:
+            continue
+        seen.add(canon)
+        handles.append(mod.register_forward_hook(make_hook(canon)))
 
     inner = language_model(model)
     fwd = inner.forward if inner is not None else model.forward
@@ -549,6 +564,7 @@ def run_compare_act(
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
     log(f"  class={wname}")
     world_caps = [capture_one(world, ids, pos) for ids, pos, _ in jobs]
+    log(f"  captured {len(world_caps[0]) if world_caps else 0} modules")
     _free(world)
 
     log("loading Instruct")
@@ -556,12 +572,18 @@ def run_compare_act(
     log(f"  class={aname}")
     running: dict[str, tuple[list[float], int]] = {}
     skipped: set[str] = set()
+    n_inst = 0
     for cap_w, (ids, pos, _) in zip(world_caps, jobs, strict=True):
         cap_a = capture_one(agent, ids, pos)
+        n_inst = len(cap_a)
         acc_pair(running, cap_w, cap_a, skipped)
         del cap_w, cap_a
     _free(agent)
     del world_caps
+    n_body = sum(1 for k in running if k != "lm_head")
+    log(f"  captured {n_inst} modules; paired={len(running)} (non-lm_head={n_body}) skipped={len(skipped)}")
+    if n_body == 0:
+        log("WARNING: only lm_head paired — module names did not align")
 
     mod_delta = finalize_running(running)
     analysis = analyze_channels(mod_delta, p=p, layer_types=types)
