@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Compare AgentWorld vs Instruct with ACT module-channel Δa (text bars).
+"""Compare AgentWorld vs Instruct with ACT module-channel Δa.
 
-ACT 2601.09398 §3.1 / eq. (2): same tokens into both models; a channel is one
-output dimension of a trainable module (attn Q/K/V/O or GDN analog, MLP
-gate/up/down, LN, embed, lm_head) — not the residual stream. Then
-
-    Δa_i = mean over answer tokens (pooled across samples) of |a_i^{AW} − a_i^{Inst}|
-
-Rank every channel together. The table looks like ``compare.py`` (per-layer
-text bars); the number is mean Δa_i of that layer's module channels.
+ACT 2601.09398 §3.1 / eq. (2) / §4.1: same tokens into both models; a channel
+is one output dimension of a trainable module. Average |a_AW − a_Instruct|
+over pooled answer tokens, rank every channel together, take top p% as the
+ability mask. No residual stream, no layer-cut table.
 
     python train/scripts/compare_act.py
     python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 8
 
-Writes ``train/outputs/compare_act/summary.txt`` and ``report.json``.
+Writes under ``train/outputs/compare_act/``:
+  summary.txt, report.json, mask.json, channels.jsonl
 """
 
 from __future__ import annotations
@@ -22,7 +19,6 @@ import argparse
 import gc
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -35,16 +31,12 @@ if str(_MERGE_DIR) not in sys.path:
     sys.path.insert(0, str(_MERGE_DIR))
 
 from biv_wm.act import (  # noqa: E402
-    CCDF_THRESHOLDS,
+    DEFAULT_TOP_P,
     add_abs_sum,
-    bar,
-    ccdf,
-    channel_stats,
+    analyze_channels,
     finalize_running,
     hook_kind,
-    layer_index,
     token_abs_sum,
-    top_channels,
 )
 from biv_wm.arch import language_model, lm_head_module  # noqa: E402
 from biv_wm.hao import split_hao  # noqa: E402
@@ -57,8 +49,6 @@ from download import (  # noqa: E402
 )
 
 DEFAULT_OUT = ROOT / "train" / "outputs" / "compare_act"
-BAR_W = 24
-N_LAYERS = 40
 
 DEFAULT_MESSAGES = [
     {"role": "user", "content": "ls"},
@@ -278,147 +268,111 @@ def acc_pair(
     skipped.update(set(left) ^ set(right))
 
 
-def _empty_layer(i: int, kind: str) -> dict[str, Any]:
-    z = channel_stats([])
-    return {
-        "layer": i,
-        "kind": kind,
-        "act": z,
-        "groups": {},
-    }
-
-
-def build_layers(
-    module_delta: dict[str, list[float]],
-    types: list[str],
-) -> list[dict[str, Any]]:
-    by_layer: dict[int, dict[str, Any]] = {}
-    for i in range(N_LAYERS):
-        kind = types[i] if i < len(types) else "?"
-        by_layer[i] = _empty_layer(i, kind)
-
-    grouped: dict[tuple[int, str], list[float]] = defaultdict(list)
-    pooled: dict[int, list[float]] = defaultdict(list)
-    for key, vec in module_delta.items():
-        li = layer_index(key)
-        kind = hook_kind(key)
-        if li is None or kind not in {"attn", "ffn", "ln"}:
-            continue
-        grouped[(li, kind)].extend(vec)
-        pooled[li].extend(vec)
-
-    for li, vec in pooled.items():
-        if li not in by_layer:
-            by_layer[li] = _empty_layer(li, "?")
-        by_layer[li]["act"] = channel_stats(vec)
-    for (li, g), vec in grouped.items():
-        by_layer[li]["groups"][g] = channel_stats(vec)
-
-    return [by_layer[i] for i in sorted(by_layer)]
-
-
-def special_stats(module_delta: dict[str, list[float]]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, vec in module_delta.items():
-        kind = hook_kind(key)
-        if kind in {"embed", "lm_head"} or (kind == "ln" and layer_index(key) is None):
-            out[key] = channel_stats(vec)
-    return out
+def _fmt_ccdf(st: dict[str, Any], thresholds: tuple[float, ...] = (0.5, 1.0, 2.0, 4.5, 8.0, 16.0)) -> list[str]:
+    c = st.get("ccdf") or {}
+    lines = [f"  {'t':>6}  {'P(Δa>t)':>10}"]
+    for t in thresholds:
+        lines.append(f"  {t:6.2f}  {float(c.get(str(t), 0.0)):10.4f}")
+    return lines
 
 
 def format_summary(report: dict[str, Any]) -> str:
-    layers: list[dict[str, Any]] = report.get("layers") or []
-    peak = max((float(r["act"]["mean"]) for r in layers), default=0.0)
-    peak = max(peak, 1e-12)
-    gpeak = 0.0
-    for r in layers:
-        for g in (r.get("groups") or {}).values():
-            gpeak = max(gpeak, float(g["mean"]))
-    gpeak = max(gpeak, peak, 1e-12)
+    kinds = ("attn", "ffn", "ln", "embed", "lm_head")
+    by_kind = report.get("by_kind") or {}
+    g = report.get("global") or {}
+    gnh = report.get("global_no_lm_head") or {}
+    p = float(report.get("p") or 0.01)
 
     lines: list[str] = []
-    lines.append(
-        "compare_act.py — ACT Δa_i = 模块输出通道 |a_AW − a_Instruct|，答案 token 上平均"
-    )
-    lines.append(report["method"])
-    lines.append(f"world     {report['paths']['world']}")
-    lines.append(f"instruct  {report['paths']['instruct']}")
+    lines.append("compare_act.py — ACT 通道 Δa（按通道排序取 top-p%，不是按层切）")
+    lines.append(str(report.get("method") or ""))
+    paths = report.get("paths") or {}
+    lines.append(f"world     {paths.get('world')}")
+    lines.append(f"instruct  {paths.get('instruct')}")
     lines.append(f"prompt    {report.get('prompt_note', '')}")
     lines.append(
         f"n_samples={report.get('n_samples')} n_tokens={report.get('n_tokens')} "
         f"n_answer={report.get('n_answer_tokens')} "
         f"decoded_answer={report.get('decoded_answer')!r}"
     )
-    lines.append("")
     lines.append(
-        f"{'L':>3} {'kind':<16} {'Δa_mean':>10} {'p99':>10} {'top1%':>10}  "
-        f"{'ACT_Δa':<{BAR_W}}"
+        f"n_channels={report.get('n_channels')}  no_lm_head={report.get('n_channels_no_lm_head')}  "
+        f"p={p}  |mask|={report.get('n_mask')}  "
+        f"mask_threshold={report.get('mask_threshold')}"
     )
-    lines.append("-" * (3 + 1 + 16 + 1 + 10 + 1 + 10 + 1 + 10 + 2 + BAR_W))
-    for r in layers:
-        i = int(r["layer"])
-        st = r["act"]
-        mean = float(st["mean"])
+    lines.append("")
+    lines.append("全局 CCDF（ACT Figure 1a，全部模块通道混在一起）")
+    lines.append(
+        f"  all: n={g.get('n_channels')} mean={float(g.get('mean') or 0):.4e} "
+        f"p50={float(g.get('p50') or 0):.4e} p99={float(g.get('p99') or 0):.4e} "
+        f"max={float(g.get('max') or 0):.4e}"
+    )
+    lines.extend(_fmt_ccdf(g))
+    lines.append(
+        f"  no_lm_head: n={gnh.get('n_channels')} mean={float(gnh.get('mean') or 0):.4e} "
+        f"p99={float(gnh.get('p99') or 0):.4e}"
+    )
+    lines.extend(_fmt_ccdf(gnh))
+
+    lines.append("")
+    lines.append("按模块种类 CCDF（ACT Figure 1c）")
+    lines.append(f"  {'kind':<8} {'n':>8} {'mean':>10} {'p99':>10} {'P(>4.5)':>10}")
+    for k in kinds:
+        st = by_kind.get(k) or {}
+        if int(st.get("n_channels") or 0) == 0:
+            continue
+        frac = float((st.get("ccdf") or {}).get("4.5", 0.0))
         lines.append(
-            f"{i:3d} {str(r['kind'])[:16]:<16} {mean:10.4e} "
-            f"{float(st['p99']):10.4e} {float(st['top1pct_mean']):10.4e}  "
-            f"{bar(mean, peak, BAR_W)}"
+            f"  {k:<8} {int(st.get('n_channels') or 0):8d} "
+            f"{float(st.get('mean') or 0):10.4e} {float(st.get('p99') or 0):10.4e} "
+            f"{frac:10.4f}"
         )
 
     lines.append("")
-    lines.append("per layer split attn vs ffn vs ln (same module-channel Δa_i):")
-    lines.append(
-        f"{'L':>3} {'g':<5} {'Δa_mean':>10} {'p99':>10} {'n_ch':>8}  "
-        f"{'ACT_Δa':<{BAR_W}}"
-    )
-    for r in layers:
-        i = int(r["layer"])
-        for g in ("attn", "ffn", "ln"):
-            gg = (r.get("groups") or {}).get(g)
-            if not gg or int(gg.get("n_channels") or 0) == 0:
-                continue
-            mean = float(gg["mean"])
-            lines.append(
-                f"{i:3d} {g:<5} {mean:10.4e} {float(gg['p99']):10.4e} "
-                f"{int(gg['n_channels']):8d}  {bar(mean, gpeak, BAR_W)}"
-            )
-
-    scored = [(float(r["act"]["mean"]), int(r["layer"])) for r in layers]
-    scored.sort(reverse=True)
-    top = [f"L{i}={v:.4e}" for v, i in scored[:8]]
-    lines.append("")
-    lines.append("模块通道 Δa 最大层: " + ", ".join(top))
-
-    c_all = report.get("ccdf_all") or {}
-    c_no_head = report.get("ccdf_no_lm_head") or {}
-    lines.append("")
-    lines.append("CCDF = 通道里 Δa 超过阈值的比例 (ACT Figure 1; 全模块通道一起排):")
-    lines.append(f"  {'t':>6}  {'all':>8}  {'no_lm_head':>10}")
-    for t in CCDF_THRESHOLDS:
-        key = str(t)
+    lines.append("top-p% 掩码落在各层的通道数（看是否铺开，不是切点）")
+    lines.append(f"  {'L':>3} {'kind':<16} {'n_ch':>8} {'n_in_mask':>10} {'p99':>10} {'P(>4.5)':>10}")
+    for row in report.get("by_layer") or []:
+        n_mask = int(row.get("n_in_mask") or 0)
+        if int(row.get("n_channels") or 0) == 0 and n_mask == 0:
+            continue
+        frac = float((row.get("ccdf") or {}).get("4.5", 0.0))
         lines.append(
-            f"  {t:6.1f}  {float(c_all.get(key, 0.0)):8.4f}  "
-            f"{float(c_no_head.get(key, 0.0)):10.4f}"
+            f"  {int(row['layer']):3d} {str(row.get('kind') or '?')[:16]:<16} "
+            f"{int(row.get('n_channels') or 0):8d} {n_mask:10d} "
+            f"{float(row.get('p99') or 0):10.4e} {frac:10.4f}"
         )
 
-    spec = report.get("special") or {}
-    if spec:
-        lines.append("")
-        lines.append("non-layer (embed / lm_head / final norm):")
-        for k, v in sorted(spec.items()):
-            lines.append(
-                f"  {k}: Δa_mean={v['mean']:.4e}  p99={v['p99']:.4e}  "
-                f"n_ch={v['n_channels']}"
-            )
+    lines.append("")
+    lines.append("各 hooked 模块（按 p99 降序，前 40；全量在 report.json / modules）")
+    lines.append(f"  {'p99':>10} {'mean':>10} {'n':>8} {'mask':>6}  key")
+    for row in (report.get("modules") or [])[:40]:
+        lines.append(
+            f"  {float(row.get('p99') or 0):10.4e} {float(row.get('mean') or 0):10.4e} "
+            f"{int(row.get('n_channels') or 0):8d} {int(row.get('n_in_mask') or 0):6d}  "
+            f"{row.get('key')}"
+        )
 
-    tops = report.get("top_channels") or []
-    if tops:
-        lines.append("")
-        lines.append("Δa 最大的通道 (module key, channel, Δa):")
-        for row in tops[:20]:
-            lines.append(
-                f"  {row['key']} [{row['channel']}]  {row['delta']:.4e}"
-            )
+    lines.append("")
+    lines.append(f"ACT 掩码 top {p:.2%}（前 40；全量 mask.json）")
+    for row in (report.get("mask") or [])[:40]:
+        li = row.get("layer")
+        layer_s = f"L{li}" if li is not None else "  "
+        lines.append(
+            f"  #{int(row.get('rank') or 0):<6d} {float(row.get('delta') or 0):.4e}  "
+            f"{str(row.get('kind') or '?'):<8} {layer_s:<4}  "
+            f"{row.get('key')}[{row.get('channel')}]"
+        )
+
+    lines.append("")
+    lines.append(f"去掉 lm_head 后的 top {p:.2%}（前 20；全量 mask.json 的 mask_no_lm_head）")
+    for row in (report.get("mask_no_lm_head") or [])[:20]:
+        li = row.get("layer")
+        layer_s = f"L{li}" if li is not None else "  "
+        lines.append(
+            f"  #{int(row.get('rank') or 0):<6d} {float(row.get('delta') or 0):.4e}  "
+            f"{str(row.get('kind') or '?'):<8} {layer_s:<4}  "
+            f"{row.get('key')}[{row.get('channel')}]"
+        )
 
     skipped = report.get("skipped") or []
     if skipped:
@@ -458,6 +412,7 @@ def run_compare_act(
     max_rows: int,
     device_map: str,
     token_mode: str,
+    p: float,
 ) -> dict[str, Any]:
     import torch
     from transformers import AutoTokenizer
@@ -510,38 +465,25 @@ def run_compare_act(
     del world_caps
 
     mod_delta = finalize_running(running)
-    layers = build_layers(mod_delta, types)
-
-    all_ch: list[float] = []
-    no_head: list[float] = []
-    for key, vec in mod_delta.items():
-        all_ch.extend(vec)
-        if hook_kind(key) != "lm_head" and key != "lm_head":
-            no_head.extend(vec)
+    analysis = analyze_channels(mod_delta, p=p, layer_types=types)
+    ranked = analysis.pop("ranked")
 
     return {
         "method": (
-            "ACT §3.1 eq. (2): module-output channel |a_AW - a_Instruct|, "
-            "mean over pooled answer tokens (arXiv:2601.09398). "
-            "Channels = attn Q/K/V/O (or GDN in_proj/out_proj), shared-expert "
-            "gate/up/down, LN, embed, lm_head. Residual stream is not used. "
-            "Routed MoE experts skipped. Rank all channels together; layer bar "
-            "is mean Δa_i of that layer's module channels."
+            "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
+            "mean over pooled answer tokens, rank all channels, keep top p% "
+            "(arXiv:2601.09398). Residual stream is not used. Routed MoE experts "
+            "skipped. Shared-expert gate/up/down is the dense-MLP analog."
         ),
         "prompt_note": prompt_note,
         "n_samples": len(jobs),
         "n_tokens": n_tokens,
         "n_answer_tokens": n_answer,
         "decoded_answer": decoded,
-        "layers": layers,
-        "special": special_stats(mod_delta),
-        "ccdf_all": ccdf(all_ch),
-        "ccdf_no_lm_head": ccdf(no_head),
-        "n_channels_all": len(all_ch),
-        "n_channels_no_lm_head": len(no_head),
-        "top_channels": top_channels(mod_delta, n=32),
         "skipped": sorted(skipped),
         "paths": {"world": str(world_dir), "instruct": str(agent_dir)},
+        "ranked": ranked,
+        **analysis,
     }
 
 
@@ -577,6 +519,12 @@ def parse_args() -> argparse.Namespace:
         default="answer",
         help="answer = last assistant (ACT). all = every token (not ACT)",
     )
+    p.add_argument(
+        "--p",
+        type=float,
+        default=DEFAULT_TOP_P,
+        help="ACT top-p fraction for the channel mask (paper default 0.01)",
+    )
     p.add_argument("--device-map", default="auto")
     return p.parse_args()
 
@@ -610,16 +558,35 @@ def main() -> None:
         max_rows=args.max_rows,
         device_map=args.device_map,
         token_mode=token_mode,
+        p=args.p,
     )
+    ranked = report.pop("ranked")
+    mask = {
+        "p": report.get("p"),
+        "n_channels": report.get("n_channels"),
+        "n_mask": report.get("n_mask"),
+        "mask_threshold": report.get("mask_threshold"),
+        "mask": report.get("mask"),
+        "mask_no_lm_head": report.get("mask_no_lm_head"),
+    }
     text = format_summary(report)
     (out_dir / "summary.txt").write_text(text, encoding="utf-8")
     (out_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    (out_dir / "mask.json").write_text(
+        json.dumps(mask, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with (out_dir / "channels.jsonl").open("w", encoding="utf-8") as f:
+        for row in ranked:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(text)
     log(f"wrote {out_dir / 'summary.txt'}")
     log(f"wrote {out_dir / 'report.json'}")
+    log(f"wrote {out_dir / 'mask.json'}")
+    log(f"wrote {out_dir / 'channels.jsonl'} ({len(ranked)} channels)")
 
 
 if __name__ == "__main__":

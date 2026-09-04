@@ -19,6 +19,24 @@ LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
 # ACT Figure 1 uses a complementary CDF; 4.5 is the threshold they quote
 # for "~99% of channels sit below this" on Qwen2.5 pairs.
 CCDF_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 2.0, 4.5, 8.0, 16.0)
+# Denser grid so the JSON can be plotted without re-reading every channel.
+ANALYSIS_THRESHOLDS: tuple[float, ...] = (
+    0.25,
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    3.0,
+    4.0,
+    4.5,
+    6.0,
+    8.0,
+    12.0,
+    16.0,
+    32.0,
+)
+DEFAULT_TOP_P = 0.01
+N_LAYERS = 40
 
 SKIP_SUBSTR = ("visual", "vision", "mtp.", "rotary")
 
@@ -159,7 +177,7 @@ def _percentile(sorted_vals: Sequence[float], p: float) -> float:
 
 
 def channel_stats(delta: Sequence[float]) -> dict[str, Any]:
-    """Summarize a pool of Δa_i. ``mean`` is the layer bar (mean over channels)."""
+    """Summarize a pool of Δa_i (mean / percentiles / tail mass)."""
     if not delta:
         return {
             "n_channels": 0,
@@ -193,6 +211,128 @@ def ccdf(delta: Sequence[float], thresholds: Iterable[float] = CCDF_THRESHOLDS) 
     if n == 0:
         return {str(t): 0.0 for t in thresholds}
     return {str(t): sum(1 for x in vals if x > t) / n for t in thresholds}
+
+
+def ranked_channels(named: dict[str, Sequence[float]]) -> list[dict[str, Any]]:
+    """Every (module, channel) with Δa_i, sorted descending. Rank is 1-based."""
+    rows: list[dict[str, Any]] = []
+    for key, vec in named.items():
+        kind = hook_kind(key)
+        li = layer_index(key)
+        for i, v in enumerate(vec):
+            rows.append(
+                {
+                    "key": key,
+                    "kind": kind,
+                    "layer": li,
+                    "channel": int(i),
+                    "delta": float(v),
+                }
+            )
+    rows.sort(key=lambda r: r["delta"], reverse=True)
+    for i, row in enumerate(rows):
+        row["rank"] = i + 1
+    return rows
+
+
+def top_p_mask(ranked: Sequence[dict[str, Any]], p: float = DEFAULT_TOP_P) -> list[dict[str, Any]]:
+    """ACT §4.1: channels whose Δa_i ranks in the top ``p`` fraction."""
+    if not ranked:
+        return []
+    p = min(1.0, max(0.0, float(p)))
+    n = max(1, int(round(len(ranked) * p)))
+    return list(ranked[: min(n, len(ranked))])
+
+
+def _pool(
+    named: dict[str, Sequence[float]],
+    *,
+    kinds: set[str] | None = None,
+    skip_kinds: set[str] | None = None,
+    layer: int | None = None,
+) -> list[float]:
+    out: list[float] = []
+    for key, vec in named.items():
+        kind = hook_kind(key)
+        if kinds is not None and kind not in kinds:
+            continue
+        if skip_kinds is not None and kind in skip_kinds:
+            continue
+        if layer is not None and layer_index(key) != layer:
+            continue
+        out.extend(float(x) for x in vec)
+    return out
+
+
+def _stats_ccdf(vals: Sequence[float]) -> dict[str, Any]:
+    st = channel_stats(vals)
+    st["ccdf"] = ccdf(vals, ANALYSIS_THRESHOLDS)
+    return st
+
+
+def analyze_channels(
+    named: dict[str, Sequence[float]],
+    *,
+    p: float = DEFAULT_TOP_P,
+    layer_types: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """ACT analysis payload: global/kind/layer CCDF, per-module stats, top-p mask."""
+    ranked = ranked_channels(named)
+    ranked_no_head = [r for r in ranked if r.get("kind") != "lm_head"]
+    mask = top_p_mask(ranked, p)
+    mask_no_head = top_p_mask(ranked_no_head, p)
+    mask_keys = {(r["key"], r["channel"]) for r in mask}
+
+    kinds = ("attn", "ffn", "ln", "embed", "lm_head")
+    by_kind = {k: _stats_ccdf(_pool(named, kinds={k})) for k in kinds}
+
+    by_layer: list[dict[str, Any]] = []
+    types = list(layer_types or [])
+    n_layers = max(N_LAYERS, max((r["layer"] for r in ranked if r["layer"] is not None), default=-1) + 1)
+    for i in range(n_layers):
+        vals = _pool(named, layer=i)
+        st = _stats_ccdf(vals)
+        n_in_mask = sum(1 for r in mask if r.get("layer") == i)
+        by_layer.append(
+            {
+                "layer": i,
+                "kind": types[i] if i < len(types) else "?",
+                "n_in_mask": n_in_mask,
+                **st,
+            }
+        )
+
+    modules: list[dict[str, Any]] = []
+    for key, vec in named.items():
+        st = channel_stats(vec)
+        modules.append(
+            {
+                "key": key,
+                "kind": hook_kind(key),
+                "layer": layer_index(key),
+                "n_in_mask": sum(1 for i in range(len(vec)) if (key, i) in mask_keys),
+                **st,
+            }
+        )
+    modules.sort(key=lambda r: float(r["p99"]), reverse=True)
+
+    threshold = float(mask[-1]["delta"]) if mask else 0.0
+    return {
+        "p": p,
+        "n_channels": len(ranked),
+        "n_channels_no_lm_head": len(ranked_no_head),
+        "n_mask": len(mask),
+        "n_mask_no_lm_head": len(mask_no_head),
+        "mask_threshold": threshold,
+        "global": _stats_ccdf([r["delta"] for r in ranked]),
+        "global_no_lm_head": _stats_ccdf([r["delta"] for r in ranked_no_head]),
+        "by_kind": by_kind,
+        "by_layer": by_layer,
+        "modules": modules,
+        "mask": mask,
+        "mask_no_lm_head": mask_no_head,
+        "ranked": ranked,
+    }
 
 
 def bar(value: float, peak: float, width: int = 24) -> str:
