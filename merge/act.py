@@ -272,6 +272,7 @@ def merge_act(
         "n_lm_head_rows": n_lm_head,
         "n_tensors_patched": n_tensors_patched,
         "n_rows_written": n_rows_written,
+        "n_copied_shards": n_copied_shards,
         "n_rewritten_bytes": total_size,
         "n_rewritten_shards": n_rewritten_shards,
         "n_missing_world": n_missing_world,

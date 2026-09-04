@@ -169,6 +169,8 @@ def test_merge_act_two_tiny_shards(tmp_path: Path | None = None) -> None:
     )
     assert meta["n_tensors_patched"] == 1
     assert meta["n_rows_written"] == 1
+    assert "n_copied_shards" in meta
+    assert "n_rewritten_shards" in meta
     from safetensors import safe_open
 
     with safe_open(str(out_dir / "model.safetensors"), framework="pt", device="cpu") as f:
