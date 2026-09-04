@@ -88,6 +88,41 @@ def _as_btc(out: Any):
     return t
 
 
+def _as_device(dev):
+    if dev is None:
+        return None
+    if hasattr(dev, "type"):
+        return dev
+    try:
+        import torch
+
+        return torch.device(dev)
+    except Exception:
+        return dev
+
+
+def _module_exec_device(mod):
+    """Real device for a module under device_map=auto. Never return meta."""
+    if mod is None:
+        return None
+    params = list(getattr(mod, "parameters", lambda: [])())
+    for p in params:
+        dev = getattr(p, "device", None)
+        if dev is not None and getattr(dev, "type", None) != "meta":
+            return _as_device(dev)
+    hook = getattr(mod, "_hf_hook", None)
+    exec_dev = getattr(hook, "execution_device", None) if hook is not None else None
+    return _as_device(exec_dev)
+
+
+def _module_dtype(mod, fallback):
+    for p in getattr(mod, "parameters", lambda: [])():
+        dt = getattr(p, "dtype", None)
+        if dt is not None:
+            return dt
+    return fallback
+
+
 def _embed_device(model) -> Any:
     inner = language_model(model)
     emb = None
@@ -97,9 +132,21 @@ def _embed_device(model) -> Any:
         getter = getattr(model, "get_input_embeddings", None)
         if callable(getter):
             emb = getter()
-    if emb is None or getattr(emb, "weight", None) is None:
-        raise RuntimeError("cannot find input embeddings to place input_ids")
-    return emb.weight.device
+    dev = _module_exec_device(emb)
+    if dev is None:
+        raise RuntimeError("cannot find a non-meta device for input_ids")
+    return dev
+
+
+def _apply_lm_head(head, last_ans):
+    """Run lm_head without copying onto a meta (offloaded) tensor."""
+    import torch
+
+    dt = _module_dtype(head, last_ans.dtype)
+    dev = _module_exec_device(head)
+    x = last_ans if dev is None else last_ans.to(device=dev, dtype=dt)
+    with torch.inference_mode():
+        return head(x)
 
 
 def _filter_kwargs(fn, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -299,9 +346,7 @@ def capture_one(
 
     head = lm_head_module(model)
     if head is not None:
-        weight = next(head.parameters())
-        with torch.inference_mode():
-            logits = head(last_ans.to(device=weight.device, dtype=weight.dtype))
+        logits = _apply_lm_head(head, last_ans)
         captures["lm_head"] = logits.detach().float().cpu()
 
     return captures

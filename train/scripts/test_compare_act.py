@@ -25,7 +25,12 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from compare_act import _language_model_only, encode_prompt, format_summary  # noqa: E402
+from compare_act import (  # noqa: E402
+    _language_model_only,
+    _module_exec_device,
+    encode_prompt,
+    format_summary,
+)
 
 
 def test_channel_delta_mean() -> None:
@@ -78,6 +83,30 @@ def test_top_p_mask_and_analyze() -> None:
     }
     no_head = analysis["mask_no_lm_head"]
     assert all(r["kind"] != "lm_head" for r in no_head)
+
+
+def test_module_exec_device_skips_meta() -> None:
+    class _Dev:
+        def __init__(self, typ: str) -> None:
+            self.type = typ
+
+    class _P:
+        def __init__(self, typ: str) -> None:
+            self.device = _Dev(typ)
+            self.dtype = "bf16"
+
+    class _Hook:
+        execution_device = "cuda:0"
+
+    class _Mod:
+        def __init__(self) -> None:
+            self._hf_hook = _Hook()
+
+        def parameters(self):
+            yield _P("meta")
+
+    got = _module_exec_device(_Mod())
+    assert str(got) == "cuda:0", got
 
 
 def test_language_model_only_flag() -> None:
@@ -154,6 +183,7 @@ def main() -> None:
     test_token_weighted_across_samples()
     test_hook_kind_act_modules_only()
     test_top_p_mask_and_analyze()
+    test_module_exec_device_skips_meta()
     test_language_model_only_flag()
     test_encode_prompt_string_chat_template()
     test_summary_is_channel_not_layer_cut()
