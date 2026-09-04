@@ -2,6 +2,33 @@
 
 ## 谁跑什么（分清）
 
+两条线不要混。
+
+**Qwen3.5 ACT 合并（本线要测的 Instruct）**
+
+| 机器 | 干什么 |
+|--|--|
+| **AutoDL（GPU）** | `python merge/eval.py --act` 加载 `merge/output/act`，监听 **6006** → `https://u741253-tujr-a523480e.westd.seetacloud.com:8443`；对照臂 `python merge/eval.py --base --port 6008` → `https://uu741253-tujr-a523480e.westd.seetacloud.com:8443` |
+| **本机（有 Docker）** | Harbor `--env docker`；`python scripts/test.py --act`（TB 2.1） |
+
+```
+本机 Harbor (Docker 沙箱)  ──HTTP──►  AutoDL vLLM (:6006 / :6008 → 公网 :8443)
+```
+
+```bash
+# AutoDL（train/.venv，不要 .venv-muse）
+python merge/act.py
+python merge/eval.py --act --max-model-len 32768
+python merge/eval.py --base --port 6008 --max-model-len 32768
+
+# 本机
+cd train && source .venv-eval/bin/activate
+python scripts/test.py --act --suite terminal_bench_2_1
+python scripts/test.py --act-instruct --suite terminal_bench_2_1
+```
+
+**Muse Glimmer-30B（另一条 checkpoint）**
+
 | 机器 | 干什么 |
 |--|--|
 | **AutoDL（GPU）** | `serve_muse_vllm.sh` 加载 Muse + **默认最新 LoRA ckpt**，监听 **6006** → 公网 `:8443` |

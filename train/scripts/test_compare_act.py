@@ -18,6 +18,7 @@ from biv_wm.act import (  # noqa: E402
     finalize_running,
     hook_kind,
     layer_index,
+    param_canonical_key,
     token_abs_sum,
     top_p_mask,
 )
@@ -61,6 +62,9 @@ def test_canonical_module_key_aligns_backbones() -> None:
     )
     assert canonical_module_key("lm_head") == "lm_head"
     assert layer_index(canonical_module_key(inst)) == 0
+    assert param_canonical_key("model.language_model.layers.0.linear_attn.in_proj_qkv.weight") == (
+        canonical_module_key(aw)
+    )
 
 
 def test_hook_kind_act_modules_only() -> None:

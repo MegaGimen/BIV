@@ -11,6 +11,11 @@ ability mask. No residual stream, no layer-cut table.
 
 Writes under ``train/outputs/compare_act/``:
   summary.txt, report.json, mask.json, channels.jsonl
+
+Merge those mask rows into Instruct::
+
+    python merge/act.py
+    python merge/eval.py --act --max-model-len 32768
 """
 
 from __future__ import annotations

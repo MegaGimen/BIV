@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Launch vLLM for the Chat Vector merge (or plain Qwen3.5 Instruct).
+"""Launch vLLM for a Qwen3.5 Instruct checkpoint (ACT merge, Chat Vector, or stock).
 
-Default: merged AgentWorld+Instruct at merge/output/chatvector, served as
-``qwen-merge``. ``--base`` serves stock Qwen3.5-35B-A3B as ``Qwen3.5-35B-A3B``.
+Default: ACT-merged Instruct at merge/output/act, served as ``qwen-act``.
+``--chatvector`` serves merge/output/chatvector as ``qwen-merge``.
+``--base`` serves stock Qwen3.5-35B-A3B as ``Qwen3.5-35B-A3B`` (use ``--port 6008``).
 
 Does not reuse .venv-muse (Muse-patched vLLM). Needs a recent vLLM that
 loads Qwen3.5-35B-A3B.
@@ -10,16 +11,18 @@ loads Qwen3.5-35B-A3B.
 This host (Harbor) is unchanged. Download weights first, merge, then serve::
 
     python merge/download.py
-    python merge/merge.py
-    python merge/eval.py
-    python merge/eval.py --base
+    python train/scripts/compare_act.py
+    python merge/act.py
+    python merge/eval.py --act --max-model-len 32768
+    python merge/eval.py --base --port 6008 --max-model-len 32768
 
     cd train && source .venv-eval/bin/activate
-    python scripts/test.py --model qwen-merge --suite terminal-bench-2.1
-    python scripts/test.py --model Qwen3.5-35B-A3B --suite terminal-bench-2.1
+    python scripts/test.py --act --suite terminal_bench_2_1
+    python scripts/test.py --act-instruct --suite terminal_bench_2_1
 
 ``scripts/test.py --base`` still means Muse-Glimmer-30B. Do not use it here.
 """
+
 
 from __future__ import annotations
 
@@ -41,8 +44,11 @@ from download import (  # noqa: E402
     has_config,
 )
 
-DEFAULT_MERGED = ROOT / "merge" / "output" / "chatvector"
+DEFAULT_ACT = ROOT / "merge" / "output" / "act"
+DEFAULT_CHATVECTOR = ROOT / "merge" / "output" / "chatvector"
 DEFAULT_PORT = 6006
+INSTRUCT_PORT = 6008
+ACT_NAME = "qwen-act"
 MERGE_NAME = "qwen-merge"
 BASE_NAME = "Qwen3.5-35B-A3B"
 # Qwen3.5 GDN/Mamba: each decode sequence needs one Mamba cache block.
@@ -109,21 +115,35 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
+        "--act",
+        action="store_true",
+        help=f"Serve ACT-merged Instruct ({DEFAULT_ACT}) as {ACT_NAME} "
+        "(default if neither --base nor --chatvector)",
+    )
+    p.add_argument(
+        "--chatvector",
+        action="store_true",
+        help=f"Serve Chat Vector merge ({DEFAULT_CHATVECTOR}) as {MERGE_NAME}",
+    )
+    p.add_argument(
         "--base",
         action="store_true",
-        help=f"Serve stock Instruct ({DEFAULT_AGENT}) as {BASE_NAME}",
+        help=f"Serve stock Instruct ({DEFAULT_AGENT}) as {BASE_NAME} "
+        f"(pair with --port {INSTRUCT_PORT} on AutoDL)",
     )
     p.add_argument(
         "--model",
         default=None,
         help="Override weights path / hub id "
-        f"(default: {DEFAULT_MERGED} or {DEFAULT_AGENT} with --base)",
+        f"(default: {DEFAULT_ACT}, {DEFAULT_CHATVECTOR} with --chatvector, "
+        f"or {DEFAULT_AGENT} with --base)",
     )
     p.add_argument(
         "--served-model-name",
         default=None,
         help=f"OpenAI model id Harbor should request "
-        f"(default: {MERGE_NAME} or {BASE_NAME} with --base)",
+        f"(default: {ACT_NAME}, {MERGE_NAME} with --chatvector, "
+        f"or {BASE_NAME} with --base)",
     )
     p.add_argument("--host", default=os.environ.get("VLLM_HOST", "0.0.0.0"))
     p.add_argument("--port", type=int, default=int(os.environ.get("VLLM_PORT", str(DEFAULT_PORT))))
@@ -206,33 +226,48 @@ def resolve_max_num_seqs(cli: int | None) -> int:
     return n
 
 
+def serve_mode(args: argparse.Namespace) -> str:
+    flags = [name for name in ("act", "chatvector", "base") if getattr(args, name)]
+    if len(flags) > 1:
+        raise SystemExit("pick one of --act / --chatvector / --base")
+    if args.base:
+        return "base"
+    if args.chatvector:
+        return "chatvector"
+    return "act"
+
+
+def _resolve_merged(path: Path, how: str) -> str:
+    local = path
+    if not local.is_absolute():
+        candidate = ROOT / local
+        if has_config(candidate):
+            local = candidate
+    if local.exists() and not has_config(local):
+        raise SystemExit(f"Merged checkpoint not ready: {local}\n{how}")
+    if not has_config(local):
+        raise SystemExit(f"Merged checkpoint not ready: {local}\n{how}")
+    return str(local.resolve())
+
+
 def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
     cache_dir = DEFAULT_CACHE if DEFAULT_CACHE.is_absolute() else (ROOT / DEFAULT_CACHE)
-    if args.base:
+    mode = serve_mode(args)
+    if mode == "base":
         model = existing_or_spec(args.model or DEFAULT_AGENT, cache_dir)
         served = args.served_model_name or BASE_NAME
-    else:
-        model = args.model or str(DEFAULT_MERGED)
+    elif mode == "chatvector":
+        model = _resolve_merged(
+            Path(args.model) if args.model else DEFAULT_CHATVECTOR,
+            "Run: python merge/merge.py",
+        )
         served = args.served_model_name or MERGE_NAME
-        local = Path(model)
-        if not local.is_absolute():
-            candidate = ROOT / local
-            if has_config(candidate):
-                local = candidate
-                model = str(candidate.resolve())
-            elif has_config(DEFAULT_MERGED) and args.model is None:
-                model = str(DEFAULT_MERGED.resolve())
-                local = DEFAULT_MERGED
-        if local.exists() and not has_config(local):
-            raise SystemExit(
-                f"Merged checkpoint not ready: {local}\n"
-                "Run: python merge/merge.py"
-            )
-        if args.model is None and not has_config(Path(model)):
-            raise SystemExit(
-                f"Merged checkpoint not ready: {model}\n"
-                "Run: python merge/merge.py"
-            )
+    else:
+        model = _resolve_merged(
+            Path(args.model) if args.model else DEFAULT_ACT,
+            "Run: python merge/act.py",
+        )
+        served = args.served_model_name or ACT_NAME
 
     if args.vllm_bin:
         launcher = [args.vllm_bin]
@@ -277,23 +312,36 @@ def build_cmd(args: argparse.Namespace) -> tuple[list[str], str, str]:
     return cmd, model, served
 
 
-def harbor_hint(served: str) -> str:
+def harbor_hint(served: str, mode: str) -> str:
+    if mode == "base":
+        flag = "--act-instruct"
+    elif mode == "chatvector":
+        flag = f"--model {served}"
+    else:
+        flag = "--act"
     return (
-        "On the Harbor host (this machine's train/scripts/test.py, unchanged):\n"
-        f"  python scripts/test.py --model {served} --suite terminal-bench-2.1\n"
-        "Do not pass --base on test.py (that still selects Muse-Glimmer-30B)."
+        "On the Harbor host (local Docker, train/.venv-eval):\n"
+        f"  python scripts/test.py {flag} --suite terminal_bench_2_1\n"
+        "Do not pass test.py --base (that still selects Muse-Glimmer-30B).\n"
+        f"  :{DEFAULT_PORT} → ACT / merge   :{INSTRUCT_PORT} → stock Instruct"
     )
 
 
 def main() -> None:
     args = parse_args()
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    mode = serve_mode(args)
     cmd, model, served = build_cmd(args)
 
     if args.source in {"modelscope", "ms"} and not Path(model).exists():
         os.environ.setdefault("VLLM_USE_MODELSCOPE", "True")
 
-    log("=== Chat Vector vLLM ===")
+    title = {
+        "act": "ACT merge vLLM",
+        "chatvector": "Chat Vector vLLM",
+        "base": "Instruct vLLM",
+    }[mode]
+    log(f"=== {title} ===")
     log(f"  model:  {model}")
     log(f"  served: {served}")
     log(f"  bind:   {args.host}:{args.port}")
@@ -302,7 +350,7 @@ def main() -> None:
         f"max_num_seqs={args.max_num_seqs}  dtype={args.dtype}"
     )
     log("  cmd:    " + " ".join(cmd))
-    log(harbor_hint(served))
+    log(harbor_hint(served, mode))
 
     if args.dry_run:
         return

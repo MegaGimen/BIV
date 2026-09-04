@@ -383,3 +383,119 @@ def top_channels(
     for val, key, idx in scored[:n]:
         out.append({"key": key, "channel": idx, "delta": val, "layer": layer_index(key)})
     return out
+
+
+PARAM_SUFFIXES = (".weight", ".bias")
+
+
+def param_canonical_key(param_name: str) -> str:
+    """Map a safetensors key onto the ACT module key in ``mask.json``.
+
+    ``model.language_model.layers.36.linear_attn.in_proj_qkv.weight``
+    → ``layers.36.linear_attn.in_proj_qkv``.
+    """
+    n = param_name
+    for suf in PARAM_SUFFIXES:
+        if n.endswith(suf):
+            n = n[: -len(suf)]
+            break
+    return canonical_module_key(n)
+
+
+def channel_axis(param_name: str, ndim: int) -> int:
+    """Which tensor axis is the ACT output channel (one row of the module).
+
+    Linear / ``lm_head``: PyTorch ``weight`` is ``[out, in]``, channel = row.
+    RMSNorm / bias: 1-D, channel = index.
+    ``embed_tokens``: activation last dim is ``hidden_size``, so column of
+    ``[vocab, hidden]`` — the probe hooked the embedding output, not a token row.
+    """
+    leaf = param_name.rsplit(".", 1)[-1]
+    if leaf == "bias" or ndim <= 1:
+        return 0
+    if param_canonical_key(param_name) == "embed_tokens":
+        return ndim - 1
+    return 0
+
+
+def world_param_candidates(instruct_key: str) -> list[str]:
+    """Instruct ImageTextToText keys vs AgentWorld CausalLM keys."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+
+    add(instruct_key)
+    prefix = "model.language_model."
+    if instruct_key.startswith(prefix):
+        add("model." + instruct_key[len(prefix) :])
+    elif instruct_key.startswith("model.") and not instruct_key.startswith(prefix):
+        add("model.language_model." + instruct_key[len("model.") :])
+    return out
+
+
+def group_mask_channels(rows: Sequence[dict[str, Any]]) -> dict[str, list[int]]:
+    grouped: dict[str, list[int]] = {}
+    for row in rows:
+        key = str(row["key"])
+        grouped.setdefault(key, []).append(int(row["channel"]))
+    return {k: sorted(set(v)) for k, v in grouped.items()}
+
+
+def load_mask_rows(payload: dict[str, Any], *, no_lm_head: bool) -> list[dict[str, Any]]:
+    """Pick ``mask`` or ``mask_no_lm_head`` from compare_act's JSON."""
+    if no_lm_head:
+        rows = payload.get("mask_no_lm_head")
+        if not isinstance(rows, list):
+            rows = [
+                r
+                for r in (payload.get("mask") or [])
+                if isinstance(r, dict)
+                and r.get("kind") != "lm_head"
+                and r.get("key") != "lm_head"
+            ]
+        return [r for r in rows if isinstance(r, dict)]
+    rows = payload.get("mask")
+    if not isinstance(rows, list):
+        raise ValueError("mask.json has no 'mask' list")
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def blend_masked_channels(
+    target: Any,
+    source: Any,
+    channels: Sequence[int],
+    lam: float,
+    axis: int = 0,
+) -> Any:
+    """ACT eq. (masked task vector): ``θ_i ← θ_i^{trg} + λ (θ_i^{abl} − θ_i^{trg})``.
+
+    ``target`` is Instruct (kept on unmasked channels). ``source`` is AgentWorld.
+    Only indices in ``channels`` along ``axis`` change. Out-of-range indices skip.
+    """
+    if tuple(target.shape) != tuple(source.shape):
+        raise ValueError(
+            f"blend_masked_channels: shape {tuple(target.shape)} vs {tuple(source.shape)}"
+        )
+    if not channels:
+        return target
+    if axis < 0 or axis >= int(target.ndim):
+        raise ValueError(f"blend_masked_channels: axis {axis} for ndim {target.ndim}")
+    import torch
+
+    n = int(target.shape[axis])
+    idx = torch.tensor(list(channels), dtype=torch.long, device=target.device)
+    idx = idx[(idx >= 0) & (idx < n)]
+    if idx.numel() == 0:
+        return target
+    sl: list[Any] = [slice(None)] * int(target.ndim)
+    sl[axis] = idx
+    loc = tuple(sl)
+    out = target.clone()
+    t = target.to(dtype=torch.float32)
+    s = source.to(dtype=torch.float32)
+    out[loc] = (t[loc] + float(lam) * (s[loc] - t[loc])).to(dtype=out.dtype)
+    return out

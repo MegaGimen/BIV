@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""Muse Glimmer agent eval: Harbor (this host, Docker) → remote AutoDL vLLM.
+"""Agent eval: Harbor (this host, Docker) → remote AutoDL vLLM.
 
-Split of roles (do not confuse):
-  • AutoDL GPU: ``bash scripts/serve_muse_vllm.sh``
-      (default: **latest** LoRA ckpt; ``--base`` for no adapter)
-  • This machine: Harbor ``--env docker`` + ``python scripts/test.py``
-      No local checkpoint path — only picks remote model id.
+Muse Glimmer-30B::
 
-Default Harbor model id is ``muse-lora`` (matches serve LoRA name).
-Use ``--base`` to hit ``Muse-Glimmer-30B`` when AutoDL served without LoRA.
+    AutoDL:  bash scripts/serve_muse_vllm.sh
+    Here:    python scripts/test.py            # muse-lora
+             python scripts/test.py --base     # Muse-Glimmer-30B
 
-TB arm/step (optional): copy from AutoDL serve banner, or::
+Qwen3.5 ACT merge (Instruct + AgentWorld mask rows)::
 
-  export MUSE_EVAL_ARM=checkpoint-e0-s2150
-  export MUSE_EVAL_STEP=2150
+    AutoDL :6006  python merge/eval.py --act --max-model-len 32768
+    AutoDL :6008  python merge/eval.py --base --port 6008 --max-model-len 32768
+    Here:         python scripts/test.py --act
+                  python scripts/test.py --act-instruct
 
-Resume an interrupted Harbor run (skips finished trials)::
-
-  python scripts/test.py --resume outputs/agent_eval/<stamp>_<arm>
-  python scripts/test.py --resume outputs/agent_eval/.../<arm>_terminal_bench_2_1 --max-model-len 65536
+Harbor ``--env docker`` on this machine. No local checkpoint path.
 """
 
 from __future__ import annotations
@@ -55,6 +51,26 @@ DEFAULT_LORA_MODEL = "muse-lora"
 DEFAULT_REMOTE_URL = (
     "https://u741253-ltqs-498e6237.westd.seetacloud.com:8443/v1"
 )
+# This instance: :6006 ACT merge, :6008 stock Instruct.
+DEFAULT_ACT_MODEL = "qwen-act"
+DEFAULT_ACT_INSTRUCT_MODEL = "Qwen3.5-35B-A3B"
+DEFAULT_ACT_URL = (
+    "https://u741253-tujr-a523480e.westd.seetacloud.com:8443/v1"
+)
+DEFAULT_ACT_INSTRUCT_URL = (
+    "https://uu741253-tujr-a523480e.westd.seetacloud.com:8443/v1"
+)
+
+SUITE_ALIASES = {
+    "terminal-bench-2.1": "terminal_bench_2_1",
+    "terminal-bench-2-1": "terminal_bench_2_1",
+    "tb2.1": "terminal_bench_2_1",
+    "tb21": "terminal_bench_2_1",
+}
+
+
+def _suite_id(value: str) -> str:
+    return SUITE_ALIASES.get(value, value)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -65,8 +81,20 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--base",
         action="store_true",
-        help=f"Request base model id '{DEFAULT_BASE_MODEL}' "
+        help=f"Request Muse base model id '{DEFAULT_BASE_MODEL}' "
         "(AutoDL must have been started with serve_muse_vllm.sh --base).",
+    )
+    p.add_argument(
+        "--act",
+        action="store_true",
+        help=f"Harbor → ACT-merged Instruct '{DEFAULT_ACT_MODEL}' "
+        f"at :6006 ({DEFAULT_ACT_URL}). Default suite is TB 2.1.",
+    )
+    p.add_argument(
+        "--act-instruct",
+        action="store_true",
+        help=f"Harbor → stock Instruct '{DEFAULT_ACT_INSTRUCT_MODEL}' "
+        f"at :6008 ({DEFAULT_ACT_INSTRUCT_URL}). Default suite is TB 2.1.",
     )
     p.add_argument(
         "--model",
@@ -91,11 +119,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--base-url",
         type=str,
-        default=os.environ.get("MUSE_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or DEFAULT_REMOTE_URL,
+        default=None,
         help="Remote vLLM OpenAI base URL "
-        f"(default: $MUSE_BASE_URL or {DEFAULT_REMOTE_URL}).",
+        "(default: --act → $ACT_BASE_URL / :6006 mapping; "
+        "--act-instruct → $ACT_INSTRUCT_URL / :6008 mapping; "
+        f"else $MUSE_BASE_URL or {DEFAULT_REMOTE_URL}).",
     )
     p.add_argument(
         "--api-key",
@@ -106,6 +134,7 @@ def _parse_args() -> argparse.Namespace:
         "--suite",
         action="append",
         dest="suites",
+        type=_suite_id,
         choices=list(SUITES.keys()),
     )
     p.add_argument(
@@ -193,11 +222,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-model-len",
         type=int,
-        default=int(os.environ.get("HARBOR_MAX_MODEL_LEN", "65536")),
-        help="Tell Terminus/LiteLLM the vLLM context window (default 65536). "
-        "Unmapped openai/<name> otherwise falls back to 1e6 and vLLM returns 400. "
-        "Output cap is smaller than this window (prompt+max_tokens must fit). "
-        "On --resume this is written into the job config.json (resume has no --ak).",
+        default=None,
+        help="Tell Terminus/LiteLLM the vLLM context window. "
+        "Default 32768 for --act / --act-instruct (matches merge/eval.py), "
+        "65536 for Muse. Unmapped openai/<name> otherwise falls back to 1e6 "
+        "and vLLM returns 400. On --resume this is written into config.json.",
     )
     p.add_argument(
         "--log-dir",
@@ -222,10 +251,85 @@ def _normalize_base_url(url: str) -> str:
     return u
 
 
-def _serve_hint(*, base: bool) -> str:
+def _serve_hint(*, act: bool = False, act_instruct: bool = False, base: bool = False) -> str:
+    if act_instruct:
+        return (
+            "python merge/eval.py --base --port 6008 --max-model-len 32768"
+        )
+    if act:
+        return "python merge/eval.py --act --max-model-len 32768"
     if base:
         return "bash scripts/serve_muse_vllm.sh --base"
     return "bash scripts/serve_muse_vllm.sh   # default: latest LoRA ckpt"
+
+
+def _resolve_eval_target(args: argparse.Namespace) -> dict[str, Any]:
+    if args.act and args.act_instruct:
+        raise SystemExit("pick one of --act / --act-instruct")
+    if args.base and (args.act or args.act_instruct):
+        raise SystemExit("--base is Muse Glimmer; use --act-instruct for stock Qwen Instruct")
+
+    use_base = bool(args.base)
+    act = bool(args.act)
+    act_instruct = bool(args.act_instruct)
+
+    if args.base_url:
+        base_url = args.base_url
+    elif act:
+        base_url = os.environ.get("ACT_BASE_URL") or DEFAULT_ACT_URL
+    elif act_instruct:
+        base_url = os.environ.get("ACT_INSTRUCT_URL") or DEFAULT_ACT_INSTRUCT_URL
+    else:
+        base_url = (
+            os.environ.get("MUSE_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+            or DEFAULT_REMOTE_URL
+        )
+
+    model_id = args.model
+    if model_id is None:
+        if act:
+            model_id = DEFAULT_ACT_MODEL
+        elif act_instruct:
+            model_id = DEFAULT_ACT_INSTRUCT_MODEL
+        else:
+            model_id = DEFAULT_BASE_MODEL if use_base else DEFAULT_LORA_MODEL
+
+    if args.max_model_len is not None:
+        max_model_len = int(args.max_model_len)
+    elif os.environ.get("HARBOR_MAX_MODEL_LEN"):
+        max_model_len = int(os.environ["HARBOR_MAX_MODEL_LEN"])
+    elif act or act_instruct:
+        max_model_len = 32768
+    else:
+        max_model_len = 65536
+
+    if args.suites:
+        suites = list(args.suites)
+    elif act or act_instruct:
+        suites = ["terminal_bench_2_1"]
+    else:
+        suites = list(DEFAULT_SUITES)
+
+    default_arm = (
+        DEFAULT_ACT_MODEL
+        if act
+        else (
+            "instruct"
+            if act_instruct
+            else ("base" if use_base else DEFAULT_LORA_MODEL)
+        )
+    )
+    return {
+        "use_base": use_base,
+        "act": act,
+        "act_instruct": act_instruct,
+        "base_url": _normalize_base_url(base_url),
+        "model_id": model_id,
+        "max_model_len": max_model_len,
+        "suites": suites,
+        "default_arm": default_arm,
+    }
 
 
 def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> None:
@@ -261,19 +365,19 @@ def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> No
 def main() -> None:
     args = _parse_args()
     meta = load_meta_reference()
-    suites = list(args.suites) if args.suites else list(DEFAULT_SUITES)
-    base_url = _normalize_base_url(args.base_url)
-
-    use_base = bool(args.base)
-    model_id = args.model
-    if model_id is None:
-        model_id = DEFAULT_BASE_MODEL if use_base else DEFAULT_LORA_MODEL
-
-    arm = (
-        args.arm
-        or os.environ.get("MUSE_EVAL_ARM")
-        or ("base" if use_base else DEFAULT_LORA_MODEL)
+    target = _resolve_eval_target(args)
+    suites = target["suites"]
+    base_url = target["base_url"]
+    use_base = target["use_base"]
+    model_id = target["model_id"]
+    args.max_model_len = target["max_model_len"]
+    serve_hint = _serve_hint(
+        act=target["act"],
+        act_instruct=target["act_instruct"],
+        base=use_base,
     )
+
+    arm = args.arm or os.environ.get("MUSE_EVAL_ARM") or target["default_arm"]
     step: int | None = args.step
     if step is None:
         env_step = os.environ.get("MUSE_EVAL_STEP")
@@ -304,7 +408,8 @@ def main() -> None:
         else float(args.agent_timeout_multiplier)
     )
 
-    print("=== Muse Glimmer agent eval (Harbor@this-host + remote vLLM) ===", flush=True)
+    title = "ACT merge agent eval" if (target["act"] or target["act_instruct"]) else "Muse Glimmer agent eval"
+    print(f"=== {title} (Harbor@this-host + remote vLLM) ===", flush=True)
     print(f"  dry_run:   {args.dry_run}", flush=True)
     if resume_jobs is not None:
         print(f"  resume:    {[str(p) for p in resume_jobs]}", flush=True)
@@ -331,13 +436,13 @@ def main() -> None:
         flush=True,
     )
     print(
-        "  NOTE: no local --ckpt; AutoDL picks latest LoRA by default:\n"
-        f"    {_serve_hint(base=use_base)}",
+        "  NOTE: no local --ckpt; AutoDL serve:\n"
+        f"    {serve_hint}",
         flush=True,
     )
 
     if args.print_serve_cmd:
-        print(_serve_hint(base=use_base), flush=True)
+        print(serve_hint, flush=True)
         return
 
     env_report = check_environment()
@@ -497,7 +602,7 @@ def main() -> None:
         "dry_run": args.dry_run,
         "resumed": resume_jobs is not None,
         "resume_paths": [str(p) for p in resume_jobs] if resume_jobs else None,
-        "serve_hint": _serve_hint(base=use_base),
+        "serve_hint": serve_hint,
         "meta_reference": meta.get("muse_glimmer_30b_high_reasoning"),
         "rows": rows,
         "env_check": env_report,

@@ -26,7 +26,7 @@ train/
 │   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
-│   ├── probe.py / compare.py / compare_act.py / cut_stage1.py
+│   ├── probe.py / compare.py / compare_act.py / merge_act.py / cut_stage1.py
 │   ├── train_jepa.py / train_jepa.sh / train_jepa_32k.sh
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── stat.py                        # AgentWorld seqlen truncation stats
@@ -64,6 +64,15 @@ python train/scripts/compare.py
 # Optional diagnostic: ACT module-channel |a_AW - a_Instruct| on answer tokens
 # (CCDF + top-p% mask, not a layer-cut table; writes train/outputs/compare_act/)
 python train/scripts/compare_act.py
+
+# ACT merge: copy top-p% rows from AgentWorld into Instruct (λ=0.4)
+python merge/act.py
+# GPU serve + local Harbor TB 2.1
+python merge/eval.py --act --max-model-len 32768          # AutoDL :6006
+python merge/eval.py --base --port 6008 --max-model-len 32768  # AutoDL :6008
+cd train && source .venv-eval/bin/activate
+python scripts/test.py --act --suite terminal_bench_2_1
+python scripts/test.py --act-instruct --suite terminal_bench_2_1
 
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
