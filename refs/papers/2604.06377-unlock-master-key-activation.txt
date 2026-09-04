@@ -1,0 +1,2373 @@
+source: https://arxiv.org/html/2604.06377
+arxiv: https://arxiv.org/abs/2604.06377
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Method
+     1. 2.1 Problem Setup
+     2. 2.2 Extracting The MasterKey
+     3. 2.3 Cross-model Subspace Alignment
+     4. 2.4 Unlocking The Target Model
+ 4. 3 Atomic And Non-Atomic Capabilities
+ 5. 4 Atomic Capability Transfer
+     1. 4.1 Experimental Setup
+     2. 4.2 Results & Discussion
+         1. Unlock Consistently Improves Reasoning Performance:
+         2. Asymmetry in Transfer Direction:
+         3. Transfer Effectiveness Depends On The Salience of The Capability in 𝒯L\,\mathcal{T}^{\
+            vphantom{*}}_{\mathrm{L}}\,:
+         4. Takeaways:
+ 6. 5 Non-Atomic Capability Transfer
+     1. 5.1 Experiment Setup
+         1. Task-Conditioned Transfer With Limited Data:
+         2. Task-Agnostic Transfer With Abundant Data:
+         3. Models and Datasets:
+     2. 5.2 Results & Discussion
+         1. Unlocking Matches Gains From Post-Training:
+         2. Assymetry in Task Utilization:
+     3. 5.3 Convergence of Reasoning Traces:
+         1. Takeaways:
+ 7. 6 The Master Key Hypothesis & Implications
+ 8. 7 Related Work
+     1. Steering vectors:
+     2. Distinction from prior steering transfer work:
+     3. Capability transfer across models:
+     4. Representational convergence and cross-model alignment:
+     5. Knowledge distillation:
+ 9. 8 Conclusion
+10. 9 Acknowledgments
+11. References
+12. A Additional Preliminaries
+     1. A.1 Comparison to Previous Approaches
+     2. A.2 Prompts and Models Used
+13. B Additional Results for Unlocking Chain of Thought
+     1. B.1 Impact of Unlocking
+         1. Increased Generation Lengths and Task Performance:
+         2. Unlock is Non-Destructive & Compliments Gains From Parameter Scaling:
+     2. B.2 Hyperparameter Search
+         1. B.2.1 Impact of Number of Examples on the Master Key
+         2. B.2.2 Effect of Rank kk and Number of examples nn on The Linear Transformation
+         3. B.2.3 Latent Space Geometry and Sensitivity
+14. C Additional Results for Unlocking Mathematical Reasoning
+     1. C.1 Results & Discussion:
+         1. C.1.1 Understanding the Impact of Unlocking
+             1. Dependence on Capabilities present in 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}
+                \,:
+             2. What is Encoded in the Master Key?
+     2. C.2 Examples of Math Reasoning Transfer
+15. D Model Family Transfer
+     1. D.1 Experimental Setup
+     2. D.2 Results & Observations
+
+License: CC BY 4.0
+arXiv:2604.06377v3 [cs.LG] 05 May 2026
+\DeclareCaptionType
+
+example[Example][List of Examples]
+
+[Uncaptioned image]  The Master Key Hypothesis:
+Unlocking Cross-Model Capability Transfer via Linear Subspace Alignment
+
+Rishab Balasubramanian^†    Pin-Jie Lin^†    Rituraj Sharma^†    Anjie Fang^‡    Fardin Abdi^‡    
+Viktor Rozgic^‡    Zheng Du^‡    Mohit Bansal^⋆    Tu Vu^†    ^† Virginia Tech    ^‡ Amazon    ^⋆
+UNC Chapel Hill
+
+Abstract
+
+We investigate whether post-trained capabilities can be transferred across model scales without
+retraining, and propose the Master Key Hypothesis, which states that model capabilities correspond
+to directions in a low-dimensional latent subspace that induce specific behaviors and are
+transferable across models through linear alignment. Based on the hypothesis, we introduce Unlock,
+a training-free and label-free framework that extracts a capability direction by contrasting
+activations between capability-present and capability-absent Source variants, aligns it with a
+Target model through a low-rank linear transformation, and applies it at inference time to elicit
+the behavior. Experiments on reasoning behaviors, including Chain-of-Thought (CoT) and mathematical
+reasoning, demonstrate substantial improvements across model scales without training. For example,
+transferring CoT reasoning from Qwen1.5-14B to Qwen1.5-7B yields an accuracy gain of 12.1% on MATH,
+and transferring a mathematical reasoning direction from Qwen3-4B-Base to Qwen3-14B-Base improves
+AGIEval Math accuracy from 61.1% to 71.3%, surpassing the 67.8% achieved by the 14B post-trained
+model. Our analysis shows that the success of transfer depends on the capabilities learned during
+pre-training, and that our intervention amplifies latent capabilities by sharpening the output
+distribution toward successful reasoning trajectories.
+
+
+
+https://github.com/rishabbala/Steering-Vector-Transfer
+
+1 Introduction
+
+Training modern language models involves two stages: pre-training, which instills general
+linguistic structure, and post-training, which aligns the model to desired behaviors. Pre-training
+data often overlaps across model families and sizes, typically varying only in composition.
+However, each new model often requires substantial data, computation, and engineering effort to
+instill useful behaviors in the post-training phase. As models proliferate, this redundancy creates
+a fundamental inefficiency: capabilities are costly to learn, yet difficult to reuse across models.
+This inefficiency is compounded by evidence that post-training methods such as reinforcement
+learning do not incorporate new knowledge or reasoning capabilities, but rather act as a
+distribution-sharpening mechanism that pushes the base model towards narrow yet correct output
+trajectories [72; 66; 14].
+
+To bridge this gap between pre- and post-training, prior work introduces reasoning and question
+answering data in between the two training stages, creating an additional mid-training regime [39;
+67; 2; 34].^1^1 1 In this work we use pre-training to collectively refer to both pre- and
+mid-training regimes. A mechanism that transfers capability-inducing representations across models
+to reliably elicit post-training behaviors without the need for retraining could reduce training
+costs, accelerate development, and enable modular reuse of existing model capabilities.
+
+Concretely, we ask: can a desired capability that is expressed in one model be isolated and
+transferred to another model without gradient-based training or labeled supervision? We define a
+capability as a reproducible property of model behavior, such as step-by-step reasoning or
+mathematical problem solving. The key challenge is that capabilities are implicitly encoded as
+high-dimensional representations, and successful transfer requires bridging differences in
+architecture, scale, and latent structure.^2^2 2 In the remainder of the paper, we use capability
+and behavior interchangeably.
+
+
+Figure 1: Performance improvements from Unlock when transferring (a) Chain-of-Thought capabilities
+from Qwen1.5-14B onto Qwen1.5-7B; and (b) Math reasoning capabilities from Qwen3-4B-Base onto 
+Qwen3-14B-Base. Capability transfer substantially improves the base model without additional
+training, approaching the performance of the post-trained model.
+
+Existing methods for capability transfer can be decomposed into two steps: (1) extracting a
+transformation from two Source variants that differ in an intended behavior — arising either from
+different models (model-driven, e.g., base and fine-tuned) or different prompting of the same model
+(prompt-driven, e.g., with vs. without chain-of-thought prompting); and (2) applying this
+transformation to a Target model to reproduce the desired behavior. These approaches differ
+primarily in the space in which this transformation is represented, and can be broadly categorized
+into three distinct frameworks — (1) Weight-space transfer [26]: The parameter-level difference
+between two Source models is added directly to the Target model, which typically requires
+architectural compatibility between the Source and Target models, or additional pruning or
+corrective training for cross-model alignment; (2) Output-space transfer  [33]: The logit
+difference between two Source variants is applied at each generation step to adjust the output
+distribution of the Target model without modifying its parameters. This avoids shape mismatches,
+but incurs substantial inference cost due to per-token logit computation for multiple models, and
+requires identical tokenization between the source and target; and (3) Latent-space transfer [42]:
+This strategy involves intervening on internal representations to steer the Target model towards
+the desired output.
+
+In this work, we focus on the latent space, where capabilities are encoded as shifts in internal
+activations. Existing methods typically construct steering directions from labeled contrastive
+examples (positive vs. negative [58; 42]) using a single Source model and apply them at inference
+time to similar prompts. Furthermore, these methods are largely focused on alignment and
+surface-level behavioral control (e.g., safety, toxicity, bias, and stylistic shaping [35; 53; 16;
+11; 52]) rather than advanced capabilities such as reasoning.
+
+We address these limitations by proposing Unlock — a training-free and label-free framework for
+cross-model capability transfer. Our method involves three main stages: First, we extract a 
+MasterKey — a capability direction in a Source model’s representation space by contrasting internal
+activations between capability-present and capability-absent variants using a small set of
+unlabeled prompts (Section 2.2). Second, we estimate a low-rank linear transformation that aligns
+this direction with the latent space of a Target model (Section 2.3). Finally, we apply the
+transferred direction as a normalized inference-time intervention to elicit the corresponding
+behavior (Section 2.4). The entire procedure is training-free, label-free, architecture-agnostic,
+and requires only forward passes.
+
+As case studies, we evaluate our capability transfer approach on reasoning behaviors, including
+Chain-of-Thought (Section 4) and mathematical reasoning (Section 5). We find that the transferred
+capability leads to substantial performance improvements, and can match the gains from
+post-training. As shown in Figure 1, transferring a Chain-of-Thought (CoT) direction from 
+Qwen1.5-14B to Qwen1.5-7B improves the accuracy on MATH from 8.0%8.0\% to 20.1%20.1\% without
+explicit CoT prompting, which outperforms the 18.2%18.2\% achieved by the 7B instruction-tuned
+model with CoT prompting. Notably, transferring mathematical reasoning from Qwen3-4B to Qwen3-14B
+improves AGIEval Math accuracy from 61.1%61.1\% to 71.3%71.3\%, which surpasses the 67.8%67.8\%
+achieved by the 14B instruction-tuned model. Lastly, we provide preliminary experiments for
+cross-family transfer of CoT behavior (Appendix D), and observe consistent performance gains,
+offering initial evidence for the convergence of capability representations across model families
+as postulated by [25].
+
+Our analysis reveals several consistent patterns. First, capability transfer exhibits a directional
+asymmetry: small-to-large transfer typically yields larger relative improvements than
+large-to-small transfer. Second, for both CoT and mathematical reasoning, Unlock amplifies
+capabilities that are dormant in the model, yielding greater gains when those capabilities are more
+strongly represented. Finally, we provide evidence that Unlock sharpens the output distribution and
+directs generation toward reasoning trajectories that are more likely to succeed — in line with the
+findings from [72]. Based on our results and observations, we introduce the Master Key Hypothesis
+below and defer a formal definition to Section 6.
+
+ The Master Key Hypothesis Capabilities exist as directions in a low-dimensional latent subspace,
+such that shifting the representations along these directions induces the desired behaviors. These
+directional vectors can then be isolated and mapped into the representation space of another model
+via linear transformations, thus eliciting the intended capability.
+
+To summarize, our main contributions are:
+
+  • •
+   
+    Training-free Capability Transfer: We propose a method that extracts a capability-inducing
+    direction (MasterKey) from a pair of Source models and transfers it to a Target model via
+    low-rank linear subspace alignment, enabling capability reuse without additional training.
+
+  • •
+   
+    The Master Key Hypothesis: We hypothesize that model capabilities correspond to directions in a
+    shared low-dimensional latent subspace, which can be isolated and transferred across models via
+    linear transformations.
+
+  • •
+   
+    Empirical Validation Across Model Sizes: Through extensive experiments, we demonstrate that
+    reasoning behaviors, including Chain-of-Thought and mathematical reasoning, can be transferred
+    across models of different sizes, yielding substantial improvements that approach or match
+    gains typically obtained through post-training.
+
+  • •
+   
+    Analysis of Transfer Dynamics: We analyze the factors that influence capability transfer,
+    namely, the effect of model family and scale on transfer, and the effect of steering on the
+    model’s output distribution.
+
+2 Method
+
+
+Figure 2: Illustration of Unlock: Our method consists of three stages: (1) Calculating the
+difference in hidden states in the Source space; (2) Learning a linear transformation between the
+Source Locked and Target Locked models; and (3) Projecting the MasterKey from Source to Target
+space and applying as a test-time intervention to the residual stream at every layer.
+
+In this section, we introduce Unlock, a training-free and label-free framework for transferring
+capability-inducing directions across models. The core idea is to represent a capability as a
+direction in representation space that shifts a model from a state where the behavior is weak or
+absent to one where it reliably emerges. Unlock extracts this direction (referred to as MasterKey)
+by contrasting two Source variants that differ in the presence of the capability (e.g., 
+Qwen3-4B-Base vs. its post-trained counterpart Qwen3-4B) and transfers it to a Target model (e.g., 
+Qwen3-14B-Base) to elicit the behavior.
+
+The framework involves three conceptual models:
+
+  • •
+   
+    Source Locked 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,: a Source variant in which the
+    desired capability is weak or absent.
+
+  • •
+   
+    Source Unlocked 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,: a Source variant that reliably
+    exhibits the capability.
+
+  • •
+   
+    Target Locked 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,: the Target model in which we aim
+    to elicit the capability.
+
+The Source variants 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\, and 𝒮U\,\mathcal{S}^{\vphantom
+{*}}_{\mathrm{U}}\, share the same architecture and tokenizers, allowing their internal activations
+to be directly compared. Their contrast isolates a capability direction in the Source
+representation space. This direction is then mapped into the Target representation space and
+applied during inference to 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,, producing the Target
+Unlocked model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,.
+
+At a high level, Unlock consists of three stages:
+
+  • •
+   
+    extracting a capability direction (MasterKey) from the Source variants (Section 2.2),
+
+  • •
+   
+    aligning representation spaces between the Source and Target models (Section 2.3), and
+
+  • •
+   
+    applying the transferred direction as an inference-time intervention (Section 2.4).
+
+The entire procedure requires only forward passes on a small set of unlabeled prompts.
+
+2.1 Problem Setup
+
+Let ℳ\mathcal{M} denote a language model with hidden dimension dℳd^{\vphantom{*}}_{\mkern-3.0mu\
+mathcal{M}}. For a model-specific prompt PℳP^{\vphantom{*}}_{\mkern-3.0mu\mathcal{M}} (e.g., task
+instructions and/or a few demonstrations) and query qiq^{\vphantom{*}}_{i}, we denote the
+final-token hidden state at layer ll as
+
+ 𝐡ℳ(l)​(Pℳ⊕qi)∈ℝdℳ,\mathbf{h}_{\mathcal{M}}^{(l)}\>(P^{\vphantom{*}}_{\mkern-3.0mu\mathcal{M}}\
+ oplus q^{\vphantom{*}}_{i})\in\mathbb{R}^{d^{\vphantom{*}}_{\mkern-3.0mu\mathcal{M}}},
+
+where ⊕\oplus denotes sequence concatenation. We assume access to a small set of unlabeled queries
+𝒟={qi}i=1n\mathcal{D}=\{q^{\vphantom{*}}_{i}\}_{i=1}^{n}. These queries are used both to extract
+the capability direction and to estimate the cross-model alignment.
+
+2.2 Extracting The MasterKey
+
+We first isolate a direction from the Source variants that elicits the desired capability ψ\psi.
+Intuitively, the difference in their internal representations captures the shift required to induce
+the behavior. For each query qiq^{\vphantom{*}}_{i} and layer ll, we compute a per-example
+representation difference between the Unlocked and Locked representations
+
+ vψ(𝒮,l,i)=𝐡𝒮U(l)​(P𝒮U⊕qi)−𝐡𝒮L(l)​(P𝒮L⊕qi).v^{(\mathcal{S},l,i)}_{\psi}\;=\;\mathbf{h}_{\,\
+ mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,}^{(l)}(P^{\vphantom{*}}_{\mkern-3.0mu\,\mathcal{S}^
+ {\vphantom{*}}_{\mathrm{U}}\,}\mkern-6.0mu\oplus q^{\vphantom{*}}_{i})\;-\;\mathbf{h}_{\,\     (1)
+ mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l)}(P^{\vphantom{*}}_{\mkern-3.0mu\,\mathcal{S}^
+ {\vphantom{*}}_{\mathrm{L}}\,}\mkern-6.0mu\oplus q^{\vphantom{*}}_{i}).
+
+This vector represents the activation shift required to move the Locked model towards the Unlocked
+behavior for that example. To obtain a dataset-level direction, we aggregate these differences
+across queries as 𝐯ψ(𝒮,l,Φ)=Φ⁡(vψ(𝒮,l,i))\mathbf{v}^{(\mathcal{S},l,\Phi)}_{\psi}\;=\;\Phi\left(v^
+{(\mathcal{S},l,i)}_{\psi}\right) where Φ\Phi is any aggregator function. In this work, we consider
+two aggregator functions — the mean aggregator, defined as the average of the differences
+
+ 𝐯ψ(𝒮,l,avg)=1n​∑i=1nvψ(𝒮,l,i),\mathbf{v}^{(\mathcal{S},l,\text{avg})}_{\psi}\;=\;\frac{1}{n}\  (2)
+ sum_{i=1}^{n}v^{(\mathcal{S},l,i)}_{\psi},
+
+and the principal component aggregator, defined as the first principal component of the centered
+differences [38]
+
+ 𝐯ψ(𝒮,l,pca)=PCA1⁡({vψ(𝒮,l,i)−𝐯ψ(𝒮,l,avg)}i=1n).\mathbf{v}^{(\mathcal{S},l,\text{pca})}_{\psi}
+ \;=\;\operatorname{PCA}^{\vphantom{*}}_{1}\!\left(\left\{v^{(\mathcal{S},l,i)}_{\psi}-\mathbf  (3)
+ {v}^{(\mathcal{S},l,\text{avg})}_{\psi}\right\}_{i=1}^{n}\right).
+
+Our formulation is entirely unsupervised and requires no labeled supervision (e.g., positive or
+negative examples). The contrast between the Source variants may arise from prompt-driven
+differences (e.g., with vs. without CoT prompting) or model-driven differences (e.g., base vs.
+post-trained models).
+
+2.3 Cross-model Subspace Alignment
+
+The capability direction MasterKey extracted in Section 2.2 lies in the Source representation
+space. Since the Target model may have a different hidden size and latent geometry, we compute a
+mapping that transfers this MasterKey onto the Target representation space.
+
+Specifically, we first collect hidden representations from the Source Locked model 𝒮L\,\mathcal{S}^
+{\vphantom{*}}_{\mathrm{L}}\, and the Target Locked model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm
+{L}}\,. Let lsl^{\vphantom{*}}_{s} denote the layer of 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}
+\, used to extract Source representations, and ltl^{\vphantom{*}}_{t} the layer of 𝒯L\,\mathcal{T}^
+{\vphantom{*}}_{\mathrm{L}}\, where the transferred MasterKey will be applied (Section 2.4
+describes how lsl^{\vphantom{*}}_{s} is selected for a given ltl^{\vphantom{*}}_{t}). To reduce
+prompt-induced variance, we use a shared prompt p=P(𝒮L,𝒯L)p=P^{\vphantom{*}}_{(\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{L}}\,,\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,)} for both models.^3^3 3 We
+note that the shared prompt is to minimize noise from the prompts. Our framework theoretically
+allows any combination of prompts to be applied between 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}
+\, and 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,. Given the query set 𝒟={qi}i=1n\mathcal{D}=\{q
+^{\vphantom{*}}_{i}\}_{i=1}^{n}, we stack representations across queries for both models to obtain
+two matrices
+
+              =[(𝐡𝒮L(ls)​(p⊕q1))⊤(𝐡𝒮L(ls)​(p⊕q2))⊤(𝐡𝒮L   =[(𝐡𝒯L(lt)​(p⊕q1))⊤(𝐡𝒯L(lt)​(p⊕q2))⊤(𝐡𝒯L
+              (ls)​(p⊕qn))⊤]∈ℝn×d𝒮,X𝒯\displaystyle=\     (lt)​(p⊕qn))⊤]∈ℝn×d𝒯,\displaystyle=\begin
+              begin{bmatrix}\big(\mathbf{h}_{\,\mathcal  {bmatrix}\big(\mathbf{h}_{\,\mathcal{T}^
+              {S}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_    {\vphantom{*}}_{\mathrm{L}}\,}^{(l_{t})}
+              {s})}(p\oplus q^{\vphantom{*}}_{1})\big)^  (p\oplus q^{\vphantom{*}}_{1})\big)^{\
+ X𝒮\          {\top}\\[5.0pt] \big(\mathbf{h}_{\,\       top}\\[5.0pt] \big(\mathbf{h}_{\,\mathcal
+ displaystyle mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,}^ {T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_
+ X_{\mathcal  {(l_{s})}(p\oplus q^{\vphantom{*}}_{2})\   {t})}(p\oplus q^{\vphantom{*}}_{2})\big)^
+ {S}}         big)^{\top}\\[5.0pt] \vdots\\[5.0pt] \big  {\top}\\[5.0pt] \vdots\\[5.0pt] \big(\
+              (\mathbf{h}_{\,\mathcal{S}^{\vphantom{*}}_ mathbf{h}_{\,\mathcal{T}^{\vphantom{*}}_
+              {\mathrm{L}}\,}^{(l_{s})}(p\oplus q^{\     {\mathrm{L}}\,}^{(l_{t})}(p\oplus q^{\
+              vphantom{*}}_{n})\big)^{\top}\\[5.0pt] \   vphantom{*}}_{n})\big)^{\top}\\[5.0pt] \
+              end{bmatrix}\in\mathbb{R}^{n\times d^{\    end{bmatrix}\in\mathbb{R}^{n\times d^{\
+              vphantom{*}}_{\mathcal{S}}},\qquad X_{\    vphantom{*}}_{\mathcal{T}}},
+              mathcal{T}}
+
+where d𝒮d^{\vphantom{*}}_{\mathcal{S}} and d𝒯d^{\vphantom{*}}_{\mathcal{T}} denote the hidden size
+of the Source and Target models, respectively, and n≪min⁡(d𝒮,d𝒯)n\ll\min(d^{\vphantom{*}}_{\mathcal
+{S}},d^{\vphantom{*}}_{\mathcal{T}}). Instead of aligning the full hidden spaces, we align low-rank
+subspaces that capture the dominant structure of the representations. To find these low-rank
+subspaces, we perform Singular Value Decomposition (SVD) on both matrices
+
+ X𝒮=U𝒮​Σ𝒮​V𝒮⊤,X𝒯=U𝒯​Σ𝒯​V𝒯⊤,X^{\vphantom{*}}_{\mathcal{S}}=U^{\vphantom{*}}_{\mathcal{S}}\Sigma^{\
+ vphantom{*}}_{\mathcal{S}}V_{\mathcal{S}}^{\top},\qquad X^{\vphantom{*}}_{\mathcal{T}}=U^{\
+ vphantom{*}}_{\mathcal{T}}\Sigma^{\vphantom{*}}_{\mathcal{T}}V_{\mathcal{T}}^{\top},
+
+and retain the top-kk right singular vectors V𝒮k∈ℝd𝒮×kV_{\mathcal{S}}^{k}\in\mathbb{R}^{d_{\mathcal
+{S}}\times k}, V𝒯k∈ℝd𝒯×kV_{\mathcal{T}}^{k}\in\mathbb{R}^{d_{\mathcal{T}}\times k}, where k≤nk\leq
+n. Projecting the representations into these subspaces yields
+
+ X^𝒮=X𝒮​V𝒮k∈ℝn×k,X^𝒯=X𝒯​V𝒯k∈ℝn×k.\hat{X}^{\vphantom{*}}_{\mathcal{S}}=X^{\vphantom{*}}_{\mathcal
+ {S}}V_{\mathcal{S}}^{k}\in\mathbb{R}^{n\times k},\qquad\hat{X}^{\vphantom{*}}_{\mathcal{T}}=X^{\
+ vphantom{*}}_{\mathcal{T}}V_{\mathcal{T}}^{k}\in\mathbb{R}^{n\times k}.
+
+We then learn a linear transformation W∈ℝk×kW\in\mathbb{R}^{k\times k} that aligns the projected
+representations by minimizing the Frobenius norm loss
+
+ W⋆=arg⁡minW∈ℝk×k⁡‖X^𝒮​W−X^𝒯‖F2.W^{\star}\;=\;\arg\min_{W\in\mathbb{R}^{k\times k}}\left\lVert
+ \hat{X}^{\vphantom{*}}_{\mathcal{S}}W-\hat{X}^{\vphantom{*}}_{\mathcal{T}}\right\rVert_{F}^    (4)
+ {2}.
+
+This problem has the closed-form solution W⋆=X^𝒮†​X^𝒯∈ℝk×kW^{\star}=\hat{X}_{\mathcal{S}}^{\dagger}
+\hat{X}_{\mathcal{T}}^{\vphantom{\dagger}}\in\mathbb{R}^{k\times k}, where ∥⋅∥F\lVert\cdot\rVert_
+{F} denotes the Frobenius norm and X^𝒮†∈ℝk×n\hat{X}_{\mathcal{S}}^{\dagger}\in\mathbb{R}^{k\times
+n} is the Moore–Penrose pseudoinverse of X^𝒮\hat{X}^{\vphantom{*}}_{\mathcal{S}}.
+
+Using this alignment, we define a lifted cross-model operator
+
+ Rlt=V𝒯k​(W⋆)⊤​(V𝒮k)⊤∈ℝd𝒯×d𝒮,R_{l_{t}}\;=\;V_{\mathcal{T}}^{k}\,(W^{\star})^{\top}\,(V_{\       (5)
+ mathcal{S}}^{k})^{\top}\in\mathbb{R}^{d_{\mathcal{T}}\times d_{\mathcal{S}}},
+
+which maps vectors from the Source representation space to the Target representation space.
+Applying this operator to the source MasterKey 𝐯ψ(𝒮,ls,Φ)∈ℝd𝒮\mathbf{v}^{(\mathcal{S},l_{s},\Phi)}_
+{\psi}\in\mathbb{R}^{d_{\mathcal{S}}} yields the transferred capability direction
+
+ 𝐯ψ(𝒯,lt,Φ)=Rlt​𝐯ψ(𝒮,ls,Φ)∈ℝd𝒯.\mathbf{v}^{(\mathcal{T},l_{t},\Phi)}_{\psi}\;=\;R^{\vphantom    (6)
+ {*}}_{l_{t}}\,\mathbf{v}^{(\mathcal{S},l_{s},\Phi)}_{\psi}\in\mathbb{R}^{d_{\mathcal{T}}}.
+
+2.4 Unlocking The Target Model
+
+Since the Source and Target models may have different depths, we align layers by relative position.
+Let L𝒮L_{\mathcal{S}} and L𝒯L_{\mathcal{T}} denote the number of layers in the Source and Target
+models, respectively. For each target layer ltl_{t}, we choose the corresponding Source layer as
+
+ ls=min⁡(L𝒮,max⁡(1,⌊L𝒮L𝒯​lt⌋)).l_{s}\;=\;\min\!\left(L_{\mathcal{S}},\ \max\!\left(1,\ \left\
+ lfloor\frac{L_{\mathcal{S}}}{L_{\mathcal{T}}}\,l_{t}\right\rfloor\right)\right).
+
+This mapping aligns layers at similar relative depths, following prior observations that
+representations maintain structural relationships across model scales [13].
+
+For a new input query, we compute the MasterKey in Target space using Equation 6, and apply this
+direction during inference to steer the hidden representations of the Target model 𝒯L\,\mathcal{T}^
+{\vphantom{*}}_{\mathrm{L}}\,. At each layer ltl_{t}, the final-token hidden state 𝐡𝒯L(lt)\mathbf
+{h}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_{t})} is modified as
+
+ 𝐡~𝒯L(lt)=𝐡𝒯L(lt)‖𝐡𝒯L(lt)‖2+α​𝐯ψ(𝒯,lt,Φ)‖𝐯ψ(𝒯,lt,Φ)‖2,\displaystyle\tilde{\mathbf{h}}_{\,\mathcal
+ {T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_{t})}=\frac{\mathbf{h}_{\,\mathcal{T}^{\vphantom{*}}_{\
+ mathrm{L}}\,}^{(l_{t})}}{\left\lVert\mathbf{h}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_
+ {t})}\right\rVert_{2}}\;+\;\alpha\frac{\mathbf{v}^{(\mathcal{T},l_{t},\Phi)}_{\psi}}{\left\lVert\
+ mathbf{v}^{(\mathcal{T},l_{t},\Phi)}_{\psi}\right\rVert_{2}},
+
+where α\alpha controls the strength of the intervention. The resulting vector is rescaled to
+preserve the magnitude of the original hidden state.
+
+ 𝐡𝒯U(lt)=𝐡~𝒯L(lt)‖𝐡~𝒯L(lt)‖2×‖𝐡𝒯L(lt)‖2.\mathbf{h}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}
+ \,}^{(l_{t})}=\frac{\tilde{\mathbf{h}}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_
+ {t})}}{\left\lVert\tilde{\mathbf{h}}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l_{t})}\  (7)
+ right\rVert_{2}}\times\left\lVert\mathbf{h}_{\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,}^
+ {(l_{t})}\right\rVert_{2}.
+
+Applying this intervention across layers during generation yields the Target Unlocked model 𝒯U\,\
+mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,, which exhibits the transferred capability without
+requiring additional training. Figure 2 shows the three stages of our method and how the
+intervention is applied at test-time.
+
+We denote the transfer of a specific capability ψ\psi from the Source pair of models to the Target
+model as 𝒯L+Unlock from​𝒮L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,\,+\,\text{{{Unlock}} }_{\
+mathrm{from\;}\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,}.^4^4 4 Since we always deploy a base
+version for the Locked models, we use the model name and size to represent 𝒮L\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{L}}\, and 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,, and drop additional
+suffixes such as -Base or -pt. To avoid confusion, we refer to the Target model that has undergone
+extensive post-training as the post-trained Target model 𝒯PT∗\,\mathcal{T}^{*}_{\mathrm{PT}}\,. We
+treat the aggregation method Φ\Phi, subspace rank kk, number of queries nn, and steering strength α
+\alpha as hyperparameters, which are selected via grid search on a held-out development set. We
+provide a discussion of these hyperparameters and the low-rank nature of the capability subspace in
+Appendix B.2.
+
+3 Atomic And Non-Atomic Capabilities
+
+We formally define a capability as:
+
+Definition 3.1: Capability For a model ℳ\mathcal{M}, a query distribution 𝒬\mathcal{Q}, and a
+prompt distribution 𝒫ℳ\mathcal{P}^{\vphantom{*}}_{\mkern-5.0mu\mathcal{M}}, a capability ψ\psi is
+defined as a measurable behavior associated with a metric mψ​(ℳ,q,p)m^{\vphantom{*}}_{\psi}\left(\
+mathcal{M};q,p\right). We say the capability ψ\psi is present in ℳ\mathcal{M} if the aggregate
+performance 𝔼q∼𝒬,p∼𝒫ℳ​[mψ​(ℳ,q,p)]≥τ\mathbb{E}^{\vphantom{*}}_{q\sim\mathcal{Q},\,p\sim\mathcal{P}^
+{\vphantom{*}}_{\mkern-5.0mu\mathcal{M}}}\left[m^{\vphantom{*}}_{\psi}(\mathcal{M};q,p)\right]\geq\
+\tau remains significantly above a baseline τ\tau and is robust to minor semantic perturbations in
+the query and prompt spaces.
+
+Conceptually, we define a capability as any model behavior that can be consistently observed across
+a distribution of semantically similar inputs and prompt templates, remaining invariant to minor
+changes in them. We further distinguish between capabilities that are latent within a model
+(elicitable via steering or prompting) and those that are absent (requiring explicit training to
+acquire).
+
+Definition 3.2: (Non-)Atomic Capabilities Let ℳ\mathcal{M} be a base model and ℳ∗\mathcal{M}^{*}
+its post-trained variant. Let q∼𝒬q\sim\mathcal{Q} and p∼𝒫p\sim\mathcal{P} denote queries and
+prompts drawn from their respective evaluation distributions. For a capability ψ\psi present in ℳ∗\
+mathcal{M}^{*} and measurable with metric mψ​(ℳ,q,p)m_{\psi}(\mathcal{M};q,p), we define the
+average post-training gain as: Δψ𝒬=𝔼q∼𝒬,p∼𝒫​[mψ​(ℳ∗,q,p)−mψ​(ℳ,q,p)].\Delta^{\mathcal{Q}}_{\psi}=\
+mathbb{E}^{\vphantom{*}}_{q\sim\mathcal{Q},\,p\sim\mathcal{P}}\left[m^{\vphantom{*}}_{\psi}(\
+mathcal{M}^{*};q,p)-m^{\vphantom{*}}_{\psi}(\mathcal{M};q,p)\right]. For a small threshold ϵ≥0\
+epsilon\geq 0, we say that ψ\psi is an atomic capability if Δψ𝒬≤ϵ\Delta^{\mathcal{Q}}_{\psi}\leq\
+epsilon (i.e. the capability is present to nearly the same degree before and after post-training),
+and a non-atomic capability if Δψ𝒬>ϵ\Delta^{\mathcal{Q}}_{\psi}>\epsilon (i.e. post-training yields
+a substantial improvement that cannot be explained by an already-present behavior).
+
+Under this view, atomicity is inherently relative to a model’s pre-training distribution: a
+capability is atomic only to the extent that it is supported by the data and objectives encountered
+during pre-training. In Sections 4, 5 we show that the atomicity of the capability impacts the
+gains from Unlock.
+
+The atomicity of a capability also depends on the learning capacity of the language model and thus
+would be impacted by size and architecture. While we explore the effects of model scale on
+transferability (Appendix B), we leave a more systematic study on the impact of architectures to
+future work. Lastly, atomicity also depends on the nature of the data. In this work we focus on
+transferring post-training capabilities onto a base model version, and thus we consider the
+capabilities present within the base model version (i.e. learned during pre-training). When
+transferring capabilities between two post-trained models, the definitions above should be modified
+to reflect this change in data distribution. We emphasize that atomicity is a function of not only
+the capability required, but also the architecture, scale, and data. We intentionally leave
+Definitions 3, 3 vague to reflect this gap in our understanding of the representation space in
+language models.
+
+4 Atomic Capability Transfer
+
+Having established the necessary framework for transferring capability-inducing directions across
+models, we now ask whether such directions can be extracted from prompt-induced representational
+changes within a single model (i.e., 𝒮U≡𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,\equiv\,\
+mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,) and then transferred across model scales. This setting
+provides a controlled test of the Master Key Hypothesis: since the model weights remain fixed, any
+behavioral change must arise from shifts in internal representations. If a capability corresponds
+to a direction in representation space, then contrasting activations from prompts that encourage
+the capability and those that do not should reveal the corresponding direction. We study this
+question using Chain-of-Thought (CoT) reasoning, which often emerges in sufficiently capable base
+language models and can be elicited through prompting alone. We therefore treat CoT as an atomic
+capability, meaning that the underlying reasoning ability is already present in the base model but
+is not always expressed without the appropriate prompt. Empirically, we find that Unlock makes
+step-by-step thinking more consistently expressed, improving reasoning performance across model
+families and benchmarks even in the absence of explicit CoT prompting.
+
+4.1 Experimental Setup
+
+We evaluate prompt-induced capability transfer across model scales within five model families: 
+Qwen1.5 [6], Qwen2.5 [71], Qwen3 [70], OLMo-2 [62], and gemma-2 [55]. For each model, we construct
+Source variants using two prompts: a Direct prompt that requests only the final answer and a CoT
+prompt that encourages step-by-step reasoning (e.g., “Let’s think step by step”, see Appendix A.2
+for details). The MasterKey is extracted from the difference in activations between these two
+prompts and then transferred to a Target model following the Unlock procedure described in Section 
+2. We evaluate performance on three reasoning benchmarks — GSM8K [12], MATH [20], and SVAMP [44].^5
+^5 5 We use a maximum generation length of 512 tokens across datasets.
+
+4.2 Results & Discussion
+
+
+Table 1: Chain-of-Thought Capability Transfer. Transfer performance across model families. 
+Accuracies of base model with Direct prompting (𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,) and
+base model with explicit CoT prompting shown in gray.
+
+               𝒯L\,\mathcal{T}^{\    𝒮U≡𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm               
+Model   Prompt vphantom{*}}_{\mathrm {U}}\,\equiv\,\mathcal{S}^{\vphantom{*}}_{\   GSM8K MATH SVAMP
+               {L}}\,                mathrm{L}}\,
+Qwen1.5 Direct 7B                    –                                             9.2   8.0  44.0
+               14B                   –                                             16.0  16.0 58.3
+        CoT    7B                    –                                             64.4  17.9 73.0
+               14B                   –                                             77.3  26.8 79.0
+        Direct 7B                    +Unlock from 14B{}_{\text{from 14B}}          56.0  20.1 70.3
+               14B                   +Unlock from 7B{}_{\text{from 7B}}            74.4  31.2 78.3
+OLMo-2  Direct 7B                    –                                             10.0  9.7  43.7
+        CoT    7B                    –                                             53.8  15.3 71.0
+        Direct 7B                    +Unlock from 1B{}_{\text{from 1B}}            63.4  15.1 59.7
+               7B                    +Unlock from 13B{}_{\text{from 13B}}          36.1  14.3 58.7
+gemma-2 Direct 2B                    –                                             5.8   6.2  36.7
+               9B                    –                                             3.0   3.5  21.0
+        CoT    2B                    –                                             13.3  8.9  31.7
+               9B                    –                                             66.6  26.4 79.3
+        Direct 2B                    +Unlock from 9B{}_{\text{from 9B}}            9.5   6.4  37.7
+               9B                    +Unlock from 2B{}_{\text{from 2B}}            60.1  26.4 74.3
+
+We provide our results in Table 1, and additional results in Appendix B. We find that Unlock (i)
+consistently improves reasoning performance and displays structured reasoning traces; (ii) is
+asymmetric in its impact: small-to-large transfer outperforms large-to-small transfer; and (iii) is
+most effective when the desired capability is already present in latent space.
+
+Unlock Consistently Improves Reasoning Performance:
+
+Across all evaluated model families and datasets, the Target Unlocked model 𝒯U\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{U}}\, consistently outperforms the baseline 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{L}}\, under Direct prompting. In the Qwen1.5 model family, large-to-small
+(Qwen1.5-7B+Unlock from​ 14​B\texttt{Qwen1.5-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}) and
+small-to-large (Qwen1.5-14B+Unlock from​ 7​B\texttt{Qwen1.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm
+{from\;}7B}) produce average accuracy gains of 25.0% and 31.2%, respectively. The performance of 𝒯U
+\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, is also comparable to the performance obtained from
+prompting 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, with explicit CoT instructions.
+
+Figure 3 plots the average length of generated outputs for each model and dataset. A consistent
+increase in generation length is observed across all model–dataset pairs, supporting the view that
+the performance gains stem from Chain-of-Thought elicitation rather than surface-level output
+changes. We provide further analysis into the structure of the generated outputs and examples of
+step-by-step reasoning from 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, in Appendix B.
+
+Asymmetry in Transfer Direction:
+
+We observe a consistent directional asymmetry: small-to-large transfer typically produces larger
+gains than large-to-small transfer. A plausible explanation is that larger models implement a
+functional superset of the mechanisms present in smaller models.
+
+Under this view, a CoT direction transferred from a smaller model can activate latent circuitry
+already present in the larger model. The reverse, however, is capacity-limited: the smaller model’s
+reduced representational capacity may be insufficient to support the more complex reasoning
+structure of the larger model. This is illustrated clearly within the gemma-2 family. In the
+small-to-large direction, 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, improves by an average of
+44.4%44.4\% over 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and comes within 18.5%18.5\% of 𝒯PT∗
+\,\mathcal{T}^{*}_{\mathrm{PT}}\,, while large-to-small transfer improves 𝒯U\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{U}}\, by only 1.6%1.6\% over 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,
+and remains 32.3%32.3\% below 𝒯PT∗\,\mathcal{T}^{*}_{\mathrm{PT}}\,. Importantly, we observe a
+similar asymmetry when using CoT prompts: gemma-2-2B improves by 2% while gemma-2-9B improves by
+48.2%. These results suggest that, like prompting, Unlock improves with scale and cannot introduce
+capabilities that are absent from the model.
+
+
+Figure 3: Comparison in Generation Length between 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and
+𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,: A consistent increase in generation length is
+observed post-transfer, representative of reasoning behavior.
+
+Transfer Effectiveness Depends On The Salience of The Capability in 𝒯L\,\mathcal{T}^{\vphantom{*}}_
+{\mathrm{L}}\,:
+
+Within the Qwen1.5 family, base and instruction-tuned variants exhibit similar performance under
+CoT prompting, suggesting the reasoning capability is largely introduced during pre-training and
+can be reliably elicited by prompting. Consequently, 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,
+significantly outperforms 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and remains within 1% 𝒯PT∗
+\,\mathcal{T}^{*}_{\mathrm{PT}}\,. In contrast, gemma-2 models exhibit a substantial gap between
+their base and instruction-tuned versions with similar prompting, providing evidence that
+step-by-step reasoning is learned during the post-training process. Here, Unlock consistently
+improves 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, over 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm
+{L}}\, but does not match 𝒯PT∗\,\mathcal{T}^{*}_{\mathrm{PT}}\,, with particularly small gains for 
+gemma-2-2B. A similar but less pronounced trend is also observable in OLMo-2. Similar trends across
+scales are also observed within a model family, as demonstrated by Qwen2.5 (Appendix B).
+
+These findings reveal that Unlock is most effective when the target capability is already present,
+though dormant, in the Locked model i.e. when the capability is atomic.
+
+Takeaways:
+
+These results suggest that Unlock operates analogously to prompting: it can reliably elicit a
+capability that is present but dormant in the model, but cannot introduce one that is absent. The 
+MasterKey thus acts as a mechanism for exposing and activating existing capabilities. By contrast,
+when the capability is genuinely absent, Unlock is unable to induce it. Introducing a fundamentally
+missing capability likely requires substantial modification of the model parameters and therefore a
+corresponding reorganization of the underlying representation space.
+
+5 Non-Atomic Capability Transfer
+
+Section 4 established that Unlock and prompting play analogous roles in eliciting desired model
+behavior. We now ask whether this analogy extends to complex non-atomic capabilities that only
+emerge after significant post-training. Post-training can be thought of as a mapping from a set of
+input prompts to target behaviors (e.g. placing the final answer within \boxed{}). Through this
+process, the model learns to associate inputs and the required capabilities.
+
+Motivated by [25] (which states larger models converge towards a shared representation of the
+world), and [66; 72] (where the authors find that post-training methods such as RLVR sharpen the
+output distribution rather than introducing new knowledge), we aim to induce these post-training
+behaviors with Unlock. Intuitively, if post-training merely evokes latent capabilities, and if
+these capabilities reside in a shared representation space, then transferring them across models
+becomes a natural next step. Since these behaviors are not reliably observed in the base model
+through prompting alone, we ask: can latent interventions activate non-atomic capabilities that
+prompting alone cannot? We study this question through the lens of mathematical reasoning, which is
+one of the main focuses of modern post-training methods.
+
+Our experiments show that combining prompting with Unlock not only outperforms prompting alone, but
+can in some cases surpass post-training. For instance transferring a mathematical reasoning
+direction from Qwen3-4B to Qwen3-14B improves the model from 61.1% to 71.3% on AGIEval-Math,
+surpassing the 67.8% of the 14B instruction-tuned variant. We further observe that Unlock sharpens
+the model’s output distribution, concentrating it onto a smaller set of promising early
+trajectories.
+
+
+Table 2: Math Reasoning Transfer Results: Performance of Unlock across model families. For
+simplicity, we use ℐ⁡(x)\mathcal{I}(x) to denote the instruction-tuned version of the corresponding
+model.
+
+            𝒯L\,\mathcal{T} 𝒮U≡ℐ⁡(𝒮L)\,\mathcal{S}^{\vphantom{*}}                          
+Model       ^{\vphantom{*}} _{\mathrm{U}}\,\equiv\mathcal{I}(\,\  AGIEval Deepmind Minerva Olympiad
+            _{\mathrm{L}}\, mathcal{S}^{\vphantom{*}}_{\mathrm    Math    Math     Math    Bench
+                            {L}}\,)
+Qwen3       4B              –                                     52.3    71.3     27.5    19.7
+            14B             –                                     61.1    78.8     34.7    29.0
+            ℐ\mathcal{I}    –                                     75.6    88.4     31.5    39.8
+            (4B)
+            ℐ\mathcal{I}    –                                     67.8    80.1     27.9    37.8
+            (14B)
+            4B              +Unlock from 14B{}_{\text{from 14B}}  58.9    75.8     27.0    26.4
+            14B             +Unlock from 4B{}_{\text{from 4B}}    64.1    79.9     31.5    35.4
+            4B              +Unlock from 14B{}_{\text{from 14B}}  49.5    72.9     25.7    20.8
+            14B             +Unlock from 4B{}_{\text{from 4B}}    71.3    82.4     39.2    36.3
+Ministral-3 3B              –                                     46.9    65.3     26.1    19.0
+            8B              –                                     50.7    67.4     29.3    20.0
+            ℐ\mathcal{I}    –                                     68.7    84.2     26.6    33.9
+            (3B)
+            ℐ\mathcal{I}    –                                     70.6    87.2     29.3    37.0
+            (8B)
+            3B              +Unlock from 8B{}_{\text{from 8B}}    53.4    66.2     27.5    21.0
+            8B              +Unlock from 3B{}_{\text{from 3B}}    51.9    71.3     37.4    20.2
+            3B              +Unlock from 8B{}_{\text{from 8B}}    49.9    65.5     27.5    21.0
+            8B              +Unlock from 3B{}_{\text{from 3B}}    54.0    70.7     34.7    21.1
+
+5.1 Experiment Setup
+
+We study two contrasting experimental settings:
+
+Task-Conditioned Transfer With Limited Data:
+
+The MasterKey, transformation, and hyperparameters are all estimated using few examples from the
+same task as evaluation. This follows the standard practice in the steering vector literature,
+where the steering direction is computed on the target task to maximize alignment with the
+evaluation distribution. Since the evaluation set consists of a limited number of examples, we
+carry out all pre-computation on a small disjoint development set.
+
+Task-Agnostic Transfer With Abundant Data:
+
+Mirroring conventional post-training practices, the MasterKey and hyperparameters are estimated on
+a large dataset from a different math task and applied to all evaluation datasets without
+modification. This setting tests whether the learned intervention captures general mathematical
+reasoning behavior that transfers across tasks.
+
+These two settings expose a central tradeoff between the in-distribution signal and the data volume
+required. In the task-conditioned regime, we estimate the MasterKey and alignment using limited
+in-distribution data, which is directly aligned with the evaluation suite, but can yield a noisier
+and less stable direction/transformation. In contrast, the task-agnostic regime leverages abundant
+out-of-distribution examples to learn a more robust MasterKey and mapping, at the cost of
+estimating them from a distribution-mismatched dataset. We discuss this tradeoff further in
+Appendix B.2
+
+Models and Datasets:
+
+We focus on language models with strong reasoning capabilities from four model families: Qwen2.5 [
+46], Qwen3 [56], Ministral-3 [32], and gemma-3 [54]. Within each family, we use the
+instruction-tuned model as 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\, and the corresponding base
+model as 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,. We evaluate our framework across four
+mathematical reasoning benchmarks: AGIEval-Math [74], Deepmind-Math [47], Minerva-Math [29], and
+OlympiadBench [19]. We apply CoT prompting to all models, and therefore the information encoded by
+the MasterKey arises from the additional post-training efforts on 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\
+mathrm{U}}\,. By utilizing different models for 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\, and
+𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,, we design a model-induced capability transfer
+setting. We provide additional experimental details and results with domain-specific models in
+Appendix C.
+
+5.2 Results & Discussion
+
+Table 2 reports results for task-conditioned transfer and task-agnostic transfer. Our evaluations
+show consistent gains from Unlock, and further analysis shows that these gains arise from a
+convergence in output trajectories, providing evidence that the MasterKey acts as a distribution
+sharpening mechanism.
+
+Unlocking Matches Gains From Post-Training:
+
+Consistent with the findings in Section 4, the Unlocked model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{U}}\, systematically outperforms the baseline 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,
+and often achieves performance comparable to, or even exceeding, the post-trained counterpart 𝒯PT∗
+\,\mathcal{T}^{*}_{\mathrm{PT}}\,. For example, Qwen3-14B+Unlock from​ 4​B\texttt{Qwen3-14B}\,+\,\
+text{{{Unlock}} }_{\mathrm{from\;}4B} and Qwen3-4B+Unlock from​ 14​B\texttt{Qwen3-4B}\,+\,\text
+{{{Unlock}} }_{\mathrm{from\;}14B} yield average gains of 6.4%6.4\% and 4.3%4.3\% over 𝒯L\,\mathcal
+{T}^{\vphantom{*}}_{\mathrm{L}}\, respectively. Importantly, this shows that while CoT prompting
+alone is unable to elicit the math reasoning abilities, Unlock is able to achieve significant gains
+across models and tasks. Although mathematical reasoning is non-atomic by Definition 3 (as it is
+not elicited by prompting alone), we find that such capabilities can nonetheless be applied to the
+Target model as latent test-time interventions, suggesting that the Target model’s latent space may
+be capable of representing them to some degree.
+
+Assymetry in Task Utilization:
+
+While both task-conditioned and task-agnostic transfer improve 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{U}}\, over 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,, their relative effectiveness
+depends on the transfer direction. In the large-to-small setting, we find that task-conditioned
+transfer is superior, outperforming the task-agnostic approach in 69.5% of the evaluated
+configurations. Conversely, for small-to-large transfer, task-agnostic transfer yields better
+results in 70% of the settings.^6^6 6 We ignore settings where both methods are within 0.5% of each
+other.
+
+Consistent with our findings from Section 4, the most substantial performance gains are observed in
+the small-to-large transfer scenario. These trends suggest that when transferring from larger to
+smaller models, a precise, task-aligned MasterKey is critical for overcoming mismatches in internal
+circuitry and abilities. In contrast, because larger models likely contain a functional superset of
+the circuits and capabilities present in smaller models, small-to-large transfer benefits more from
+a generalizable MasterKey, and a stronger and more robust transformation. In this regime,
+emphasizing general reasoning transfer is more effective than optimizing for task-specific
+alignment. We leave further analysis into this mismatch and how capabilities arise with scale to
+future work.
+
+
+(a) Ministral-3-8B
+
+
+(b) Ministral-3-8B+Unlock from​ 3​B\texttt{Ministral-3-8B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}
+3B}
+
+
+(c) Qwen3-14B
+
+
+(d) Qwen3-14B+Unlock from​ 4​B\texttt{Qwen3-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}4B}
+
+
+Figure 4: Statistics of First Generated Word: The output distribution is significantly skewed to a
+minimal set of starting traces post-steering.
+
+5.3 Convergence of Reasoning Traces:
+
+To probe for the source of 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,’s gains, we analyze the
+structure of the generated reasoning traces and find that the Unlocked model displays a narrower
+set of opening trajectories. We show the distribution of the first generated token of 𝒯L\,\mathcal
+{T}^{\vphantom{*}}_{\mathrm{L}}\, and 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, in Figures 4, 
+13. Across models and datasets, we find 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, to converge
+in it’s opening statements, while 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, displays a more
+diffuse distribution. We show examples of these changes, along with additional discussions in
+Appendix C. Combined with the improvement in downstream performance these patterns suggest that 
+Unlock increases the likelihood of producing plausible reasoning traces by consolidating
+representations and reducing variability in early trajectory selection. We thus arrive at a similar
+conclusion as [66; 72] where the authors show that RLVR methods push the model towards narrower
+responses by editing the probability of a minimal set of tokens. We conclude that this output
+reshaping mechanism of post-training can be captured in low dimensional subspaces and applied onto
+a target model to elicit similar capabilities.
+
+Takeaways:
+
+Post-training trains the model to map input prompts to desired outputs, a process that relies on
+eliciting the combination of capabilities required to produce them. However, these capabilities are
+often already present within the model and not introduced during post-training. Without this
+learned mapping, prompting alone is insufficient to elicit them. Instead, Unlock exploits the
+presence of the capabilities in latent space. We find that it is possible to isolate and transfer
+such capabilities as direct latent interventions, without any training. Put together, these results
+corroborate our previous findings that Unlock is most effective when the desired capability is
+dormant in the model, and the Unlock primarily improves elicitation of the capability rather than
+injecting new behaviors or information into the model. We leave a more thorough analysis of
+diversity and mode coverage under latent space capability transfer, and its similarity to other
+post-training methods to future work.
+
+6 The Master Key Hypothesis & Implications
+
+We now synthesize our empirical findings into a working hypothesis. Our results show that: (i)
+latent interventions extracted from Source contrasts can improve downstream behavior in Target
+models; (ii) transfer is strongest when the Target model already appears to weakly express the
+relevant capability; and (iii) a low-rank linear alignment is often sufficient to enable this
+transfer in practice. Taken together, these observations motivate the following operational form of
+the Master Key Hypothesis (MKH).
+
+ The Master Key Hypothesis (MKH) Let ℳ1\mathcal{M}^{\vphantom{*}}_{1} be a model with hidden
+dimension d1d^{\vphantom{*}}_{1}, and let l1l^{\vphantom{*}}_{1} denote some layer of ℳ1\mathcal{M}
+^{\vphantom{*}}_{1}. We hypothesize that there may exist a projection P1:ℝd1→ℝk,k≪d1,P^{\vphantom
+{*}}_{1}:\mathbb{R}^{d^{\vphantom{*}}_{1}}\rightarrow\mathbb{R}^{k},\;k\ll d^{\vphantom{*}}_{1},
+such that a capability ψ\psi is represented at layer l1l_{1} by a direction 𝐯ψ(ℳ1,l1)∈ℝd1,\mathbf
+{v}^{(\mathcal{M}^{\vphantom{*}}_{1},l^{\vphantom{*}}_{1})}_{\psi}\in\mathbb{R}^{d^{\vphantom{*}}_
+{1}}, whose capability-inducing effect is well-captured within the projected subspace P1​(ℝd1)P^{\
+vphantom{*}}_{1}(\mathbb{R}^{d^{\vphantom{*}}_{1}}). For a second model ℳ2\mathcal{M}^{\vphantom
+{*}}_{2} with hidden dimension d2d^{\vphantom{*}}_{2}, and some corresponding layer l2l^{\vphantom
+{*}}_{2}, there may likewise exist a projection P2:ℝd2→ℝk,P^{\vphantom{*}}_{2}:\mathbb{R}^{d^{\
+vphantom{*}}_{2}}\rightarrow\mathbb{R}^{k}, together with a linear alignment map f:ℝk→ℝk,f:\mathbb
+{R}^{k}\rightarrow\mathbb{R}^{k}, such that the capability can approximately be transferred across
+models as P2​(𝐯ψ(ℳ2,l2))≈f⁡(P1​(𝐯ψ(ℳ1,l1))).P^{\vphantom{*}}_{2}\!\left(\mathbf{v}^{(\mathcal{M}^{\
+vphantom{*}}_{2},l^{\vphantom{*}}_{2})}_{\psi}\right)\approx f\!\left(P^{\vphantom{*}}_{1}\!\left(\
+mathbf{v}^{(\mathcal{M}^{\vphantom{*}}_{1},l^{\vphantom{*}}_{1})}_{\psi}\right)\right). where ff
+denotes the low-rank alignment between the corresponding latent subspaces.
+In this view, the success of transfer depends on the representational capacity of the model. A
+capability dormant but present can be isolated and transferred albeit noisily. When a capability is
+absent in the Source model, there may be no direction to isolate; when it is absent in the Target
+model, the Target may lack a compatible representational basis to support the transferred
+intervention.
+
+Our experiments provide three lines of empirical evidence that are consistent with the MKH. First,
+capability directions extracted from Source models reliably transfer to Target models across scales
+and multiple architectures, which demonstrates that such directions are not model-specific
+artifacts. Second, our analysis of the MasterKey (Appendix B.2) suggests that the transferable
+intervention can often be well-approximated in a compact subspace, with effective rank
+substantially smaller than the hidden size of the model. Moreover, we observe that these
+interventions stabilize as the number of examples used to estimate them increases, which is
+consistent with the view that the transferred signal is structured rather than arbitrary noise.
+Third, transfer efficacy varies predictably with capability atomicity: transfer is strongest when
+the Target model already appears to contain a latent, though weak or dormant, form of the
+capability, and substantially weaker when that capability is largely absent.
+
+We find that non-atomic capabilities are also transferrable, if they are well represented in the
+Source contrast, and the Target model possesses sufficient capacity to represent them in latent
+space. While we define (non-)atomicity of a capability with respect to its post-training gains and
+stability across prompts, we find that this does not completely explain our results. For example, a
+simple capability such as Chain-of-Thought is difficult to transfer perfectly in the gemma-2
+family, while complex math reasoning abilities can be transferred in the Qwen-3 family. Further,
+the fact that non-atomic capabilities are transferrable hints at the possibility that they could be
+represented as a combination of simpler abilities. As such, we believe that Definitions 3, 3 are
+functionally incomplete — the atomicity of a capability should be defined based on how well it can
+be isolated in latent space, and not by its stability or elicitation in input/output token space.
+We believe this to be outside the line of this work and leave it to future research.
+
+The Master Key Hypothesis builds on two lines of prior work. The Linear Representation Hypothesis
+(LRH) [37; 43] suggests that concepts can correspond to consistent directions in representation
+space within a model. The Platonic Representation Hypothesis (PRH) [25] suggests that latent
+representations may converge across models. The MKH unifies these findings at the level of
+capabilities, arguing that post-training behaviors can often be modeled as transferable latent
+interventions across model scales. Our results are consistent with extending these ideas from
+concepts to behaviors: not only semantic features, but also some capability-inducing interventions,
+may admit compact and partially transferable latent structure across related models. We emphasize,
+however, that our results provide empirical support for this view rather than a mechanistic proof
+of it.
+
+The MKH also offers one possible interpretation of recent findings of [72; 66; 30], which suggest
+that reinforcement-style post-training often sharpens or re-weights existing output trajectories
+rather than introducing entirely new knowledge. In our setting, we find that the behavior
+associated with post-training can sometimes be partially reproduced by transferring a latent
+intervention (MasterKey). This is consistent with the view that certain post-training effects such
+as mathematical reasoning operate by amplifying pre-existing latent tendencies rather than
+introducing new representational structure. At the same time, our results also suggest clear
+limits: such transfer is much less effective for older or weaker models that appear to not possess
+the necessary representational basis for the desired behavior.
+
+While our findings support the usefulness of the MKH as an empirical abstraction, they do not yet
+determine the precise mechanism by which capabilities are formed, represented, or interact with
+each other. The MKH posits the existence of shared low-dimensional subspaces without specifying how
+they arise from pre-training dynamics or architectural constraints. We therefore view MKH as a
+useful operational hypothesis that organizes the empirical patterns observed in this work and
+generates concrete predictions for future study. Just as the Linear Representation Hypothesis
+motivated subsequent mechanistic work on how concepts are encoded, MKH motivates analogous
+investigation into how capabilities are learned, organized, and combined in representation space.
+We leave this to future work.
+
+7 Related Work
+
+Steering vectors:
+
+Steering vectors modulate model behavior by intervening on internal activations [58], with early
+work emphasizing safety-relevant behaviors [42]. A broad literature argues that many attributes are
+captured by low-dimensional directions [18; 4; 28; 59; 76]. Steering has also been used to improve
+reasoning and downstream performance and to support mechanistic analysis [35; 53; 57; 51; 16; 11;
+21; 61; 52; 60; 75]. Recently, there has been growing interest in distilling capabilities in
+language modes using steering vectors. [5] show that concise Chain-of-Though abilities can be
+isolated as a single vector within a language model. Parallel to our work, [3] show that
+jail-breaking in language models can be simply performed by substituting or sampling for targeted
+words, to fool the model into generating coherent reasoning traces for unsafe questions.
+
+Distinction from prior steering transfer work:
+
+Most cross-model steering transfer is demonstrated on safety, jailbreak, or style behaviors, where
+evaluation often relies on coarse proxies (e.g., refusal-string presence), the steering vectors are
+constructed from explicit positive/negative supervision, and applied to the same model/task. In
+contrast, we study capability transfer across model sizes and families and evaluate success using
+task-level correctness on standard reasoning benchmarks. We provide a unified formalization of (i)
+targeted shifts derived from prompt- or model-induced representational differences and (ii) the
+cross-model alignment required to apply such shifts in a new model.
+
+Capability transfer across models:
+
+Prior approaches define the transfer signal in (i) weight space, (ii) output/probability space, or
+(iii) distillation-based training. Weight-space methods reuse parameter deltas as task directions [
+26; 22; 9; 69; 63; 73], but typically do not carry across sizes or families. Logit-space methods
+guide a student using stronger-model outputs [41; 15; 33], but require multi-model computation at
+inference.
+
+Representational convergence and cross-model alignment:
+
+A growing line of work argues that different models learn compatible representations, enabling
+transfer through shared subspaces or simple maps [27; 8; 23]. We also acknowledge concurrent
+efforts that learn mappings across model sizes [40; 7]. Unlike prior work, we use a low-rank linear
+alignment rather than non-linear autoencoders or full-dimensional psuedoinverse matrices, and we
+focus on improvements on quantifiable improvements on downstream tasks.
+
+Knowledge distillation:
+
+Finally, classical distillation transfers capabilities by training a student model to match a
+teacher distribution [17; 65; 17; 48; 10; 45]. Unlike our setting, distillation typically incurs a
+nontrivial training cost and must be repeated per student model. Concurrently with our work, others
+have explored self-distillation in language models [49; 24], and claim that contextual knowledge
+and capabilities can be distilled into a model simply by training on it’s logits along with
+additional feedback or examples. While we take a training-free approach, these works provide
+further grounding and motivation by empirically proving that target abilities can be elicited
+simply by incorporating additional task-conditioned signals.
+
+8 Conclusion
+
+In this paper, we present a training-free approach for transferring capabilities across models. Our
+method extracts a MasterKey direction from prompt- /model-induced representational differences and
+transfers it to a new model via low-rank linear subspace alignment, avoiding gradient updates and
+requiring no architectural or tokenization correspondence between Source and Target pairs.
+Empirical evaluations across multiple model families and benchmarks confirm the effectiveness of
+our approach. More broadly, our results support the Master Key Hypothesis, suggesting that useful
+behaviors can be isolated as linearly transferrable latent directions in shared low-dimensional
+subspaces.
+
+9 Acknowledgments
+
+We thank Quyet Do, Thinh Phan, Nguyen Nguyen, Weiyuan Chen, Jing Chen, Yu-Min Tseng, Noah
+Provenzano, and Yeana Bond for valuable discussions and feedback. Rishab, Pin-Jie, and Tu were
+supported by an award from the Amazon - Virginia Tech Initiative for Efficient and Robust Machine
+Learning. We acknowledge Advanced Research Computing at Virginia Tech for providing computational
+resources and support.^7^7 7 https://arc.vt.edu/
+
+References
+
+  • Ahmad et al. (2025) W. U. Ahmad, S. Majumdar, A. Ficek, S. Narenthiran, M. Samadi, J. Huang, S.
+    Jain, V. Noroozi, and B. Ginsburg OpenCodeReasoning-ii: a simple test time scaling approach via
+    self-critique. External Links: 2507.09075, Link Cited by: Appendix C.
+  • Akter et al. (2025) S. N. Akter, S. Prabhumoye, E. Nyberg, M. Patwary, M. Shoeybi, Y. Choi, and
+    B. Catanzaro Front-loading reasoning: the synergy between pretraining and post-training data. 
+    External Links: 2510.03264, Link Cited by: §1.
+  • Anton de la Fuente (2026) J. E. Anton de la Fuente Thought editing: steering models by editing
+    their chain of thought. External Links: Link Cited by: §7.
+  • Arditi et al. (2024) A. Arditi, O. Obeso, A. Syed, D. Paleka, N. Panickssery, W. Gurnee, and N.
+    Nanda Refusal in language models is mediated by a single direction. External Links: 2406.11717,
+    Link Cited by: §7.
+  • Azizi et al. (2025) S. Azizi, E. B. Potraghloo, and M. Pedram Activation steering for
+    chain-of-thought compression. External Links: 2507.04742, Link Cited by: §7.
+  • Bai et al. (2023) J. Bai, S. Bai, Y. Chu, Z. Cui, K. Dang, X. Deng, Y. Fan, W. Ge, Y. Han, F.
+    Huang, et al. Qwen technical report. arXiv preprint arXiv:2309.16609. External Links: Link 
+    Cited by: §4.1.
+  • Bello et al. (2025) F. Bello, A. Das, F. Zeng, F. Yin, and L. Leqi Linear representation
+    transferability hypothesis: leveraging small models to steer large models. External Links: 
+    2506.00653, Link Cited by: §B.2.2, §7.
+  • Berman et al. (2025) N. Berman, A. Hallak, and A. Shocher Who said neural networks aren’t
+    linear?. External Links: 2510.08570, Link Cited by: §7.
+  • Buzzega et al. (2025) P. Buzzega, R. Salami, A. Porrello, and S. Calderara Rethinking
+    layer-wise model merging through chain of merges. External Links: 2508.21421, Link Cited by: §7
+    .
+  • Caccia et al. (2025) L. Caccia, A. Ansell, E. Ponti, I. Vulić, and A. Sordoni Training
+    plug-n-play knowledge modules with deep context distillation. External Links: 2503.08727, Link 
+    Cited by: §7.
+  • Chen et al. (2024) H. Chen, C. Vondrick, and C. Mao SelfIE: self-interpretation of large
+    language model embeddings. External Links: 2403.10949, Link Cited by: §1, §7.
+  • Cobbe et al. (2021) K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M.
+    Plappert, J. Tworek, J. Hilton, R. Nakano, et al. Training verifiers to solve math word
+    problems. arXiv preprint arXiv:2110.14168. External Links: Link Cited by: §4.1.
+  • Csordás et al. (2025) R. Csordás, C. D. Manning, and C. Potts Do language models use their
+    depth efficiently?. In The Thirty-ninth Annual Conference on Neural Information Processing
+    Systems, External Links: Link Cited by: §2.4.
+  • Cui et al. (2025) G. Cui, Y. Zhang, J. Chen, L. Yuan, Z. Wang, Y. Zuo, H. Li, Y. Fan, H. Chen,
+    W. Chen, Z. Liu, H. Peng, L. Bai, W. Ouyang, Y. Cheng, B. Zhou, and N. Ding The entropy
+    mechanism of reinforcement learning for reasoning language models. External Links: 2505.22617,
+    Link Cited by: §1.
+  • Fei et al. (2025) Y. Fei, Y. Razeghi, and S. Singh Nudging: inference-time alignment of llms
+    via guided decoding. External Links: 2410.09300, Link Cited by: §7.
+  • Ghandeharioun et al. (2024) A. Ghandeharioun, A. Caciularu, A. Pearce, L. Dixon, and M. Geva 
+    Patchscopes: a unifying framework for inspecting hidden representations of language models. 
+    External Links: 2401.06102, Link Cited by: Table 3, §1, §7.
+  • Gu et al. (2025) Y. Gu, L. Dong, F. Wei, and M. Huang MiniLLM: knowledge distillation of large
+    language models. External Links: 2306.08543, Link Cited by: Table 3, §7.
+  • Gurnee and Tegmark (2024) W. Gurnee and M. Tegmark Language models represent space and time. 
+    External Links: 2310.02207, Link Cited by: §7.
+  • He et al. (2024) C. He, R. Luo, Y. Bai, S. Hu, Z. L. Thai, J. Shen, J. Hu, X. Han, Y. Huang, Y.
+    Zhang, J. Liu, L. Qi, Z. Liu, and M. Sun OlympiadBench: a challenging benchmark for promoting
+    agi with olympiad-level bilingual multimodal scientific problems. External Links: 2402.14008,
+    Link Cited by: Appendix C, §5.1.
+  • Hendrycks et al. (2021) D. Hendrycks, C. Burns, S. Kadavath, A. Arora, S. Basart, E. Tang, D.
+    Song, and J. Steinhardt Measuring mathematical problem solving with the math dataset. arXiv
+    preprint arXiv:2103.03874. External Links: Link Cited by: Appendix C, §4.1.
+  • Hong et al. (2025) Y. Hong, D. Zhou, M. Cao, L. Yu, and Z. Jin The reasoning-memorization
+    interplay in language models is mediated by a single direction. External Links: 2503.23084,
+    Link Cited by: §7.
+  • Huang et al. (2024) S. Huang, P. Li, Y. Hsu, K. Chen, Y. T. Lin, S. Hsiao, R. T. Tsai, and H.
+    Lee Chat vector: a simple approach to equip llms with instruction following and model alignment
+    in new languages. External Links: 2310.04799, Link Cited by: §7.
+  • Huang et al. (2025) Y. Huang, C. Huang, D. Feng, W. Lei, and J. Lv Cross-model transferability
+    among large language models on the platonic representations of concepts. External Links: 
+    2501.02009, Link Cited by: §7.
+  • Hübotter et al. (2026) J. Hübotter, F. Lübeck, L. Behric, A. Baumann, M. Bagatella, D. Marta,
+    I. Hakimi, I. Shenfeld, T. K. Buening, C. Guestrin, and A. Krause Reinforcement learning via
+    self-distillation. External Links: 2601.20802, Link Cited by: §7.
+  • Huh et al. (2024) M. Huh, B. Cheung, T. Wang, and P. Isola The platonic representation
+    hypothesis. arXiv preprint arXiv:2405.07987. External Links: Link Cited by: §1, §5, §6.
+  • Ilharco et al. (2023) G. Ilharco, M. T. Ribeiro, M. Wortsman, S. Gururangan, L. Schmidt, H.
+    Hajishirzi, and A. Farhadi Editing models with task arithmetic. External Links: 2212.04089,
+    Link Cited by: Table 3, §1, §7.
+  • Kaushik et al. (2025) P. Kaushik, S. Chaudhari, A. Vaidya, R. Chellappa, and A. Yuille The
+    universal weight subspace hypothesis. External Links: 2512.05117, Link Cited by: §7.
+  • Konen et al. (2024) K. Konen, S. Jentzsch, D. Diallo, P. Schütt, O. Bensch, R. E. Baff, D.
+    Opitz, and T. Hecking Style vectors for steering generative large language model. External
+    Links: 2402.01618, Link Cited by: §7.
+  • Lewkowycz et al. (2022) A. Lewkowycz, A. Andreassen, D. Dohan, E. Dyer, H. Michalewski, V.
+    Ramasesh, A. Slone, C. Anil, I. Schlag, T. Gutman-Solo, Y. Wu, B. Neyshabur, G. Gur-Ari, and V.
+    Misra Solving quantitative reasoning problems with language models. External Links: 2206.14858,
+    Link Cited by: Appendix C, §5.1.
+  • Li et al. (2026) K. Li, J. Pang, and Y. Yu RLVR training of llms does not improve thinking
+    ability for general qa: evaluation method and a simple solution. External Links: 2603.20799,
+    Link Cited by: §6.
+  • Liao et al. (2024) M. Liao, W. Luo, C. Li, J. Wu, and K. Fan MARIO: math reasoning with code
+    interpreter output–a reproducible pipeline. arXiv preprint arXiv:2401.08190. Cited by: Appendix
+    C.
+  • Liu et al. (2026a) A. H. Liu, K. Khandelwal, S. Subramanian, V. Jouault, A. Rastogi, A. Sadé,
+    A. Jeffares, A. Jiang, A. Cahill, A. Gavaudan, A. Sablayrolles, A. Héliou, A. You, A.
+    Ehrenberg, A. Lo, A. Eliseev, A. Calvi, A. Sooriyarachchi, B. Bout, B. Rozière, B. D.
+    Monicault, C. Lanfranchi, C. Barreau, C. Courtot, D. Grattarola, D. Dabert, D. de las Casas, E.
+    Chane-Sane, F. Ahmed, G. Berrada, G. Ecrepont, G. Guinet, G. Novikov, G. Kunsch, G. Lample, G.
+    Martin, G. Gupta, J. Ludziejewski, J. Rute, J. Studnia, J. Amar, J. Delas, J. S. Roberts, K.
+    Yadav, K. Chandu, K. Jain, L. Aitchison, L. Fainsin, L. Blier, L. Zhao, L. Martin, L. Saulnier,
+    L. Gao, M. Buyl, M. Jennings, M. Pellat, M. Prins, M. Poirée, M. Guillaumin, M. Dinot, M.
+    Futeral, M. Darrin, M. Augustin, M. Chiquier, M. Schimpf, N. Grinsztajn, N. Gupta, N.
+    Raghuraman, O. Bousquet, O. Duchenne, P. Wang, P. von Platen, P. Jacob, P. Wambergue, P.
+    Kurylowicz, P. R. Muddireddy, P. Chagniot, P. Stock, P. Agrawal, Q. Torroba, R. Sauvestre, R.
+    Soletskyi, R. Menneer, S. Vaze, S. Barry, S. Gandhi, S. Waghjale, S. Gandhi, S. Ghosh, S.
+    Mishra, S. Aithal, S. Antoniak, T. L. Scao, T. Cachet, T. S. Sorg, T. Lavril, T. N. Saada, T.
+    Chabal, T. Foubert, T. Robert, T. Wang, T. Lawson, T. Bewley, T. Bewley, T. Edwards, U. Jamil,
+    U. Tomasini, V. Nemychnikova, V. Phung, V. Maladière, V. Richard, W. Bouaziz, W. Li, W.
+    Marshall, X. Li, X. Yang, Y. E. Ouahidi, Y. Wang, Y. Tang, and Z. Ramzi Ministral 3. External
+    Links: 2601.08584, Link Cited by: Appendix C, §5.1.
+  • Liu et al. (2024a) A. Liu, X. Han, Y. Wang, Y. Tsvetkov, Y. Choi, and N. A. Smith Tuning
+    language models by proxy. External Links: 2401.08565, Link Cited by: Table 3, §1, §7.
+  • Liu et al. (2026b) E. Liu, G. Neubig, and C. Xiong Midtraining bridges pretraining and
+    posttraining distributions. External Links: 2510.14865, Link Cited by: §1.
+  • Liu et al. (2024b) S. Liu, H. Ye, L. Xing, and J. Zou In-context vectors: making in context
+    learning more effective and controllable through latent space steering. External Links: 
+    2311.06668, Link Cited by: §1, §7.
+  • Liu et al. (2025) S. Liu, X. Dong, X. Lu, S. Diao, M. Liu, M. Chen, H. Yin, Y. F. Wang, K.
+    Cheng, Y. Choi, et al. DLER: doing length penalty right-incentivizing more intelligence per
+    token via reinforcement learning. arXiv preprint arXiv:2510.15110. Cited by: Appendix C.
+  • Mikolov et al. (2013) T. Mikolov, K. Chen, G. Corrado, and J. Dean Efficient estimation of word
+    representations in vector space. External Links: 1301.3781, Link Cited by: §6.
+  • Nguyen et al. (2025) D. Nguyen, A. Prasad, E. Stengel-Eskin, and M. Bansal GrAInS:
+    gradient-based attribution for inference-time steering of llms and vlms. arXiv preprint
+    arXiv:2507.18043. External Links: Link Cited by: §2.2.
+  • OLMo et al. (2025) T. OLMo, P. Walsh, L. Soldaini, D. Groeneveld, K. Lo, S. Arora, A. Bhagia,
+    Y. Gu, S. Huang, M. Jordan, N. Lambert, D. Schwenk, O. Tafjord, T. Anderson, D. Atkinson, F.
+    Brahman, C. Clark, P. Dasigi, N. Dziri, A. Ettinger, M. Guerquin, D. Heineman, H. Ivison, P. W.
+    Koh, J. Liu, S. Malik, W. Merrill, L. J. V. Miranda, J. Morrison, T. Murray, C. Nam, J.
+    Poznanski, V. Pyatkin, A. Rangapur, M. Schmitz, S. Skjonsberg, D. Wadden, C. Wilhelm, M.
+    Wilson, L. Zettlemoyer, A. Farhadi, N. A. Smith, and H. Hajishirzi 2 olmo 2 furious. External
+    Links: 2501.00656, Link Cited by: §1.
+  • Oozeer et al. (2025) N. Oozeer, D. Nathawani, N. Prakash, M. Lan, A. Harrasse, and A. Abdullah 
+    Activation space interventions can be transferred between large language models. External
+    Links: 2503.04429, Link Cited by: Table 3, §B.2.2, §7.
+  • Ouyang et al. (2025) S. Ouyang, X. Zhu, Z. Xiao, M. Jiang, Y. Meng, and J. Han RAST: reasoning
+    activation in llms via small-model transfer. External Links: 2506.15710, Link Cited by: §7.
+  • Panickssery et al. (2024) N. Panickssery, N. Gabrieli, J. Schulz, M. Tong, E. Hubinger, and A.
+    M. Turner Steering llama 2 via contrastive activation addition. External Links: 2312.06681,
+    Link Cited by: Table 3, §1, §1, §7.
+  • Park et al. (2024) K. Park, Y. J. Choe, and V. Veitch The linear representation hypothesis and
+    the geometry of large language models. External Links: 2311.03658, Link Cited by: §6.
+  • Patel et al. (2021) A. Patel, S. Bhattamishra, and N. Goyal Are NLP models really able to solve
+    simple math word problems?. In Proceedings of the 2021 Conference of the North American Chapter
+    of the Association for Computational Linguistics: Human Language Technologies, K. Toutanova, A.
+    Rumshisky, L. Zettlemoyer, D. Hakkani-Tur, I. Beltagy, S. Bethard, R. Cotterell, T.
+    Chakraborty, and Y. Zhou (Eds.), Online, pp. 2080–2094. External Links: Link, Document Cited
+    by: §4.1.
+  • Qin et al. (2022) Y. Qin, Y. Lin, J. Yi, J. Zhang, X. Han, Z. Zhang, Y. Su, Z. Liu, P. Li, M.
+    Sun, and J. Zhou Knowledge inheritance for pre-trained language models. External Links: 
+    2105.13880, Link Cited by: §7.
+  • Qwen et al. (2025) Qwen, :, A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu,
+    F. Huang, H. Wei, H. Lin, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Lin, K. Dang,
+    K. Lu, K. Bao, K. Yang, L. Yu, M. Li, M. Xue, P. Zhang, Q. Zhu, R. Men, R. Lin, T. Li, T. Tang,
+    T. Xia, X. Ren, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Wan, Y. Liu, Z. Cui, Z. Zhang, and Z. Qiu 
+    Qwen2.5 technical report. External Links: 2412.15115, Link Cited by: Appendix C, §5.1.
+  • Saxton et al. (2019) D. Saxton, E. Grefenstette, F. Hill, and P. Kohli Analysing mathematical
+    reasoning abilities of neural models. External Links: 1904.01557, Link Cited by: Appendix C,
+    §5.1.
+  • Shen et al. (2025) Z. Shen, H. Yan, L. Zhang, Z. Hu, Y. Du, and Y. He CODI: compressing
+    chain-of-thought into continuous space via self-distillation. External Links: 2502.21074, Link 
+    Cited by: §7.
+  • Shenfeld et al. (2026) I. Shenfeld, M. Damani, J. Hübotter, and P. Agrawal Self-distillation
+    enables continual learning. External Links: 2601.19897, Link Cited by: §7.
+  • Skean et al. (2025) O. Skean, M. R. Arefin, D. Zhao, N. Patel, J. Naghiyev, Y. LeCun, and R.
+    Shwartz-Ziv Layer by layer: uncovering hidden representations in language models. External
+    Links: 2502.02013, Link Cited by: §B.2.1.
+  • Stoehr et al. (2024) N. Stoehr, K. Du, V. Snæbjarnarson, R. West, R. Cotterell, and A. Schein 
+    Activation scaling for steering and interpreting language models. External Links: 2410.04962,
+    Link Cited by: §7.
+  • Stolfo et al. (2025) A. Stolfo, V. Balachandran, S. Yousefi, E. Horvitz, and B. Nushi Improving
+    instruction-following in language models through activation steering. External Links: 
+    2410.12877, Link Cited by: §1, §7.
+  • Tan et al. (2025) D. Tan, D. Chanin, A. Lynch, D. Kanoulas, B. Paige, A. Garriga-Alonso, and R.
+    Kirk Analyzing the generalization and reliability of steering vectors. External Links: 
+    2407.12404, Link Cited by: §1, §7.
+  • Team et al. (2025) G. Team, A. Kamath, J. Ferret, S. Pathak, N. Vieillard, R. Merhej, S.
+    Perrin, T. Matejovicova, A. Ramé, M. Rivière, L. Rouillard, T. Mesnard, G. Cideron, J. Grill,
+    S. Ramos, E. Yvinec, M. Casbon, E. Pot, I. Penchev, G. Liu, F. Visin, K. Kenealy, L. Beyer, X.
+    Zhai, A. Tsitsulin, R. Busa-Fekete, A. Feng, N. Sachdeva, B. Coleman, Y. Gao, B. Mustafa, I.
+    Barr, E. Parisotto, D. Tian, M. Eyal, C. Cherry, J. Peter, D. Sinopalnikov, S. Bhupatiraju, R.
+    Agarwal, M. Kazemi, D. Malkin, R. Kumar, D. Vilar, I. Brusilovsky, J. Luo, A. Steiner, A.
+    Friesen, A. Sharma, A. Sharma, A. M. Gilady, A. Goedeckemeyer, A. Saade, A. Feng, A.
+    Kolesnikov, A. Bendebury, A. Abdagic, A. Vadi, A. György, A. S. Pinto, A. Das, A. Bapna, A.
+    Miech, A. Yang, A. Paterson, A. Shenoy, A. Chakrabarti, B. Piot, B. Wu, B. Shahriari, B.
+    Petrini, C. Chen, C. L. Lan, C. A. Choquette-Choo, C. Carey, C. Brick, D. Deutsch, D. Eisenbud,
+    D. Cattle, D. Cheng, D. Paparas, D. S. Sreepathihalli, D. Reid, D. Tran, D. Zelle, E. Noland,
+    E. Huizenga, E. Kharitonov, F. Liu, G. Amirkhanyan, G. Cameron, H. Hashemi, H.
+    Klimczak-Plucińska, H. Singh, H. Mehta, H. T. Lehri, H. Hazimeh, I. Ballantyne, I. Szpektor, I.
+    Nardini, J. Pouget-Abadie, J. Chan, J. Stanton, J. Wieting, J. Lai, J. Orbay, J. Fernandez, J.
+    Newlan, J. Ji, J. Singh, K. Black, K. Yu, K. Hui, K. Vodrahalli, K. Greff, L. Qiu, M.
+    Valentine, M. Coelho, M. Ritter, M. Hoffman, M. Watson, M. Chaturvedi, M. Moynihan, M. Ma, N.
+    Babar, N. Noy, N. Byrd, N. Roy, N. Momchev, N. Chauhan, N. Sachdeva, O. Bunyan, P. Botarda, P.
+    Caron, P. K. Rubenstein, P. Culliton, P. Schmid, P. G. Sessa, P. Xu, P. Stanczyk, P. Tafti, R.
+    Shivanna, R. Wu, R. Pan, R. Rokni, R. Willoughby, R. Vallu, R. Mullins, S. Jerome, S. Smoot, S.
+    Girgin, S. Iqbal, S. Reddy, S. Sheth, S. Põder, S. Bhatnagar, S. R. Panyam, S. Eiger, S. Zhang,
+    T. Liu, T. Yacovone, T. Liechty, U. Kalra, U. Evci, V. Misra, V. Roseberry, V. Feinberg, V.
+    Kolesnikov, W. Han, W. Kwon, X. Chen, Y. Chow, Y. Zhu, Z. Wei, Z. Egyed, V. Cotruta, M. Giang,
+    P. Kirk, A. Rao, K. Black, N. Babar, J. Lo, E. Moreira, L. G. Martins, O. Sanseviero, L.
+    Gonzalez, Z. Gleicher, T. Warkentin, V. Mirrokni, E. Senter, E. Collins, J. Barral, Z.
+    Ghahramani, R. Hadsell, Y. Matias, D. Sculley, S. Petrov, N. Fiedel, N. Shazeer, O. Vinyals, J.
+    Dean, D. Hassabis, K. Kavukcuoglu, C. Farabet, E. Buchatskaya, J. Alayrac, R. Anil, Dmitry,
+    Lepikhin, S. Borgeaud, O. Bachem, A. Joulin, A. Andreev, C. Hardin, R. Dadashi, and L. Hussenot
+    Gemma 3 technical report. External Links: 2503.19786, Link Cited by: Appendix C, §5.1.
+  • Team et al. (2024) G. Team, M. Riviere, S. Pathak, P. G. Sessa, C. Hardin, S. Bhupatiraju, L.
+    Hussenot, T. Mesnard, B. Shahriari, A. Ramé, et al. Gemma 2: improving open language models at
+    a practical size. arXiv preprint arXiv:2408.00118. External Links: Link Cited by: §4.1.
+  • Team (2025) Q. Team Qwen3 technical report. External Links: 2505.09388, Link Cited by: Appendix
+    C, Appendix C, §5.1.
+  • Todd et al. (2024) E. Todd, M. L. Li, A. S. Sharma, A. Mueller, B. C. Wallace, and D. Bau 
+    Function vectors in large language models. External Links: 2310.15213, Link Cited by: §7.
+  • Turner et al. (2024) A. M. Turner, L. Thiergart, G. Leech, D. Udell, J. J. Vazquez, U. Mini,
+    and M. MacDiarmid Steering language models with activation engineering. External Links: 
+    2308.10248, Link Cited by: §1, §7.
+  • van der Weij et al. (2024) T. van der Weij, M. Poesio, and N. Schoots Extending activation
+    steering to broad skills and multiple behaviours. External Links: 2403.05767, Link Cited by: §7
+    .
+  • Venhoff et al. (2025a) C. Venhoff, I. Arcuschin, P. Torr, A. Conmy, and N. Nanda Base models
+    know how to reason, thinking models learn when. External Links: 2510.07364, Link Cited by: §7.
+  • Venhoff et al. (2025b) C. Venhoff, I. Arcuschin, P. Torr, A. Conmy, and N. Nanda Understanding
+    reasoning in thinking language models via steering vectors. External Links: 2506.18167, Link 
+    Cited by: §7.
+  • Walsh et al. (2025) E. P. Walsh, L. Soldaini, D. Groeneveld, K. Lo, S. Arora, A. Bhagia, Y. Gu,
+    S. Huang, M. Jordan, N. Lambert, D. Schwenk, O. Tafjord, T. Anderson, D. Atkinson, F. Brahman,
+    C. Clark, P. Dasigi, N. Dziri, A. Ettinger, M. Guerquin, D. Heineman, H. Ivison, P. W. Koh, J.
+    Liu, S. Malik, W. Merrill, L. J. V. Miranda, J. Morrison, T. Murray, C. Nam, J. Poznanski, V.
+    Pyatkin, A. Rangapur, M. Schmitz, S. Skjonsberg, D. Wadden, C. Wilhelm, M. Wilson, L.
+    Zettlemoyer, A. Farhadi, N. A. Smith, and H. Hajishirzi 2 OLMo 2 furious (COLM’s version). In 
+    Second Conference on Language Modeling, External Links: Link Cited by: §4.1.
+  • Wan et al. (2024) F. Wan, L. Zhong, Z. Yang, R. Chen, and X. Quan FuseChat: knowledge fusion of
+    chat models. External Links: 2408.07990, Link Cited by: §7.
+  • Wang et al. (2025a) B. Wang, C. Lee, N. Lee, S. Lin, W. Dai, Y. Chen, Y. Chen, Z. Yang, Z. Liu,
+    M. Shoeybi, B. Catanzaro, and W. Ping Nemotron-cascade: scaling cascaded reinforcement learning
+    for general-purpose reasoning models. External Links: 2512.13607, Link Cited by: Appendix C.
+  • Wang et al. (2025b) J. Wang, Y. Chen, Z. Li, and C. Huang LightReasoner: can small language
+    models teach large language models reasoning?. External Links: 2510.07962, Link Cited by: §7.
+  • Wang et al. (2025c) S. Wang, L. Yu, C. Gao, C. Zheng, S. Liu, R. Lu, K. Dang, X. Chen, J. Yang,
+    Z. Zhang, Y. Liu, A. Yang, A. Zhao, Y. Yue, S. Song, B. Yu, G. Huang, and J. Lin Beyond the 80/
+    20 rule: high-entropy minority tokens drive effective reinforcement learning for llm reasoning.
+    External Links: 2506.01939, Link Cited by: §1, §5.3, §5, §6.
+  • Wang et al. (2025d) Z. Wang, F. Zhou, X. Li, and P. Liu OctoThinker: mid-training incentivizes
+    reinforcement learning scaling. External Links: 2506.20512, Link Cited by: §1.
+  • Wei et al. (2023) J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. Chi, Q. Le,
+    and D. Zhou Chain-of-thought prompting elicits reasoning in large language models. External
+    Links: 2201.11903, Link Cited by: §B.1.
+  • Wu et al. (2025) T. Wu, R. Yang, J. Li, P. Hu, Y. Wu, N. Wong, and Y. Yang Shadow-ft: tuning
+    instruct model via training on paired base model. External Links: 2505.12716, Link Cited by: §7
+    .
+  • Yang et al. (2025a) A. Yang, A. Li, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Gao, C.
+    Huang, C. Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388. External Links: 
+    Link Cited by: §4.1.
+  • Yang et al. (2025b) A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F.
+    Huang, H. Wei, et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115. External
+    Links: Link Cited by: §4.1.
+  • Yue et al. (2025) Y. Yue, Z. Chen, R. Lu, A. Zhao, Z. Wang, Y. Yue, S. Song, and G. Huang Does
+    reinforcement learning really incentivize reasoning capacity in llms beyond the base model?. 
+    External Links: 2504.13837, Link Cited by: §1, §1, §5.3, §5, §6.
+  • Zbeeb et al. (2025) M. Zbeeb, H. A. A. K. Hammoud, and B. Ghanem Reasoning vectors:
+    transferring chain-of-thought capabilities via task arithmetic. External Links: 2509.01363,
+    Link Cited by: §7.
+  • Zhong et al. (2023) W. Zhong, R. Cui, Y. Guo, Y. Liang, S. Lu, Y. Wang, A. Saied, W. Chen, and
+    N. Duan AGIEval: a human-centric benchmark for evaluating foundation models. External Links: 
+    2304.06364, Link Cited by: Appendix C, §5.1.
+  • Zhong and Raghunathan (2025) Z. Zhong and A. Raghunathan Watch the weights: unsupervised
+    monitoring and control of fine-tuned llms. External Links: 2508.00161, Link Cited by: §7.
+  • Zou et al. (2025) A. Zou, L. Phan, S. Chen, J. Campbell, P. Guo, R. Ren, A. Pan, X. Yin, M.
+    Mazeika, A. Dombrowski, S. Goel, N. Li, M. J. Byun, Z. Wang, A. Mallen, S. Basart, S. Koyejo,
+    D. Song, M. Fredrikson, J. Z. Kolter, and D. Hendrycks Representation engineering: a top-down
+    approach to ai transparency. External Links: 2310.01405, Link Cited by: §7.
+
+Appendix A Additional Preliminaries
+
+A.1 Comparison to Previous Approaches
+
+We provide a comparison of our approach to prior work in Table 3. We are amongst the first to
+demonstrate that high-level capability transfer is inherently low-rank. Building on this insight,
+we perform the extensive evaluation of both large-to-small and small-to-large capability transfer
+using latent steering vectors. Crucially, our approach is entirely training-free and requires no
+labeled data, distinguishing it from existing methods that rely on gradient updates or supervised
+signals.
+
+
+Table 3: Comparison of our method to other approaches: Unlock is completely training-free and
+label-free, and shows improvements across model scales and architectures for extrinsic evaluation
+tasks.
+
+Method                           Transfer   No Labeled Fixed     Transferrable      Extrinsic 
+                                 Space      Data       Compute   Across Sizes       Evaluations
+Task Vectors [Ilharco et al.,    Weight     ✓          ✓         ✗                  ✓
+2023]
+Knowledge Distillation [Gu et    Weight     ✗          ✓         ✓                  ✓
+al., 2025]
+Proxy Tuning [Liu et al., 2024a] Logit      ✓          ✗         ✓                  ✓
+Steering Vectors [Panickssery et Latent     ✗          ✓         ✗                  ✗
+al., 2024]
+Patchscopes [Ghandeharioun et    Latent     ✗          ✓         ✓                  ✗
+al., 2024]
+Activation Intervention [Oozeer  Latent     ✗          ✓         ✓                  ✗
+et al., 2025]
+Unlock                           Latent     ✓          ✓         ✓                  ✓
+
+A.2 Prompts and Models Used
+
+Reason step by step and give a final answer to the following question. Your response should always
+end with “The final answer is <atok> [answer] </atok>.” where [answer] is the correct solution to
+the problem. Question:
+Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How
+many clips did Natalia sell altogether in April and May? Answer: Let’s think step by step.
+Solve the following question and place the answer at the end. Your response should always end with
+“The final answer is <atok> [answer] </atok>.” where [answer] is the correct solution to the
+problem. Question:
+Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How
+many clips did Natalia sell altogether in April and May? Answer:
+
+Figure 5: Example Prompts: Example CoT (green) and Direct (red) prompts which are used for all
+evaluations.
+
+We show the Direct and CoT prompts that we used in Figure 5. To avoid discrepancies in prompt
+templates across models, we use only the two prompt types shown for all experiments. We observe
+that some post-trained models tend to format outputs to end with "\boxed{ans}". To prevent results
+from being skewed in favor of such models, we instead use a unified concluding token pattern, "
+<atok>ans</atok>", for the final answer.
+
+Appendix B Additional Results for Unlocking Chain of Thought
+
+We provide comparisons of the Unlocked model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, to the
+post-trained model 𝒯PT∗\,\mathcal{T}^{*}_{\mathrm{PT}}\,, along with additional experiments for 
+Qwen2.5 and Qwen3 model families in Table 4
+
+
+(a) Small-to-Large
+
+
+(b) Large-to-Small
+
+
+Figure 6: Increased Generation Length of 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,: Unlock
+leads to a clear increase in generation length over the base model with Direct prompting, matching
+the length of the instruction-tuned model with explicit CoT prompts.
+
+B.1 Impact of Unlocking
+
+Increased Generation Lengths and Task Performance:
+
+We find a significant increase in the length of generated answers across all evaluated models in
+Figure 6. While increased generation length is consistent with step-by-step reasoning, it may also
+be a result of unhelpful verbosity, such as repetition or hallucination. To assess whether the
+additional text is task-relevant, we analyze correctness as a function of generation length.
+
+Specifically, we bin outputs based on the number of generated characters for the base model with
+Direct prompt (i.e. Locked model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,), the base model
+with CoT prompt, and the Unlocked model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, with Direct
+prompt. We choose a binning threshold of 50 characters, which corresponds to the length of our
+response template. Figure 7 displays the percentage of correct solutions in each bin.
+
+We consistently observe an increase in generation under two conditions: (1) as we transition from
+direct to CoT prompting; and (2) when we move from 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, to
+𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, with Direct prompting. Crucially, this increase in
+length is accompanied by a higher proportion of correct solutions. This correlation indicates that 
+Unlock does not merely append extraneous text but instead elicits meaningful intermediate content
+that improves downstream performance. We provide qualitative examples illustrating these behavioral
+shifts in Examples B.2.3–B.2.3.
+
+Unlock is Non-Destructive & Compliments Gains From Parameter Scaling:
+
+In the Qwen2.5 family, effective CoT usage is present at 1.5B size but the model typically requires
+explicit CoT prompting to produce intermediate steps (supported by the significant gains from CoT
+prompts in Table 4). In contrast, the 7B model often produces intermediate steps even under direct
+prompting. These findings are in line with Wei et al. [2023], who show that Chain-of-Thought
+reasoning emerges with scale.
+
+Across both sizes, we observe that 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, displays strong
+reasoning capabilities and performs competitively with (±2%\pm 2\% of) 𝒯PT∗\,\mathcal{T}^{*}_{\
+mathrm{PT}}\,. We observe a similar trend in Qwen-3, supporting the view that Unlock is
+non-destructive: it does not inhibit performance in models where the behavior is reliably
+displayed, while it reliably elicits the capability when it is present but unused.
+
+
+(a) small-to-large
+
+
+(b) large-to-small
+
+
+Figure 7: Evidence for Improved Reasoning: Generation length of the Unlocked model significantly
+increases over the Locked model, with a corresponding improvement in downstream performance.
+
+
+Table 4: Chain-of-thought Capability Transfer Results. Performance of Unlock across model families.
+Accuracies of the base model with Direct prompting (Locked model), base model with CoT prompting,
+and instruction-tuned model with CoT prompting shown in gray.
+
+               𝒯L\,\mathcal{T}^{\    𝒮U≡𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm               
+Model   Prompt vphantom{*}}_{\mathrm {U}}\,\equiv\,\mathcal{S}^{\vphantom{*}}_{\   GSM8K MATH SVAMP
+               {L}}\,                mathrm{L}}\,
+Qwen1.5 Direct 7B                    –                                             9.2   8.0  44.0
+               14B                   –                                             16.0  16.0 58.3
+        CoT    7B                    –                                             64.4  17.9 73.0
+               14B                   –                                             77.3  26.8 79.0
+        CoT    7B-Chat               –                                             58.1  18.2 69.7
+               14B-Chat              –                                             74.8  30.2 82.0
+        Direct 7B                    +Unlock from 14B{}_{\text{from {14B}}}        56.0  20.1 70.3
+               14B                   +Unlock from 7B{}_{\text{from {7B}}}          74.4  31.2 78.3
+OLMo-2  Direct 1B                    –                                             5.5   4.9  19.0
+               7B                    –                                             10.0  9.7  43.7
+               13B                   –                                             18.7  13.8 65.7
+        CoT    1B                    –                                             35.0  6.4  31.7
+               7B                    –                                             53.8  15.3 71.0
+               13B                   –                                             67.1  20.2 75.7
+        CoT    1B-Instruct           –                                             63.7  16.1 64.0
+               7B-Instruct           –                                             79.4  24.9 78.7
+               13B-Instruct          –                                             80.6  33.8 75.0
+        Direct 1B                    +Unlock from 7B{}_{\text{from {7B}}}          20.5  5.9  37.3
+               7B                    +Unlock from 1B{}_{\text{from {1B}}}          63.4  15.1 59.7
+               7B                    +Unlock from 13B{}_{\text{from {13B}}}        36.1  14.3 58.7
+               13B                   +Unlock from 7B{}_{\text{from {7B}}}          45.8  16.0 67.3
+gemma-2 Direct 2B                    –                                             5.8   6.2  36.7
+               9B                    –                                             3.0   3.5  21.0
+        CoT    2B                    –                                             13.3  8.9  31.7
+               9B                    –                                             66.6  26.4 79.3
+        CoT    2B-it                 –                                             60.3  22.7 67.3
+               9B-it                 –                                             87.6  43.5 85.3
+        Direct 2B                    +Unlock from 9B{}_{\text{from {9B}}}          9.5   6.4  37.7
+               9B                    +Unlock from 2B{}_{\text{from {2B}}}          60.1  26.4 74.3
+Qwen2.5 Direct 1.5B                  –                                             11.1  13.5 48.0
+               7B                    –                                             85.2  46.1 90.3
+        CoT    1.5B                  –                                             67.5  30.8 76.3
+               7B                    –                                             87.0  48.8 85.0
+        CoT    1.5B-Instruct         –                                             65.0  26.7 74.7
+               7B-Instruct           –                                             90.4  46.1 91.7
+        Direct 1.5B                  +Unlock from 7B{}_{\text{from {7B}}}          59.7  31.2 78.0
+               7B                    +Unlock from 1.5B{}_{\text{from {1.5B}}}      85.3  46.5 89.3
+Qwen3   Direct 4B-Base               –                                             89.6  51.8 89.7
+               8B-Base               –                                             85.3  50.5 93.3
+        CoT    4B-Base               –                                             84.9  50.5 83.0
+               8B-Base               –                                             89.4  51.6 86.7
+        CoT    4B                    –                                             91.1  51.9 92.3
+               8B                    –                                             81.6  53.4 86.7
+        Direct 4B                    +Unlock from 8B{}_{\text{from {8B}}}          89.7  52.2 90.7
+               8B                    +Unlock from 4B{}_{\text{from {4B}}}          92.4  52.3 93.0
+
+B.2 Hyperparameter Search
+
+B.2.1 Impact of Number of Examples on the Master Key
+
+We now investigate the impact of the number of examples nn used in computing the MasterKey. Using
+the same shared prompt p=P(𝒮L,𝒮U)p=P^{\vphantom{*}}_{(\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,,
+\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,)} and set of queries 𝒟={qi}i=1n\mathcal{D}=\{q_{i}\}_{i
+=1}^{n} we stack the final-token hidden states of 𝒮L\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\, and
+𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\, across queries at a fixed layer ll:
+
+              =[(𝐡𝒮L(l)​(p⊕q1))⊤;(𝐡𝒮L(l)​(p⊕q2))⊤;(𝐡𝒮L   =[(𝐡𝒮U(l)​(p⊕q1))⊤;(𝐡𝒮U(l)​(p⊕q2))⊤;(𝐡𝒮U
+              (l)​(p⊕qn))⊤]∈ℝn×d𝒮,X𝒮U\displaystyle=\     (l)​(p⊕qn))⊤]∈ℝn×d𝒮,\displaystyle=\begin
+              begin{bmatrix}\big(\mathbf{h}_{\,\mathcal  {bmatrix}\big(\mathbf{h}_{\,\mathcal{S}^
+ X𝒮L\         {S}^{\vphantom{*}}_{\mathrm{L}}\,}^{(l)}(p {\vphantom{*}}_{\mathrm{U}}\,}^{(l)}(p\
+ displaystyle \oplus q^{\vphantom{*}}_{1})\big)^{\top};\ oplus q^{\vphantom{*}}_{1})\big)^{\top};\
+ X_{\,\       \ \big(\mathbf{h}_{\,\mathcal{S}^{\        \ \big(\mathbf{h}_{\,\mathcal{S}^{\
+ mathcal{S}^  vphantom{*}}_{\mathrm{L}}\,}^{(l)}(p\oplus vphantom{*}}_{\mathrm{U}}\,}^{(l)}(p\
+ {\vphantom   q^{\vphantom{*}}_{2})\big)^{\top};\\ \     oplus q^{\vphantom{*}}_{2})\big)^{\top};\
+ {*}}_{\      vdots\\ \big(\mathbf{h}_{\,\mathcal{S}^{\  \ \vdots\\ \big(\mathbf{h}_{\,\mathcal{S}
+ mathrm{L}}   vphantom{*}}_{\mathrm{L}}\,}^{(l)}(p\oplus ^{\vphantom{*}}_{\mathrm{U}}\,}^{(l)}(p\
+ \,}          q^{\vphantom{*}}_{n})\big)^{\top}\\ \end   oplus q^{\vphantom{*}}_{n})\big)^{\top}\\
+              {bmatrix}\in\mathbb{R}^{n\times d^{\       \end{bmatrix}\in\mathbb{R}^{n\times d^{\
+              vphantom{*}}_{\mathcal{S}}},\qquad X_{\,\  vphantom{*}}_{\mathcal{S}}},
+              mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,}
+
+where d𝒮d^{\vphantom{*}}_{\mathcal{S}} represents the hidden size of the Source models. We define
+the difference matrix X=X𝒮U−X𝒮LX=X^{\vphantom{*}}_{\mkern-2.0mu\,\mathcal{S}^{\vphantom{*}}_{\
+mathrm{U}}\,}-X^{\vphantom{*}}_{\mkern-2.0mu\,\mathcal{S}^{\vphantom{*}}_{\mathrm{L}}\,}, where
+each row represents a per-example steering vector. The corresponding covariance matrix is computed
+as
+
+ Σ=X⊤​X∈ℝd𝒮×d𝒮.\Sigma=X^{\top}X\in\mathbb{R}^{d^{\vphantom{*}}_{\mathcal{S}}\times d^{\vphantom
+ {*}}_{\mathcal{S}}}.
+
+Let λ1≥λ2≥⋯≥λr\lambda^{\vphantom{*}}_{1}\geq\lambda^{\vphantom{*}}_{2}\geq\cdots\geq\lambda^{\
+vphantom{*}}_{r} be the eigenvalues of Σ\Sigma, where r=min⁡(n,d𝒮)r=\min(n,d^{\vphantom{*}}_{\
+mathcal{S}}) denotes the maximum possible rank. Following Skean et al. [2025], we define the
+normalized eigenvalues as
+
+ λ~i=λi∑j=1rλj,\tilde{\lambda}^{\vphantom{*}}_{i}=\frac{\lambda^{\vphantom{*}}_{i}}{\sum_{j=1}  (8)
+ ^{r}\lambda^{\vphantom{*}}_{j}},
+
+and the spectral entropy as
+
+ H(Σ)=−∑i=1rλ~ilogλ~i.H(\Sigma)=-\sum_{i=1}^{r}\tilde{\lambda}^{\vphantom{*}}_{i}\log\tilde{\   (9)
+ lambda}^{\vphantom{*}}_{i}.
+
+The spectral entropy serves as a measure of the distributional compression of the steering vectors
+within the latent space. A lower entropy indicates a more compressed representation, where a small
+number of dominant eigenvalues capture the majority of the variance. Conversely, a higher entropy
+reflects a more diffuse representation, where the MasterKey is distributed more broadly across
+multiple orthogonal directions.
+
+Figure 8 illustrates how spectral entropy evolves as a function of the number of examples nn.
+Empirically, we find that spectral entropy plateaus between approximately 1.4 and 2.5 nats across
+all evaluated datasets. This corresponds to an effective rank in the range 4-12, (since e1.4≈4e^
+{1.4}\approx 4 and e2.5≈12e^{2.5}\approx 12), which is negligible relative to the model’s latent
+dimensionality (d𝒮≥1024d^{\vphantom{*}}_{\mathcal{S}}\geq 1024 for all models used in this work).
+
+Notably, this extreme compression persists even as nn increases, providing strong evidence that the
+isolated capability resides in a stable, low-dimensional subspace. We further observe that the rate
+of entropy growth begins to saturate across models and datasets as nn increases from 256 to 512,
+indicating diminishing returns in characterizing the MasterKey with sample sizes. However, given
+the pronounced increase in entropy between n=16n=16 and n=64n=64, we assume that at least 6464
+examples are required for an accurate and sufficiently complete estimate of the Master Key.
+
+B.2.2 Effect of Rank kk and Number of examples nn on The Linear Transformation
+
+Next, we evaluate the fidelity of the cross-model alignment by measuring its reconstruction error.
+Concretely, we run the same set of nn queries through the Source Locked model 𝒮L\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{L}}\, and the Target Locked model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}
+\,, extract final-token hidden states at layers (ls,lt)(l^{\vphantom{*}}_{s},l^{\vphantom{*}}_{t}),
+and fit the low-rank mapping described in Section 2.3. For each query, we map the Source hidden
+state into the Target space and compute the ℓ2\ell^{\vphantom{*}}_{2} distance to the corresponding
+ground-truth Target hidden state; we report the mean error over the nn examples. Figures 9 and 10
+show this mapping error as a function of the number of examples nn and the transformation rank kk,
+respectively.
+
+Recall that the rank kk controls the expressivity of the projection: larger kk allows the mapping
+to preserve and align more directions of variation, whereas smaller kk forces the alignment to
+concentrate on the most prominent structures shared across the two models. Accordingly, higher rank
+can, in principle, encode more complex correspondences between latent features, but at the cost of
+increased sensitivity and a greater risk of overfitting. In contrast, lower rank constrains the
+mapping to capture only the most dominant and robust shared structure, while prone to underfitting.
+
+Figure 9 shows that in very low-rank regimes (e.g., k∈{1,4}k\in\{1,4\}), the benefit of increasing
+the number of examples nn rapidly saturates. Specifically, while reconstruction error improves
+initially, it plateaus as early as n≈64n\approx 64. Consequently, for highly constrained
+projections, additional examples do not yield further gains because the mapping lacks sufficient
+capacity to represent finer structural correspondences; in this regime, the bottleneck is rank
+rather than sample size.
+
+In contrast, even with an abundance of examples, we find that increasing the rank kk does not lead
+to a monotonic improvement in accuracy. While moderate ranks can reduce reconstruction error
+effectively, pushing kk beyond a threshold consistently degrades performance across models, with
+this effect becoming pronounced beyond k≈128k\approx 128 in our experiments (shown in Figure 10).
+This behavior is characteristic of overfitting: high-rank projections begin to align superficial,
+example-specific artifacts hindering generalization. These findings provide strong evidence that
+capabilities are better captured through low-rank transformations because they effectively filter
+out spurious information, and highlights a critical limitation in previous approaches such as Bello
+et al. [2025], Oozeer et al. [2025], which utilize full-rank transformations that are both
+computationally intensive and prone to capturing noise.
+
+Qualitatively, we observe complementary failure modes at the two extremes. Examples B.2.3–B.2.3
+illustrate cases where we scale nn while keeping kk highly constrained. In these instances,
+although CoT-like behavior is occasionally elicited, it remains fragmented or poorly structured.
+Conversely, Examples B.2.3, B.2.3 demonstrate the emergence of unintended behaviors at high rank;
+for example, while CoT is induced, it may manifest in an undesired language (e.g., Chinese instead
+of English).
+
+This tension between the MasterKey (which benefits from additional examples) and transformation
+(which overfits with too many examples) motivates the two regimes for mathematical reasoning
+transfer introduced in Section 5: the task-conditioned setting, which prioritizes in-distribution
+signals for estimating the MasterKey and mapping under limited data, and the task-agnostic setting,
+which leverages abundant (but distribution-mismatched) data to fit a more stable alignment.
+
+B.2.3 Latent Space Geometry and Sensitivity
+
+Finally, we present topological visualizations of the feature space for OLMo-2-7B in Figure 11,12.
+We find that successful capability transfer typically occurs within localized “pockets” of the
+latent manifold. This localization highlights the necessity of precise hyperparameter calibration.
+
+In comparing different extraction strategies, we find that neither the principal component
+aggregator nor the mean aggregator provides a definitive advantage. Across our benchmarks, the
+superior method is split approximately evenly, with neither consistently outperforming the other.
+Ultimately, while subspace matching exhibits sensitivity to the chosen configuration, it yields
+substantial performance gains when the low-rank projection is well-optimized. We leave a deeper
+exploration of this hyperparameter landscape to future work.
+
+
+(a) Qwen1.5-14B
+
+
+(b) Qwen1.5-7B
+
+
+(c) OLMo-2-1B
+
+
+Figure 8: Spectral Entropy of the Covariance Matrix: Increasing the number of examples leads to a
+corresponding increase in entropy — providing evidence that the MasterKey captures more information
+with additional examples.
+
+
+(a) Qwen1.5-14B+Unlock from​ 7​B\texttt{Qwen1.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+
+(b) Qwen1.5-7B+Unlock from​ 14​B\texttt{Qwen1.5-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}
+
+
+(c) OLMo-2-7B+Unlock from​ 1​B\texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}1B}
+
+
+Figure 9: Convergence in performance of the linear transformation at low ranks: The normalized ℓ2\
+ell^{\vphantom{*}}_{2} error of the linear mapping as a function of number of samples nn with rank
+k=4k=4 shows the diminishing impact of additional examples in rank-constrained settings.
+
+
+(a) Qwen1.5-14B+Unlock from​ 7​B\texttt{Qwen1.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+
+(b) Qwen1.5-7B+Unlock from​ 14​B\texttt{Qwen1.5-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}
+
+
+(c) OLMo-2-7B+Unlock from​ 1​B\texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}1B}
+
+
+Figure 10: Overfitting of the linear transformation at high ranks: The normalized ℓ2\ell^{\vphantom
+{*}}_{2} error of the linear mapping as a function of rank kk with number of samples n=512n=512
+shows the overfitting of the transformation at high ranks.
+
+
+(a) 𝒟\mathcal{D}=GSM8K
+
+Refer to caption
+(b) 𝒟\mathcal{D}=MATH
+
+
+(c) 𝒟\mathcal{D}=SVAMP
+
+
+(d) 𝒟\mathcal{D}=GSM8K
+
+
+(e) 𝒟\mathcal{D}=MATH
+
+
+(f) 𝒟\mathcal{D}=SVAMP
+
+
+Figure 11: Representation Space with 𝚽\mathbf{\Phi}=Avg: Performance of OLMo-2-7B+Unlock from​ 1​B\
+texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}1B} (top) and OLMo-2-7B+Unlock from​ 13​B\
+texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}13B} (bottom) with the mean aggregator.
+
+
+(a) 𝒟\mathcal{D}=GSM8K
+
+Refer to caption
+(b) 𝒟\mathcal{D}=MATH
+
+Refer to caption
+(c) 𝒟\mathcal{D}=SVAMP
+
+
+(d) 𝒟\mathcal{D}=GSM8K
+
+
+(e) 𝒟\mathcal{D}=MATH
+
+
+(f) 𝒟\mathcal{D}=SVAMP
+
+
+Figure 12: Representation Space with 𝚽\mathbf{\Phi}=PCA: Performance of OLMo-2-7B+Unlock from​ 1​B\
+texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}1B} (top) and OLMo-2-7B+Unlock from​ 13​B\
+texttt{OLMo-2-7B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}13B} (bottom) with the principal component
+aggregator.
+
+
+Table 5: Optimal Hyperparameters for CoT Transfer: The absence of a universal optimal
+hyperparameter combination across models suggests misalignment in the underlying representation
+spaces.
+
+𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,              Dataset   Agg.    n       k      α\alpha
+                                                                     Method
+Qwen1.5-7B+Unlock from​14B\texttt{Qwen1.5-7B}\,+\,\text    GSM8K     Avg Avg 512 64  64 64  0.1 
+{{{Unlock}} }_{\mathrm{from\;}\texttt{14B}}                MATH      PCA     64      16     0.05 
+                                                           SVAMP                            0.1
+Qwen1.5-14B+Unlock from​7B\texttt{Qwen1.5-14B}\,+\,\text   GSM8K     PCA PCA 128 512 4 512  0.1 0.1
+{{{Unlock}} }_{\mathrm{from\;}\texttt{7B}}                 MATH      PCA     128     128    0.1
+                                                           SVAMP
+OLMo-2-1B+Unlock from​7B\texttt{OLMo-2-1B}\,+\,\text       GSM8K     Avg Avg 512 512 128    0.2 
+{{{Unlock}} }_{\mathrm{from\;}\texttt{7B}}                 MATH      Avg     64      256 64 0.05 
+                                                           SVAMP                            0.2
+OLMo-2-7B+Unlock from​1B\texttt{OLMo-2-7B}\,+\,\text       GSM8K     Avg Avg 1024    1024 4 0.5 0.2
+{{{Unlock}} }_{\mathrm{from\;}\texttt{1B}}                 MATH      Avg     128 256 128    0.2
+                                                           SVAMP
+OLMo-2-7B+Unlock from​13B\texttt{OLMo-2-7B}\,+\,\text      GSM8K     PCA Avg 512 512 1 128  0.1 0.1
+{{{Unlock}} }_{\mathrm{from\;}\texttt{13B}}                MATH      PCA     16      16     0.1
+                                                           SVAMP
+OLMo-2-13B+Unlock from​7B\texttt{OLMo-2-13B}\,+\,\text     GSM8K     Avg PCA 64 64   64 4   0.1 0.1
+{{{Unlock}} }_{\mathrm{from\;}\texttt{7B}}                 MATH      Avg     256     16     0.05
+                                                           SVAMP
+gemma-2-2B+Unlock from​9B\texttt{gemma-2-2B}\,+\,\text     GSM8K     PCA PCA 16 64          0.2 
+{{{Unlock}} }_{\mathrm{from\;}\texttt{9B}}                 MATH      PCA     512     1 64 4 0.05 
+                                                           SVAMP                            0.2
+gemma-2-9B+Unlock from​2B\texttt{gemma-2-9B}\,+\,\text     GSM8K     Avg Avg 128 512 64 64  0.1 0.1
+{{{Unlock}} }_{\mathrm{from\;}\texttt{2B}}                 MATH      PCA     4       1      0.2
+                                                           SVAMP
+
+Question James decides to run 3 sprints 3 times a week. He runs 60 meters each sprint. How many
+total meters does he run a week?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> 180 </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, Let’s break down the problem step by
+step:
+
+1. James runs 3 sprints 3 times a week.
+2. He runs 60 meters each sprint.
+
+Now, let’s calculate the total meters he runs in a week:
+
+Total meters = (Number of sprints) ×\times (Number of times per week) ×\times (Distance per sprint)
+
+Total meters = 3 sprints ×\times 3 times per week ×\times 60 meters per sprint
+
+Total meters = 9 ×\times 60
+
+Total meters = 540
+
+The final answer is <atok> 540 </atok>
+{example}
+Successful CoT Transfer for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\text{{{Unlock}}
+}_{\mathrm{from\;}7B}
+
+.
+
+Question Every day, Wendi feeds each of her chickens three cups of mixed chicken feed, containing
+seeds, mealworms and vegetables to help keep them healthy. She gives the chickens their feed in
+three separate meals. In the morning, she gives her flock of chickens 15 cups of feed. In the
+afternoon, she gives her chickens another 25 cups of feed. How many cups of feed does she need to
+give her chickens in the final meal of the day if the size of Wendi’s flock is 20 chickens?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> 10 cups of
+feed </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, If Wendi feeds each of her chickens
+three cups of mixed chicken feed every day, and she has 20 chickens, then she needs to feed a total
+of 20 chickens ×\times 3 cups of feed = 60 cups of feed each day.
+
+In the morning, she gives her flock of chickens 15 cups of feed, and in the afternoon, she gives
+them another 25 cups of feed. So far, she has given her chickens a total of 15 cups + 25 cups = 40
+cups of feed.
+
+To find out how many cups of feed she needs to give her chickens in the final meal of the day, we
+need to subtract the amount of feed she has already given from the total amount of feed she needs
+to give each day.
+
+The total amount of feed she needs to give each day is 60 cups, and she has already given 40 cups,
+so she needs to give her chickens 60 cups - 40 cups = 20 cups of feed in the final meal of the day.
+
+The final answer is 20 cups of feed
+{example}
+Successful CoT Transfer for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\text{{{Unlock}}
+}_{\mathrm{from\;}7B}
+Question Every day, Wendi feeds each of her chickens three cups of mixed chicken feed, containing
+seeds, mealworms and vegetables to help keep them healthy. She gives the chickens their feed in
+three separate meals. In the morning, she gives her flock of chickens 15 cups of feed. In the
+afternoon, she gives her chickens another 25 cups of feed. How many cups of feed does she need to
+give her chickens in the final meal of the day if the size of Wendi’s flock is 20 chickens?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> 10 cups of
+feed </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, If Wendi feeds each of her chickens
+three cups of mixed chicken feed every day, and she has 20 chickens, then she needs to feed a total
+of 20 chickens ×\times 3 cups of feed = 60 cups of feed each day.
+
+In the morning, she gives her flock of chickens 15 cups of feed, and in the afternoon, she gives
+them another 25 cups of feed. So far, she has given her chickens a total of 15 cups + 25 cups = 40
+cups of feed.
+
+To find out how many cups of feed she needs to give her chickens in the final meal of the day, we
+need to subtract the amount of feed she has already given from the total amount of feed she needs
+to give each day.
+
+The total amount of feed she needs to give each day is 60 cups, and she has already given 40 cups,
+so she needs to give her chickens 60 cups - 40 cups = 20 cups of feed in the final meal of the day.
+
+The final answer is 20 cups of feed
+{example}
+Successful CoT Transfer for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\text{{{Unlock}}
+}_{\mathrm{from\;}7B}
+Question Robin bought a four-scoop ice cream cone having a scoop each of vanilla, chocolate,
+strawberry and cherry. In how many orders can the four scoops be stacked on the cone if they are
+stacked one on top of the other and chocolate cannot be on the bottom?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok>12</atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, To solve this problem, we need to find
+the number of ways to stack the four scoops on the cone, with the condition that chocolate cannot
+be on the bottom.
+
+
+
+First, let’s consider the number of ways to stack the scoops without any restrictions. There are 4
+choices for the bottom scoop, 3 choices for the second scoop, 2 choices for the third scoop, and 1
+choice for the top scoop. So, the total number of ways to stack the scoops without any restrictions
+is 4 * 3 * 2 * 1 = 24.
+
+
+
+Now, let’s consider the number of ways to stack the scoops with the condition that chocolate cannot
+be on the bottom. Since chocolate cannot be on the bottom, there are only 3 choices for the bottom
+scoop (vanilla, strawberry, or cherry). For the second scoop, there are 3 choices (any of the
+remaining 3 flavors). For the third scoop, there are 2 choices (any of the remaining 2 flavors).
+And for the top scoop, there is 1 choice (the remaining flavor).
+
+
+
+So, the total number of ways to stack the scoops with the condition that chocolate cannot be on the
+bottom is 3 * 3 * 2 * 1 = 18.
+
+
+
+Therefore, the number of ways to stack the four scoops on the cone with the condition that
+chocolate cannot be on the bottom is 18.
+
+
+
+The final answer is <atok>18</atok>
+{example}
+Successful CoT Transfer for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\text{{{Unlock}}
+}_{\mathrm{from\;}7B}
+Question The profit from a business transaction is shared among 2 business partners, Mike and
+Johnson in the ratio 2:5 respectively. If Johnson got $2500, how much will Mike have after spending
+some of his share on a shirt that costs $200?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> $1600 </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 每份利润为2500/5=500美元。因此，Mike的
+份额为500*2=1000美元。如果他花了200美元买了一件衬衫，那么他将剩下1000-200=800美元。The final answer
+is 800.
+{example}
+Failed CoT Transfer at nn=512, kk=512 for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\
+text{{{Unlock}} }_{\mathrm{from\;}7B}
+Question Alexis is applying for a new job and bought a new set of business clothes to wear to the
+interview. She went to a department store with a budget of $200 and spent $30 on a button-up shirt,
+$46 on suit pants, $38 on a suit coat, $11 on socks, and $18 on a belt. She also purchased a pair
+of shoes, but lost the receipt for them. She has $16 left from her budget. How much did Alexis pay
+for the shoes?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok>$115</atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 每件商品的價格如下：
+
+- 衬衫：$30
+- 裤子：$46
+- 外套：$38
+- 袜子：$11
+- 腰帶：$18
+Alexis的預算為 $200，她已經花了 $30 + $46 + $38 + $11 + $18 = $143。她還剩下 $200 - $143 = $57。她
+還剩下 $16，所以她花了 $57 - $16 = $41 買鞋子。
+
+The final answer is $41
+{example}
+Failed CoT Transfer at n=256n=256, k=256k=256 for Qwen-1.5-14B+Unlock from​ 7​B\texttt
+{Qwen-1.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+Question Julie is reading a 120-page book. Yesterday, she was able to read 12 pages and today, she
+read twice as many pages as yesterday. If she wants to read half of the remaining pages tomorrow,
+how many pages should she read?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> $20 </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 120−12−24=84120-12-24=84 pages. Half
+of 8484 is 4242 pages. So, Julie should read 4242 pages tomorrow. The final answer is <atok>42</
+atok>
+{example}
+Weak CoT Transfer at n=4n=4, k=1k=1 for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\
+text{{{Unlock}} }_{\mathrm{from\;}7B}
+Question Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in
+May. How many clips did Natalia sell altogether in April and May?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok> 72 </atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 48+482=48+24=7248+\frac{48}{2}=48+24=
+72 clips
+
+The final answer is 72.
+{example}
+Weak CoT Transfer at n=4n=4, k=4k=4 for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\
+text{{{Unlock}} }_{\mathrm{from\;}7B}
+Question James writes a 3-page letter to 2 different friends twice a week. How many pages does he
+write a year?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, The final answer is <atok>260</atok>
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 24×2×52=249624\times 2\times 52=2496
+pages
+
+The final answer is 2496 </atok>
+{example}
+Weak CoT Transfer at n=4n=4, k=4k=4 for Qwen-1.5-14B+Unlock from​ 7​B\texttt{Qwen-1.5-14B}\,+\,\
+text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+Appendix C Additional Results for Unlocking Mathematical Reasoning
+
+Our test suite consists of four mathematical reasoning benchmarks: AGIEval-Math [Zhong et al., 2023
+], Deepmind-Math [Saxton et al., 2019], Minerva-Math [Lewkowycz et al., 2022], and OlympiadBench [
+He et al., 2024]. We withhold 32 examples from each dataset to use as the dev set for 
+task-conditioned transfer. We exclude these examples from the test sets across all settings. For 
+task-agnostic transfer, we compute the MasterKey and linear transformation using data from MATH 
+Hendrycks et al. [2021], and verify the robustness of Unlock on Gaokao2023En [Liao et al., 2024]
+and AMC23^8^8 8 https://huggingface.co/datasets/AI-MO/
+aimo-validation-amc. The best performing hyperparameters are used for evaluating on the test suite.
+
+We investigate four distinct model families: Qwen2.5 Qwen et al. [2025], Qwen3 Team [2025], 
+Ministral-3 Liu et al. [2026a], and gemma-3 Team et al. [2025]. For each family, the base model
+serves as the Locked variants 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and 𝒮L\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{L}}\,, while a stronger post-trained model is selected as the Unlocked Source
+model 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,. We categorize these Unlocked models into two
+classes:
+
+ 1. 1.
+   
+    Instruction-tuned models, optimized for general instruction following and trained with a
+    combination of math, coding, and safety datasets;
+
+ 2. 2.
+   
+    Math-specific models, specialized for math reasoning.
+
+We utilize the corresponding -Instruct or -Chat checkpoints publicly available on Hugging Face^9^9 
+9 https://huggingface.co/models for the instruction-tuned models. For the math-specific models, we
+employ NVIDIA-OpenReasoning-Nemotron  Ahmad et al. [2025] and NVIDIA-DLER-R1 Liu et al. [2025] for 
+Qwen2.5, and NVIDIA-Nemotron-Cascade Wang et al. [2025a] and Qwen3-Thinking [Team, 2025] for Qwen3.
+We omit gemma-3 from the math-specific setting as no comparably strong math-oriented post-trained
+variants were identified for this family.
+
+All models are prompted with the same CoT prompt. To reduce model- and dataset-specific variance,
+we do not apply chat templates or in-context demonstrations. We evaluate with greedy decoding and a
+maximum generation length of 4096 tokens. We report the results when using instruction-tuned
+Unlocked models in Table 6 and math-specific models in Table 7.
+
+C.1 Results & Discussion:
+
+C.1.1 Understanding the Impact of Unlocking
+
+Dependence on Capabilities present in 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,:
+
+We find that the gain of 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, over 𝒯L\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{L}}\, depends not only on the strength of the Source contrast, measured by
+how much 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\, improves over 𝒮L\,\mathcal{S}^{\vphantom{*}}
+_{\mathrm{L}}\,, but also the baseline competence of 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,.
+For instance, gemma-3 is the weakest-performing family in our experiments and underperforms its
+instruction-tuned counterpart by a wide margin, with average gaps of 32.37% for gemma-3-4B and
+31.65% for gemma-3-12B, leaving limited scope for Unlock to recover post-training gains.
+Accordingly, we observe modest improvements in this setting, and 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{U}}\, typically falls well short of 𝒯PT∗\,\mathcal{T}^{*}_{\mathrm{PT}}\,. Taken together,
+these results reinforce the interpretation that our method does not introduce new knowledge, but
+instead elicits and amplifies capabilities already present but latent in the Target model.
+
+What is Encoded in the Master Key?
+
+We find that gains in accuracy typically arise from three types of changes:
+
+(I.) Coherent reasoning traces: 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, frequently fails to
+produce explicit step-by-step reasoning, or instead generates reasoning that is fragmented,
+inefficient, or prematurely terminated. In contrast, 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,
+more consistently produces coherent intermediate steps that connect the problem statement to the
+final answer. Examples C.2 and C.2 illustrate this effect.
+
+Figure 13 plots the distribution of first generated words for 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{L}}\, and 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,. We find that Unlock sharpens the
+output distribution toward a small set of recurring openings. Across model–dataset pairs, the
+Unlocked model frequently begins with similar phrases (e.g., “To solve the …” or “Step 1: …”). In
+contrast, 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, exhibits a more diffuse distribution over
+opening tokens.
+
+These patterns suggest that Unlock increases the likelihood of producing plausible reasoning traces
+by consolidating representations and reducing variability in early trajectory selection. We leave a
+more thorough analysis of diversity and mode coverage under Unlocking, and similarity to various
+post-training methods to future work.
+
+(II.) Improved mathematical reliability: Example C.2 highlights cases where both 𝒯L\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{L}}\, and 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, generate step-by-step
+reasoning yet arrive at different conclusions. 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, often
+invokes relevant intermediate concepts but fails to reliably build on them to reach a valid
+solution. By shifting internal representations during generation, the MasterKey increases the
+probability that the model follows mathematically sound trajectories.
+
+To characterize this effect, we first analyze generation length after unlocking. Because many
+models can hallucinate or repeat, we measure length only up to the point at which the final answer
+is produced, and only for outputs marked correct; we refer to this metric as length-to-answer.
+Across tasks and model families, Unlock typically increases length-to-answer (with the exception of
+Minerva Math), indicating that 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, more often sustains
+longer, explicit reasoning traces before committing to an answer (Figure 14, left).
+
+For incorrect solutions, we further quantify degeneration by computing the number of repeated
+substrings as a function of substring length ll (Figure 14, middle and right). We find that
+repetitions peak around l∈[128,256]l\in[128,256] characters for solutions marked incorrect,
+indicating substantial repeated fragments in the generated text. Moreover, 𝒯L\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{L}}\, exhibits significantly more repetition than 𝒯U\,\mathcal{T}^{\vphantom
+{*}}_{\mathrm{U}}\,. This provides evidence that Unlock reduces repetition and consolidates the
+model’s internal representations, steering generation more successful reasoning patterns.
+
+(III.) More consistent formatting: A common objective of post-training is to enforce stable output
+formats so that responses can be parsed and evaluated reliably. We observe that 𝒯L\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{L}}\, occasionally deviates from the required format (Example C.2), likely
+because it was not explicitly trained to follow a strict response schema. In contrast, 𝒯U\,\mathcal
+{T}^{\vphantom{*}}_{\mathrm{U}}\, adheres to the expected format more consistently, reducing format
+violations. We note that these formatting differences are rarely observed for models larger than
+7B, suggesting that at this scale the primary gains from Unlock stem from improved reasoning
+behavior rather than format compliance.
+
+
+Table 6: Mathematical Reasoning Transfer From Instruction-Tuned Unlocked Models 𝒮U\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{U}}\,: Performance of the baselines, task-conditioned, and task-agnostic
+transfer.
+
+            𝒯L\,\mathcal{T}^{\    𝒮L\,\mathcal{S}^{\    𝒮U\,\mathcal{S}^{\                    
+Model       vphantom{*}}_{\mathrm vphantom{*}}_{\mathrm vphantom{*}}_{\mathrm AGI-M D-M  M-M  OB
+            {L}}\,                {L}}\,                {U}}\,
+Qwen2.5     1.5B                  –                     –                     35.9  45.3 10.8 9.9
+            7B                    –                     –                     48.2  67.7 22.5 20.8
+            14B                   –                     –                     52.2  70.7 18.5 20.0
+            1.5B-Instruct         –                     –                     37.8  46.6 12.6 13.3
+            7B-Instruct           –                     –                     54.7  71.9 27.5 26.1
+            14B-Instruct          –                     –                     65.7  78.5 29.7 33.8
+            1.5B                  7B                    7B-Instruct           41.4  46.1 16.7 13.6
+            1.5B                  14B                   14B-Instruct          38.6  43.5 16.2 12.3
+            7B                    1.5B                  1.5B-Instruct         52.0  68.8 25.2 22.2
+            14B                   1.5B                  1.5B-Instruct         50.3  73.4 23.9 23.0
+            1.5B                  7B                    7B-Instruct           41.1  45.7 18.0 14.6
+            1.5B                  14B                   14B-Instruct          38.5  49.2 14.9 12.5
+            7B                    1.5B                  1.5B-Instruct         50.0  68.1 24.3 21.8
+            14B                   1.5B                  1.5B-Instruct         55.5  72.7 25.2 23.5
+Qwen3       4B-Base               –                     –                     52.3  71.3 27.5 19.7
+            8B-Base               –                     –                     53.6  77.1 24.3 23.0
+            14B-Base              –                     –                     61.1  78.8 34.7 29.0
+            4B                    –                     –                     75.6  88.4 31.5 39.8
+            8B                    –                     –                     64.0  77.6 25.2 31.4
+            14B                   –                     –                     67.8  80.1 27.9 37.8
+            4B-Base               8B-Base               8B                    53.1  76.4 29.3 26.6
+            4B-Base               14B-Base              14B                   58.9  75.8 27.0 26.4
+            8B-Base               4B-Base               4B                    54.4  73.8 26.1 20.5
+            14B-Base              4B-Base               4B                    64.1  79.9 31.5 35.4
+            4B-Base               8B-Base               8B                    52.4  76.5 28.4 21.8
+            4B-Base               14B-Base              14B                   49.5  72.9 25.7 20.8
+            8B-Base               4B-Base               4B                    57.6  80.9 27.9 25.1
+            14B-Base              4B-Base               4B                    71.3  82.4 39.2 36.3
+gemma-3     4B-PT                 –                     –                     15.5  14.9 10.8 1.9
+            12B-PT                –                     –                     33.1  48.4 18.9 9.1
+            4B-IT                 –                     –                     62.0  74.1 17.7 29.0
+            12B-IT                –                     –                     76.7  85.7 29.7 44.0
+            4B-PT                 12B-PT                12B-IT                17.4  25.6 7.7  3.0
+            12B-PT                4B-PT                 4B-IT                 33.5  54.7 19.4 9.6
+            4B-PT                 12B-PT                12B-IT                16.6  25.1 9.0  3.4
+            12B-PT                4B-PT                 4B-IT                 33.7  53.5 20.3 10.1
+Ministral-3 3B                    –                     –                     46.9  65.3 26.1 19.0
+            8B                    –                     –                     50.7  67.4 29.3 20.0
+            ℐ\mathcal{I}(3B)      –                     –                     68.7  84.2 26.6 33.9
+            ℐ\mathcal{I}(8B)      –                     –                     70.6  87.2 29.3 37.0
+            3B                    8B                    8B-Instruct           53.4  66.2 27.5 21.0
+            8B                    3B                    3B-Instruct           51.9  71.3 37.4 20.2
+            3B                    8B                    8B-Instruct           49.9  65.5 27.5 21.0
+            8B                    3B                    3B-Instruct           54.0  70.7 34.7 21.1
+
+
+Table 7: Mathematical Reasoning Transfer From Math-specific Unlocked Models 𝒮U\,\mathcal{S}^{\
+vphantom{*}}_{\mathrm{U}}\,: Performance of the baselines, math post-trained models, 
+task-conditioned, and task-agnostic transfer.
+
+        𝒯L\,\mathcal{T}^{\      𝒮L\,\mathcal{S}^{\      𝒮U\,\mathcal{S}^{\                      
+Model   vphantom{*}}_{\mathrm   vphantom{*}}_{\mathrm   vphantom{*}}_{\mathrm   AGI-M D-M  M-M  OB
+        {L}}\,                  {L}}\,                  {U}}\,
+Qwen2.5 7B                      –                       –                       48.2  67.7 22.5 20.8
+        14B                     –                       –                       52.2  70.7 18.5 20.0
+        7B-Instruct             –                       –                       54.7  71.9 27.5 26.1
+        14B-Instruct            –                       –                       65.7  78.5 29.7 33.8
+        Nemotron-14B            –                       –                       58.1  82.2 10.8 9.1
+        DLER-R1-7B              –                       –                       80.7  88.6 40.5 50.2
+        7B                      14B                     Nemotron-14B            52.8  71.6 21.6 20.2
+        14B                     7B                      DLER-R1-7B              55.5  73.7 24.8 25.4
+        7B                      14B                     Nemotron-14B            50.1  69.9 23.0 21.3
+        14B                     17B                     DLER-R1-7B              58.0  78.2 26.1 26.1
+Qwen3   4B-Base                 –                       –                       52.3  71.3 27.5 19.7
+        8B-Base                 –                       –                       53.6  77.1 24.3 23.0
+        Nemotron-Cascade-8B     –                       –                       80.1  89.7 36.5 45.1
+        4B-Thinking             –                       –                       60.5  75.2 26.6 36.2
+        4B                      8B                      Nemotron-Cascade-8B     56.1  78.9 27.5 24.5
+        8B                      4B                      4B-Thinking             55.5  80.0 28.4 22.6
+        4B                      8B                      Nemotron-Cascade-8B     54.9  77.2 27.0 23.4
+        8B                      4B                      4B-Thinking             53.6  79.4 30.6 24.3
+
+
+(a) Qwen3-14B
+
+
+(b) Qwen3-14B+Unlock from​ 4​B\texttt{Qwen3-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}4B}
+
+
+(c) Qwen3-8B
+
+
+(d) Qwen3-8B+Unlock from​ 4​B\texttt{Qwen3-8B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}4B}
+
+
+(e) Qwen3-4B
+
+
+(f) Qwen3-4B+Unlock from​ 14​B\texttt{Qwen3-4B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}
+
+
+(g) Qwen3-4B
+
+
+(h) Qwen3-4B+Unlock from​ 14​B\texttt{Qwen3-4B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}
+
+
+(i) Qwen3-4B
+
+
+(j) Qwen3-4B+Unlock from​ 8​B\texttt{Qwen3-4B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}8B}
+
+
+(k) Qwen2.5-14B
+
+
+(l) Qwen2.5-14B+Unlock from​ 7​B\texttt{Qwen2.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+
+(m) Qwen2.5-14B
+
+
+(n) Qwen2.5-14B+Unlock from​ 7​B\texttt{Qwen2.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+
+(o) Qwen2.5-14B
+
+
+(p) Qwen2.5-14B+Unlock from​ 7​B\texttt{Qwen2.5-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}7B}
+
+
+Figure 13: Additional Statistics of the First-generated Word: A clear shift in the distribution of
+first-generated word is observed after applying Unlock
+
+
+(a) Qwen3-4B+Unlock from​ 14​B\texttt{Qwen3-4B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}14B}
+
+
+(b) Qwen3-14B+Unlock from​ 4​B\texttt{Qwen3-14B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}4B}
+
+
+(c) Ministral-3-3B+Unlock from​ 8​B\texttt{Ministral-3-3B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}
+8B}
+
+
+(d) Ministral-3-8B+Unlock from​ 3​B\texttt{Ministral-3-8B}\,+\,\text{{{Unlock}} }_{\mathrm{from\;}
+3B}
+
+
+Figure 14: Length to answer (left); and Number of repeating substrings (middle and right) for Qwen3
+and Ministral-3 families.
+
+C.2 Examples of Math Reasoning Transfer
+
+Question Find the solution to the equation log3​x⁡4=log2​x⁡8\log_{3x}4=\log_{2x}8, where xx is a
+positive real number other than 13\tfrac{1}{3} or 12\tfrac{1}{2}.
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, 1. We are given the equation log3​x⁡4=
+log2​x⁡8\log_{3x}4=\log_{2x}8.
+2. To solve this equation, we can use the change of base formula for logarithms: loga⁡b=
+logc⁡blogc⁡a\log_{a}b=\frac{\log_{c}b}{\log_{c}a}, where cc is any positive real number other than
+1.
+3. Applying the change of base formula to both sides of the equation, we get log⁡4log⁡(3​x)=
+log⁡8log⁡(2​x)\frac{\log 4}{\log(3x)}=\frac{\log 8}{\log(2x)}.
+4. Now, we can cross-multiply to get rid of the fractions: log⁡4⋅log⁡(2​x)=log⁡8⋅log⁡(3​x)\log 4\
+cdot\log(2x)=\log 8\cdot\log(3x).
+5. We can simplify the equation by using the properties of logarithms: log⁡4+log⁡(2​x)=log⁡8+log⁡
+(3​x)\log 4+\log(2x)=\log 8+\log(3x).
+6. Using the property log⁡a+log⁡b=log⁡(a​b)\log a+\log b=\log(ab), we can rewrite the equation as
+log⁡(4⋅2​x)=log⁡(8⋅3​x)\log(4\cdot 2x)=\log(8\cdot 3x).
+7. Simplifying further, we get log⁡(8​x)=log⁡(24​x)\log(8x)=\log(24x).
+8. Since the logarithms are equal, their arguments must also be equal: 8​x=24​x8x=24x.
+9. Solving for xx, we get x=13x=\frac{1}{3}.
+10. However, we are given that xx is a positive real number other than 13\tfrac{1}{3} or 12\tfrac
+{1}{2}, so x=13x=\frac{1}{3} is not a valid solution.
+11. Therefore, there is no solution to the equation log3​x⁡4=log2​x⁡8\log_{3x}4=\log_{2x}8.
+
+The final answer is <atok> no solution </atok>.
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, To solve the equation log3​x⁡4=
+log2​x⁡8\log_{3x}4=\log_{2x}8, we will follow these steps:
+
+1. **Express the logarithms in terms of natural logarithms:**
+log3​x⁡4=ln⁡4ln⁡(3​x)andlog2​x⁡8=ln⁡8ln⁡(2​x)\\ \log_{3x}4=\frac{\ln 4}{\ln(3x)}\quad\text{and}\
+quad\log_{2x}8=\frac{\ln 8}{\ln(2x)}\\ 2. **Set the two expressions equal to each other:**
+ln⁡4ln⁡(3​x)=ln⁡8ln⁡(2​x)\\ \frac{\ln 4}{\ln(3x)}=\frac{\ln 8}{\ln(2x)}\\ 3. **Cross-multiply to
+eliminate the fractions:**
+ln⁡4⋅ln⁡(2​x)=ln⁡8⋅ln⁡(3​x)\\ \ln 4\cdot\ln(2x)=\ln 8\cdot\ln(3x)\\ 4. **Use the properties of
+logarithms to simplify:**
+ln⁡4=2​ln⁡2andln⁡8=3​ln⁡2\\ \ln 4=2\ln 2\quad\text{and}\quad\ln 8=3\ln 2\\ Substituting these into
+the equation, we get:
+2​ln⁡2⋅ln⁡(2​x)=3​ln⁡2⋅ln⁡(3​x)\\ 2\ln 2\cdot\ln(2x)=3\ln 2\cdot\ln(3x)\\ 5. **Divide both sides by
+ln⁡2\ln 2 (since ln⁡2=0\ln 2=0):**
+2​ln⁡(2​x)=3​ln⁡(3​x)\\ 2\ln(2x)=3\ln(3x)\\ 6. **Expand the logarithms:**
+2​(ln⁡2+ln⁡x)=3​(ln⁡3+ln⁡x)\\ 2(\ln 2+\ln x)=3(\ln 3+\ln x)\\ 7. **Distribute the constants:**
+2​ln​2+2​ln​x=3​ln​3+3​ln​x\\ 2\ln 2+2\ln x=3\ln 3+3\ln x\\ 8. **Isolate the terms involving ln⁡x\
+ln x:**
+2​ln​2−3​ln​3=3​ln​x−2​ln​x\\ 2\ln 2-3\ln 3=3\ln x-2\ln x\\ 2​ln⁡2−3​ln⁡3=ln⁡x\\ 2\ln 2-3\ln 3=\ln
+x\\ 9. **Solve for xx:**
+ln⁡x=2​ln⁡2−3​ln⁡3\\ \ln x=2\ln 2-3\ln 3\\ ln⁡x=ln⁡22−ln⁡33\\ \ln x=\ln 2^{2}-\ln 3^{3}\\ ln⁡x=
+ln⁡4−ln⁡27\\ \ln x=\ln 4-\ln 27\\ ln⁡x=ln⁡(427)\\ \ln x=\ln\left(\frac{4}{27}\right)\\ x=427\\ x=\
+frac{4}{27}\\ The final answer is 427\boxed{\frac{4}{27}}.
+{example}
+Improved Coherence in Reasoning Traces: 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and 𝒯U\,\
+mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, generate similar reasoning steps up till Step 4 in 𝒯L\,\
+mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,’s output and Step 3 in 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\
+mathrm{U}}\,’s output. At this point 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, skips
+intermediate reasoning steps, and thus makes mistakes in all further steps. On the other hand 𝒯U\,\
+mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, continues to reason step by step and arrives at the
+correct answer
+Question What is 1134508901 to the power of 1/4, to the nearest integer?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, To find the fourth root of 1134508901 to
+the nearest integer, we can follow these steps:
+
+1. **Understand the problem**: We need to find a number xx such that x4x^{4} is approximately equal
+to 1134508901. In other words, we are looking for x=11345089014x=\sqrt[4]{1134508901}.
+
+2. **Estimate the value**: Since 104=1000010^{4}=10000 and 1004=100000000100^{4}=100000000, the
+fourth root of 1134508901 must be between 100 and 1000. Let’s narrow it down further.
+
+3. **Calculate 3004300^{4}**:
+3004=(3002)2=900002=8100000000\\ 300^{4}=(300^{2})^{2}=90000^{2}=8100000000\\ This is much larger
+than 1134508901, so the fourth root must be less than 300.
+
+4. **Calculate 2004200^{4}**:
+2004=(2002)2=400002=1600000000\\ 200^{4}=(200^{2})^{2}=40000^{2}=1600000000\\ This is still larger
+than 1134508901, so the fourth root must be less than 200.
+
+5. **Calculate 1504150^{4}**:
+1504=(1502)2=225002=506250000\\ 150^{4}=(150^{2})^{2}=22500^{2}=506250000\\ This is less than
+1134508901, so the fourth root must be greater than 150.
+
+6. **Calculate 1804180^{4}**:
+1804=(1802)2=324002=1049760000\\ 180^{4}=(180^{2})^{2}=32400^{2}=1049760000\\ This is close to
+1134508901, so the fourth root is likely around 180.
+
+7. **Calculate 1854185^{4}**:
+1854=(1852)2=342252=1171215625\\ 185^{4}=(185^{2})^{2}=34225^{2}=1171215625\\ This is slightly
+larger than 1134508901, so the fourth root must be less than 185.
+
+8. **Calculate 1834183^{4}**:
+1834=(1832)2=334892=1121088121\\ 183^{4}=(183^{2})^{2}=33489^{2}=1121088121\\ This is very close to
+1134508901, so the fourth root is likely around 183.
+
+9. **Calculate 1844184^{4}**:
+1844=(1842)2=338562=1146617616\\ 184^{4}=(184^{2})^{2}=33856^{2}=1146617616\\ This is slightly
+larger than 1134508901, so the fourth root must be less than 184.
+
+10. **Conclusion**: The fourth root of 1134508901 is between 183 and 184. Since 1834183^{4} is
+closer to 1134508901 than 1844184^{4}, the nearest integer is 183.
+
+The final answer is <atok> 183 </atok>.
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, 1. First, we need to find the fourth
+root of 1134508901.
+2. To do this, we can use a calculator or a computer program that can handle large numbers and
+roots.
+3. Using a calculator, we find that the fourth root of 1134508901 is approximately 183.57.
+4. Now, we need to round this number to the nearest integer.
+5. Since 183.57 is closer to 184 than it is to 183, we round up to 184.
+
+The final answer is <atok> 184 </atok>.
+{example}
+Improved Coherence in Reasoning Traces: 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, arrives at
+approximately the correct answer by making a mistake in floating point estimations. On the other
+hand, 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, is more vary of the rounding off specified in
+the question, and thus reaches the correct solution.
+Question In the nt​hn^{th} row of Pascal’s Triangle where the first row is n=0n=0, the arithmetic
+mean of the elements is 51.251.2. What is the value of nn?
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, 1. We know that the sum of the elements
+in the nt​hn^{th} row of Pascal’s Triangle is 2n2^{n}.
+2. The arithmetic mean of the elements in the nt​hn^{th} row is the sum of the elements divided by
+the number of elements, which is 2n/(n+1)2^{n}/(n+1).
+3. We are given that the arithmetic mean is 51.251.2, so we can set up the equation: 2n/(n+1)=51.22
+^{n}/(n+1)=51.2.
+4. To solve for nn, we can multiply both sides of the equation by (n+1)(n+1): 2n=51.2​(n+1)2^{n}=
+51.2(n+1).
+5. Now, we can try different values of nn to find the one that satisfies the equation. We can start
+with n=10n=10 since 210=10242^{10}=1024 and 51.2​(10+1)=563.251.2(10+1)=563.2, which is close to
+10241024.
+6. We can check if n=10n=10 is the correct value by plugging it back into the equation: 210/(10+1)=
+1024/11=93.092^{10}/(10+1)=1024/11=93.09, which is not equal to 51.251.2.
+7. We can try n=11n=11 since 211=20482^{11}=2048 and 51.2​(11+1)=614.451.2(11+1)=614.4, which is
+closer to 20482048.
+8. We can check if n=11n=11 is the correct value by plugging it back into the equation: 211/(11+1)=
+2048/12=170.672^{11}/(11+1)=2048/12=170.67, which is not equal to 51.251.2.
+9. We can try n=12n=12 since 212=40962^{12}=4096 and 51.2​(12+1)=665.651.2(12+1)=665.6, which is
+closer to 40964096.
+10. We can check if n=12n=12 is the correct value by plugging it back into the equation: 212/(12+1)
+=4096/13=315.082^{12}/(12+1)=4096/13=315.08, which is not equal to 51.251.2.
+⋯\cdots
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, To solve this problem, we need to
+understand the properties of Pascal’s Triangle and how to calculate the arithmetic mean of its
+elements in the nt​hn^{th} row.
+
+### Step 1: Understand Pascal’s Triangle
+Pascal’s Triangle is a triangular array of numbers where each number is the sum of the two directly
+above it. The nt​hn^{th} row of Pascal’s Triangle corresponds to the coefficients of the binomial
+expansion (a+b)n(a+b)^{n}. The elements in the nt​hn^{th} row are given by the binomial
+coefficients (nk)\binom{n}{k} for k=0,1,2,…,nk=0,1,2,\dots,n
+
+### Step 2: Calculate the Sum of the Elements in the nt​hn^{th} Row
+The sum of the elements in the nt​hn^{th} row of Pascal’s Triangle is 2n2^{n}. This is because the
+sum of the binomial coefficients (nk)\binom{n}{k} for k=0k=0 to nn is equal to 2n2^{n}.
+
+### Step 3: Calculate the Arithmetic Mean of the Elements in the nt​hn^{th} Row
+The arithmetic mean of the elements in the nt​hn^{th} row is the sum of the elements divided by the
+number of elements. Since there are n+1n+1 elements in the nt​hn^{th} row, the arithmetic mean is:
+Arithmetic Mean=2nn+1\\ \text{Arithmetic Mean}=\frac{2^{n}}{n+1}\\ ### Step 4: Set Up the Equation
+We are given that the arithmetic mean is 51.251.2. Therefore, we can set up the equation:
+2nn+1=51.2\\ \frac{2^{n}}{n+1}=51.2\\ ### Step 5: Solve for nn
+We need to find the value of nn that satisfies the equation. Let’s test integer values of nn:
+
+- For n=6n=6:
+266+1=647≈9.14≠51.2\\ \frac{2^{6}}{6+1}=\frac{64}{7}\approx 9.14\neq 51.2\\ - For n=7n=7:
+277+1=1288=16≠51.2\\ \frac{2^{7}}{7+1}=\frac{128}{8}=16\neq 51.2\\ - For n=8n=8:
+288+1=2569≈28.44≠51.2\\ \frac{2^{8}}{8+1}=\frac{256}{9}\approx 28.44\neq 51.2\\ - For n=9n=9:
+299+1=51210=51.2\\ \frac{2^{9}}{9+1}=\frac{512}{10}=51.2\\ ### Step 6: Conclusion
+The value of nn that satisfies the equation is 99.
+
+The final answer is <atok> 9 </atok>.
+{example}
+Improved Math Reasoning Capability: 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, completely
+hallucinates, and never reaches the solution, while 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\,
+is able to generate complete reasoning and the correct solution.
+Question Compute (1248)​(53).\begin{pmatrix}1&2\\ 4&8\\ \end{pmatrix}\begin{pmatrix}5\\ 3\end
+{pmatrix}.
+Locked Model 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, To compute the product of the given
+matrices, we need to follow the rules of matrix multiplication. The first matrix is a 2×22\times 2
+matrix, and the second matrix is a 2×12\times 1 matrix. The result will be a 2×12\times 1 matrix. 
+Step 1: Multiply the first row of the first matrix by the column of the second matrix. (1×5)+(2×3)=
+5+6=11(1\times 5)+(2\times 3)=5+6=11 Step 2: Multiply the second row of the first matrix by the
+column of the second matrix. (4×5)+(8×3)=20+24=44(4\times 5)+(8\times 3)=20+24=44 The final answer
+is <atok> [11,44][11,44] </atok>.
+Unlocked Model 𝒯U\,\mathcal{T}^{\vphantom{*}}_{\mathrm{U}}\, Step 1: Identify the matrices involved
+in the multiplication. Matrix A = (1248)\begin{pmatrix}1&2\\ 4&8\\ \end{pmatrix} Matrix B = (53)\
+begin{pmatrix}5\\ 3\end{pmatrix} Step 2: Check if the multiplication is possible. Matrix A is a
+2×22\times 2 matrix, and Matrix B is a 2×12\times 1 matrix. Since the number of columns in Matrix A
+is equal to the number of rows in Matrix B, the multiplication is possible. Step 3: Perform the
+matrix multiplication. To multiply the matrices, we need to multiply the elements of each row in
+Matrix A by the corresponding elements in Matrix B and then sum the results. Row 1: (1×5)+(2×3)=5+6
+=11(1\times 5)+(2\times 3)=5+6=11 Row 2: (4×5)+(8×3)=20+24=44(4\times 5)+(8\times 3)=20+24=44 Step
+4: Write the result as a matrix. The final answer is <atok> (1144)\begin{pmatrix}11\\ 44\end
+{pmatrix} </atok>.
+{example}
+Improved Formatting: Both 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, and 𝒯U\,\mathcal{T}^{\
+vphantom{*}}_{\mathrm{U}}\, achieve the same answer but 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}
+\, incorrectly formats the final answer. This phenomenon is rarely observed in 14B models (Example
+taken from Qwen-2.5-7B)
+
+Appendix D Model Family Transfer
+
+D.1 Experimental Setup
+
+We now investigate the efficacy of cross-family transfer, where the Source and Target models belong
+to different architectural families. From Section 4, we observed that Qwen-1.5 family of models
+possesses CoT as an atomic ability, and consistently demonstrates robust performance across the
+evaluation settings. We thus select Qwen1.5 checkpoints as the Source models. In contrast to the
+intra-family configuration used in the CoT setting, we utilize the stronger post-trained variant (
+-Chat) model for 𝒮U\,\mathcal{S}^{\vphantom{*}}_{\mathrm{U}}\,, while maintaining all other
+experimental settings.
+
+D.2 Results & Observations
+
+We report our results in Table 8. First, we observe that cross-family transfer can elicit
+significant CoT behavior from 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\,, confirming that
+Chain-of-Thought capabilities are often latent. Next, we find that cross-family transfer achieves
+comparable performance to prompting 𝒯L\,\mathcal{T}^{\vphantom{*}}_{\mathrm{L}}\, with a CoT
+prompt. Surprisingly, we find that cross-family transfer performs comparably to intra-family
+transfer, providing evidence of converging representations of capabilities across models. These
+results further support our hypothesis that if the Target model contains sufficient
+representational capacity, it is possible to isolate and apply capabilities and directions in
+latent space. We leave further exploration into this space, and the more complex challenge of
+non-atomic capability transfer to future work.
+
+
+Table 8: Cross-Family CoT Transfer: Results when transferring Chain-of-Thought capabilities from
+the Qwen1.5 family onto gemma-2 and OLMo-2 families. For simplicity, we use ℐ⁡(x)\mathcal{I}(x) to
+denote the instruction-tuned version of the corresponding model. Baseline comparisons shown in gray
+.
+
+               𝒯L\,\mathcal{T}^{\  𝒮U≡ℐ⁡(𝒮L)\,\mathcal{S}^{\vphantom{*}}_{\mathrm             
+Model   Prompt vphantom{*}}_{\     {U}}\,\equiv\mathcal{I}(\,\mathcal{S}^{\        GSM8K MATH SVAMP
+               mathrm{L}}\,        vphantom{*}}_{\mathrm{L}}\,)
+gemma-2 Direct 9B                  –                                               3.0   3.5  21.0
+        CoT    9B                  –                                               66.6  26.4 79.3
+        CoT    9B-Instruct         –                                               87.6  43.5 85.3
+        Direct 9B                  14B                                             60.5  24.2 76.7
+        Direct 9B                  7B                                              43.7  26.3 72.3
+OLMo-2  Direct 7B                  –                                               10.0  9.7  43.7
+        CoT    7B                  –                                               53.8  15.3 71.0
+        CoT    7B-Instruct         –                                               79.4  24.9 78.7
+        Direct 7B                  14B                                             51.6  15.5 58.7
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

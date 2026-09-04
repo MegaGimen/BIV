@@ -1,0 +1,1486 @@
+source: https://arxiv.org/html/2601.09398
+arxiv: https://arxiv.org/abs/2601.09398
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related Work
+     1. Modularity in LLMs.
+     2. Catastrophic Forgetting.
+     3. Model Merging.
+ 4. 3 Empirical Analysis of Cross-Model Activation Differences
+     1. 3.1 Analysis Setup
+         1. Activation Extraction and Difference.
+         2. Model Pairs.
+         3. Languages and Domains.
+     2. 3.2 Distribution of Activation Differences
+         1. Finding 1: Large activation differences are concentrated in a small fraction of
+            channels.
+         2. Finding 2: Activation difference distributions across different layers exhibit
+            consistent patterns.
+     3. 3.3 Ability-specific Disentanglement
+         1. Finding 3: Ability-specific channels are naturally disentangled.
+         2. Finding 4: Ability-specific channels exhibit consistency after fine-tuning.
+     4. 3.4 Comparison with Fine-tuning Updated Channels
+         1. Finding 5: Ability-specific channels selected by activations differ from largely
+            updated ones during fine-tuning.
+ 5. 4 Approach
+     1. 4.1 Ability-Transfer Channel Identification
+     2. 4.2 Ability Transfer with Masks
+         1. Model-level Mask Aggregation.
+         2. Masked Task Vector Transfer.
+     3. 4.3 Lightweight Post-Transfer Fine-Tuning
+ 6. 5 Experiments
+     1. 5.1 Recovering Forgotten Abilities
+         1. 5.1.1 Experimental Setup
+             1. Datasets and Models.
+             2. Evaluation Metrics and Baselines.
+         2. 5.1.2 Main Results
+             1. Transfer Only.
+             2. Transfer with Lightweight Fine-Tuning.
+         3. 5.1.3 Sensitivity Analysis
+     2. 5.2 Multi-Abilities Merging Test
+         1. Models and Abilities.
+         2. Results.
+ 7. 6 Conclusion
+ 8. 7 Limitations
+ 9. References
+10. A Implementation Details for Recovering Forgetten Abilities
+11. B Implementation Details for Multi-abilities Merging
+12. C AI Assistance Disclosure
+13. D Additional Empirical Analysis
+     1. D.1 Additional Results for Finding 1
+         1. Qwen2.5 Math Models.
+         2. Qwen2.5 Coder Models.
+         3. LLaMA-2 Family Models.
+         4. Summary.
+     2. D.2 Additional Results for Finding 2
+         1. Qwen2.5 Math Models.
+         2. Qwen2.5 Coder Models.
+         3. LLaMA-2 Family Models.
+         4. Summary.
+     3. D.3 Additional Results for Finding 3
+         1. Qwen2.5 Models across Languages and Domains.
+         2. LLaMA-2 Family Models.
+         3. Summary.
+     4. D.4 Additional Results for Finding 4
+         1. Qwen2.5 Models at Smaller Scale.
+         2. LLaMA-2 Family Models.
+         3. Summary.
+     5. D.5 Additional Results for Finding 5
+         1. Weight-Based Channel Update Distributions.
+         2. Qwen2.5 (7B and 1.5B): multilingual results.
+         3. LLaMA-2-13B family: English-only results.
+         4. Summary.
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2601.09398v1 [cs.CL] 14 Jan 2026
+
+Ability Transfer and Recovery via Modularized Parameters Localization
+
+Songyao Jin    Kun Zhou ^†^†thanks: Corresponding Author    Wenqi Li    Peng Wang    Biwei Huang 
+Affiliation: University of California San Diego Affiliation: {\{soj007, kuzhou, wel118, pew025,
+bih007}\}@ucsd.edu
+
+Abstract
+
+Large language models can be continually pre-trained or fine-tuned to improve performance in
+specific domains, languages, or skills, but this specialization often degrades other capabilities
+and may cause catastrophic forgetting. We investigate how abilities are distributed within LLM
+parameters by analyzing module activations under domain- and language-specific inputs for closely
+related models. Across layers and modules, we find that ability-related activations are highly
+concentrated in a small set of channels (typically <5%), and these channels are largely
+disentangled with good sufficiency and stability. Building on these observations, we propose ACT
+(Activation-Guided Channel-wise Ability Transfer), which localizes ability-relevant channels via
+activation differences and selectively transfers only the corresponding parameters, followed by
+lightweight fine-tuning for compatibility. Experiments on multilingual mathematical and scientific
+reasoning show that ACT can recover forgotten abilities while preserving retained skills. It can
+also merge multiple specialized models to integrate several abilities into a single model with
+minimal interference. Our code and data will be publicly released.
+
+1 Introduction
+
+Large language models (LLMs) pretrained on large-scale corpora have demonstrated strong
+general-purpose capabilities across a wide range of tasks (Brown et al., 2020; Touvron et al., 2023
+; Zhao et al., 2025). To further enhance performance in specific domains, languages and skills,
+these LLMs can be continually pre-trained or fine-tuned on related datasets (Ouyang et al., 2022;
+Rafailov et al., 2024). However, such specialization often degrades other abilities, and even
+causes catastrophic forgetting (Luo et al., 2025) on relevant tasks.
+
+To overcome the ability degradation issue, existing work mostly focuses on devising new fine-tuning
+strategy with special regularization (Kirkpatrick et al., 2017) and parameter frozen methods (
+Houlsby et al., 2019). However, due to the unawareness of the ability knowledge distribution, it is
+challenging to disentangle the targeted and irrelevant abilities within the LLM. Moreover, these
+method can not directly work on the ability recovery of fine-tuned LLMs, limiting the broader
+application on growing scenarios in the community.
+
+In this work, we study how different abilities are stored in LLMs, and find a more efficient and
+effective way to transfer or recovery them. To this end, we focus on localizing the ability-related
+parameters and test the sufficiency and stability. Existing work (Zhang et al., 2023; Du et al.,
+2024; Kumar et al., 2024) about the modularity of LLMs, has revealed that their inner parameters
+and activations are potentially highly disentangled for storing and representing different
+knowledge, respectively. Inspired by it, we start from analyzing activation values within LLMs ^1^1
+1 In this paper, activations refer to outputs of trainable modules, such as attention (Q/K/V/O) and
+MLP (gate/up/down) projections, measured along their output channels.. By feeding domain- and
+language-specific samples and comparing closely related models, we empirically observe that the
+ability-related activations are highly concentrated on very few channels (e.g., <5%<5\%), spanning
+all layers and modules. Surprisingly, the ability-specific channels are highly disentangled with
+each other, and are very stable and consistent to resist fine-tuning. It indicates that pre-trained
+LLMs contain modularized parameters for specific ability, which is promising to help efficiently
+and effectively transfer or recovery the target abilities.
+
+Motivated by these observations, we introduce ACT (Activation-Guided Channel-wise Ability T
+ransfer), a selective ability transfer framework that localizes ability-relevant channels using
+cross-model activation differences and restricts parameter transfer to these channels. ACT performs
+ability transfer through activation-guided channel selection followed by masked task-vector
+merging. We additionally apply lightweight post-transfer fine-tuning to improve compatibility, and
+empirically find that the transferred parameters substantially enhance fine-tuning effectiveness.
+
+Extensive experiments show that ACT effectively recovers forgotten abilities while preserving
+retained skills. In addition, experiments on merging multiple specialized models demonstrate that
+ACT can integrate several retained abilities into a single model. Compared with existing
+fine-tuning and model merging baselines, ACT achieves competitive or superior performance while
+modifying only a small fraction of parameters, and enables multi-ability integration with minimal
+interference.
+
+2 Related Work
+
+Modularity in LLMs.
+
+A growing body of work suggests that large neural networks exhibit sparse and task-relevant
+subnetworks (Frankle and Carbin, 2019; Sanh et al., 2020). As model scale increases,
+representations associated with different tasks or classes become increasingly orthogonal,
+indicating emergent functional separation (Ramasesh et al., 2021). Activation- and gradient-based
+analyses further show that parameters in deeper layers of language models become increasingly
+sparse and specialized across domains and tasks (Wang et al., 2024; Du et al., 2024). More direct
+evidence of modularity comes from interpretability studies of Transformers, which reveal that a
+small subset of neurons, channels, or components specialize in distinct semantic, factual, or
+algorithmic functions (Zhang et al., 2023; Elhage et al., 2021; Olsson et al., 2022; Wang et al.,
+2025b). Recent dictionary learning and sparse decomposition approaches further show that model
+activations can be expressed in terms of approximately disentangled, monosemantic features, despite
+the presence of superposition (Bricken et al., 2023; Templeton et al., 2024; Elhage et al., 2022;
+Yan et al., 2024). Together, these findings indicate that model behaviors may be modular,
+motivating the use of activation-level signals to identify ability-relevant structures.
+
+Catastrophic Forgetting.
+
+Catastrophic forgetting (CF) has been extensively studied, where models continually trained on new
+data or tasks tend to degrade performance on previously learned tasks. Early work addresses CF
+through parameter regularization, often formulated as approximate Bayesian inference over model
+parameters (Kirkpatrick et al., 2017; Farquhar and Gal, 2019). Parameter-efficient approaches, such
+as adapters, introduce task-specific trainable modules to reduce interference across tasks (Houlsby
+et al., 2019). Beyond performance degradation, several studies show that internal representations
+can still drift substantially even when task accuracy is preserved (Davari et al., 2022; Wu et al.,
+2022). Recent empirical analyses confirm that CF also arises during post-training LLMs (Luo et al.,
+2025).
+
+Model Merging.
+
+Model merging aims to combine multiple task-specific models into one generalist model. Naive
+parameter averaging often leads to severe performance degradation (Wortsman et al., 2022). To
+address this, several weighted merging methods have been proposed, including Fisher-Merging (Matena
+and Raffel, 2022) and RegMean (Jin et al., 2025), which compute merging coefficients based on
+parameter-level statistics such as Fisher information or inner-product matrices. Task Arithmetic (
+Ilharco et al., 2023) represents task-specific behaviors as task vectors, the differences between
+fine-tuned and pretrained models, and composes them through linear addition. Subsequent methods,
+such as TIES (Yadav et al., 2023), DARE (Yu et al., 2024a), and LiNeS (Wang et al., 2025a), further
+mitigate interference using parameter-space heuristics, including trimming, random dropping, or
+layer-wise scaling.
+
+3 Empirical Analysis of Cross-Model Activation Differences
+
+In this section, we empirically analyze cross-model activation differences to characterize how
+activations vary among language or domain abilities. Specifically, we focus on pair of closely
+related LLMs, and examine how activation differences change under inputs from different
+language-domain combinations. This analysis aims to study whether these activation differences are
+informative to identify ability-specific modularized parameters.
+
+3.1 Analysis Setup
+
+Activation Extraction and Difference.
+
+To perform a comprehensive study, we extract activation vectors from all layers in the LLM,
+including attention projections, MLP projections, layer normalization, token embedding layers, and
+the language modeling head. An channel corresponds to one dimension in the activation vector, which
+is a scalar computed typically by the dot product between one row of the weight matrix and the
+input hidden state. For each data sample, we record activations at every layer and token position.
+Given a model pair and inputs for a specific ability, we compute token-level activation differences
+as
+
+ Δ​ai,t=|ai,t(m1)−ai,t(m2)|,\Delta a_{i,t}=\left|a_{i,t}^{(\text{m1})}-a_{i,t}^{(\text{m2})}\   (1)
+ right|,
+
+where ai,t(⋅)a_{i,t}^{(\cdot)} denotes the scalar activation of the ii-th output channel at the
+tt-th token position. For each output channel, we average activation differences over all answer
+tokens across samples, yielding a single scalar activation difference Δ​ai\Delta a_{i} per channel
+for studying language-domain combination.
+
+Model Pairs.
+
+We analyze activation differences for pair of related models that share the same pretrained
+backbone but differ in fine-tuning objectives. Our analysis primarily focuses on two Qwen2.5 math
+model pairs at different scales: (1) Qwen2.5-Math-7B-Instruct vs. Qwen2.5-7B-Instruct, and (2)
+Qwen2.5-Math-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct. The math-specialized models exhibit strong
+performance on English and Chinese mathematical reasoning, but underperform their corresponding
+general-purpose instruct models in other domains and languages (Qwen et al., 2024; Qwen et al.,
+2025). To assess the generality, we additionally analyze Qwen2.5-Coder models and LLaMA-2-13B-based
+fine-tuned variants. Unless otherwise stated, we report representative results on Qwen2.5 math
+model pairs at 7B and 1.5B, while comprehensive results across different model families, scales,
+languages, and domains are in Appendix D.
+
+Languages and Domains.
+
+Our analysis primarily considers two domain-specific reasoning, mathematics and science, across 11
+languages: English, Chinese, Arabic, Bengali, Hungarian, Japanese, Korean, Swahili, Telugu, Thai,
+and Vietnamese. For each language-domain combination, both models in a pair are evaluated on the
+same set of input samples, ensuring that observed activation differences primarily reflect
+differences in model parameters rather than tokenization or input content. For mathematical
+reasoning, we use the MetaMathQA dataset (Yu et al., 2024b), translating 1,500 distinct samples per
+language to avoid biases from shared content. For scientific reasoning, we adopt the MegaScience
+dataset (Fan et al., 2025), selecting physics, chemistry, and biology as representative subjects,
+and translating 500 samples per subject per language, resulting in 1,500 science samples per
+language. All translations are performed using GPT-4o-mini (OpenAI et al., 2024), except for
+mathematics in Telugu, which uses GPT-4o for improved quality. Due to limited multilingual
+coverage, LLaMA2 experiments focus on English mathematics, science, and code-related domains.
+
+
+(a) Global CCDF
+
+
+(b) CCDF per layer (EN-Math 7B)
+
+
+(c) CCDF per module (EN-Math 7B)
+
+
+Figure 1: Complementary cumulative distribution function (CCDF), i.e., the fraction of output
+channels whose averaged activation difference exceeds a given threshold. Across all views,
+activation differences exhibit highly skewed, heavy-tailed distributions, with large deviations
+concentrated in a small subset of channels.
+
+3.2 Distribution of Activation Differences
+
+We first analyze the empirical distribution of activation differences across output channels, to
+study how large activation differences distribute across different layers and modules.
+
+Finding 1: Large activation differences are concentrated in a small fraction of channels.
+
+Figure 1(a) shows the empirical complementary cumulative distribution function (CCDF) of
+channel-wise activation differences for representative language-domain combinations, including
+English and Arabic for both mathematical and scientific reasoning. Across all settings, the
+distributions are consistently skewed: approximately 99% of output channels exhibit an averaged
+activation difference below 4.5, while only a small fraction displays substantially larger
+deviations. This heavy-tailed behavior indicates that activation differences are concentrated in a
+small subset of channels. This observation provides an intuitive basis for ability transfer. If
+activation differences on high-deviation channels can be modeled and transferred, the ability gap
+between two models is promising to be bridged.
+
+Finding 2: Activation difference distributions across different layers exhibit consistent patterns.
+
+We further examine how activation differences are distributed across different layer and module
+types for a fixed language-domain combination. As shown in Figure 1, both layer-wise and
+module-wise CCDFs exhibit highly consistent heavy-tailed patterns. Although deeper layers and the
+language modeling head tend to show slightly larger extrema, no single layer or module dominates
+the distribution. Overall, these results indicate that while large activation differences are
+sparse (Finding 1), they are broadly distributed throughout the network.
+
+Base Ability     EN-Math         AR-Math       EN-Science      AR-Science    Cross-Lingual
+  EN-Math    100.0% (17,505) –               –               –               26.4% (4,625)
+  AR-Math    25.3% (4,434)   100.0% (17,505) –               –               35.7% (6,253)
+ EN-Science  67.6% (11,827)  31.3% (5,476)   100.0% (17,505) –               33.2% (5,805)
+ AR-Science  21.0% (3,669)   80.9% (14,157)  26.5% (4,635)   100.0% (17,505) 30.5% (5,346)
+
+
+Table 1: Overlap of top-1%1\% activation-difference channels across abilities for Qwen2.5-7B
+Math-Instruct vs. Instruct. The last column shows overlap with the union of both domains in the
+other language.
+
+3.3 Ability-specific Disentanglement
+
+Based on the findings about the unbalanced activation difference distribution, we further study the
+ability-specific disentanglement for the top-ranked output channels. Specifically, for each
+language-domain combination, we rank output channels by their average activation difference and
+select the top 1%1\% as the ability-specific channels. Then, we empirically study: (i) whether
+channels associated with different language-domain abilities are easy to disentangle, and (ii)
+whether channels associated with the same ability are consistent across different fine-tuned
+variations derived from the same pretrained model.
+
+Finding 3: Ability-specific channels are naturally disentangled.
+
+Table 1 reports the overlap of top activation difference channels for four abilities on the
+Qwen2.5-7B math model pair. We observe low overlap between different language-domain abilities
+(e.g., English-Math vs. Arabic-Science), in the 20%20\%–30%30\% range. Low overlap also persists
+across languages within the same domain, as well as when comparing a single ability to the union of
+both domains in another language. These results show the natural disentanglement of the
+language-specific channels with large activation differences.
+
+
+Figure 2: Cross-pair consistency of ability-specific channels. Left: Qwen2.5-7B overlap between
+top-1% activation channels from (Math-Instruct vs. Instruct) and (Coder-Instruct vs. Instruct); 
+Right: LLaMA-2-13B overlap from (Tulu-2-DPO vs. LLaMA-2) and (WizardLM vs. LLaMA-2).
+
+ Ability   Overlap (%)  #Ch.
+EN-Math    4.66         816
+EN-Science 5.35         936
+AR-Math    5.62         983
+AR-Science 3.83         670
+Random     1.00         –
+
+
+Table 2: Weight-activation top-1% mask overlap (Qwen2.5-7B Math-Instruct vs. Instruct).
+
+Finding 4: Ability-specific channels exhibit consistency after fine-tuning.
+
+We compare top-1% identified specific channels for the same ability across different fine-tuned LLM
+pairs derived from the same pretrained model. As shown in Figure 2, these channels exhibit
+significant overlap for the same language-domain ability, in both Qwen2.5-7B and LLaMA-2-13B
+models. It indicates that the ability-specific channels stably exist in the LLM, and fine-tuning
+will not greatly change that. Thus, it is promising to transfer the specific channels across
+different fine-tuned variants from a pre-trained LLM, to recovery or enhance the ability.
+
+3.4 Comparison with Fine-tuning Updated Channels
+
+We examine if identified ability-specific channels are the same as largely updated ones in
+fine-tuning. Using the same model pair as before (Qwen2.5-Math-7B-Instruct vs.
+Qwen2.5-7B-Instruct), we compute a channel-wise weight difference by calculating parameter
+differences with an ℓ2\ell_{2} norm. Then, we compute the overlap between top 1%1\% channels
+selected by update and activation differences.
+
+Finding 5: Ability-specific channels selected by activations differ from largely updated ones
+during fine-tuning.
+
+Figure 21 (Appendix D.5) shows that channel-wise weight updates also exhibit heavy-tailed
+distributions. As shown in Table 2, the overlap between channels selected by activation differences
+and those with the largest parameter updates remains limited (3.8%–5.6% across language-domain
+abilities). It indicates that channels with large activation differences do not simply correspond
+to those with the largest parameter updates. This suggests that activation-based localization is
+able to identify the parameters that are highly important to the ability but may not be well
+trained during fine-tuning. Therefore, it is promising to first use the activation-based
+localization and then move the identified parameters before fine-tuning, for efficient ability
+transfer or recovery.
+
+
+Figure 3: Illustration of ACT. WbaseW_{\text{base}} denotes a base model, while W1W_{1} and W2W_{2}
+denote two ability models.
+
+4 Approach
+
+Motivated by our empirical findings, we propose ACT (Activation-Guided Channel-wise Ability T
+ransfer), a selective ability transfer framework that transfers specific abilities across LLMs
+while minimizing interference with unrelated capabilities. The core idea of ACT is to localize
+modularized parameters within the LLM corresponding to the target ability, to enable efficiently
+and effectively ability transfer or recovery. As shown in Figure 3, ACT consists of three stages:
+(1) identifying ability-specific channels via cross-model activation differences, (2) selectively
+transferring parameters using masked task vectors, and (3) applying lightweight post fine-tuning to
+stabilize the merged model.
+
+4.1 Ability-Transfer Channel Identification
+
+Let MtrgM_{\text{trg}} denote a target model whose performance on a specific language-domain
+ability is to be improved, and MablM_{\text{abl}} an ability model that exhibits strong performance
+on that ability. Both models share the same architecture and tokenizer and are preferably derived
+from the same pretrained checkpoint. For a given language-domain combination, we feed the same set
+of input samples into both models and record the output activations of all trainable modules. For
+each output channel ii, we compute a token-averaged activation difference
+
+ Δ​ai=1|T|​∑t=1T|ai,t(abl)−ai,t(trg)|,\Delta a_{i}=\frac{1}{\left|T\right|}\sum_{t=1}^{T}\left  (2)
+ |a_{i,t}^{(\text{abl})}-a_{i,t}^{(\text{trg})}\right|,
+
+where activations are averaged over answer tokens across all samples, as described in Section 3.1.
+This yields a channel-wise measure of how differently the two models respond internally to same
+inputs.
+
+We then rank all output channels by Δ​ai\Delta a_{i}, irrespective of layer or module, and select
+the top p%p\% to form an activation-based ability-specific mask
+
+ ℳact={i∣Δ​ai​ ranks among the top ​p%}.\mathcal{M}_{\text{act}}=\{i\mid\Delta a_{i}\text{ ranks
+ among the top }p\%\}.
+
+This mask defines a sparse set of channels that exhibit the larger cross-model behavioral
+discrepancies for the target ability.
+
+4.2 Ability Transfer with Masks
+
+Given a collection of activation-based channel masks {ℳ1,…,ℳK}\{\mathcal{M}_{1},\dots,\mathcal{M}_
+{K}\}, each corresponding to a specific language–domain ability, ACT performs selective parameter
+transfer from one or more ability models to a target model. Unlike global merging, parameter
+updates are restricted to channels identified as ability-relevant, reducing interference and
+improving parameter efficiency.
+
+Model-level Mask Aggregation.
+
+In practice, multiple ability masks may originate from the same ability model. For example, a
+single fine-tuned model may provide activation-based masks for several related abilities (e.g.,
+multiple languages or domains). To avoid repeatedly transferring the same task vector, ACT first
+aggregates masks at the model level. Specifically, for each ability model mm, we define a unified
+mask
+
+ ℳ(m)=⋃k∈𝒦mℳk,\mathcal{M}^{(m)}=\bigcup_{k\in\mathcal{K}_{m}}\mathcal{M}_{k},  (3)
+
+where 𝒦m\mathcal{K}_{m} indexes all ability masks of model mm. This unified mask identifies all
+channels to which knowledge from model mm will be transferred.
+
+Masked Task Vector Transfer.
+
+Let θtrg\theta_{\text{trg}} denote the parameters of the target model, and θabl(m)\theta_{\text
+{abl}}^{(m)} those of ability model mm. Following task arithmetic (Ilharco et al., 2023), we
+compute a single task vector for each ability model:
+
+ Δ​θ(m)=θabl(m)−θtrg.\Delta\theta^{(m)}=\theta_{\text{abl}}^{(m)}-\theta_{\text{trg}}.  (4)
+
+ACT then applies the task vector only to parameter rows selected by the unified mask ℳ(m)\mathcal
+{M}^{(m)}. For each output channel ii, the merged parameters are
+
+ θi(merged)=θi(trg)+∑mλm​Δ​θi(m)​(i∈ℳ(m)),\theta_{i}^{(\text{merged})}=\theta_{i}^{(\text
+ {trg})}+\sum_{m}\lambda_{m}\,\Delta\theta_{i}^{(m)}\,\mathbf{1}\!\left(i\in\mathcal{M}^{(m)}\  (5)
+ right),
+
+where λm\lambda_{m} are the scaling factors that control the transfer strength from ability model
+mm, and 𝟏​(⋅)\mathbf{1}(\cdot) denotes the indicator function.
+
+By restricting parameter updates to the activation-based ability-specific channel masks, ACT
+injects ability-relevant knowledge while preserving the majority of the target model’s parameters.
+This design is directly motivated by our empirical findings that large activation differences are
+sparse and largely disentangled across abilities. It is also worth noticing that this masked
+ability transfer is a versatile plug-and-play module and may be applied to any other model merging
+methods, such as Fisher (Matena and Raffel, 2022), TIES (Yadav et al., 2023), and DARE (Yu et al.,
+2024a).
+
+4.3 Lightweight Post-Transfer Fine-Tuning
+
+After masked parameter transfer, ACT applies a lightweight post-transfer fine-tuning step to
+improve stability and compatibility. Specifically, we perform a brief supervised fine-tuning on a
+small set of ability-relevant samples using a low learning rate and a limited number of
+optimization steps, i.e., 1500 instance per ability. Although all model parameters are updated
+during this stage, the objective is not to relearn the target abilities from scratch, but to smooth
+the integration of the transferred parameters within the existing network. As demonstrated in our
+experiments, this post-transfer refinement is substantially more effective than fine-tuning alone
+while largely preserving the target model’s original capabilities.
+
+                        Math (Keep)        Science (Multilingual Recovery)
+        Methods         EN   ZH   Avg.     AR   BN   HU   JA   KO   SW   TE   TH   VI   Avg.
+                                  Keep                                                  Recover
+                                Multi-lingual Large Language Models
+  Qwen2.5-7B Instruct   82.0 74.0 78.0     26.6 20.5 26.1 27.5 26.8 21.4 21.4 28.4 30.6 25.5
+    Qwen2.5-7B Math     92.4 84.0 88.2     14.3 9.6  13.0 11.6 11.8 15.4 11.8 12.3 11.2 12.3
+       Instruct
+                                    Ability Transfer Approaches
+   + Task Arithmetic    89.6 85.6 87.6     16.5 4.2  17.0 16.3 13.2 13.8 12.5 13.2 13.6 13.4
+    + TIES Merging      92.4 84.4 88.4     11.8 8.0  14.5 14.1 12.5 16.3 11.2 15.6 12.7 13.0
+    + DARE Merging      91.2 86.0 88.6     15.2 7.1  13.2 13.8 13.8 13.8 13.4 13.0 15.2 13.2
++ Ours (transfer-only)  90.0 84.8 87.4     15.4 13.6 13.6 17.6 19.0 17.6 17.4 15.0 15.0 16.0
+                                    With supervised fine-tuning
+         + SFT          87.6 74.8 81.2     18.3 12.1 19.0 21.2 19.4 8.0  11.4 21.9 19.2 16.7
+     + TA &\& SFT       88.4 79.6 84.0     21.2 15.4 18.3 17.4 20.8 10.0 13.4 19.4 17.9 17.1
+    + TIES &\& SFT      88.4 75.6 82.0     20.1 11.2 17.4 16.1 17.9 10.5 13.0 18.5 16.5 15.7
+    + DARE &\& SFT      88.8 74.8 81.8     20.8 13.0 18.1 19.2 20.8 10.7 13.4 19.4 21.6 17.4
+     + Ours w/ SFT      90.4 79.6 85.0     22.1 18.1 20.3 19.0 22.3 11.6 21.4 19.9 18.3 19.2
+
+
+Table 3: Math preservation (EN/ZH) and multilingual science recovery. Math (Keep) reports English
+and Chinese math accuracy, and Science (Multilingual Recovery) reports science accuracy on the
+remaining 9 languages.
+
+5 Experiments
+
+5.1 Recovering Forgotten Abilities
+
+5.1.1 Experimental Setup
+
+Datasets and Models.
+
+Following the empirical analysis in Section 3.1, we consider two reasoning domains, mathematics and
+science, across 11 languages. Mathematics data are constructed from multilingual translations of
+MetaMathQA (Yu et al., 2024b), while science data are derived from multilingual translations of
+MegaScience (Fan et al., 2025), covering physics, chemistry, and biology. The same datasets are
+used for both ability localization and post-transfer fine-tuning. Our experiments focus on the
+model pair Qwen2.5-Math-7B-Instruct and Qwen2.5-7B-Instruct, which share the same Qwen2.5-7B
+pretrained base and are obtained through continued pre-training processes. The goal is to preserve
+the strong English and Chinese mathematical reasoning performance of Qwen2.5-Math-7B-Instruct,
+while recovering general scientific reasoning performance in the remaining languages.
+
+Evaluation Metrics and Baselines.
+
+We evaluate all models using the multilingual and multi-ability evaluation framework BenchMax (
+Huang et al., 2025), where the mathematics and science evaluations are drawn from MGSM (Shi et al.,
+2022) and GPQA (Rein et al., 2023), respectively. All evaluations are conducted under a zero-shot
+setting, and performance is measured using exact-match accuracy. Inference is performed with vLLM (
+Kwon et al., 2023). We compare our method against three representative parameter-transfer
+baselines: Task Arithmetic (Ilharco et al., 2023), TIES (Yadav et al., 2023), and DARE (Yu et al.,
+2024a). For a fair comparison, we report results under two settings: (i) parameter transfer without
+post-transfer fine-tuning, and (ii) parameter transfer followed by lightweight supervised
+fine-tuning. In the latter case, the same fine-tuning protocol is applied to all baselines.
+Detailed implementations and hyperparameters are in Appendix A.
+
+5.1.2 Main Results
+
+Table 3 summarizes the performance of our method and baseline approaches. Our evaluation targets a
+challenging setting: preserving the strong English and Chinese mathematical reasoning of Qwen2.5-7B
+Math-Instruct while recovering scientific reasoning in the remaining languages.
+
+Transfer Only.
+
+Under the transfer-only setting, our method achieves the highest average science accuracy
+(16.016.0) among all approaches by transferring only 4.73% of the model parameters, while
+preserving English and Chinese mathematical performance at the level of the Math-Instruct model. In
+contrast, baseline merging methods yield only marginal improvements in science performance when
+math accuracy is maintained. The limited effectiveness of these baseline methods is likely due to
+the fact that Qwen2.5-7B Math-Instruct is obtained via continuous pre-training on large-scale
+mathematical data (Qwen et al., 2024), which induces substantial parameter drift relative to the
+Instruct model. Such large parameter shifts, together with configuration mismatches between the two
+models, violate the assumptions underlying most existing merging methods, which are effective only
+when parameter updates remain relatively small (Yu et al., 2024a).
+
+Transfer with Lightweight Fine-Tuning.
+
+With lightweight post-transfer fine-tuning using 1,500 samples per language-domain combination,
+science performance further improves to 19.2219.22, while English and Chinese mathematical accuracy
+remains close to that of the Math-Instruct model. This indicates that lightweight fine-tuning
+effectively smooths the integration of transferred parameters and alleviates residual interference.
+Notably, the resulting model outperforms direct fine-tuning of Qwen2.5-7B Math-Instruct alone on
+both mathematics (85.0 vs. 81.2) and science (19.22 vs. 16.7). In contrast, baseline methods derive
+substantially less benefit from fine-tuning: although their science performance increases, it
+remains comparable to fine-tuning without prior parameter transfer, suggesting limited synergy
+between merging and fine-tuning in these approaches.
+
+
+(a) Math (transfer ratio)
+
+
+(b) Science (transfer ratio)
+
+
+(c) Math (λ\lambda)
+
+
+(d) Science (λ\lambda)
+
+
+Figure 4: Performance comparison of transferring from Qwen-2.5-7B-Instruct to
+Qwen-2.5-Math-7B-Instruct. Top row: Comparison across different transfer ratios with λ=0.5\lambda=
+0.5. Bottom row: Comparison using 1% transfer ratio with Task Arithmetic across different λ\lambda.
+
+5.1.3 Sensitivity Analysis
+
+We conduct a sensitivity analysis on transfer-only setting to evaluate robustness under varying
+per-ability channel transfer ratios p%p\% and scaling factors λ\lambda. Figures 4(a) and 4(b)
+compare ACT with sparse merging baselines under a fixed λ=0.5\lambda=0.5. ACT preserves averaged
+math performance across all transfer ratios, while achieving stronger averaged science recovery in
+both highly sparse (≤10%\leq 10\% transferred parameters) and dense regimes (≥50%\geq 50\%
+transferred parameters). At extreme sparsity (1% transfer), DARE exhibits severe performance
+degradation due to its rescaling factor 1/(1−p)1/(1-p), which amplifies transferred weights by
+100×100\times and destabilizes the model. By contrast, ACT remains stable under this setting.
+Figures 4(c) and 4(d) further compare ACT with Task Arithmetic across different λ\lambda values
+using a fixed 1% transfer ratio. While both methods maintain math accuracy for small λ\lambda, ACT
+consistently achieves higher science performance and remains stable as λ\lambda increases. Task
+Arithmetic, in contrast, fails to recover the Instruct model’s performance for relatively large λ\
+lambda, likely due to configuration and parameter mismatches between the Math-Instruct and Instruct
+models. Overall, ACT demonstrates greater robustness to hyperparameter variations than baselines.
+
+5.2 Multi-Abilities Merging Test
+
+We next evaluate ACT on merging multiple abilities from different fine-tuned models.
+
+Models and Abilities.
+
+We consider three widely used LLaMA-2-13B-based fine-tuned models, each specializing in a distinct
+English-language reasoning ability: WizardMath-13B for mathematical reasoning, Tulu-2-DPO-13B for
+scientific reasoning, and WizardLM-13B-V1.2 for code generation. Each model performs well on its
+target ability while being less competitive on the others. Our goal is to integrate these abilities
+into a single model without degrading any individual strength. Detailed implementations are in
+Appendix B.
+
+Results.
+
+Table 4 reports English math, science, and code performance for individual ability models and
+merged models. ACT achieves the best overall performance, with an average score of 41.841.8,
+substantially exceeding any single specialized model. This demonstrates that our method effectively
+integrates multiple abilities when ability masks originate from different source models. Notably,
+all baseline merging methods also achieve competitive results, only slightly below our method. This
+contrasts with the Qwen2.5 results and may be attributed to the fact that the specialized LLaMA-2
+models are obtained via standard fine-tuning with relatively limited data, rather than continuous
+pretraining. As a result, parameter and activation differences between models are substantially
+smaller. As shown in Appendix D.1, activation differences for LLaMA-2 model pairs are generally
+around 10−110^{-1} (with maxima around 10110^{1}), compared to Qwen2.5 model pairs where
+differences are typically around 11 and can reach up to 10310^{3}. Although heavy-tailed activation
+differences still exist, the reduced magnitude leads to weaker interference and makes merging more
+effective. This experiment highlights that ACT is advantageous in regimes with large representation
+shifts, while remaining competitive in fine-tuning-level merging settings.
+
+        Methods         Math Science Code Avg.
+        LLaMA 2 based models (English)
+    WizardMath-13B      63.6 24.1    12.2 33.3
+    Tulu-2-DPO-13B      34.0 28.1    32.3 31.5
+   WizardLM-13B-V1.2    55.2 23.4    36.6 38.4
+         Ability Transfer Approaches
+   + Task Arithmetic    68.4 24.6    31.7 41.6
+    + TIES Merging      66.4 25.0    31.7 41.0
+    + DARE Merging      68.4 25.4    31.1 41.6
++ Ours (transfer-only)  66.8 24.3    34.2 41.8
+
+
+Table 4: Performance of merging WizardMath (English math), Tulu-2 (science), and WizardLM (code).
+
+6 Conclusion
+
+In this paper, we investigated how different abilities are stored in LLMs and how they can be
+efficiently recovered or transferred after specialization. Activation analysis across layers and
+modules shows that ability-related signals are concentrated in a small fraction of channels and
+remain disentangled, sufficient, and stable under fine-tuning, suggesting modularized
+ability-specific parameters. Building on these findings, we proposed ACT, which localizes
+ability-relevant channels via cross-model activation differences and selectively transfers only the
+corresponding parameters through masked task-vector merging, with lightweight post-transfer
+fine-tuning for compatibility. Experiments demonstrate that ACT recovers forgotten multilingual
+reasoning abilities while preserving retained skills, and enables multi-ability integration with
+minimal interference while modifying only a small fraction of parameters per language–domain
+setting.
+
+7 Limitations
+
+While our results demonstrate the effectiveness of activation-guided ability transfer, several
+limitations remain. First, our experiments primarily consider model pairs or small groups of models
+that share the same pretrained backbone. Extending the analysis to models with substantially
+different architectures or pretraining corpora is an interesting direction for future work. Second,
+ability-specific channel localization is based on curated datasets for each ability. As a result,
+the quality of the identified channel masks may depend on how well these datasets capture the
+underlying ability. Finally, our study focuses on reasoning-oriented domains such as mathematics,
+science, and code. It remains to be explored whether similar activation-based structures arise for
+other categories of abilities.
+
+References
+
+  • Ahmad et al. (2025) W. U. Ahmad, A. Ficek, M. Samadi, J. Huang, V. Noroozi, S. Majumdar, and B.
+    Ginsburg OpenCodeInstruct: a large-scale instruction tuning dataset for code llms. External
+    Links: 2504.04030, Link Cited by: Appendix B, §D.1.
+  • Bricken et al. (2023) T. Bricken, A. Templeton, J. Batson, B. Chen, A. Jermyn, T. Conerly, N.
+    Turner, C. Anil, C. Denison, A. Askell, R. Lasenby, Y. Wu, S. Kravec, N. Schiefer, T. Maxwell,
+    N. Joseph, Z. Hatfield-Dodds, A. Tamkin, K. Nguyen, B. McLean, J. E. Burke, T. Hume, S. Carter,
+    T. Henighan, and C. Olah Towards monosemanticity: decomposing language models with dictionary
+    learning. Transformer Circuits Thread. Note: https://transformer-circuits.pub/2023/
+    monosemantic-features/index.html Cited by: §2.
+  • Brown et al. (2020) T. B. Brown, B. Mann, N. Ryder, M. Subbiah, J. Kaplan, P. Dhariwal, A.
+    Neelakantan, P. Shyam, G. Sastry, A. Askell, S. Agarwal, A. Herbert-Voss, G. Krueger, T.
+    Henighan, R. Child, A. Ramesh, D. M. Ziegler, J. Wu, C. Winter, C. Hesse, M. Chen, E. Sigler,
+    M. Litwin, S. Gray, B. Chess, J. Clark, C. Berner, S. McCandlish, A. Radford, I. Sutskever, and
+    D. Amodei Language models are few-shot learners. External Links: 2005.14165, Link Cited by: §1.
+  • Davari et al. (2022) M. Davari, N. Asadi, S. Mudur, R. Aljundi, and E. Belilovsky Probing
+    representation forgetting in supervised and unsupervised continual learning. External Links: 
+    2203.13381, Link Cited by: §2.
+  • Du et al. (2024) W. Du, S. Cheng, T. Luo, Z. Qiu, Z. Huang, K. C. Cheung, R. Cheng, and J. Fu 
+    Unlocking continual learning abilities in language models. External Links: 2406.17245, Link 
+    Cited by: §1, §2.
+  • Elhage et al. (2022) N. Elhage, T. Hume, C. Olsson, N. Schiefer, T. Henighan, S. Kravec, Z.
+    Hatfield-Dodds, R. Lasenby, D. Drain, C. Chen, R. Grosse, S. McCandlish, J. Kaplan, D. Amodei,
+    M. Wattenberg, and C. Olah Toy models of superposition. External Links: 2209.10652, Link Cited
+    by: §2.
+  • Elhage et al. (2021) N. Elhage, N. Nanda, C. Olsson, T. Henighan, N. Joseph, B. Mann, A.
+    Askell, Y. Bai, A. Chen, T. Conerly, et al. A mathematical framework for transformer circuits. 
+    Transformer Circuits Thread 1 (1), pp. 12. Cited by: §2.
+  • Fan et al. (2025) R. Fan, Z. Wang, and P. Liu MegaScience: pushing the frontiers of
+    post-training datasets for science reasoning. External Links: 2507.16812, Link Cited by:
+    Appendix B, §3.1, §5.1.1.
+  • Farquhar and Gal (2019) S. Farquhar and Y. Gal A unifying bayesian view of continual learning. 
+    External Links: 1902.06494, Link Cited by: §2.
+  • Frankle and Carbin (2019) J. Frankle and M. Carbin The lottery ticket hypothesis: finding
+    sparse, trainable neural networks. External Links: 1803.03635, Link Cited by: §2.
+  • Houlsby et al. (2019) N. Houlsby, A. Giurgiu, S. Jastrzebski, B. Morrone, Q. de Laroussilhe, A.
+    Gesmundo, M. Attariyan, and S. Gelly Parameter-efficient transfer learning for nlp. External
+    Links: 1902.00751, Link Cited by: §1, §2.
+  • Huang et al. (2025) X. Huang, W. Zhu, H. Hu, C. He, L. Li, S. Huang, and F. Yuan BenchMAX: a
+    comprehensive multilingual evaluation suite for large language models. External Links: 
+    2502.07346, Link Cited by: §5.1.1.
+  • Ilharco et al. (2023) G. Ilharco, M. T. Ribeiro, M. Wortsman, S. Gururangan, L. Schmidt, H.
+    Hajishirzi, and A. Farhadi Editing models with task arithmetic. External Links: 2212.04089,
+    Link Cited by: §2, §4.2, §5.1.1.
+  • Jin et al. (2025) X. Jin, X. Ren, D. Preotiuc-Pietro, and P. Cheng Dataless knowledge fusion by
+    merging weights of language models. External Links: 2212.09849, Link Cited by: §2.
+  • Kingma and Ba (2017) D. P. Kingma and J. Ba Adam: a method for stochastic optimization. 
+    External Links: 1412.6980, Link Cited by: Appendix A.
+  • Kirkpatrick et al. (2017) J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins,
+    A. A. Rusu, K. Milan, J. Quan, T. Ramalho, A. Grabska-Barwinska, D. Hassabis, C. Clopath, D.
+    Kumaran, and R. Hadsell Overcoming catastrophic forgetting in neural networks. Proceedings of
+    the National Academy of Sciences 114 (13), pp. 3521–3526. External Links: ISSN 1091-6490, Link,
+    Document Cited by: §1, §2.
+  • Kumar et al. (2024) S. Kumar, T. R. Sumers, T. Yamakoshi, A. Goldstein, U. Hasson, K. A.
+    Norman, T. L. Griffiths, R. D. Hawkins, and S. A. Nastase Shared functional specialization in
+    transformer-based language models and the human brain. Nature communications 15 (1), pp. 5523. 
+    Cited by: §1.
+  • Kwon et al. (2023) W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H.
+    Zhang, and I. Stoica Efficient memory management for large language model serving with
+    pagedattention. External Links: 2309.06180, Link Cited by: §5.1.1.
+  • Luo et al. (2025) Y. Luo, Z. Yang, F. Meng, Y. Li, J. Zhou, and Y. Zhang An empirical study of
+    catastrophic forgetting in large language models during continual fine-tuning. External Links: 
+    2308.08747, Link Cited by: §1, §2.
+  • Matena and Raffel (2022) M. Matena and C. Raffel Merging models with fisher-weighted averaging.
+    External Links: 2111.09832, Link Cited by: §2, §4.2.
+  • Olsson et al. (2022) C. Olsson, N. Elhage, N. Nanda, N. Joseph, N. DasSarma, T. Henighan, B.
+    Mann, A. Askell, Y. Bai, A. Chen, T. Conerly, D. Drain, D. Ganguli, Z. Hatfield-Dodds, D.
+    Hernandez, S. Johnston, A. Jones, J. Kernion, L. Lovitt, K. Ndousse, D. Amodei, T. Brown, J.
+    Clark, J. Kaplan, S. McCandlish, and C. Olah In-context learning and induction heads. External
+    Links: 2209.11895, Link Cited by: §2.
+  • OpenAI et al. (2024) OpenAI, :, A. Hurst, A. Lerer, A. P. Goucher, A. Perelman, A. Ramesh, A.
+    Clark, A. Ostrow, A. Welihinda, A. Hayes, A. Radford, A. Mądry, A. Baker-Whitcomb, A. Beutel,
+    A. Borzunov, A. Carney, A. Chow, A. Kirillov, A. Nichol, A. Paino, A. Renzin, A. T. Passos, A.
+    Kirillov, A. Christakis, A. Conneau, A. Kamali, A. Jabri, A. Moyer, A. Tam, A. Crookes, A.
+    Tootoochian, A. Tootoonchian, A. Kumar, A. Vallone, A. Karpathy, A. Braunstein, A. Cann, A.
+    Codispoti, A. Galu, A. Kondrich, A. Tulloch, A. Mishchenko, A. Baek, A. Jiang, A. Pelisse, A.
+    Woodford, A. Gosalia, A. Dhar, A. Pantuliano, A. Nayak, A. Oliver, B. Zoph, B. Ghorbani, B.
+    Leimberger, B. Rossen, B. Sokolowsky, B. Wang, B. Zweig, B. Hoover, B. Samic, B. McGrew, B.
+    Spero, B. Giertler, B. Cheng, B. Lightcap, B. Walkin, B. Quinn, B. Guarraci, B. Hsu, B.
+    Kellogg, B. Eastman, C. Lugaresi, C. Wainwright, C. Bassin, C. Hudson, C. Chu, C. Nelson, C.
+    Li, C. J. Shern, C. Conger, C. Barette, C. Voss, C. Ding, C. Lu, C. Zhang, C. Beaumont, C.
+    Hallacy, C. Koch, C. Gibson, C. Kim, C. Choi, C. McLeavey, C. Hesse, C. Fischer, C. Winter, C.
+    Czarnecki, C. Jarvis, C. Wei, C. Koumouzelis, D. Sherburn, D. Kappler, D. Levin, D. Levy, D.
+    Carr, D. Farhi, D. Mely, D. Robinson, D. Sasaki, D. Jin, D. Valladares, D. Tsipras, D. Li, D.
+    P. Nguyen, D. Findlay, E. Oiwoh, E. Wong, E. Asdar, E. Proehl, E. Yang, E. Antonow, E. Kramer,
+    E. Peterson, E. Sigler, E. Wallace, E. Brevdo, E. Mays, F. Khorasani, F. P. Such, F. Raso, F.
+    Zhang, F. von Lohmann, F. Sulit, G. Goh, G. Oden, G. Salmon, G. Starace, G. Brockman, H.
+    Salman, H. Bao, H. Hu, H. Wong, H. Wang, H. Schmidt, H. Whitney, H. Jun, H. Kirchner, H. P. de
+    Oliveira Pinto, H. Ren, H. Chang, H. W. Chung, I. Kivlichan, I. O’Connell, I. O’Connell, I.
+    Osband, I. Silber, I. Sohl, I. Okuyucu, I. Lan, I. Kostrikov, I. Sutskever, I. Kanitscheider,
+    I. Gulrajani, J. Coxon, J. Menick, J. Pachocki, J. Aung, J. Betker, J. Crooks, J. Lennon, J.
+    Kiros, J. Leike, J. Park, J. Kwon, J. Phang, J. Teplitz, J. Wei, J. Wolfe, J. Chen, J. Harris,
+    J. Varavva, J. G. Lee, J. Shieh, J. Lin, J. Yu, J. Weng, J. Tang, J. Yu, J. Jang, J. Q.
+    Candela, J. Beutler, J. Landers, J. Parish, J. Heidecke, J. Schulman, J. Lachman, J. McKay, J.
+    Uesato, J. Ward, J. W. Kim, J. Huizinga, J. Sitkin, J. Kraaijeveld, J. Gross, J. Kaplan, J.
+    Snyder, J. Achiam, J. Jiao, J. Lee, J. Zhuang, J. Harriman, K. Fricke, K. Hayashi, K. Singhal,
+    K. Shi, K. Karthik, K. Wood, K. Rimbach, K. Hsu, K. Nguyen, K. Gu-Lemberg, K. Button, K. Liu,
+    K. Howe, K. Muthukumar, K. Luther, L. Ahmad, L. Kai, L. Itow, L. Workman, L. Pathak, L. Chen,
+    L. Jing, L. Guy, L. Fedus, L. Zhou, L. Mamitsuka, L. Weng, L. McCallum, L. Held, L. Ouyang, L.
+    Feuvrier, L. Zhang, L. Kondraciuk, L. Kaiser, L. Hewitt, L. Metz, L. Doshi, M. Aflak, M.
+    Simens, M. Boyd, M. Thompson, M. Dukhan, M. Chen, M. Gray, M. Hudnall, M. Zhang, M. Aljubeh, M.
+    Litwin, M. Zeng, M. Johnson, M. Shetty, M. Gupta, M. Shah, M. Yatbaz, M. J. Yang, M. Zhong, M.
+    Glaese, M. Chen, M. Janner, M. Lampe, M. Petrov, M. Wu, M. Wang, M. Fradin, M. Pokrass, M.
+    Castro, M. O. T. de Castro, M. Pavlov, M. Brundage, M. Wang, M. Khan, M. Murati, M. Bavarian,
+    M. Lin, M. Yesildal, N. Soto, N. Gimelshein, N. Cone, N. Staudacher, N. Summers, N. LaFontaine,
+    N. Chowdhury, N. Ryder, N. Stathas, N. Turley, N. Tezak, N. Felix, N. Kudige, N. Keskar, N.
+    Deutsch, N. Bundick, N. Puckett, O. Nachum, O. Okelola, O. Boiko, O. Murk, O. Jaffe, O.
+    Watkins, O. Godement, O. Campbell-Moore, P. Chao, P. McMillan, P. Belov, P. Su, P. Bak, P.
+    Bakkum, P. Deng, P. Dolan, P. Hoeschele, P. Welinder, P. Tillet, P. Pronin, P. Tillet, P.
+    Dhariwal, Q. Yuan, R. Dias, R. Lim, R. Arora, R. Troll, R. Lin, R. G. Lopes, R. Puri, R.
+    Miyara, R. Leike, R. Gaubert, R. Zamani, R. Wang, R. Donnelly, R. Honsby, R. Smith, R. Sahai,
+    R. Ramchandani, R. Huet, R. Carmichael, R. Zellers, R. Chen, R. Chen, R. Nigmatullin, R. Cheu,
+    S. Jain, S. Altman, S. Schoenholz, S. Toizer, S. Miserendino, S. Agarwal, S. Culver, S.
+    Ethersmith, S. Gray, S. Grove, S. Metzger, S. Hermani, S. Jain, S. Zhao, S. Wu, S. Jomoto, S.
+    Wu, Shuaiqi, Xia, S. Phene, S. Papay, S. Narayanan, S. Coffey, S. Lee, S. Hall, S. Balaji, T.
+    Broda, T. Stramer, T. Xu, T. Gogineni, T. Christianson, T. Sanders, T. Patwardhan, T.
+    Cunninghman, T. Degry, T. Dimson, T. Raoux, T. Shadwell, T. Zheng, T. Underwood, T. Markov, T.
+    Sherbakov, T. Rubin, T. Stasi, T. Kaftan, T. Heywood, T. Peterson, T. Walters, T. Eloundou, V.
+    Qi, V. Moeller, V. Monaco, V. Kuo, V. Fomenko, W. Chang, W. Zheng, W. Zhou, W. Manassra, W.
+    Sheu, W. Zaremba, Y. Patil, Y. Qian, Y. Kim, Y. Cheng, Y. Zhang, Y. He, Y. Zhang, Y. Jin, Y.
+    Dai, and Y. Malkov GPT-4o system card. External Links: 2410.21276, Link Cited by: §3.1.
+  • Ouyang et al. (2022) L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. L. Wainwright, P. Mishkin, C.
+    Zhang, S. Agarwal, K. Slama, A. Ray, J. Schulman, J. Hilton, F. Kelton, L. Miller, M. Simens,
+    A. Askell, P. Welinder, P. Christiano, J. Leike, and R. Lowe Training language models to follow
+    instructions with human feedback. External Links: 2203.02155, Link Cited by: §1.
+  • Qwen et al. (2025) Qwen, :, A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu,
+    F. Huang, H. Wei, H. Lin, J. Yang, J. Tu, J. Zhang, J. Yang, J. Yang, J. Zhou, J. Lin, K. Dang,
+    K. Lu, K. Bao, K. Yang, L. Yu, M. Li, M. Xue, P. Zhang, Q. Zhu, R. Men, R. Lin, T. Li, T. Tang,
+    T. Xia, X. Ren, X. Ren, Y. Fan, Y. Su, Y. Zhang, Y. Wan, Y. Liu, Z. Cui, Z. Zhang, and Z. Qiu 
+    Qwen2.5 technical report. External Links: 2412.15115, Link Cited by: §3.1.
+  • Qwen et al. (2024) Qwen, :, A. Yang, B. Zhang, B. Hui, B. Gao, B. Yu, C. Li, D. Liu, J. Tu, J.
+    Zhou, J. Lin, K. Lu, M. Xue, R. Lin, T. Liu, X. Ren, and Z. Zhang Qwen2.5-math technical
+    report: toward mathematical expert model via self-improvement. External Links: 2409.12122, Link
+    Cited by: §3.1, §5.1.2.
+  • Rafailov et al. (2024) R. Rafailov, A. Sharma, E. Mitchell, S. Ermon, C. D. Manning, and C.
+    Finn Direct preference optimization: your language model is secretly a reward model. External
+    Links: 2305.18290, Link Cited by: §1.
+  • Ramasesh et al. (2021) V. V. Ramasesh, A. Lewkowycz, and E. Dyer Effect of scale on
+    catastrophic forgetting in neural networks. In International conference on learning
+    representations, Cited by: §2.
+  • Rein et al. (2023) D. Rein, B. L. Hou, A. C. Stickland, J. Petty, R. Y. Pang, J. Dirani, J.
+    Michael, and S. R. Bowman GPQA: a graduate-level google-proof q&a benchmark. External Links: 
+    2311.12022, Link Cited by: §5.1.1.
+  • Sanh et al. (2020) V. Sanh, T. Wolf, and A. M. Rush Movement pruning: adaptive sparsity by
+    fine-tuning. External Links: 2005.07683, Link Cited by: §2.
+  • Shi et al. (2022) F. Shi, M. Suzgun, M. Freitag, X. Wang, S. Srivats, S. Vosoughi, H. W. Chung,
+    Y. Tay, S. Ruder, D. Zhou, D. Das, and J. Wei Language models are multilingual chain-of-thought
+    reasoners. External Links: 2210.03057, Link Cited by: §5.1.1.
+  • Templeton et al. (2024) A. Templeton, T. Conerly, J. Marcus, J. Lindsey, T. Bricken, B. Chen,
+    A. Pearce, C. Citro, E. Ameisen, A. Jones, H. Cunningham, N. L. Turner, C. McDougall, M.
+    MacDiarmid, C. D. Freeman, T. R. Sumers, E. Rees, J. Batson, A. Jermyn, S. Carter, C. Olah, and
+    T. Henighan Scaling monosemanticity: extracting interpretable features from claude 3 sonnet. 
+    Transformer Circuits Thread. External Links: Link Cited by: §2.
+  • Touvron et al. (2023) H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N.
+    Bashlykov, S. Batra, P. Bhargava, S. Bhosale, D. Bikel, L. Blecher, C. C. Ferrer, M. Chen, G.
+    Cucurull, D. Esiobu, J. Fernandes, J. Fu, W. Fu, B. Fuller, C. Gao, V. Goswami, N. Goyal, A.
+    Hartshorn, S. Hosseini, R. Hou, H. Inan, M. Kardas, V. Kerkez, M. Khabsa, I. Kloumann, A.
+    Korenev, P. S. Koura, M. Lachaux, T. Lavril, J. Lee, D. Liskovich, Y. Lu, Y. Mao, X. Martinet,
+    T. Mihaylov, P. Mishra, I. Molybog, Y. Nie, A. Poulton, J. Reizenstein, R. Rungta, K. Saladi,
+    A. Schelten, R. Silva, E. M. Smith, R. Subramanian, X. E. Tan, B. Tang, R. Taylor, A. Williams,
+    J. X. Kuan, P. Xu, Z. Yan, I. Zarov, Y. Zhang, A. Fan, M. Kambadur, S. Narang, A. Rodriguez, R.
+    Stojnic, S. Edunov, and T. Scialom Llama 2: open foundation and fine-tuned chat models. 
+    External Links: 2307.09288, Link Cited by: §1.
+  • Wang et al. (2025a) K. Wang, N. Dimitriadis, A. Favero, G. Ortiz-Jimenez, F. Fleuret, and P.
+    Frossard LiNeS: post-training layer scaling prevents forgetting and enhances model merging. 
+    External Links: 2410.17146, Link Cited by: §2.
+  • Wang et al. (2025b) M. Wang, R. Yu, W. E, and L. Wu How transformers get rich: approximation
+    and dynamics analysis. External Links: 2410.11474, Link Cited by: §2.
+  • Wang et al. (2024) Y. Wang, D. Dai, and Z. Sui Exploring activation patterns of parameters in
+    language models. External Links: 2405.17799, Link Cited by: §2.
+  • Wortsman et al. (2022) M. Wortsman, G. Ilharco, S. Y. Gadre, R. Roelofs, R. Gontijo-Lopes, A.
+    S. Morcos, H. Namkoong, A. Farhadi, Y. Carmon, S. Kornblith, and L. Schmidt Model soups:
+    averaging weights of multiple fine-tuned models improves accuracy without increasing inference
+    time. External Links: 2203.05482, Link Cited by: §2.
+  • Wu et al. (2022) T. Wu, M. Caccia, Z. Li, Y. Li, G. Qi, and G. Haffari Pretrained language
+    model in continual learning: a comparative study. In International conference on learning
+    representations, Cited by: §2.
+  • Yadav et al. (2023) P. Yadav, D. Tam, L. Choshen, C. Raffel, and M. Bansal TIES-merging:
+    resolving interference when merging models. External Links: 2306.01708, Link Cited by: §2, §4.2
+    , §5.1.1.
+  • Yan et al. (2024) H. Yan, Y. Xiang, G. Chen, Y. Wang, L. Gui, and Y. He Encourage or inhibit
+    monosemanticity? revisit monosemanticity from a feature decorrelation perspective. External
+    Links: 2406.17969, Link Cited by: §2.
+  • Yu et al. (2024a) L. Yu, B. Yu, H. Yu, F. Huang, and Y. Li Language models are super mario:
+    absorbing abilities from homologous models as a free lunch. External Links: 2311.03099, Link 
+    Cited by: §2, §4.2, §5.1.1, §5.1.2.
+  • Yu et al. (2024b) L. Yu, W. Jiang, H. Shi, J. Yu, Z. Liu, Y. Zhang, J. T. Kwok, Z. Li, A.
+    Weller, and W. Liu MetaMath: bootstrap your own mathematical questions for large language
+    models. External Links: 2309.12284, Link Cited by: Appendix B, §3.1, §5.1.1.
+  • Zhang et al. (2023) Z. Zhang, Z. Zeng, Y. Lin, C. Xiao, X. Wang, X. Han, Z. Liu, R. Xie, M.
+    Sun, and J. Zhou Emergent modularity in pre-trained transformers. External Links: 2305.18390,
+    Link Cited by: §1, §2.
+  • Zhao et al. (2025) W. X. Zhao, K. Zhou, J. Li, T. Tang, X. Wang, Y. Hou, Y. Min, B. Zhang, J.
+    Zhang, Z. Dong, Y. Du, C. Yang, Y. Chen, Z. Chen, J. Jiang, R. Ren, Y. Li, X. Tang, Z. Liu, P.
+    Liu, J. Nie, and J. Wen A survey of large language models. External Links: 2303.18223, Link 
+    Cited by: §1.
+
+Appendix A Implementation Details for Recovering Forgetten Abilities
+
+Following Section 3.1, we use 1,500 samples for each language–domain combination. For ability
+localization, we construct activation-based channel masks for scientific reasoning in the remaining
+9 languages except English and Chinese, and take their union to guide parameter transfer.
+Post-transfer fine-tuning is then performed on the full multilingual dataset, including both
+mathematics and science data across all 11 languages, to ensure balanced adaptation. We employ grid
+search to identify optimal hyperparameters. The merging scaling factor is evaluated over λ∈
+{0.1,0.2,…,0.9}\lambda\in\{0.1,0.2,\dots,0.9\}. For the transfer ratio, we apply a fine-grained
+search with a 1% step size for ratios ≤10%\leq 10\% and a 5% step size for ratios >10%>10\%. For
+our results reported in Table 3, we use top-1%1\% activation-based channel masks per ability in the
+transfer-only setting; after taking the union across all selected abilities, this corresponds to
+transferring 4.73%4.73\% of the model parameters, with a scaling factor λ=0.4\lambda=0.4. When
+post-transfer fine-tuning is applied, we instead use top-9%9\% masks per ability, whose union
+covers 11.35%11.35\% of the model parameters, with a scaling factor λ=0.7\lambda=0.7. Fine-tuning
+is conducted using the Adam optimizer (Kingma and Ba, 2017) with a learning rate of 2×10−52\times
+10^{-5} for one epoch, and gradient updates every 16 samples. All fine-tuning is done on
+NVIDIA-H100 and NVIDIA-A100. Each training process takes approximately 2 hours on both devices. We
+use NVIDIA-H100, NVIDIA-A100 and NVIDIA-A6000 for all evaluation.
+
+Appendix B Implementation Details for Multi-abilities Merging
+
+We use LLaMA-2-13B as the target model and transfer abilities from the three specialized models.
+Ability-specific channel masks are extracted using 1,500 English samples for each domain: math
+(MetaMathQA Yu et al., 2024b), science (MegaScience Fan et al., 2025), and code (OpenCodeInstruct 
+Ahmad et al., 2025). In this setting, we apply transfer-only ability transfer without post-transfer
+fine-tuning, as the merged models already achieve strong performance. For our results reported in
+Table 4, we use top-90% masks per ability, with the same scaling factor λ=0.6\lambda=0.6 for all
+models. We compare ACT against same representative model merging baselines used previously.
+
+Appendix C AI Assistance Disclosure
+
+We used large language models to assist with manuscript editing and code refinement. Specifically,
+GPT-based models were used to polish the writing, and Claude Sonnet 4.5 was used to help revise and
+debug code. All scientific ideas, experimental design, results, and interpretations are solely
+those of the authors.
+
+Appendix D Additional Empirical Analysis
+
+D.1 Additional Results for Finding 1
+
+In the main text (Finding 1), we show that cross-model activation differences are sparse and
+heavy-tailed: most output channels exhibit small deviations, while a small fraction accounts for
+the largest discrepancies. Here, we provide additional evidence that this pattern is robust across
+model families (Qwen2.5 and LLaMA-2), model scales (1.5B/7B/13B), and ability domains (math/science
+/code in 11 languages).
+
+Qwen2.5 Math Models.
+
+Figures 5 and 6 report CCDFs of channel-wise activation differences between Qwen2.5-Math-Instruct
+and Qwen2.5-Instruct at 7B and 1.5B, respectively. We evaluate mathematical (solid) and scientific
+(dashed) reasoning across 11 languages. Across all language-domain combinations, the CCDFs are
+highly consistent and heavy-tailed, indicating that large cross-model discrepancies concentrate in
+a small subset of channels rather than being uniformly distributed.
+
+
+Figure 5: Qwen2.5-Math-7B-Instruct vs. Qwen2.5-7B-Instruct. CCDFs of channel-wise activation
+differences across 11 languages for math (solid) and science (dashed). Large activation differences
+concentrate in a small fraction of channels across all language-domain combinations.
+
+
+Figure 6: Qwen2.5-Math-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct. CCDFs of channel-wise activation
+differences across 11 languages for math (solid) and science (dashed). The same sparse,
+heavy-tailed pattern persists at a smaller scale.
+
+Qwen2.5 Coder Models.
+
+We repeat the same multilingual math/science analysis for code-specialized models. Figures 7 and 8
+show CCDFs for Qwen2.5-Coder-Instruct versus Qwen2.5-Instruct at 7B and 1.5B. Despite different
+fine-tuning objectives, activation differences for these abilities remain sparse and heavy-tailed.
+
+
+Figure 7: Qwen2.5-Coder-7B-Instruct vs. Qwen2.5-7B-Instruct. CCDFs of channel-wise activation
+differences across 11 languages for math (solid) and science (dashed). Despite coder
+specialization, activation differences remain sparse and heavy-tailed.
+
+
+Figure 8: Qwen2.5-Coder-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct. CCDFs of channel-wise activation
+differences across 11 languages for math (solid) and science (dashed). The heavy-tailed structure
+is consistent at 1.5B scale.
+
+LLaMA-2 Family Models.
+
+To assess generalization beyond Qwen, we further analyze model pairs derived from LLaMA-2-13B. We
+compare the base model with WizardMath-13B, WizardLM-13B, and Tulu-2-13B, which are specialized for
+mathematics, code, and scientific reasoning, respectively. Due to limited multilingual coverage,
+these experiments focus on English only. We compute activation differences using 1,500 samples each
+for English math and science (the same datasets as in the main analysis), and 1,500 English code
+samples from OpenCodeInstruct (Ahmad et al., 2025). Figures 9, 10, and 11 report CCDFs for English
+math, science, and code. All three comparisons again exhibit heavy-tailed behavior, with a small
+subset of channels accounting for most cross-model discrepancies. Interestingly, while the
+distribution shapes are similar, the overall activation-difference magnitudes are generally smaller
+than those observed in the Qwen2.5 family.
+
+
+Figure 9: WizardMath-13B vs. LLaMA-2-13B. CCDFs of channel-wise activation differences on English
+math, science, and code inputs. Activation differences are heavy-tailed, with large deviations
+concentrated in a small subset of channels.
+
+
+Figure 10: Tulu-2-13B vs. LLaMA-2-13B. CCDFs of channel-wise activation differences on English
+math, science, and code inputs. Activation differences remain heavy-tailed across ability domains.
+
+
+Figure 11: WizardLM-13B vs. LLaMA-2-13B. CCDFs of channel-wise activation differences on English
+math, science, and code inputs. Activation differences remain heavy-tailed across ability domains.
+
+Summary.
+
+Overall, these results reinforce Finding 1: sparse, heavy-tailed cross-model activation differences
+are a robust phenomenon across scales, model families, and ability domains. This supports using
+activation differences as a principled signal for localizing and selectively transferring
+ability-relevant channels.
+
+D.2 Additional Results for Finding 2
+
+In the main text (Finding 2), we show that large cross-model activation differences are sparse yet
+broadly distributed across decoder layers and module types, exhibiting consistent heavy-tailed
+patterns with moderate structural concentration. Here, we provide additional results to verify that
+this structural behavior is robust across model families, scales, abilities, and languages.
+
+Rather than exhaustively enumerating all possible model–language-domain combinations, we report a
+representative but diverse set of configurations that jointly vary model family, model scale,
+specialization objective, language, and domain. This design allows us to validate the generality of
+Finding 2 without redundant repetition.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+(c) EN-Science (per layer)
+
+
+(d) EN-Science (per module)
+
+
+(e) AR-Math (per layer)
+
+
+(f) AR-Math (per module)
+
+
+(g) AR-Science (per layer)
+
+
+(h) AR-Science (per module)
+
+
+Figure 12: Additional results for Finding 2 on Qwen2.5-Math-7B-Instruct vs. Qwen2.5-7B-Instruct.
+Each row corresponds to a language-domain ability, and columns show per-layer (left) and per-module
+(right) CCDFs of channel-wise activation differences. Across all abilities, activation differences
+exhibit consistent heavy-tailed distributions with moderate structural concentration.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+(c) EN-Science (per layer)
+
+
+(d) EN-Science (per module)
+
+
+(e) AR-Math (per layer)
+
+
+(f) AR-Math (per module)
+
+
+(g) AR-Science (per layer)
+
+
+(h) AR-Science (per module)
+
+
+Figure 13: Additional results for Finding 2 on Qwen2.5-Math-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct
+. The layout follows Figure 12. Across all language-domain abilities, activation differences
+exhibit consistent heavy-tailed distributions with moderate structural concentration.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+Figure 14: Additional results for Finding 2 on Qwen2.5-Coder-7B-Instruct vs. Qwen2.5-7B-Instruct.
+Per-layer (left) and per-module (right) CCDFs of channel-wise activation differences for EN-Math.
+
+Qwen2.5 Math Models.
+
+We first analyze layer- and module-wise activation difference distributions for Qwen2.5
+Math-Instruct models. Figure 12 reports results for the 7B models on four representative abilities:
+English-Math, English-Science, Arabic-Math, and Arabic-Science. Across all settings, activation
+differences exhibit consistent heavy-tailed distributions across layers and modules. While deeper
+layers and the LM head tend to show mildly more and larger extrema, no single layer or module
+dominates the distribution. Figure 13 presents the corresponding results for the 1.5B models.
+Despite the reduced model scale, we observe the same qualitative behavior: sparse large deviations
+distributed broadly across layers and modules. These results indicate that the structural pattern
+identified in Finding 2 is stable across both languages and model scales.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+Figure 15: Additional results for Finding 2 on Qwen2.5-Coder-1.5B-Instruct vs. 
+Qwen2.5-1.5B-Instruct. Per-layer (left) and per-module (right) CCDFs of channel-wise activation
+differences for EN-Math.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+Figure 16: Additional results for Finding 2 on WizardMath-13B vs. LLaMA-2-13B for English
+mathematical reasoning.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+Figure 17: Additional results for Finding 2 on Tulu-2-13B vs. LLaMA-2-13B for English mathematical
+reasoning.
+
+
+(a) EN-Math (per layer)
+
+
+(b) EN-Math (per module)
+
+
+(c) EN-Science (per layer)
+
+
+(d) EN-Science (per module)
+
+
+(e) EN-Code (per layer)
+
+
+(f) EN-Code (per module)
+
+
+Figure 18: Additional results for Finding 2 on WizardLM-13B vs. LLaMA-2-13B. Each row corresponds
+to an English ability (math, science, code), and columns show per-layer (left) and per-module
+(right) CCDFs of channel-wise activation differences.
+
+Qwen2.5 Coder Models.
+
+We next consider code-specialized Qwen2.5 models. Figures 14 and 15 show layer- and module-wise
+activation difference distributions for English-Math on the Coder-Instruct vs. Instruct model pairs
+of 7B and 1.5B, respectively. Despite being fine-tuned for code generation, the activation
+difference distributions for mathematical reasoning remain heavy-tailed and broadly distributed
+across the network. This suggests that the structural properties identified in Finding 2 generalize
+beyond math-specialized models and hold across different fine-tuning objectives.
+
+LLaMA-2 Family Models.
+
+To assess whether Finding 2 generalizes beyond the Qwen family, we further analyze models derived
+from LLaMA-2-13B. Specifically, we compare the base model with WizardMath-13B, Tulu-2-13B, and
+WizardLM-13B, which are specialized for mathematics, scientific reasoning, and code generation,
+respectively. Figure 16 and Figure 17 report layer- and module-wise activation difference
+distributions for English-Math. Figure 18 additionally presents results for English-Math,
+English-Science, and English-Code. Across all comparisons, activation differences again exhibit
+consistent heavy-tailed patterns distributed across layers and modules, with mild concentration in
+later layers and output-related components. These observations confirm that the structural
+conclusions of Finding 2 extend to the LLaMA-2 family and across distinct specialization
+objectives.
+
+Summary.
+
+Across all examined model families, scales, abilities, and languages, layer- and module-wise
+activation difference distributions consistently exhibit heavy-tailed behavior with sparse large
+deviations spread throughout the network. These additional results further support Finding 2 and
+motivate the use of channel-wise activation signals for selective and controlled ability transfer.
+
+D.3 Additional Results for Finding 3
+
+In the main text (Finding 3), we show that, within a single model pair, channels associated with
+large activation differences are not same across language-domain abilities. Instead, these channels
+exhibit structured overlap patterns: overlap across languages is generally low, while overlap
+between different domains within the same language is higher but still incomplete. In this
+appendix, we provide additional results that validate this observation across different model
+families (Qwen2.5 and LLaMA-2), model scales (1.5B/7B/13B), and ability domains (math, science, and
+code in 11 languages), while restricting analysis to a single model pair at a time.
+
+Refer to caption
+(a) Qwen2.5-Math-7B-Instruct vs. Qwen2.5-7B-Instruct
+
+Refer to caption
+(b) Qwen2.5-Math-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct
+
+Refer to caption
+(c) Qwen2.5-Coder-7B-Instruct vs. Qwen2.5-7B-Instruct
+
+Refer to caption
+(d) Qwen2.5-Coder-1.5B-Instruct vs. Qwen2.5-1.5B-Instruct
+
+
+Figure 19: Additional results for Finding 3: overlap of activation-based ability-specific channel
+masks within model pairs. Each heatmap shows the overlap (%) between top-1%1\%
+activation-difference channel masks across 1111 languages and 22 domains (Math and Science),
+computed within a fixed model pair. Diagonal blocks correspond to same-language comparisons, while
+off-diagonal blocks reflect cross-language overlap. Across all settings, overlaps are generally low
+across languages, whereas overlaps between Math and Science within the same language are
+consistently higher, indicating partial disentanglement of ability-specific channels within a model
+pair.
+
+        Math  Science Code
+ Math   100.0 89.1    87.5
+Science 89.1  100.0   89.4
+ Code   87.5  89.4    100.0
+
+
+(a) Tulu-2-13B vs. LLaMA-2-13B
+
+        Math  Science Code
+ Math   100.0 82.4    81.8
+Science 82.4  100.0   86.0
+ Code   81.8  86.0    100.0
+
+
+(b) WizardLM-13B vs. LLaMA-2-13B
+
+        Math  Science Code
+ Math   100.0 89.4    85.9
+Science 89.4  100.0   89.2
+ Code   85.9  89.2    100.0
+
+
+(c) WizardMath-13B vs. LLaMA-2-13B
+
+
+Table 5: Top-1% ability-mask overlap (%) within LLaMA-2-13B derived model pairs. Each entry reports
+the fraction of channels shared between the base (row) and compared (column) ability masks.
+Compared to Qwen2.5 models, overlaps across EN-Math, EN-Science, and EN-Code are generally higher
+in LLaMA-2, suggesting stronger sharing of large-activation-difference channels within this model
+family. This effect is plausibly influenced by the increased concentration of top-1% channels in
+shared components such as the LM head, rather than indicating a lack of ability-specific structure.
+
+Qwen2.5 Models across Languages and Domains.
+
+We first analyze ability disentanglement within Qwen2.5 model pairs. For both math-specialized and
+code-specialized variants, we consider Instruct vs. ability-specialized models at the 7B and 1.5B
+scales. For each model pair, we construct activation-based ability-specific channel masks by
+selecting the top-1%1\% channels ranked by token-averaged activation differences for each
+language-domain combination (math or science across 11 languages). We then compute pairwise overlap
+ratios between all ability masks, normalized by the size of the base (row) mask. Figures 19(a), 19
+(b), 19(c), and 19(d) show the resulting overlap heatmaps. Across all Qwen2.5 settings, we observe
+consistent structure. Overlaps between different languages are generally low, even when the domain
+is the same (e.g., EN-Math vs. AR-Math), indicating strong language-conditioned separation. In
+contrast, overlaps between different domains within the same language (e.g., EN-Math vs.
+EN-Science) are noticeably higher, though still far from complete. This suggests partial channel
+reuse across domains within a language, alongside substantial domain-specific components. These
+patterns are stable across model scales and across math- and code-specialized fine-tuning
+objectives, demonstrating that ability disentanglement within a model pair is a robust phenomenon.
+
+LLaMA-2 Family Models.
+
+We next examine ability disentanglement within model pairs derived from LLaMA-2-13B. Due to limited
+multilingual coverage, this analysis focuses on English-language abilities. We consider three model
+pairs: WizardMath-13B vs. LLaMA-2-13B, Tulu-2-13B vs. LLaMA-2-13B, and WizardLM-13B vs.
+LLaMA-2-13B, which specialize in math, science, and code reasoning, respectively. For each pair, we
+construct activation-based ability-specific masks for English math, science, and code, and compute
+pairwise overlap ratios between masks. Table 5 reports the resulting 3×33\times 3 overlap matrices.
+Compared to Qwen2.5 models, overlaps between different abilities are generally higher in the
+LLaMA-2 family, indicating stronger sharing of channels with large activation differences across
+English-language domains. Nevertheless, overlaps remain structured, with ability-specific masks
+still exhibiting non-trivial differences across math, science, and code. This suggests that while
+the degree of disentanglement depends on architectural and training factors, ability-related
+activation differences within a single model pair are not fully shared even in LLaMA-2 models.
+
+Summary.
+
+Across both Qwen2.5 and LLaMA-2 model families, channels exhibiting large activation differences
+are not uniformly shared across language-domain abilities within a single model pair. While the
+overall degree of overlap varies with model architecture and mask composition, the observed overlap
+patterns remain structured, indicating partial but non-trivial ability separation. These results
+support Finding 3 and suggest that activation-based ability disentanglement is a general
+phenomenon, modulated by architectural and training-specific biases.
+
+D.4 Additional Results for Finding 4
+
+This appendix provides additional evidence supporting Finding 4 by extending the analysis of
+cross-pair consistency of ability-specific channels to smaller model scales and to more models in
+LLaMA-2 family. Across all experiments, consistency is measured as the overlap between top-1%
+activation-based channel masks corresponding to the same language-domain ability, extracted from
+different fine-tuning pairs that share a common pretrained base model. These results further
+examine the extent to which ability-relevant channel structure is preserved after fine-tuning.
+
+Qwen2.5 Models at Smaller Scale.
+
+Figure 20(a) reports cross-pair consistency results on Qwen2.5-1.5B. We compare ability-specific
+channel masks extracted from the Instruct vs. Math-Instruct and Instruct vs. Coder-Instruct model
+pairs. For each selected language, overlap ratios are shown separately for math and science
+abilities. Consistent with the 7B-scale results in the main text, we observe that ability-specific
+channel masks exhibit substantial overlap across fine-tuning objectives, remaining well above the
+random baseline. Although the magnitude of overlap varies across languages, the presence of
+non-trivial cross-pair consistency at this smaller scale indicates that fine-tuning largely reuses
+a shared set of ability-relevant channels rather than inducing entirely new ones. This suggests
+that the core channel structure associated with each ability is preserved under fine-tuning, even
+when model capacity is reduced.
+
+LLaMA-2 Family Models.
+
+We further examine cross-pair consistency within the LLaMA-2-13B family by complementing the
+results presented in the main text. For each fine-tuned model (WizardMath-13B, WizardLM-13B, and
+Tulu-2-DPO-13B), ability-specific channel masks are extracted by comparing its activations against
+the shared base model LLaMA-2-13B. Each mask therefore captures activation differences induced by a
+specific fine-tuning objective relative to the same pretrained representation. While the main text
+reports cross-pair consistency between the Tulu-2-DPO-13B and WizardLM-13B model pairs, the
+appendix focuses on the remaining comparisons involving WizardMath-13B. Specifically, we report
+overlap between ability-specific masks derived from (i) Tulu-2-DPO-13B vs. LLaMA-2-13B and
+WizardMath-13B vs. LLaMA-2-13B, and (ii) WizardLM-13B vs. LLaMA-2-13B and WizardMath-13B vs.
+LLaMA-2-13B. Due to limited multilingual coverage, this analysis is restricted to English math,
+science, and code abilities. As shown in Figures 20(b) and 20(c), both comparisons exhibit
+consistently high overlap across all abilities. Together with the results in the main text, these
+findings indicate that, within the LLaMA-2 family, channels associated with large activation
+differences for a given ability are highly consistent across different fine-tuning objectives. This
+further supports the stability of ability-specific channel structure after fine-tuning.
+
+Summary.
+
+Across both Qwen2.5 and LLaMA-2 families, ability-specific channels associated with large
+activation differences exhibit obvious cross-pair consistency after fine-tuning. In Qwen2.5 models,
+ability-relevant channel structure is preserved across fine-tuning objectives and model scales,
+despite moderate variation in overlap magnitude across languages. Within the LLaMA-2 family, where
+the analysis is restricted to English abilities, consistently high overlap is observed across all
+reported model pairs. Taken together, these results support Finding 4 by showing that fine-tuning
+predominantly reuses and reweights a stable set of ability-relevant channels anchored in the
+pretrained representation, rather than inducing fundamentally new channel structures.
+
+
+(a)
+
+
+(b)
+
+
+(c)
+
+
+Figure 20: Additional cross-pair consistency results for Finding 4. Left: Qwen2.5-1.5B cross-pair
+overlap between top-1% activation-based masks from (Instruct vs. Math-Instruct) and (Instruct vs.
+Coder-Instruct), shown for a subset of representative languages; bars report math and science
+results separately. Middle, Right: LLaMA-2-13B cross-pair overlap between ability-specific channel
+masks extracted from different fine-tuned vs. base model pairs, between (Tulu-2-DPO vs. LLaMA-2)
+and (WizardMath vs. LLaMA-2), and between (WizardLM vs. LLaMA-2) and (WizardMath vs. LLaMA-2),
+evaluated on English math, science, and code abilities. Overall, these results extend the main-text
+findings by showing that cross-pair consistency persists at smaller model scales and remains
+uniformly high within the LLaMA-2 family, while Qwen models exhibit mild language-dependent
+variation.
+
+
+(a) Global CCDF
+
+
+(b) CCDF per layer)
+
+
+(c) CCDF per module
+
+
+Figure 21: CCDFs of channel-wise ℓ2\ell_{2} weight differences on Qwen2.5-Math-7B-Instruct vs. 
+Qwen2.5-7B-Instruct, shown globally, per layer, and per module. Weight updates exhibit moderately
+heavy-tailed distributions, though less extreme than activation differences.
+
+            Math                                                        Science
+  Metric    EN   AR   ZH   JA   KO   BN    HU    SW    TE    TH   VI    EN   AR   ZH   JA    KO   BN    HU    SW   TE   TH   VI
+Overlap (%) 4.66 5.62 2.68 9.80 9.74 18.72 21.69 20.53 15.67 5.81 10.28 5.35 3.83 3.44 11.84 9.74 14.40 21.06 4.11 8.32 5.42 8.26
+ #Overlap   816  983  469  1716 1705 3277  3796  3593  2743  1017 1799  936  670  603  2073  1705 2520  3686  720  1457 949  1446
+    Ch.
+
+
+Table 6: Weight–activation top-1% channel-mask overlap (%) on Qwen2.5-7B (Math-Instruct vs.
+Instruct). We report overlap ratios and the number of overlapping channels for each language and
+domain.
+
+            Math                                                        Science
+  Metric    AR    BN    EN   HU    JA   KO   SW    TE    TH   VI   ZH   AR   BN    EN   HU    JA   KO   SW    TE    TH   VI   ZH
+Overlap (%) 10.36 12.43 5.00 25.15 5.76 5.49 17.05 10.54 9.55 7.15 3.94 8.92 14.35 5.34 25.54 6.08 6.55 14.30 11.69 8.60 8.55 4.25
+ #Overlap   1813  2176  876  4402  1009 961  2985  1845  1672 1252 690  1561 2512  935  4470  1065 1146 2503  2046  1505 1496 744
+    Ch.
+
+
+Table 7: Weight–activation top-1% channel-mask overlap (%) on Qwen2.5-7B (Coder-Instruct vs.
+Instruct). We report overlap ratios and the number of overlapping channels for each language and
+domain.
+
+            Math                                                   Science
+  Metric    EN   AR   ZH   JA   KO   BN   HU   SW   TE   TH   VI   EN   AR   ZH   JA   KO   BN   HU   SW   TE   TH   VI
+Overlap (%) 6.85 5.44 7.78 4.97 5.62 6.39 9.03 9.29 6.36 4.00 4.42 7.15 5.51 7.58 5.69 5.71 6.68 9.89 7.83 6.70 4.14 4.95
+ #Overlap   607  482  689  440  498  566  800  823  564  354  392  634  488  672  504  506  592  876  694  594  367  439
+    Ch.
+
+
+Table 8: Weight–activation top-1% channel-mask overlap (%) on Qwen2.5-1.5B (Math-Instruct vs.
+Instruct). We report overlap ratios and the number of overlapping channels for each language and
+domain.
+
+            Math                                                   Science
+  Metric    AR   BN   EN   HU   JA   KO   SW   TE   TH   VI   ZH   AR   BN   EN   HU   JA   KO   SW   TE   TH   VI   ZH
+Overlap (%) 5.76 7.72 4.89 7.23 6.99 8.02 6.61 7.70 6.17 5.59 7.73 5.60 8.14 5.42 7.26 7.15 8.09 6.09 8.10 6.21 6.06 7.65
+ #Overlap   510  684  433  641  619  711  586  682  547  495  685  496  721  480  643  634  717  540  718  550  537  678
+    Ch.
+
+
+Table 9: Weight–activation top-1% channel-mask overlap (%) on Qwen2.5-1.5B (Coder-Instruct vs.
+Instruct). We report overlap ratios and the number of overlapping channels for each language and
+domain.
+
+D.5 Additional Results for Finding 5
+
+This appendix provides full results for Finding 5 by reporting, across model families and
+abilities, the overlap between (i) the activation-based top-1% channel masks (ranked by
+token-averaged cross-model activation differences) and (ii) the weight-based top-1% channel masks
+(ranked by channel-wise ℓ2\ell_{2} weight updates). Throughout, overlaps are measured as the
+fraction of shared channels (in %) between the two top-1% masks, together with the number of
+overlapping channels.
+
+Weight-Based Channel Update Distributions.
+
+Figure 21 visualizes the complementary cumulative distribution functions (CCDFs) of channel-wise ℓ2
+\ell_{2} weight differences between Qwen2.5-7B Math-Instruct and Instruct models. Consistent with
+the main text, weight updates also exhibit heavy-tailed behavior, but with substantially weaker
+concentration compared to activation-based differences.
+
+Qwen2.5 (7B and 1.5B): multilingual results.
+
+Tables 6–9 report results for Qwen2.5 across 11 languages and two domains (math/science), for both
+Math-Instruct and Coder-Instruct fine-tuning. Across all settings, overlap consistently exceeds the
+random baseline (1%), but remains far from complete, indicating that channels with the largest
+activation shifts are not simply those with the largest weight-magnitude updates. We also observe
+substantial variation across languages and domains. In particular, some languages exhibit
+noticeably higher alignment (e.g., overlaps reaching ∼\sim20%–25% in a few cases), while others
+remain close to single-digit percentages, suggesting that the relationship between weight updates
+and activation shifts is highly ability- and language-dependent.
+
+LLaMA-2-13B family: English-only results.
+
+Table 10 reports weight–activation overlap for English math, science, and code abilities across
+three LLaMA-2-derived model pairs. We observe that overlap levels vary substantially across
+fine-tuning recipes. In particular, WizardLM-13B and Tulu-2-DPO-13B exhibit moderately higher
+overlap with weight-based masks, whereas WizardMath-13B shows consistently lower alignment. This
+variation suggests that the correspondence between large activation shifts and large weight updates
+is sensitive to the specific fine-tuning objective and training procedure, even when starting from
+the same pretrained base model.
+
+   Metric     Math  Science Code
+ Overlap (%)  18.77 19.93   19.37
+#Overlap Ch.  4845  5145    5000
+
+
+(a) Tulu-2-DPO-13B vs. LLaMA-2-13B
+
+   Metric     Math  Science Code
+ Overlap (%)  30.01 36.24   32.35
+#Overlap Ch.  7747  9356    8353
+
+
+(b) WizardLM-13B vs. LLaMA-2-13B
+
+   Metric     Math Science Code
+ Overlap (%)  9.41 9.21    9.64
+#Overlap Ch.  2430 2377    2489
+
+
+(c) WizardMath-13B vs. LLaMA-2-13B
+
+
+Table 10: Weight–activation top-1% channel-mask overlap (%) within the LLaMA-2-13B family. Each
+subtable reports the overlap between activation-based and weight-based masks for English math,
+science, and code.
+
+Summary.
+
+Across both Qwen2.5 and LLaMA-2 families, activation-based ability channels consistently show only
+partial overlap with channels selected by large weight-magnitude updates. Although overlaps are
+reliably above a random baseline, they remain far from complete and vary across languages,
+abilities, model scales, and fine-tuning recipes. These results reinforce Finding 5: large
+cross-model activation differences are not simply explained by weight-update magnitude, indicating
+that activation-based localization captures complementary and more functionally specific
+information about ability-related model behavior.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

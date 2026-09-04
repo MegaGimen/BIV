@@ -230,6 +230,14 @@ PAPERS: list[tuple[str, str]] = [
     ("2304.12743", "tracefixer"),
     # note: "Towards Effectively Leveraging Execution Traces for Program Repair"
     # has no usable arXiv HTML; see ACL DOI 10.18653/v1/2025.knowledgenlp-1.17
+    # Activation-space stitching / collapse (user notes 2026-09)
+    ("2601.09398", "act-activation-cut"),
+    ("2510.17902", "cast-cross-model-activation"),
+    ("2507.13236", "fewshot-zeroshot-activation-direction"),
+    ("2604.06377", "unlock-master-key-activation"),
+    ("2603.10422", "world2act"),
+    ("2607.26924", "sigreg-collapse-regularizer"),
+    ("2603.19312", "jepa-paradox-representation-collapse"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
