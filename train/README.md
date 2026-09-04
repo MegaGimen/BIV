@@ -26,7 +26,7 @@ train/
 │   └── axolotl/                       # legacy Axolotl
 ├── src/biv_wm/
 ├── scripts/
-│   ├── probe.py / compare.py / cut_stage1.py
+│   ├── probe.py / compare.py / compare_act.py / cut_stage1.py
 │   ├── train_jepa.py / train_jepa.sh / train_jepa_32k.sh
 │   ├── prepare_data.py                # step 1: multi-source mix JSONL
 │   ├── stat.py                        # AgentWorld seqlen truncation stats
@@ -60,6 +60,10 @@ Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent me
 ```bash
 # Optional diagnostic: row-MAV vs Base (no longer decides any cut point)
 python train/scripts/compare.py
+
+# Optional diagnostic: ACT channel-wise |a_AW - a_Instruct| on one prompt
+# (text bars like compare.py; writes train/outputs/compare_act/)
+python train/scripts/compare_act.py
 
 # Reuse existing mix; prepare only if missing (no --all)
 python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/mix_v2
