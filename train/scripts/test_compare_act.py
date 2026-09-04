@@ -25,7 +25,7 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from compare_act import encode_prompt, format_summary  # noqa: E402
+from compare_act import _language_model_only, encode_prompt, format_summary  # noqa: E402
 
 
 def test_channel_delta_mean() -> None:
@@ -78,6 +78,16 @@ def test_top_p_mask_and_analyze() -> None:
     }
     no_head = analysis["mask_no_lm_head"]
     assert all(r["kind"] != "lm_head" for r in no_head)
+
+
+def test_language_model_only_flag() -> None:
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as raw:
+        d = Path(raw)
+        assert _language_model_only(d) is False
+        (d / "config.json").write_text('{"language_model_only": true}', encoding="utf-8")
+        assert _language_model_only(d) is True
 
 
 def test_encode_prompt_string_chat_template() -> None:
@@ -144,6 +154,7 @@ def main() -> None:
     test_token_weighted_across_samples()
     test_hook_kind_act_modules_only()
     test_top_p_mask_and_analyze()
+    test_language_model_only_flag()
     test_encode_prompt_string_chat_template()
     test_summary_is_channel_not_layer_cut()
     print("ok", flush=True)

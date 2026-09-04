@@ -191,19 +191,42 @@ def encode_prompt(
     return full, list(range(start, len(full))), note
 
 
+def _language_model_only(model_dir: Path) -> bool:
+    cfg_path = model_dir / "config.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(cfg.get("language_model_only"))
+
+
 def _load_model(model_dir: Path, *, dtype, device_map: str):
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
     kwargs = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
+        "dtype": dtype,
         "low_cpu_mem_usage": True,
         "device_map": device_map,
     }
+    # AgentWorld is language_model_only (no ViT). ImageTextToText would
+    # randomly init model.visual and print a MISSING dump; CausalLM first.
+    loaders = (AutoModelForCausalLM, AutoModelForImageTextToText)
+    if not _language_model_only(model_dir):
+        loaders = (AutoModelForImageTextToText, AutoModelForCausalLM)
     last = None
-    for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
+    for loader in loaders:
         try:
             return loader.from_pretrained(str(model_dir), **kwargs), loader.__name__
+        except TypeError:
+            kwargs.pop("dtype", None)
+            try:
+                return loader.from_pretrained(str(model_dir), **kwargs), loader.__name__
+            except Exception as e:
+                last = e
         except Exception as e:
             last = e
     raise RuntimeError(f"from_pretrained failed: {last}")
