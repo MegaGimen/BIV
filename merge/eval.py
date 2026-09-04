@@ -63,6 +63,58 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _mkdir_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".biv_write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def flashinfer_workspace_candidates() -> list[Path]:
+    """AutoDL often has no /root/.cache (or a dangling symlink). Prefer autodl-tmp."""
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+
+    explicit = os.environ.get("FLASHINFER_WORKSPACE_DIR", "").strip()
+    if explicit:
+        add(Path(explicit))
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        add(Path(xdg) / "flashinfer")
+    autodl = Path("/root/autodl-tmp")
+    if autodl.is_dir():
+        add(autodl / ".cache" / "flashinfer")
+    add(Path.home() / ".cache" / "flashinfer")
+    add(Path("/tmp/flashinfer"))
+    return out
+
+
+def prepare_serve_env() -> Path:
+    """vLLM enumerates FlashInfer even when FLASH_ATTN wins; import mkdirs the workspace.
+
+    Sampler FlashInfer is off (Blackwell JIT false-fails). Attention stays FLASH_ATTN.
+    """
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    os.environ.setdefault("VLLM_ATTENTION_BACKEND", "FLASH_ATTN")
+    for dest in flashinfer_workspace_candidates():
+        if _mkdir_writable(dest):
+            os.environ["FLASHINFER_WORKSPACE_DIR"] = str(dest)
+            return dest
+    raise SystemExit(
+        "No writable FlashInfer workspace. Set FLASHINFER_WORKSPACE_DIR to a real directory."
+    )
+
+
 def _path_is_muse(path: Path) -> bool:
     muse = (ROOT / "train" / ".venv-muse").resolve()
     try:
@@ -329,7 +381,7 @@ def harbor_hint(served: str, mode: str) -> str:
 
 def main() -> None:
     args = parse_args()
-    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    workspace = prepare_serve_env()
     mode = serve_mode(args)
     cmd, model, served = build_cmd(args)
 
@@ -349,6 +401,8 @@ def main() -> None:
         f"  tp={args.tp}  max_model_len={args.max_model_len}  "
         f"max_num_seqs={args.max_num_seqs}  dtype={args.dtype}"
     )
+    log(f"  attn:   {os.environ.get('VLLM_ATTENTION_BACKEND')}  "
+        f"flashinfer={workspace}")
     log("  cmd:    " + " ".join(cmd))
     log(harbor_hint(served, mode))
 

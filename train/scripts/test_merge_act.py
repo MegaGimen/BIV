@@ -181,6 +181,42 @@ def test_merge_act_two_tiny_shards(tmp_path: Path | None = None) -> None:
     assert (out_dir / "tokenizer_config.json").is_file()
 
 
+def test_prepare_serve_env_uses_writable_workspace() -> None:
+    import importlib.util
+    import os
+    import tempfile
+
+    merge_dir = Path(__file__).resolve().parents[2] / "merge"
+    spec = importlib.util.spec_from_file_location("biv_merge_eval", merge_dir / "eval.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    prev = {
+        k: os.environ.get(k)
+        for k in (
+            "FLASHINFER_WORKSPACE_DIR",
+            "VLLM_ATTENTION_BACKEND",
+            "VLLM_USE_FLASHINFER_SAMPLER",
+        )
+    }
+    try:
+        os.environ.pop("FLASHINFER_WORKSPACE_DIR", None)
+        with tempfile.TemporaryDirectory(prefix="biv_fi_") as tmp:
+            dest = Path(tmp) / "flashinfer"
+            os.environ["FLASHINFER_WORKSPACE_DIR"] = str(dest)
+            got = mod.prepare_serve_env()
+            assert got == dest
+            assert dest.is_dir()
+            assert os.environ["VLLM_ATTENTION_BACKEND"] == "FLASH_ATTN"
+            assert os.environ["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+    finally:
+        for key, val in prev.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+
+
 def main() -> None:
     test_param_canonical_key()
     test_world_param_candidates()
@@ -189,6 +225,7 @@ def main() -> None:
     test_blend_linear_rows()
     test_blend_embed_columns()
     test_merge_act_two_tiny_shards()
+    test_prepare_serve_env_uses_writable_workspace()
     print("ok", flush=True)
 
 
