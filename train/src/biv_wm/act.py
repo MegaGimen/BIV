@@ -43,8 +43,6 @@ LN_LEAVES = frozenset(
         "input_layernorm",
         "post_attention_layernorm",
         "post_mlp_layernorm",
-        "q_norm",
-        "k_norm",
     }
 )
 
@@ -57,11 +55,14 @@ def layer_index(name: str) -> int | None:
 def hook_kind(name: str) -> str | None:
     """Which ACT bucket a ``named_modules`` path belongs to, or None to skip.
 
-    ACT records outputs of attention Q/K/V/O, MLP gate/up/down, layer
-    norms, the token embedding, and ``lm_head``. Qwen3.5-35B-A3B is MoE
-    (256 routed experts): those expert projections are skipped so the
-    channel pool is not 256× a dense MLP. Shared-expert projections and
-    the mixed ``mlp`` output stay.
+    ACT §3.1 / footnote 1: outputs of trainable modules — attention Q/K/V/O,
+    MLP gate/up/down, layer norms, token embedding, ``lm_head``. A channel is
+    one output dimension of that module, not a residual-stream coordinate.
+
+    Qwen3.5-35B-A3B is MoE: routed ``experts.*`` projections are skipped
+    because a token does not pass every expert (ACT's dense MLP does). The
+    shared expert's gate/up/down is the dense-MLP analog. The mixed ``mlp``
+    block output is not a projection and is not hooked.
     """
     n = name
     if any(s in n for s in SKIP_SUBSTR):
@@ -77,8 +78,6 @@ def hook_kind(name: str) -> str | None:
         return "attn"
     if leaf in FFN_PROJ_LEAVES:
         return "ffn"
-    if leaf == "mlp":
-        return "ffn"
     if leaf in LN_LEAVES:
         return "ln"
     if leaf == "norm" and "layers" not in n:
@@ -86,22 +85,62 @@ def hook_kind(name: str) -> str | None:
     return None
 
 
-def channel_delta(a: Any, b: Any) -> list[float]:
-    """Mean over the token axis of |a − b|. ``a``/``b`` are [T, C]."""
+def token_abs_sum(a: Any, b: Any) -> tuple[list[float], int]:
+    """``(sum_t |a_t − b_t|, T)`` for activations ``[T, C]``.
+
+    ACT eq. (2) averages over the pooled answer-token set, so callers should
+    add these sums across samples and divide once.
+    """
     if hasattr(a, "detach"):
-        x = (a.detach().float() - b.detach().float()).abs().mean(dim=0)
-        return [float(v) for v in x.reshape(-1).tolist()]
+        d = (a.detach().float() - b.detach().float()).abs()
+        if d.ndim == 1:
+            d = d.unsqueeze(0)
+        return [float(v) for v in d.sum(dim=0).reshape(-1).tolist()], int(d.shape[0])
     if not a:
-        return []
+        return [], 0
     t = len(a)
     c = len(a[0])
     out = [0.0] * c
     for row_a, row_b in zip(a, b, strict=True):
         if len(row_a) != c or len(row_b) != c:
-            raise ValueError("channel_delta: ragged or mismatched width")
+            raise ValueError("token_abs_sum: ragged or mismatched width")
         for i in range(c):
             out[i] += abs(float(row_a[i]) - float(row_b[i]))
-    return [x / t for x in out]
+    return out, t
+
+
+def mean_from_sum(sum_abs: Sequence[float], n_tokens: int) -> list[float]:
+    if n_tokens <= 0:
+        return [0.0] * len(sum_abs)
+    n = float(n_tokens)
+    return [float(x) / n for x in sum_abs]
+
+
+def channel_delta(a: Any, b: Any) -> list[float]:
+    """Mean over the token axis of |a − b|. One-sample case of ACT eq. (2)."""
+    s, n = token_abs_sum(a, b)
+    return mean_from_sum(s, n)
+
+
+def add_abs_sum(
+    running: dict[str, tuple[list[float], int]],
+    key: str,
+    sum_abs: Sequence[float],
+    n_tokens: int,
+) -> None:
+    if n_tokens <= 0:
+        return
+    if key not in running:
+        running[key] = ([float(x) for x in sum_abs], int(n_tokens))
+        return
+    prev, n0 = running[key]
+    if len(prev) != len(sum_abs):
+        raise ValueError(f"add_abs_sum: width {len(prev)} vs {len(sum_abs)} for {key}")
+    running[key] = ([x + float(y) for x, y in zip(prev, sum_abs, strict=True)], n0 + int(n_tokens))
+
+
+def finalize_running(running: dict[str, tuple[list[float], int]]) -> dict[str, list[float]]:
+    return {k: mean_from_sum(s, n) for k, (s, n) in running.items()}
 
 
 def _sorted(values: Sequence[float]) -> list[float]:

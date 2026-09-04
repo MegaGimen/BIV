@@ -149,7 +149,7 @@ flowchart LR
 
 Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。激活差探针：`python train/scripts/compare_act.py`（同一段文本进 AgentWorld 和 Instruct，按 ACT 对答案 token 做通道级 \(|a^{AW}-a^{Instruct}|\)，写出 `train/outputs/compare_act/`，柱图格式同 `compare.py`）。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
+`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。激活差探针：`python train/scripts/compare_act.py`（同一串 token 进 AgentWorld 和 Instruct；按 ACT 对**模块输出通道**在答案 token 上取 \(|a^{AW}-a^{Instruct}|\)，不是残差流，写出 `train/outputs/compare_act/`，柱图格式同 `compare.py`）。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 

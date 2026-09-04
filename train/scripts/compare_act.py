@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Compare AgentWorld vs Instruct activations with ACT channel Δa (text bars).
+"""Compare AgentWorld vs Instruct with ACT module-channel Δa (text bars).
 
-Same tokens into both checkpoints. Per output channel of each hooked module
-(and of the residual stream), ACT 2601.09398:
+ACT 2601.09398 §3.1 / eq. (2): same tokens into both models; a channel is one
+output dimension of a trainable module (attn Q/K/V/O or GDN analog, MLP
+gate/up/down, LN, embed, lm_head) — not the residual stream. Then
 
-    Δa_i = mean over answer tokens of |a_i^{AgentWorld} − a_i^{Instruct}|
+    Δa_i = mean over answer tokens (pooled across samples) of |a_i^{AW} − a_i^{Inst}|
 
-The table looks like ``compare.py`` (per-layer text bars), but the number is
-activation difference, not row-MAV of weights. No Base checkpoint.
+Rank every channel together. The table looks like ``compare.py`` (per-layer
+text bars); the number is mean Δa_i of that layer's module channels.
 
     python train/scripts/compare_act.py
-    python train/scripts/compare_act.py --text "ls\\na.txt\\nrm a.txt\\ngone"
+    python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 8
 
 Writes ``train/outputs/compare_act/summary.txt`` and ``report.json``.
 """
@@ -35,15 +36,18 @@ if str(_MERGE_DIR) not in sys.path:
 
 from biv_wm.act import (  # noqa: E402
     CCDF_THRESHOLDS,
+    add_abs_sum,
     bar,
     ccdf,
-    channel_delta,
     channel_stats,
+    finalize_running,
     hook_kind,
     layer_index,
+    token_abs_sum,
     top_channels,
 )
 from biv_wm.arch import language_model, lm_head_module  # noqa: E402
+from biv_wm.hao import split_hao  # noqa: E402
 from download import (  # noqa: E402
     DEFAULT_AGENT,
     DEFAULT_CACHE,
@@ -128,8 +132,13 @@ def encode_prompt(
         ids = tokenizer.encode(text, add_special_tokens=True)
         if not ids:
             raise ValueError("empty --text")
+        if token_mode == "answer":
+            raise ValueError(
+                "--text has no chat answer span; pass --tokens all (not ACT) "
+                "or use the default chat / --jsonl"
+            )
         pos = list(range(len(ids)))
-        return ids, pos, "raw --text; ACT mean over all tokens"
+        return ids, pos, "raw --text; mean over all tokens (not ACT answer mask)"
 
     if not messages:
         raise ValueError("need --text or chat messages")
@@ -140,7 +149,7 @@ def encode_prompt(
         full = full["input_ids"]
     full = list(full)
     if token_mode == "all":
-        return full, list(range(len(full))), "chat; ACT mean over all tokens"
+        return full, list(range(len(full))), "chat; mean over all tokens (not ACT answer mask)"
 
     prefix = tokenizer.apply_chat_template(
         messages[:-1], tokenize=True, add_generation_prompt=True
@@ -192,7 +201,7 @@ def capture_one(
     input_ids: list[int],
     answer_pos: list[int],
 ) -> dict[str, Any]:
-    """Forward once; CPU float32 activations at answer positions, keyed by name."""
+    """Forward once; CPU float32 *module* outputs at answer positions."""
     import torch
 
     device = _embed_device(model)
@@ -203,7 +212,6 @@ def capture_one(
     handles = []
 
     def _answer(t):
-        # Slice on CPU so device_map=auto layers are not required to share idx's device.
         return t[0].detach().float().cpu()[answer_pos]
 
     def make_hook(name: str):
@@ -217,9 +225,7 @@ def capture_one(
 
     for name, mod in model.named_modules():
         kind = hook_kind(name)
-        if kind is None:
-            continue
-        if kind == "lm_head":
+        if kind is None or kind == "lm_head":
             continue
         handles.append(mod.register_forward_hook(make_hook(name)))
 
@@ -230,7 +236,7 @@ def capture_one(
         {
             "input_ids": ids,
             "attention_mask": mask,
-            "output_hidden_states": True,
+            "output_hidden_states": False,
             "use_cache": False,
             "return_dict": True,
         },
@@ -241,50 +247,35 @@ def capture_one(
     for h in handles:
         h.remove()
 
-    hidden = getattr(out, "hidden_states", None)
-    residual: dict[str, Any] = {}
     last = getattr(out, "last_hidden_state", None)
-    last_ans = None
-    if hidden:
-        for i, h in enumerate(hidden):
-            key = "embed" if i == 0 else f"layers.{i - 1}.residual"
-            residual[key] = _answer(h)
-    if last is not None:
-        last_cpu = _answer(last)
-        if not hidden or last.data_ptr() != hidden[-1].data_ptr():
-            residual["final_norm"] = last_cpu
-        last_ans = last_cpu
-    elif residual:
-        last_ans = residual["embed"]
-        if hidden and len(hidden) > 1:
-            last_ans = residual[f"layers.{len(hidden) - 2}.residual"]
-    else:
-        raise RuntimeError("forward returned no hidden_states / last_hidden_state")
+    if last is None:
+        raise RuntimeError("forward returned no last_hidden_state")
+    last_ans = _answer(last)
 
     head = lm_head_module(model)
-    if head is not None and last_ans is not None:
+    if head is not None:
         weight = next(head.parameters())
         with torch.inference_mode():
             logits = head(last_ans.to(device=weight.device, dtype=weight.dtype))
         captures["lm_head"] = logits.detach().float().cpu()
 
-    return {"modules": captures, "residual": residual}
+    return captures
 
 
-def _pair_delta(
+def acc_pair(
+    running: dict[str, tuple[list[float], int]],
     left: dict[str, Any],
     right: dict[str, Any],
-) -> tuple[dict[str, list[float]], list[str]]:
-    keys = sorted(set(left) & set(right))
-    missing = sorted(set(left) ^ set(right))
-    out: dict[str, list[float]] = {}
-    for k in keys:
+    skipped: set[str],
+) -> None:
+    for k in sorted(set(left) & set(right)):
         a, b = left[k], right[k]
         if tuple(a.shape) != tuple(b.shape):
-            missing.append(f"{k}:shape {tuple(a.shape)} vs {tuple(b.shape)}")
+            skipped.add(f"{k}:shape {tuple(a.shape)} vs {tuple(b.shape)}")
             continue
-        out[k] = channel_delta(a, b)
-    return out, missing
+        s, n = token_abs_sum(a, b)
+        add_abs_sum(running, k, s, n)
+    skipped.update(set(left) ^ set(right))
 
 
 def _empty_layer(i: int, kind: str) -> dict[str, Any]:
@@ -292,13 +283,12 @@ def _empty_layer(i: int, kind: str) -> dict[str, Any]:
     return {
         "layer": i,
         "kind": kind,
-        "residual": z,
+        "act": z,
         "groups": {},
     }
 
 
 def build_layers(
-    residual_delta: dict[str, list[float]],
     module_delta: dict[str, list[float]],
     types: list[str],
 ) -> list[dict[str, Any]]:
@@ -307,35 +297,28 @@ def build_layers(
         kind = types[i] if i < len(types) else "?"
         by_layer[i] = _empty_layer(i, kind)
 
-    for key, vec in residual_delta.items():
-        li = layer_index(key)
-        if li is None:
-            continue
-        if li not in by_layer:
-            by_layer[li] = _empty_layer(li, "?")
-        by_layer[li]["residual"] = channel_stats(vec)
-
     grouped: dict[tuple[int, str], list[float]] = defaultdict(list)
+    pooled: dict[int, list[float]] = defaultdict(list)
     for key, vec in module_delta.items():
         li = layer_index(key)
         kind = hook_kind(key)
         if li is None or kind not in {"attn", "ffn", "ln"}:
             continue
         grouped[(li, kind)].extend(vec)
+        pooled[li].extend(vec)
 
-    for (li, g), vec in grouped.items():
+    for li, vec in pooled.items():
         if li not in by_layer:
             by_layer[li] = _empty_layer(li, "?")
+        by_layer[li]["act"] = channel_stats(vec)
+    for (li, g), vec in grouped.items():
         by_layer[li]["groups"][g] = channel_stats(vec)
 
     return [by_layer[i] for i in sorted(by_layer)]
 
 
-def special_stats(residual_delta: dict[str, list[float]], module_delta: dict[str, list[float]]) -> dict[str, Any]:
+def special_stats(module_delta: dict[str, list[float]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key, vec in residual_delta.items():
-        if layer_index(key) is None:
-            out[key] = channel_stats(vec)
     for key, vec in module_delta.items():
         kind = hook_kind(key)
         if kind in {"embed", "lm_head"} or (kind == "ln" and layer_index(key) is None):
@@ -345,7 +328,7 @@ def special_stats(residual_delta: dict[str, list[float]], module_delta: dict[str
 
 def format_summary(report: dict[str, Any]) -> str:
     layers: list[dict[str, Any]] = report.get("layers") or []
-    peak = max((float(r["residual"]["mean"]) for r in layers), default=0.0)
+    peak = max((float(r["act"]["mean"]) for r in layers), default=0.0)
     peak = max(peak, 1e-12)
     gpeak = 0.0
     for r in layers:
@@ -355,14 +338,15 @@ def format_summary(report: dict[str, Any]) -> str:
 
     lines: list[str] = []
     lines.append(
-        "compare_act.py — 激活差 = |a_AW − a_Instruct|，答案 token 上按通道平均 (ACT Δa_i)"
+        "compare_act.py — ACT Δa_i = 模块输出通道 |a_AW − a_Instruct|，答案 token 上平均"
     )
     lines.append(report["method"])
     lines.append(f"world     {report['paths']['world']}")
     lines.append(f"instruct  {report['paths']['instruct']}")
     lines.append(f"prompt    {report.get('prompt_note', '')}")
     lines.append(
-        f"n_tokens={report.get('n_tokens')} n_answer={report.get('n_answer_tokens')} "
+        f"n_samples={report.get('n_samples')} n_tokens={report.get('n_tokens')} "
+        f"n_answer={report.get('n_answer_tokens')} "
         f"decoded_answer={report.get('decoded_answer')!r}"
     )
     lines.append("")
@@ -373,7 +357,7 @@ def format_summary(report: dict[str, Any]) -> str:
     lines.append("-" * (3 + 1 + 16 + 1 + 10 + 1 + 10 + 1 + 10 + 2 + BAR_W))
     for r in layers:
         i = int(r["layer"])
-        st = r["residual"]
+        st = r["act"]
         mean = float(st["mean"])
         lines.append(
             f"{i:3d} {str(r['kind'])[:16]:<16} {mean:10.4e} "
@@ -382,7 +366,7 @@ def format_summary(report: dict[str, Any]) -> str:
         )
 
     lines.append("")
-    lines.append("per layer split attn vs ffn vs ln (module outputs, same Δa_i mean):")
+    lines.append("per layer split attn vs ffn vs ln (same module-channel Δa_i):")
     lines.append(
         f"{'L':>3} {'g':<5} {'Δa_mean':>10} {'p99':>10} {'n_ch':>8}  "
         f"{'ACT_Δa':<{BAR_W}}"
@@ -399,16 +383,16 @@ def format_summary(report: dict[str, Any]) -> str:
                 f"{int(gg['n_channels']):8d}  {bar(mean, gpeak, BAR_W)}"
             )
 
-    scored = [(float(r["residual"]["mean"]), int(r["layer"])) for r in layers]
+    scored = [(float(r["act"]["mean"]), int(r["layer"])) for r in layers]
     scored.sort(reverse=True)
     top = [f"L{i}={v:.4e}" for v, i in scored[:8]]
     lines.append("")
-    lines.append("残差流激活差最大层: " + ", ".join(top))
+    lines.append("模块通道 Δa 最大层: " + ", ".join(top))
 
     c_all = report.get("ccdf_all") or {}
     c_no_head = report.get("ccdf_no_lm_head") or {}
     lines.append("")
-    lines.append("CCDF = 通道里 Δa 超过阈值的比例 (ACT Figure 1):")
+    lines.append("CCDF = 通道里 Δa 超过阈值的比例 (ACT Figure 1; 全模块通道一起排):")
     lines.append(f"  {'t':>6}  {'all':>8}  {'no_lm_head':>10}")
     for t in CCDF_THRESHOLDS:
         key = str(t)
@@ -446,11 +430,32 @@ def format_summary(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def load_jsonl_chats(path: Path, max_rows: int) -> list[list[dict[str, Any]]]:
+    rows: list[list[dict[str, Any]]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            msgs = obj.get("messages") if isinstance(obj, dict) else None
+            if not isinstance(msgs, list) or split_hao(msgs) is None:
+                continue
+            rows.append(msgs)
+            if len(rows) >= max_rows:
+                break
+    if not rows:
+        raise ValueError(f"no complete (h,a,o) chats in {path}")
+    return rows
+
+
 def run_compare_act(
     world_dir: Path,
     agent_dir: Path,
     *,
     text: str | None,
+    jsonl: Path | None,
+    max_rows: int,
     device_map: str,
     token_mode: str,
 ) -> dict[str, Any]:
@@ -458,12 +463,30 @@ def run_compare_act(
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(agent_dir), trust_remote_code=True)
-    messages = None if text is not None else DEFAULT_MESSAGES
-    ids, answer_pos, prompt_note = encode_prompt(
-        tokenizer, text=text, messages=messages, token_mode=token_mode
+    jobs: list[tuple[list[int], list[int], str]] = []
+    if jsonl is not None:
+        for msgs in load_jsonl_chats(jsonl, max_rows):
+            jobs.append(
+                encode_prompt(tokenizer, text=None, messages=msgs, token_mode=token_mode)
+            )
+        prompt_note = f"jsonl={jsonl} n={len(jobs)}; " + jobs[0][2]
+    elif text is not None:
+        jobs.append(encode_prompt(tokenizer, text=text, messages=None, token_mode=token_mode))
+        prompt_note = jobs[0][2]
+    else:
+        jobs.append(
+            encode_prompt(
+                tokenizer, text=None, messages=DEFAULT_MESSAGES, token_mode=token_mode
+            )
+        )
+        prompt_note = jobs[0][2]
+
+    n_tokens = sum(len(ids) for ids, _, _ in jobs)
+    n_answer = sum(len(pos) for _, pos, _ in jobs)
+    decoded = tokenizer.decode(
+        [jobs[0][0][i] for i in jobs[0][1]], skip_special_tokens=False
     )
-    decoded = tokenizer.decode([ids[i] for i in answer_pos], skip_special_tokens=False)
-    log(f"tokens={len(ids)} answer={len(answer_pos)} ({prompt_note})")
+    log(f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} ({prompt_note})")
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
@@ -471,48 +494,53 @@ def run_compare_act(
     log("loading AgentWorld")
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
     log(f"  class={wname}")
-    cap_w = capture_one(world, ids, answer_pos)
+    world_caps = [capture_one(world, ids, pos) for ids, pos, _ in jobs]
     _free(world)
 
     log("loading Instruct")
     agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
     log(f"  class={aname}")
-    cap_a = capture_one(agent, ids, answer_pos)
+    running: dict[str, tuple[list[float], int]] = {}
+    skipped: set[str] = set()
+    for cap_w, (ids, pos, _) in zip(world_caps, jobs, strict=True):
+        cap_a = capture_one(agent, ids, pos)
+        acc_pair(running, cap_w, cap_a, skipped)
+        del cap_w, cap_a
     _free(agent)
+    del world_caps
 
-    res_delta, res_skip = _pair_delta(cap_w["residual"], cap_a["residual"])
-    mod_delta, mod_skip = _pair_delta(cap_w["modules"], cap_a["modules"])
-    layers = build_layers(res_delta, mod_delta, types)
+    mod_delta = finalize_running(running)
+    layers = build_layers(mod_delta, types)
 
     all_ch: list[float] = []
     no_head: list[float] = []
-    named: dict[str, list[float]] = {}
-    named.update(res_delta)
-    named.update(mod_delta)
-    for key, vec in named.items():
+    for key, vec in mod_delta.items():
         all_ch.extend(vec)
         if hook_kind(key) != "lm_head" and key != "lm_head":
             no_head.extend(vec)
 
     return {
         "method": (
-            "ACT channel-wise |a_AW - a_Instruct|, mean over answer tokens "
-            "(arXiv:2601.09398 §3.1). Residual stream = per-layer bars; "
-            "hooks = attn/ffn/ln projections (MoE routed experts skipped). "
-            "Text bars like compare.py, quantity is activation not weight MAV."
+            "ACT §3.1 eq. (2): module-output channel |a_AW - a_Instruct|, "
+            "mean over pooled answer tokens (arXiv:2601.09398). "
+            "Channels = attn Q/K/V/O (or GDN in_proj/out_proj), shared-expert "
+            "gate/up/down, LN, embed, lm_head. Residual stream is not used. "
+            "Routed MoE experts skipped. Rank all channels together; layer bar "
+            "is mean Δa_i of that layer's module channels."
         ),
         "prompt_note": prompt_note,
-        "n_tokens": len(ids),
-        "n_answer_tokens": len(answer_pos),
+        "n_samples": len(jobs),
+        "n_tokens": n_tokens,
+        "n_answer_tokens": n_answer,
         "decoded_answer": decoded,
         "layers": layers,
-        "special": special_stats(res_delta, mod_delta),
+        "special": special_stats(mod_delta),
         "ccdf_all": ccdf(all_ch),
         "ccdf_no_lm_head": ccdf(no_head),
         "n_channels_all": len(all_ch),
         "n_channels_no_lm_head": len(no_head),
-        "top_channels": top_channels(named, n=32),
-        "skipped": res_skip + mod_skip,
+        "top_channels": top_channels(mod_delta, n=32),
+        "skipped": sorted(skipped),
         "paths": {"world": str(world_dir), "instruct": str(agent_dir)},
     }
 
@@ -534,13 +562,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--text",
         default=None,
-        help="raw string (same tokens to both models). default: ls / a.txt / rm / gone chat",
+        help="raw string (requires --tokens all). default: ls / a.txt / rm / gone chat",
     )
+    p.add_argument(
+        "--jsonl",
+        type=Path,
+        default=None,
+        help="mix JSONL; last assistant span is the ACT answer; average across rows",
+    )
+    p.add_argument("--max-rows", type=int, default=8, help="with --jsonl, how many complete chats")
     p.add_argument(
         "--tokens",
         choices=["answer", "all"],
         default="answer",
-        help="answer = last assistant span on the default chat; ignored for --text (always all)",
+        help="answer = last assistant (ACT). all = every token (not ACT)",
     )
     p.add_argument("--device-map", default="auto")
     return p.parse_args()
@@ -560,11 +595,19 @@ def main() -> None:
         args.agent, source=args.source, cache_dir=cache_dir, role="instruct"
     )
 
-    token_mode = "all" if args.text is not None else args.tokens
+    token_mode = args.tokens
+    jsonl = args.jsonl
+    if jsonl is not None and not jsonl.is_absolute():
+        for cand in (jsonl, ROOT / jsonl, ROOT / "train" / jsonl):
+            if cand.is_file():
+                jsonl = cand
+                break
     report = run_compare_act(
         world_dir,
         agent_dir,
         text=args.text,
+        jsonl=jsonl,
+        max_rows=args.max_rows,
         device_map=args.device_map,
         token_mode=token_mode,
     )

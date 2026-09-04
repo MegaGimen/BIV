@@ -61,7 +61,7 @@ Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent me
 # Optional diagnostic: row-MAV vs Base (no longer decides any cut point)
 python train/scripts/compare.py
 
-# Optional diagnostic: ACT channel-wise |a_AW - a_Instruct| on one prompt
+# Optional diagnostic: ACT module-channel |a_AW - a_Instruct| on answer tokens
 # (text bars like compare.py; writes train/outputs/compare_act/)
 python train/scripts/compare_act.py
 
