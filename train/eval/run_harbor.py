@@ -145,6 +145,34 @@ def apply_model_info_to_job_config(job_dir: Path, max_model_len: int) -> None:
     )
 
 
+def apply_n_concurrent_to_job_config(job_dir: Path, n_concurrent: int) -> None:
+    """``harbor job resume`` has no ``-n``; it rereads JobConfig (default 4)."""
+    n = int(n_concurrent)
+    if n < 1:
+        raise SystemExit(f"--n-concurrent must be >= 1, got {n}")
+
+    cfg_path = job_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if raw.get("n_concurrent_trials") != n:
+        raw["n_concurrent_trials"] = n
+        cfg_path.write_text(
+            json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    lock_path = job_dir / "lock.json"
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        if lock.get("n_concurrent_trials") != n:
+            lock["n_concurrent_trials"] = n
+            lock_path.write_text(
+                json.dumps(lock, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+    print(f"[harbor] set n_concurrent_trials={n} in {job_dir}", flush=True)
+
+
 def load_meta_reference() -> dict[str, Any]:
     return json.loads(META_REF_PATH.read_text(encoding="utf-8"))
 
@@ -557,6 +585,7 @@ def resume_job(
     base_url: str | None = None,
     api_key: str | None = None,
     max_model_len: int | None = DEFAULT_MAX_MODEL_LEN,
+    n_concurrent: int | None = None,
 ) -> dict[str, Any]:
     """Continue an interrupted Harbor job via ``harbor job resume -p``."""
     job_dir = job_dir if job_dir.is_absolute() else (TRAIN_ROOT / job_dir)
@@ -566,6 +595,8 @@ def resume_job(
         raise SystemExit(f"resume: missing config.json in {job_dir}")
     if max_model_len is not None and not dry_run:
         apply_model_info_to_job_config(job_dir, max_model_len)
+    if n_concurrent is not None and not dry_run:
+        apply_n_concurrent_to_job_config(job_dir, n_concurrent)
 
     suite = infer_suite_from_job_dir(job_dir) or "unknown"
     meta = SUITES.get(suite) or {}

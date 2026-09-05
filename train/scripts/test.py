@@ -417,6 +417,7 @@ def main() -> None:
             f"  filter_err:{args.filter_error_types or '(harbor default: CancelledError)'}",
             flush=True,
         )
+        print(f"  n_concurrent: {args.n_concurrent}", flush=True)
     else:
         print(f"  suites:    {suites}", flush=True)
     print(f"  base_url:  {base_url}", flush=True)
@@ -518,6 +519,7 @@ def main() -> None:
                 base_url=base_url,
                 api_key=args.api_key,
                 max_model_len=args.max_model_len,
+                n_concurrent=args.n_concurrent,
             )
             suite = str(result.get("suite") or job_dir.name)
             result["arm"] = arm
