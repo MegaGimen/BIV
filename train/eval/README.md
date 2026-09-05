@@ -27,6 +27,8 @@ python scripts/test.py --act --suite terminal_bench_2_1
 python scripts/test.py --act-instruct --suite terminal_bench_2_1
 ```
 
+Harbor 默认 `GET {vLLM}/v1/models` 读卡片上的 `max_model_len`（这台 AutoDL 现在是 65536），写进 Terminus `model_info`。GPU 改窗口不用再在评测机手填；要钉死仍可 `--max-model-len`。
+
 **Muse Glimmer-30B（另一条 checkpoint）**
 
 | 机器 | 干什么 |
@@ -129,8 +131,8 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 `--resume` **先把整个 job 拷进一个新的 stamp 目录**，再在副本上跑 `harbor job resume`。原来的 stamp 里每一份 `result.json` / 轨迹都不动；`-f` 只会删副本里对上的失败 trial。中断后不要再开一轮不带 `--resume` 的默认 `test.py`（那是从零另开 89 题），用：
 
 ```bash
-# 续跑整个 stamp 下所有未完成 suite（默认写入 65536 上下文，避免 LiteLLM 1e6 fallback）
-python scripts/test.py --resume outputs/agent_eval/20260814T170504Z_checkpoint-e0-s2150 --max-model-len 65536
+# 续跑整个 stamp 下所有未完成 suite（窗口从 vLLM /v1/models 读）
+python scripts/test.py --resume outputs/agent_eval/20260814T170504Z_checkpoint-e0-s2150
 
 # 只续某一个 suite job
 python scripts/test.py --resume outputs/agent_eval/.../checkpoint-e0-s2150_terminal_bench_2_1

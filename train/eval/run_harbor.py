@@ -10,6 +10,8 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,6 +80,99 @@ def terminus_model_info(max_model_len: int) -> dict[str, int]:
         "max_output_tokens": output,
         "max_tokens": n,
     }
+
+
+def _card_max_model_len(card: dict[str, Any]) -> int | None:
+    raw = card.get("max_model_len")
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def parse_vllm_models_max_model_len(
+    payload: Any,
+    *,
+    model_id: str | None = None,
+) -> int | None:
+    """Read ``max_model_len`` from a vLLM ``GET /v1/models`` body.
+
+    Base cards carry the engine window. LoRA adapter cards often leave it
+    null; then use another card on the same list that has a value.
+    """
+    if not isinstance(payload, dict):
+        return None
+    cards = payload.get("data")
+    if not isinstance(cards, list):
+        return None
+    want = (model_id or "").strip()
+    want_short = want.split("/")[-1] if want else ""
+    named: list[int | None] = []
+    filled: list[int] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        n = _card_max_model_len(card)
+        cid = str(card.get("id") or "")
+        if want and (
+            cid == want
+            or cid == want_short
+            or (want_short and cid.endswith("/" + want_short))
+        ):
+            named.append(n)
+        elif n is not None:
+            filled.append(n)
+    for n in named:
+        if n is not None:
+            return n
+    if named and filled:
+        return filled[0]
+    if not want and filled:
+        return filled[0]
+    if not named and len(filled) == 1:
+        return filled[0]
+    return None
+
+
+def fetch_vllm_max_model_len(
+    base_url: str,
+    *,
+    model_id: str | None = None,
+    api_key: str | None = None,
+    timeout_s: float = 20.0,
+) -> int:
+    """Ask the live vLLM OpenAI server for its engine ``max_model_len``."""
+    root = base_url.rstrip("/")
+    if not root.endswith("/v1"):
+        root = f"{root}/v1"
+    url = f"{root}/models"
+    headers = {"Accept": "application/json"}
+    key = (api_key or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        raise SystemExit(
+            f"Could not read max_model_len from {url}: {e!r}\n"
+            "Start vLLM first, or pass --max-model-len."
+        ) from e
+    n = parse_vllm_models_max_model_len(payload, model_id=model_id)
+    if n is None:
+        raise SystemExit(
+            f"{url} has no max_model_len for model {model_id!r}. "
+            "Pass --max-model-len."
+        )
+    print(
+        f"[harbor] vLLM max_model_len={n} from {url} (model={model_id})",
+        flush=True,
+    )
+    return n
 
 
 def _inject_model_info(container: dict[str, Any], info: dict[str, int]) -> bool:

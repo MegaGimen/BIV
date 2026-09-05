@@ -38,6 +38,7 @@ from eval.run_harbor import (  # noqa: E402
     DEFAULT_TERMINUS_MAX_TURNS,
     SUITES,
     clone_resume_jobs,
+    fetch_vllm_max_model_len,
     load_meta_reference,
     make_spec,
     resolve_resume_job_dirs,
@@ -234,9 +235,10 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Tell Terminus/LiteLLM the vLLM context window. "
-        "Default 32768 for --act / --act-instruct (matches merge/eval.py), "
-        "65536 for Muse. Unmapped openai/<name> otherwise falls back to 1e6 "
-        "and vLLM returns 400. On --resume this is written into config.json.",
+        "Default: GET {base_url}/models and use that card's max_model_len. "
+        "Pass a number to pin. Unmapped openai/<name> otherwise falls back "
+        "to 1e6 and vLLM returns 400. On --resume this is written into "
+        "config.json.",
     )
     p.add_argument(
         "--log-dir",
@@ -306,13 +308,11 @@ def _resolve_eval_target(args: argparse.Namespace) -> dict[str, Any]:
             model_id = DEFAULT_BASE_MODEL if use_base else DEFAULT_LORA_MODEL
 
     if args.max_model_len is not None:
-        max_model_len = int(args.max_model_len)
+        max_model_len: int | None = int(args.max_model_len)
     elif os.environ.get("HARBOR_MAX_MODEL_LEN"):
         max_model_len = int(os.environ["HARBOR_MAX_MODEL_LEN"])
-    elif act or act_instruct:
-        max_model_len = 32768
     else:
-        max_model_len = 65536
+        max_model_len = None
 
     if args.suites:
         suites = list(args.suites)
@@ -400,12 +400,21 @@ def main() -> None:
     base_url = target["base_url"]
     use_base = target["use_base"]
     model_id = target["model_id"]
-    args.max_model_len = target["max_model_len"]
     serve_hint = _serve_hint(
         act=target["act"],
         act_instruct=target["act_instruct"],
         base=use_base,
     )
+    if args.print_serve_cmd:
+        print(serve_hint, flush=True)
+        return
+    if target["max_model_len"] is None:
+        target["max_model_len"] = fetch_vllm_max_model_len(
+            base_url,
+            model_id=model_id,
+            api_key=args.api_key,
+        )
+    args.max_model_len = target["max_model_len"]
 
     arm = args.arm or os.environ.get("MUSE_EVAL_ARM") or target["default_arm"]
     step: int | None = args.step
@@ -481,10 +490,6 @@ def main() -> None:
         f"    {serve_hint}",
         flush=True,
     )
-
-    if args.print_serve_cmd:
-        print(serve_hint, flush=True)
-        return
 
     env_report = check_environment(env=args.env)
     print(format_report(env_report), flush=True)
