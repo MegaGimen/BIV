@@ -278,8 +278,6 @@ class HarborRunSpec:
                     str(DAYTONA_OVERRIDE_STORAGE_MB),
                     "--override-gpus",
                     "0",
-                    "--ek",
-                    "auto_snapshot=true",
                 ]
             )
 
