@@ -206,15 +206,15 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Terminus-2 LLM round limit (--ak max_turns). "
-        "Default 300 (not set by TB task.toml; Harbor alone defaults to ~1e6). "
-        "Pass 0 to leave Harbor unlimited.",
+        "Default: omit (Harbor unlimited). Pass a positive int to cap, "
+        "or 0 for the same omit behavior.",
     )
     p.add_argument(
         "--agent-timeout-multiplier",
         type=float,
         default=None,
         help="Harbor --agent-timeout-multiplier (default 100 so 900s tasks "
-        "become ~25h wall-clock and max_turns is the real stop).",
+        "become ~25h wall-clock).",
     )
     p.add_argument(
         "--timeout-multiplier",
@@ -406,7 +406,7 @@ def main() -> None:
             suites=list(args.suites) if args.suites else None,
         )
 
-    # max_turns: None CLI → default 300; 0 → unlimited (omit --ak max_turns)
+    # max_turns: None CLI → omit --ak max_turns; 0 → same; >0 → cap
     if args.max_turns is None:
         max_turns: int | None = DEFAULT_TERMINUS_MAX_TURNS
     elif int(args.max_turns) <= 0:

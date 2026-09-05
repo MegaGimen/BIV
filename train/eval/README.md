@@ -85,7 +85,7 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 
 | 项 | 默认 | 说明 |
 |--|--|--|
-| `--max-turns` | **300** | Terminus LLM 回合上限（`--ak max_turns`）。**题目 `task.toml` 不写这个**；Harbor 原生默认 ~1e6。常见取值：Harbor 文档示例 100；AgentCompass TB2.1 默认 300。`--max-turns 0` = 不限制。 |
+| `--max-turns` | **不传** | Terminus LLM 回合上限。默认不设 `--ak max_turns`（Harbor 约 1e6）。要限制再传正整数。 |
 | `--agent-timeout-multiplier` | **100** | 题集里的 `agent.timeout_sec`（多数 900s）×100，避免慢远端推理先撞墙钟。 |
 
 题目只给定 **墙钟** `timeout_sec`（89 题里约一半是 900s，其余 600～12000 不等），**没有**给定 max_turns。

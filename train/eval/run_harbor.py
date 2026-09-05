@@ -54,9 +54,8 @@ SUITES: dict[str, dict[str, Any]] = {
 DEFAULT_SUITES = tuple(SUITES.keys())
 
 # Terminus-2: task.toml only sets wall-clock agent timeout_sec (often 900), NOT max_turns.
-# Harbor default max_turns is ~1e6 (effectively unlimited). Common when people do set a
-# limit: Harbor docs example=100; AgentCompass TB2.1 harness default=300.
-DEFAULT_TERMINUS_MAX_TURNS = 300
+# Default: omit --ak max_turns (Harbor ~1e6, effectively unlimited).
+DEFAULT_TERMINUS_MAX_TURNS = None
 # Stretch task timeouts so slow remote vLLM is not killed by 900s wall-clock first.
 DEFAULT_AGENT_TIMEOUT_MULTIPLIER = 100.0
 # Terminus/LiteLLM fallback is 1e6 if the model is unmapped; that makes vLLM
