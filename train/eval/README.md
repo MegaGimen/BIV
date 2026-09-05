@@ -126,7 +126,7 @@ python -m eval.follow_traj outputs/agent_eval/20260814T170504Z_checkpoint-e0-s11
 
 ## 检查点 / resume
 
-Harbor 每个 suite 的 job 目录里有 `config.json` + 已完成的 `trial_result.json`。中断后**不要**再开一轮默认 `test.py`（会新建时间戳目录），用：
+`--resume` **先把整个 job 拷进一个新的 stamp 目录**，再在副本上跑 `harbor job resume`。原来的 stamp 里每一份 `result.json` / 轨迹都不动；`-f` 只会删副本里对上的失败 trial。中断后不要再开一轮不带 `--resume` 的默认 `test.py`（那是从零另开 89 题），用：
 
 ```bash
 # 续跑整个 stamp 下所有未完成 suite（默认写入 65536 上下文，避免 LiteLLM 1e6 fallback）
@@ -139,7 +139,9 @@ python scripts/test.py --resume outputs/agent_eval/.../checkpoint-e0-s2150_termi
 python scripts/test.py --resume outputs/agent_eval/<stamp>_… --suite terminal_bench_2_1
 ```
 
-底层是 `harbor job resume -p <job_dir>`：已完成且模型真正跑过的 trial，`result.json` 原样保留。Harbor 默认只清 `CancelledError` 再重跑。阿里云 E2B 的 `BuildException`（环境没起来）会留在目录里；ours% 本来就不计入它们。要换 Daytona 重考这些基建失败：
+副本里已经有合法 `result.json` 的 trial，Harbor 当考完跳过。`-f` 是 Harbor 的 `--filter-error-type`：resume 开始前，按 `result.json` 里的 `exception_info.exception_type` **整目录删掉**对上的 trial，然后 Harbor 把这些空槽当成没考过再开。写了 `-f` 会**换成**你列出的类型，不是往默认列表上追加。省略 `-f` 时 Harbor 自己默认只清 `CancelledError`。
+
+阿里云 E2B 的 `BuildException`（环境没起来、模型没出场）不在那个默认列表里。要在副本里重考这些基建失败，同时把 Ctrl+C 留下的 `CancelledError` 也清掉：
 
 ```bash
 python scripts/test.py --act --env daytona --resume outputs/agent_eval/20260905T025005Z_qwen-act \

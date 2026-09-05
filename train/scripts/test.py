@@ -37,6 +37,7 @@ from eval.run_harbor import (  # noqa: E402
     DEFAULT_SUITES,
     DEFAULT_TERMINUS_MAX_TURNS,
     SUITES,
+    clone_resume_jobs,
     load_meta_reference,
     make_spec,
     resolve_resume_job_dirs,
@@ -169,7 +170,8 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Resume interrupted Harbor job(s): path to one suite job dir "
         "(has config.json), or an agent_eval stamp root containing them. "
-        "Skips finished trials; default Harbor filter drops CancelledError.",
+        "Copies into a new stamp first so the original run is never mutated. "
+        "Harbor then skips finished trials; default filter drops CancelledError.",
     )
     p.add_argument(
         "--filter-error-type",
@@ -177,8 +179,10 @@ def _parse_args() -> argparse.Namespace:
         action="append",
         dest="filter_error_types",
         default=None,
-        help="On --resume: remove trials with this exception type before "
-        "continuing (repeatable). Omit to keep Harbor default (CancelledError).",
+        help="On --resume: delete copied trials whose result.json exception_type "
+        "matches, then Harbor recreates those slots (repeatable). Passing any "
+        "-f replaces Harbor's default list. Omit → Harbor default "
+        "(CancelledError only). Example: -f BuildException -f CancelledError.",
     )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -338,6 +342,18 @@ def _resolve_eval_target(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _agent_eval_out_root(arm: str, jobs_dir: Path | None) -> Path:
+    if jobs_dir is not None:
+        out_root = jobs_dir if jobs_dir.is_absolute() else ROOT / jobs_dir
+        out_root.mkdir(parents=True, exist_ok=True)
+        return out_root
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in arm)[:80]
+    out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{safe}"
+    out_root.mkdir(parents=True, exist_ok=True)
+    return out_root
+
+
 def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> None:
     ref = meta.get("muse_glimmer_30b_high_reasoning") or {}
     print("\n=== Summary (our % vs Meta Muse Glimmer-30B) ===", flush=True)
@@ -402,12 +418,14 @@ def main() -> None:
                 step = None
 
     resume_jobs: list[Path] | None = None
+    resume_src: list[Path] | None = None
     if args.resume is not None:
         # With --suite, only resume matching jobs under a stamp root.
         resume_jobs = resolve_resume_job_dirs(
             args.resume,
             suites=list(args.suites) if args.suites else None,
         )
+        resume_src = list(resume_jobs)
 
     # max_turns: None CLI → omit --ak max_turns; 0 → same; >0 → cap
     if args.max_turns is None:
@@ -426,7 +444,7 @@ def main() -> None:
     print(f"=== {title} (Harbor@this-host + remote vLLM) ===", flush=True)
     print(f"  dry_run:   {args.dry_run}", flush=True)
     if resume_jobs is not None:
-        print(f"  resume:    {[str(p) for p in resume_jobs]}", flush=True)
+        print(f"  resume src:{[str(p) for p in resume_jobs]}", flush=True)
         print(
             f"  filter_err:{args.filter_error_types or '(harbor default: CancelledError)'}",
             flush=True,
@@ -496,17 +514,17 @@ def main() -> None:
         if not args.dry_run:
             raise SystemExit(2)
 
+    out_root = _agent_eval_out_root(arm, args.jobs_dir)
     if resume_jobs is not None:
-        out_root = resume_jobs[0].parent
-    else:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out_root = args.jobs_dir
-        if out_root is None:
-            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in arm)[:80]
-            out_root = ROOT / "outputs" / "agent_eval" / f"{stamp}_{safe}"
-        elif not out_root.is_absolute():
-            out_root = ROOT / out_root
-        out_root.mkdir(parents=True, exist_ok=True)
+        print(f"  resume dest:{out_root}", flush=True)
+        if args.dry_run:
+            print(
+                "[harbor] dry-run: would copy source job(s) into the dest stamp "
+                "then resume the copy",
+                flush=True,
+            )
+        else:
+            resume_jobs = clone_resume_jobs(resume_jobs, out_root)
 
     tb_sess = None
     log_root: Path | None = None
@@ -640,6 +658,7 @@ def main() -> None:
         "env": args.env,
         "dry_run": args.dry_run,
         "resumed": resume_jobs is not None,
+        "resume_from": [str(p) for p in resume_src] if resume_src else None,
         "resume_paths": [str(p) for p in resume_jobs] if resume_jobs else None,
         "serve_hint": serve_hint,
         "meta_reference": meta.get("muse_glimmer_30b_high_reasoning"),

@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -615,6 +616,76 @@ def resolve_resume_job_dirs(
             )
         return picked
     return kids
+
+
+def retarget_cloned_job(job_dir: Path, *, jobs_dir: Path) -> None:
+    """Point a copied Harbor job at its new parent so ``Job.create`` writes here.
+
+    Harbor ``job resume -p`` only reads ``config.json``; the live directory is
+    ``jobs_dir / job_name``. TrialConfig equality includes ``trials_dir``, so
+    each copied trial config must match the new job path.
+    """
+    job_dir = job_dir.resolve()
+    jobs_dir = jobs_dir.resolve()
+    cfg_path = job_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    raw["jobs_dir"] = str(jobs_dir)
+    cfg_path.write_text(
+        json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    n = 0
+    dest = str(job_dir)
+    for trial_cfg in job_dir.glob("*/config.json"):
+        trial = json.loads(trial_cfg.read_text(encoding="utf-8"))
+        if trial.get("trials_dir") == dest:
+            continue
+        trial["trials_dir"] = dest
+        trial_cfg.write_text(
+            json.dumps(trial, indent=4, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        n += 1
+    print(
+        f"[harbor] retarget jobs_dir={jobs_dir} trials_dir={job_dir} "
+        f"({n} trial configs)",
+        flush=True,
+    )
+
+
+def clone_resume_jobs(src_jobs: list[Path], dest_root: Path) -> list[Path]:
+    """Copy job dirs into a new stamp so resume never mutates the original run.
+
+    ``-f`` then ``rmtree``s matching exception trials on the copy only.
+    Completed ``result.json`` (including LLM scores) are copied and skipped.
+    """
+    dest_root = dest_root.resolve()
+    dest_root.mkdir(parents=True, exist_ok=True)
+    cloned: list[Path] = []
+    records: list[dict[str, str]] = []
+    for src in src_jobs:
+        src = src.resolve()
+        dest = dest_root / src.name
+        if dest.exists():
+            raise SystemExit(f"resume clone dest already exists: {dest}")
+        print(f"[harbor] copy job {src} → {dest}", flush=True)
+        shutil.copytree(src, dest)
+        retarget_cloned_job(dest, jobs_dir=dest_root)
+        cloned.append(dest)
+        records.append({"src": str(src), "dest": str(dest)})
+    meta = {
+        "copied_at": datetime.now(timezone.utc).isoformat(),
+        "jobs": records,
+    }
+    (dest_root / "resume_from.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"[harbor] original jobs left untouched; resume runs in {dest_root}",
+        flush=True,
+    )
+    return cloned
 
 
 # Prepended to Harbor's PYTHONPATH so sitecustomize.py can patch Terminus.
