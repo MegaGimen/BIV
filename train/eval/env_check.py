@@ -123,6 +123,15 @@ def check_environment(*, env: str = "e2b") -> dict[str, Any]:
         else:
             report["checks"]["e2b_sdk"] = "venv python missing"
             report["ok"] = False
+        dest = os.environ.get("E2B_TEMPLATE_DEST_IMAGE_REF", "").strip()
+        dest_user = os.environ.get("E2B_TEMPLATE_DEST_USERNAME", "").strip()
+        dest_password = os.environ.get("E2B_TEMPLATE_DEST_PASSWORD", "").strip()
+        dest_ok = bool(dest and dest_user and dest_password)
+        report["checks"]["E2B_TEMPLATE_DEST"] = (
+            dest if dest_ok else "unset (TB images need ACR EE dest)"
+        )
+        if not dest_ok:
+            report["ok"] = False
 
     rc, _ = _run(["nvidia-smi", "-L"])
     report["checks"]["gpu"] = "present" if rc == 0 else "none (expected on this app host)"

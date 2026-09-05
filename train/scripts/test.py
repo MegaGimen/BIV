@@ -478,7 +478,11 @@ def main() -> None:
         elif args.env == "e2b":
             print(
                 "[test] --env e2b needs E2B_API_KEY, E2B_API_URL, E2B_DOMAIN "
-                "(train/.env) and pip install 'harbor[e2b]' in .venv-eval.",
+                "(train/.env), pip install 'harbor[e2b]' in .venv-eval, and "
+                "ACR EE dest: E2B_TEMPLATE_DEST_IMAGE_REF / "
+                "E2B_TEMPLATE_DEST_USERNAME / E2B_TEMPLATE_DEST_PASSWORD. "
+                "Without dest, Aliyun cannot inject envd into alexgshaw/* "
+                "and Harbor only surfaces 409 CREATE_FAILED.",
                 flush=True,
             )
         if not args.dry_run:

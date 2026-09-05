@@ -92,15 +92,46 @@ def _patch_litellm_max_tokens_clamp() -> None:
     LiteLLM._biv_max_tokens_clamp = True
 
 
+_ALIYUN_OFFICIAL_REGISTRY = "fc-e2b-registry."
+_ALIYUN_DEST_MISSING = (
+    "Aliyun envd inject needs a pushable dest registry. "
+    "TB images (alexgshaw/*) have no /.fce2b; default conversion fails with "
+    "'envd inject failed', Harbor retries the same alias and you only see "
+    "409 CREATE_FAILED. Open ACR EE in the same region as E2B_DOMAIN, then "
+    "set E2B_TEMPLATE_DEST_IMAGE_REF / E2B_TEMPLATE_DEST_USERNAME / "
+    "E2B_TEMPLATE_DEST_PASSWORD in train/.env. Dest ref may use {src} or a "
+    "repo without tag (tag becomes the source image)."
+)
+
+
+def _template_base_image(template) -> str:
+    inner = getattr(template, "_template", None) or template
+    return str(getattr(inner, "_base_image", "") or "")
+
+
+def _dest_image_ref(dest: str, source: str) -> str:
+    safe = (
+        source.replace("/", "_").replace(":", "-").replace("@", "-")[:80]
+        or "image"
+    )
+    if "{src}" in dest:
+        return dest.replace("{src}", safe)
+    last = dest.rsplit("/", 1)[-1]
+    if ":" not in last:
+        return f"{dest}:{safe}"
+    return dest
+
+
 def _patch_aliyun_e2b_template_headers() -> None:
-    """Aliyun FC sandbox rejects inline Dockerfiles; builder needs registry headers."""
+    """Aliyun: official registry works as-is; TB images need builder→ACR EE."""
     import os
 
     url = os.environ.get("E2B_API_URL", "")
     if "e2b.fc.aliyuncs.com" not in url:
         return
     try:
-        from e2b import AsyncTemplate
+        from e2b import AsyncTemplate, default_build_logger
+        from e2b.exceptions import BuildException
     except ImportError:
         return
     if getattr(AsyncTemplate, "_biv_aliyun_headers", False):
@@ -110,28 +141,61 @@ def _patch_aliyun_e2b_template_headers() -> None:
 
     async def build(template, *args, **kwargs):
         headers = dict(kwargs.get("headers") or {})
+        source = _template_base_image(template)
+        official = _ALIYUN_OFFICIAL_REGISTRY in source
         user = os.environ.get("E2B_TEMPLATE_SOURCE_USERNAME", "").strip()
         password = os.environ.get("E2B_TEMPLATE_SOURCE_PASSWORD", "").strip()
         dest = os.environ.get("E2B_TEMPLATE_DEST_IMAGE_REF", "").strip()
         dest_user = os.environ.get("E2B_TEMPLATE_DEST_USERNAME", "").strip()
         dest_password = os.environ.get("E2B_TEMPLATE_DEST_PASSWORD", "").strip()
-        if user and password:
+        if not official and not (dest and dest_user and dest_password):
+            raise BuildException(_ALIYUN_DEST_MISSING)
+        if dest and dest_user and dest_password and not official:
             headers.setdefault("X-E2B-Template-Build-Mode", "builder")
-            headers.setdefault("X-E2B-Template-Source-Username", user)
-            headers.setdefault("X-E2B-Template-Source-Password", password)
-        if dest:
-            headers.setdefault("X-E2B-Template-Dest-Image-Ref", dest)
-        if dest_user and dest_password:
+            headers.setdefault(
+                "X-E2B-Template-Dest-Image-Ref",
+                _dest_image_ref(dest, source),
+            )
             headers.setdefault("X-E2B-Template-Dest-Username", dest_user)
             headers.setdefault("X-E2B-Template-Dest-Password", dest_password)
+        if user and password:
+            headers.setdefault("X-E2B-Template-Source-Username", user)
+            headers.setdefault("X-E2B-Template-Source-Password", password)
         if headers:
             kwargs["headers"] = headers
+        if kwargs.get("on_build_logs") is None:
+            kwargs["on_build_logs"] = default_build_logger()
+        # Aliyun returns 400 "force is not supported".
+        kwargs["skip_cache"] = False
         return await _orig(template, *args, **kwargs)
 
     AsyncTemplate.build = staticmethod(build)  # type: ignore[method-assign]
     AsyncTemplate._biv_aliyun_headers = True
 
 
+def _patch_harbor_aliyun_template_retry() -> None:
+    """Harbor retries the same alias; Aliyun CREATE_FAILED forbids a second build."""
+    import os
+
+    if "e2b.fc.aliyuncs.com" not in os.environ.get("E2B_API_URL", ""):
+        return
+    try:
+        from harbor.environments.e2b import E2BEnvironment
+    except ImportError:
+        return
+    if getattr(E2BEnvironment, "_biv_aliyun_no_retry", False):
+        return
+    wrapped = E2BEnvironment._create_template
+    inner = getattr(wrapped, "__wrapped__", wrapped)
+
+    async def _create_template(self):
+        return await inner(self)
+
+    E2BEnvironment._create_template = _create_template  # type: ignore[method-assign]
+    E2BEnvironment._biv_aliyun_no_retry = True
+
+
 _patch_terminus_tmux()
 _patch_litellm_max_tokens_clamp()
 _patch_aliyun_e2b_template_headers()
+_patch_harbor_aliyun_template_retry()
