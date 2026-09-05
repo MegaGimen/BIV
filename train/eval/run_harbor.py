@@ -8,6 +8,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -870,7 +871,24 @@ def _terminate_process_group(proc: subprocess.Popen[Any], *, wait_s: float = 20.
         pass
 
 
-def _print_smart_timeout_state(state: dict[str, Any], *, prev_mult: float | None) -> None:
+def _emit_toks(text: str, *, job_dir: Path | None = None) -> None:
+    """Harbor Live redraws stdout; tok/s goes to stderr and ``biv_toks.log``."""
+    print(text, file=sys.stderr, flush=True)
+    if job_dir is None:
+        return
+    try:
+        with (job_dir / "biv_toks.log").open("a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except OSError:
+        pass
+
+
+def _print_smart_timeout_state(
+    state: dict[str, Any],
+    *,
+    prev_mult: float | None,
+    job_dir: Path | None = None,
+) -> None:
     v = state.get("v")
     mult = float(state.get("multiplier") or 1.0)
     n = int(state.get("n_trials") or 0)
@@ -878,29 +896,29 @@ def _print_smart_timeout_state(state: dict[str, Any], *, prev_mult: float | None
     for ev in state.get("events") or []:
         name = ev.get("trial") or ev.get("task")
         if ev.get("kind") == "llm":
-            print(
+            _emit_toks(
                 f"[harbor] done {name}\n"
                 f"         this {ev.get('tok_s')} tok/s  "
                 f"({ev.get('output_tokens')} tok / {ev.get('api_sec')} s API)\n"
                 f"         session {v} tok/s over {n} LLM trial(s) → timeout ×{mult}\n"
                 f"         {reason}",
-                flush=True,
+                job_dir=job_dir,
             )
         else:
             exc = ev.get("exception") or "no exception"
-            print(
+            _emit_toks(
                 f"[harbor] done {name}\n"
                 f"         no LLM ({exc})  session {v} tok/s over {n} "
                 f"LLM trial(s) → timeout ×{mult}\n"
                 f"         {reason}",
-                flush=True,
+                job_dir=job_dir,
             )
     if prev_mult is not None and events_or_mult_changed(state, prev_mult, mult):
         if abs(prev_mult - mult) > 1e-9:
-            print(
+            _emit_toks(
                 f"[harbor] multiplier {prev_mult:g} → {mult:g}  "
                 f"(new boxes use task.toml × {mult:g})",
-                flush=True,
+                job_dir=job_dir,
             )
 
 
@@ -931,7 +949,9 @@ def _start_smart_timeout_thread(
                 continue
             if state is None:
                 continue
-            _print_smart_timeout_state(state, prev_mult=last_mult)
+            _print_smart_timeout_state(
+                state, prev_mult=last_mult, job_dir=job_dir
+            )
             last_mult = float(state.get("multiplier") or 1.0)
 
     th = threading.Thread(
