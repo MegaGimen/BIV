@@ -16,6 +16,34 @@ if str(TRAIN_ROOT) not in sys.path:
 
 from eval.run_harbor import SUITES, harbor_bin  # noqa: E402
 
+ALIYUN_E2B_API_URL = "https://api.us-west-1.e2b.fc.aliyuncs.com"
+ALIYUN_E2B_DOMAIN = "us-west-1.e2b.fc.aliyuncs.com"
+
+
+def load_eval_env() -> None:
+    """Load ``train/.env`` (gitignored) and fill Aliyun E2B endpoints if needed."""
+    env_path = TRAIN_ROOT / ".env"
+    if env_path.is_file():
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(env_path, override=False)
+        except ImportError:
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip("'").strip('"')
+                os.environ.setdefault(key, val)
+    if os.environ.get("E2B_API_KEY") and not os.environ.get("E2B_API_URL"):
+        os.environ["E2B_API_URL"] = ALIYUN_E2B_API_URL
+        os.environ.setdefault("E2B_DOMAIN", ALIYUN_E2B_DOMAIN)
+
+
+load_eval_env()
+
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
     try:
@@ -34,7 +62,8 @@ def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
         return 124, "timeout"
 
 
-def check_environment(*, env: str = "daytona") -> dict[str, Any]:
+def check_environment(*, env: str = "e2b") -> dict[str, Any]:
+    load_eval_env()
     report: dict[str, Any] = {"ok": True, "checks": {}, "env": env}
 
     try:
@@ -72,6 +101,27 @@ def check_environment(*, env: str = "daytona") -> dict[str, Any]:
                 report["ok"] = False
         else:
             report["checks"]["daytona_sdk"] = "venv python missing"
+            report["ok"] = False
+
+    if env == "e2b":
+        key_ok = bool(os.environ.get("E2B_API_KEY"))
+        url = os.environ.get("E2B_API_URL", "")
+        domain = os.environ.get("E2B_DOMAIN", "")
+        report["checks"]["E2B_API_KEY"] = "set" if key_ok else "unset"
+        report["checks"]["E2B_API_URL"] = url or "unset"
+        report["checks"]["E2B_DOMAIN"] = domain or "unset"
+        if not key_ok or not url or not domain:
+            report["ok"] = False
+        venv_py = TRAIN_ROOT / ".venv-eval" / "bin" / "python"
+        if venv_py.is_file():
+            rc_e, out_e = _run(
+                [str(venv_py), "-c", "import e2b; print(getattr(e2b, '__version__', 'ok'))"]
+            )
+            report["checks"]["e2b_sdk"] = out_e if rc_e == 0 else f"fail {out_e}"
+            if rc_e != 0:
+                report["ok"] = False
+        else:
+            report["checks"]["e2b_sdk"] = "venv python missing"
             report["ok"] = False
 
     rc, _ = _run(["nvidia-smi", "-L"])
@@ -123,6 +173,6 @@ def format_report(report: dict[str, Any]) -> str:
 
 
 if __name__ == "__main__":
-    r = check_environment()
+    r = check_environment(env=os.environ.get("HARBOR_ENV", "e2b"))
     print(format_report(r))
     print(json.dumps(r, indent=2, ensure_ascii=False))

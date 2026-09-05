@@ -92,5 +92,46 @@ def _patch_litellm_max_tokens_clamp() -> None:
     LiteLLM._biv_max_tokens_clamp = True
 
 
+def _patch_aliyun_e2b_template_headers() -> None:
+    """Aliyun FC sandbox rejects inline Dockerfiles; builder needs registry headers."""
+    import os
+
+    url = os.environ.get("E2B_API_URL", "")
+    if "e2b.fc.aliyuncs.com" not in url:
+        return
+    try:
+        from e2b import AsyncTemplate
+    except ImportError:
+        return
+    if getattr(AsyncTemplate, "_biv_aliyun_headers", False):
+        return
+
+    _orig = AsyncTemplate.build
+
+    async def build(template, *args, **kwargs):
+        headers = dict(kwargs.get("headers") or {})
+        user = os.environ.get("E2B_TEMPLATE_SOURCE_USERNAME", "").strip()
+        password = os.environ.get("E2B_TEMPLATE_SOURCE_PASSWORD", "").strip()
+        dest = os.environ.get("E2B_TEMPLATE_DEST_IMAGE_REF", "").strip()
+        dest_user = os.environ.get("E2B_TEMPLATE_DEST_USERNAME", "").strip()
+        dest_password = os.environ.get("E2B_TEMPLATE_DEST_PASSWORD", "").strip()
+        if user and password:
+            headers.setdefault("X-E2B-Template-Build-Mode", "builder")
+            headers.setdefault("X-E2B-Template-Source-Username", user)
+            headers.setdefault("X-E2B-Template-Source-Password", password)
+        if dest:
+            headers.setdefault("X-E2B-Template-Dest-Image-Ref", dest)
+        if dest_user and dest_password:
+            headers.setdefault("X-E2B-Template-Dest-Username", dest_user)
+            headers.setdefault("X-E2B-Template-Dest-Password", dest_password)
+        if headers:
+            kwargs["headers"] = headers
+        return await _orig(template, *args, **kwargs)
+
+    AsyncTemplate.build = staticmethod(build)  # type: ignore[method-assign]
+    AsyncTemplate._biv_aliyun_headers = True
+
+
 _patch_terminus_tmux()
 _patch_litellm_max_tokens_clamp()
+_patch_aliyun_e2b_template_headers()

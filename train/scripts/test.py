@@ -14,7 +14,7 @@ Qwen3.5 ACT merge (Instruct + AgentWorld mask rows)::
     Here:         python scripts/test.py --act
                   python scripts/test.py --act-instruct
 
-Harbor ``--env daytona`` (cloud sandbox). No local checkpoint path.
+Harbor ``--env e2b`` (Aliyun Function Compute sandbox, us-west-1). No local checkpoint path.
 """
 
 from __future__ import annotations
@@ -141,8 +141,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--env",
         type=str,
-        default=os.environ.get("HARBOR_ENV", "daytona"),
-        help="Harbor sandbox backend (default: daytona).",
+        default=os.environ.get("HARBOR_ENV", "e2b"),
+        help="Harbor sandbox backend (default: e2b / Aliyun).",
     )
     p.add_argument("--n-attempts", "-k", type=int, default=None)
     p.add_argument(
@@ -150,7 +150,7 @@ def _parse_args() -> argparse.Namespace:
         "-n",
         type=int,
         default=None,
-        help="Parallel trials. Default 16 on daytona, 4 on docker. "
+        help="Parallel trials. Default 16 on e2b/daytona, 4 on docker. "
         "Override with -n or $HARBOR_N_CONCURRENT.",
     )
     p.add_argument("--include-task", action="append", dest="include_tasks", default=None)
@@ -371,7 +371,7 @@ def main() -> None:
         env_n = os.environ.get("HARBOR_N_CONCURRENT")
         if env_n:
             args.n_concurrent = int(env_n)
-        elif args.env == "daytona":
+        elif args.env in ("daytona", "e2b"):
             args.n_concurrent = DAYTONA_DEFAULT_N_CONCURRENT
         else:
             args.n_concurrent = 4
@@ -473,13 +473,14 @@ def main() -> None:
                 "pip install 'harbor[daytona]' in .venv-eval.",
                 flush=True,
             )
+        elif args.env == "e2b":
+            print(
+                "[test] --env e2b needs E2B_API_KEY, E2B_API_URL, E2B_DOMAIN "
+                "(train/.env) and pip install 'harbor[e2b]' in .venv-eval.",
+                flush=True,
+            )
         if not args.dry_run:
             raise SystemExit(2)
-    if args.env == "e2b" and not os.environ.get("E2B_API_KEY"):
-        print(
-            "[test] WARNING: --env e2b but E2B_API_KEY unset.",
-            flush=True,
-        )
 
     if resume_jobs is not None:
         out_root = resume_jobs[0].parent

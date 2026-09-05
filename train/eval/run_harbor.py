@@ -266,19 +266,24 @@ class HarborRunSpec:
             cmd.extend(["-i", name])
         if self.n_tasks is not None:
             cmd.extend(["-l", str(self.n_tasks)])
-        if self.env == "daytona":
+        if self.env in ("daytona", "e2b"):
             cmd.extend(
                 [
                     "--override-cpus",
                     str(DAYTONA_OVERRIDE_CPUS),
                     "--override-memory-mb",
                     str(DAYTONA_OVERRIDE_MEMORY_MB),
-                    "--override-storage-mb",
-                    str(DAYTONA_OVERRIDE_STORAGE_MB),
-                    "--override-gpus",
-                    "0",
                 ]
             )
+            if self.env == "daytona":
+                cmd.extend(
+                    [
+                        "--override-storage-mb",
+                        str(DAYTONA_OVERRIDE_STORAGE_MB),
+                        "--override-gpus",
+                        "0",
+                    ]
+                )
 
         if self.base_url:
             base = self.base_url.rstrip("/")
