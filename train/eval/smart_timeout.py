@@ -35,6 +35,18 @@ def multiplier_from_tps(v: float) -> float:
     return max(MULT_MIN, min(MULT_MAX, CANONICAL_TPS / v))
 
 
+def multiplier_reason(v: float | None, mult: float) -> str:
+    if v is None:
+        return "no LLM timings yet, keep task.toml (×1)"
+    if BAND_LO <= v <= BAND_HI:
+        return f"session {v:.3f} tok/s in [{BAND_LO:g}, {BAND_HI:g}], keep task.toml (×1)"
+    return (
+        f"session {v:.3f} tok/s outside [{BAND_LO:g}, {BAND_HI:g}], "
+        f"× = {CANONICAL_TPS:g}/{v:.3f} = {mult:g}  "
+        f"(later trials get that scale)"
+    )
+
+
 def trial_llm_stats(trial: dict[str, Any]) -> tuple[int, float] | None:
     """Return (output_tokens, api_seconds) or None if the trial never called the LLM."""
     ar = trial.get("agent_result")
@@ -51,6 +63,22 @@ def trial_llm_stats(trial: dict[str, Any]) -> tuple[int, float] | None:
     return out, sec
 
 
+def _exception_type(trial: dict[str, Any]) -> str | None:
+    ei = trial.get("exception_info")
+    if not isinstance(ei, dict):
+        return None
+    raw = ei.get("type") or ei.get("exception_type")
+    return str(raw) if raw else None
+
+
+def _trial_result_file(child: Path) -> Path | None:
+    for name in ("result.json", "trial_result.json"):
+        p = child / name
+        if p.is_file():
+            return p
+    return None
+
+
 def empty_state() -> dict[str, Any]:
     return {
         "n_trials": 0,
@@ -60,13 +88,15 @@ def empty_state() -> dict[str, Any]:
         "multiplier": 1.0,
         "canonical_tps": CANONICAL_TPS,
         "band": [BAND_LO, BAND_HI],
+        "events": [],
     }
 
 
 def write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    dump = {k: v for k, v in state.items() if k != "events"}
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(dump, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 
@@ -81,27 +111,34 @@ def load_state(path: Path) -> dict[str, Any]:
         return empty_state()
     out = empty_state()
     out.update(raw)
+    out["events"] = []
     return out
 
 
-def refresh_from_job(job_dir: Path) -> dict[str, Any] | None:
+def refresh_from_job(
+    job_dir: Path,
+    *,
+    seen: set[str] | None = None,
+    seed: bool = False,
+) -> dict[str, Any] | None:
     """Recompute session tok/s from finished ``result.json`` files.
 
-    Returns the new state when the multiplier or trial count changed, else None.
+    ``seen`` tracks result-file paths already announced. ``seed=True`` fills
+    ``seen`` from existing files without emitting events (resume start).
+    Returns state when the session rate changes or new trials appear.
     """
     path = state_path(job_dir)
     prev = load_state(path)
     n_out = 0
     api_sec = 0.0
     n_trials = 0
-    for child in job_dir.iterdir():
+    events: list[dict[str, Any]] = []
+
+    for child in sorted(job_dir.iterdir(), key=lambda p: p.name):
         if not child.is_dir():
             continue
-        result_path = child / "result.json"
-        if not result_path.is_file():
-            alt = child / "trial_result.json"
-            result_path = alt if alt.is_file() else result_path
-        if not result_path.is_file():
+        result_path = _trial_result_file(child)
+        if result_path is None:
             continue
         try:
             trial = json.loads(result_path.read_text(encoding="utf-8"))
@@ -109,13 +146,38 @@ def refresh_from_job(job_dir: Path) -> dict[str, Any] | None:
             continue
         if not isinstance(trial, dict):
             continue
+        key = str(result_path)
+        is_new = seen is not None and key not in seen
+        if seen is not None:
+            seen.add(key)
+
         stats = trial_llm_stats(trial)
-        if stats is None:
-            continue
-        out, sec = stats
-        n_out += out
-        api_sec += sec
-        n_trials += 1
+        task = trial.get("task_name") or child.name
+        if stats is not None:
+            out, sec = stats
+            n_out += out
+            api_sec += sec
+            n_trials += 1
+            if is_new and not seed:
+                events.append(
+                    {
+                        "kind": "llm",
+                        "trial": child.name,
+                        "task": task,
+                        "tok_s": round(out / sec, 3),
+                        "output_tokens": out,
+                        "api_sec": round(sec, 3),
+                    }
+                )
+        elif is_new and not seed:
+            events.append(
+                {
+                    "kind": "infra",
+                    "trial": child.name,
+                    "task": task,
+                    "exception": _exception_type(trial),
+                }
+            )
 
     v: float | None = (n_out / api_sec) if api_sec > 0 and n_out > 0 else None
     mult = 1.0 if v is None else multiplier_from_tps(v)
@@ -127,12 +189,20 @@ def refresh_from_job(job_dir: Path) -> dict[str, Any] | None:
         "multiplier": round(mult, 4),
         "canonical_tps": CANONICAL_TPS,
         "band": [BAND_LO, BAND_HI],
+        "reason": multiplier_reason(v, round(mult, 4)),
+        "events": events,
     }
-    if (
-        state["n_trials"] == prev.get("n_trials")
-        and state["multiplier"] == prev.get("multiplier")
-        and state["v"] == prev.get("v")
-    ):
+    changed = (
+        state["n_trials"] != prev.get("n_trials")
+        or state["multiplier"] != prev.get("multiplier")
+        or state["v"] != prev.get("v")
+    )
+    if changed:
+        write_state(path, state)
+    if seed:
+        write_state(path, state)
+        state["events"] = []
+        return state
+    if not changed and not events:
         return None
-    write_state(path, state)
     return state

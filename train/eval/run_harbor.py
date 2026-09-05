@@ -704,6 +704,46 @@ def _terminate_process_group(proc: subprocess.Popen[Any], *, wait_s: float = 20.
         pass
 
 
+def _print_smart_timeout_state(state: dict[str, Any], *, prev_mult: float | None) -> None:
+    v = state.get("v")
+    mult = float(state.get("multiplier") or 1.0)
+    n = int(state.get("n_trials") or 0)
+    reason = state.get("reason") or ""
+    for ev in state.get("events") or []:
+        name = ev.get("trial") or ev.get("task")
+        if ev.get("kind") == "llm":
+            print(
+                f"[harbor] done {name}\n"
+                f"         this {ev.get('tok_s')} tok/s  "
+                f"({ev.get('output_tokens')} tok / {ev.get('api_sec')} s API)\n"
+                f"         session {v} tok/s over {n} LLM trial(s) → timeout ×{mult}\n"
+                f"         {reason}",
+                flush=True,
+            )
+        else:
+            exc = ev.get("exception") or "no exception"
+            print(
+                f"[harbor] done {name}\n"
+                f"         no LLM ({exc})  session {v} tok/s over {n} "
+                f"LLM trial(s) → timeout ×{mult}\n"
+                f"         {reason}",
+                flush=True,
+            )
+    if prev_mult is not None and events_or_mult_changed(state, prev_mult, mult):
+        if abs(prev_mult - mult) > 1e-9:
+            print(
+                f"[harbor] multiplier {prev_mult:g} → {mult:g}  "
+                f"(new boxes use task.toml × {mult:g})",
+                flush=True,
+            )
+
+
+def events_or_mult_changed(
+    state: dict[str, Any], prev_mult: float, mult: float
+) -> bool:
+    return bool(state.get("events")) or abs(prev_mult - mult) > 1e-9
+
+
 def _start_smart_timeout_thread(
     job_dir: Path,
     *,
@@ -711,33 +751,22 @@ def _start_smart_timeout_thread(
 ) -> tuple[threading.Event, threading.Thread]:
     from eval.smart_timeout import refresh_from_job
 
-    refresh_from_job(job_dir)
+    seen: set[str] = set()
+    refresh_from_job(job_dir, seen=seen, seed=True)
     stop = threading.Event()
 
     def _loop() -> None:
         last_mult: float | None = None
-        last_n = -1
         while not stop.wait(interval_s):
             try:
-                state = refresh_from_job(job_dir)
+                state = refresh_from_job(job_dir, seen=seen)
             except Exception as e:  # noqa: BLE001
                 print(f"[harbor] smart timeout refresh failed: {e!r}", flush=True)
                 continue
             if state is None:
                 continue
-            n = int(state.get("n_trials") or 0)
-            mult = float(state.get("multiplier") or 1.0)
-            if n == last_n and mult == last_mult:
-                continue
-            last_n = n
-            last_mult = mult
-            v = state.get("v")
-            print(
-                f"[harbor] tok/s={v} over {n} trial(s) → agent timeout ×{mult} "
-                f"(canonical {state.get('canonical_tps')} tok/s, "
-                f"band {state.get('band')})",
-                flush=True,
-            )
+            _print_smart_timeout_state(state, prev_mult=last_mult)
+            last_mult = float(state.get("multiplier") or 1.0)
 
     th = threading.Thread(
         target=_loop, name=f"harbor-tps-{job_dir.name}", daemon=True
@@ -783,14 +812,14 @@ def _execute_harbor(
 
         tpath = state_path(job_dir)
         write_state(tpath, empty_state())
-        seeded = refresh_from_job(job_dir)
+        seeded = refresh_from_job(job_dir, seed=True)
         env = dict(env)
         env["BIV_SMART_TIMEOUT_PATH"] = str(tpath)
         if seeded is not None:
             print(
                 f"[harbor] seeded tok/s={seeded.get('v')} → agent timeout "
                 f"×{seeded.get('multiplier')} from {seeded.get('n_trials')} "
-                "finished trial(s)",
+                f"LLM trial(s); {seeded.get('reason')}",
                 flush=True,
             )
 
@@ -812,9 +841,7 @@ def _execute_harbor(
         )
         stops.append(stop)
     if smart_timeout:
-        stop, _th = _start_smart_timeout_thread(
-            job_dir, interval_s=min(10.0, score_poll_interval_s)
-        )
+        stop, _th = _start_smart_timeout_thread(job_dir, interval_s=3.0)
         stops.append(stop)
 
     interrupted = False

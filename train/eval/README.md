@@ -86,7 +86,7 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 | 项 | 默认 | 说明 |
 |--|--|--|
 | `--max-turns` | **不传** | Terminus LLM 回合上限。默认不设 `--ak max_turns`（Harbor 约 1e6）。要限制再传正整数。 |
-| `--agent-timeout-multiplier` | **不传** | 默认用题面 `[agent] timeout_sec`。每道交卷后用输出 token / API 墙钟得到会话 tok/s；落在 30–50 就保持 ×1，出去就按 `40/v` 调后续 trial（已开跑的盒子不改）。传数字则冻结这一档、关掉自动调。 |
+| `--agent-timeout-multiplier` | **不传** | 默认用题面 `[agent] timeout_sec`。每道 trial 交卷后终端打本题 tok/s、会话 tok/s、下一步 multiplier。落在 30–50 保持 ×1，出去按 `40/v` 调后续盒子。传数字则冻结、关掉自动调。 |
 
 题目只给定 **墙钟** `timeout_sec`（89 题里约一半是 900s，其余 600～12000 不等），**没有**给定 max_turns。
 
@@ -139,7 +139,12 @@ python scripts/test.py --resume outputs/agent_eval/.../checkpoint-e0-s2150_termi
 python scripts/test.py --resume outputs/agent_eval/<stamp>_… --suite terminal_bench_2_1
 ```
 
-底层是 `harbor job resume -p <job_dir>`：已完成 trial 保留；Harbor 默认会清掉 `CancelledError` 的 trial 再重跑它们。自定义：`--filter-error-type SomeError`（可重复）。
+底层是 `harbor job resume -p <job_dir>`：已完成且模型真正跑过的 trial，`result.json` 原样保留。Harbor 默认只清 `CancelledError` 再重跑。阿里云 E2B 的 `BuildException`（环境没起来）会留在目录里；ours% 本来就不计入它们。要换 Daytona 重考这些基建失败：
+
+```bash
+python scripts/test.py --act --env daytona --resume outputs/agent_eval/20260905T025005Z_qwen-act \
+  -f BuildException -f CancelledError
+```
 
 训练 LoRA 检查点仍在 AutoDL `checkpoint-e*-s*`，与这里无关。
 
