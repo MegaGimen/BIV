@@ -88,7 +88,7 @@ python scripts/test.py --base       # 请求 Muse-Glimmer-30B（AutoDL 需 --bas
 | 项 | 默认 | 说明 |
 |--|--|--|
 | `--max-turns` | **不传** | Terminus LLM 回合上限。默认不设 `--ak max_turns`（Harbor 约 1e6）。要限制再传正整数。 |
-| `--agent-timeout-multiplier` | **不传** | 默认用题面 `[agent] timeout_sec`。每道 trial 交卷后终端打本题 tok/s、会话 tok/s、下一步 multiplier。落在 30–50 保持 ×1，出去按 `40/v` 调后续盒子。传数字则冻结、关掉自动调。 |
+| `--agent-timeout-multiplier` | **不传** | 默认用题面 `[agent] timeout_sec`。每道出过字的 trial 写 `biv_toks.json`；会话速度是这些题 tok/s 的算术平均。resume 从已有 sidecar / result 恢复；没有记录时按 42 tok/s。落在 30–50 保持 ×1，出去按 `40/v` 调后续盒子。 |
 
 题目只给定 **墙钟** `timeout_sec`（89 题里约一半是 900s，其余 600～12000 不等），**没有**给定 max_turns。
 

@@ -1,11 +1,14 @@
 """Scale Harbor agent timeout from measured LLM tok/s vs a 40 tok/s canonical.
 
+Each finished LLM trial writes ``biv_toks.json`` next to ``result.json``.
+Session speed is the unweighted mean of those per-trial rates. Resume
+recomputes from every sidecar (and backfills missing ones from
+``result.json``). With no LLM trial yet, session speed is 42 tok/s.
+
 Original ``task.toml`` ``[agent] timeout_sec`` is the budget at ~40 tok/s.
-After each finished trial we accumulate output tokens / API wall time. If the
-session rate sits in 30–50 tok/s, multiplier stays 1. Outside that band,
-multiplier is ``40 / v`` so a slower model gets more wall clock and a faster
-one gets less. Already-running trials keep the timeout they started with;
-new trials read the JSON this module writes.
+If the session rate sits in 30–50 tok/s, multiplier stays 1. Outside that
+band, multiplier is ``40 / v``. Already-running trials keep the timeout
+they started with; new trials read the JSON this module writes.
 """
 
 from __future__ import annotations
@@ -15,16 +18,22 @@ from pathlib import Path
 from typing import Any
 
 CANONICAL_TPS = 40.0
+DEFAULT_SEED_TPS = 42.0
 BAND_LO = 30.0
 BAND_HI = 50.0
 MULT_MIN = 0.25
 MULT_MAX = 10.0
 
 STATE_NAME = "biv_timeout.json"
+TRIAL_TOKS_NAME = "biv_toks.json"
 
 
 def state_path(job_dir: Path) -> Path:
     return job_dir / STATE_NAME
+
+
+def trial_toks_path(trial_dir: Path) -> Path:
+    return trial_dir / TRIAL_TOKS_NAME
 
 
 def multiplier_from_tps(v: float) -> float:
@@ -35,20 +44,27 @@ def multiplier_from_tps(v: float) -> float:
     return max(MULT_MIN, min(MULT_MAX, CANONICAL_TPS / v))
 
 
-def multiplier_reason(v: float | None, mult: float) -> str:
-    if v is None:
-        return "no LLM timings yet, keep task.toml (×1)"
+def multiplier_reason(v: float | None, mult: float, *, n_trials: int) -> str:
+    if n_trials <= 0 or v is None:
+        return (
+            f"no LLM timings yet, seed {DEFAULT_SEED_TPS:g} tok/s "
+            f"(×{mult:g})"
+        )
     if BAND_LO <= v <= BAND_HI:
-        return f"session {v:.3f} tok/s in [{BAND_LO:g}, {BAND_HI:g}], keep task.toml (×1)"
+        return (
+            f"mean {v:.3f} tok/s over {n_trials} trial(s) "
+            f"in [{BAND_LO:g}, {BAND_HI:g}], keep task.toml (×1)"
+        )
     return (
-        f"session {v:.3f} tok/s outside [{BAND_LO:g}, {BAND_HI:g}], "
+        f"mean {v:.3f} tok/s over {n_trials} trial(s) "
+        f"outside [{BAND_LO:g}, {BAND_HI:g}], "
         f"× = {CANONICAL_TPS:g}/{v:.3f} = {mult:g}  "
         f"(later trials get that scale)"
     )
 
 
 def trial_llm_stats(trial: dict[str, Any]) -> tuple[int, float] | None:
-    """Return (output_tokens, api_seconds) or None if the trial never called the LLM."""
+    """Return (output_tokens, api_seconds) when the trial called the LLM."""
     ar = trial.get("agent_result")
     if not isinstance(ar, dict):
         return None
@@ -79,15 +95,41 @@ def _trial_result_file(child: Path) -> Path | None:
     return None
 
 
+def trial_toks_record(
+    trial_dir: Path,
+    trial: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Per-trial tok/s sidecar. Write/refresh ``biv_toks.json`` from result."""
+    stats = trial_llm_stats(trial)
+    if stats is None:
+        return None
+    out, sec = stats
+    rec = {
+        "trial": trial_dir.name,
+        "task": trial.get("task_name") or trial_dir.name,
+        "tok_s": round(out / sec, 3),
+        "output_tokens": out,
+        "api_sec": round(sec, 3),
+    }
+    path = trial_toks_path(trial_dir)
+    try:
+        path.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return rec
+
+
 def empty_state() -> dict[str, Any]:
     return {
         "n_trials": 0,
         "output_tokens": 0,
         "api_sec": 0.0,
-        "v": None,
+        "v": DEFAULT_SEED_TPS,
         "multiplier": 1.0,
         "canonical_tps": CANONICAL_TPS,
+        "seed_default": DEFAULT_SEED_TPS,
         "band": [BAND_LO, BAND_HI],
+        "trials": [],
         "events": [],
     }
 
@@ -115,23 +157,27 @@ def load_state(path: Path) -> dict[str, Any]:
     return out
 
 
+def mean_trial_tok_s(records: list[dict[str, Any]]) -> float | None:
+    rates = [float(r["tok_s"]) for r in records if r.get("tok_s")]
+    if not rates:
+        return None
+    return sum(rates) / len(rates)
+
+
 def refresh_from_job(
     job_dir: Path,
     *,
     seen: set[str] | None = None,
     seed: bool = False,
 ) -> dict[str, Any] | None:
-    """Recompute session tok/s from finished ``result.json`` files.
+    """Recompute mean tok/s from per-trial sidecars / ``result.json``.
 
     ``seen`` tracks result-file paths already announced. ``seed=True`` fills
     ``seen`` from existing files without emitting events (resume start).
-    Returns state when the session rate changes or new trials appear.
     """
     path = state_path(job_dir)
     prev = load_state(path)
-    n_out = 0
-    api_sec = 0.0
-    n_trials = 0
+    records: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
 
     for child in sorted(job_dir.iterdir(), key=lambda p: p.name):
@@ -151,24 +197,12 @@ def refresh_from_job(
         if seen is not None:
             seen.add(key)
 
-        stats = trial_llm_stats(trial)
+        rec = trial_toks_record(child, trial)
         task = trial.get("task_name") or child.name
-        if stats is not None:
-            out, sec = stats
-            n_out += out
-            api_sec += sec
-            n_trials += 1
+        if rec is not None:
+            records.append(rec)
             if is_new and not seed:
-                events.append(
-                    {
-                        "kind": "llm",
-                        "trial": child.name,
-                        "task": task,
-                        "tok_s": round(out / sec, 3),
-                        "output_tokens": out,
-                        "api_sec": round(sec, 3),
-                    }
-                )
+                events.append({"kind": "llm", **rec})
         elif is_new and not seed:
             events.append(
                 {
@@ -179,17 +213,23 @@ def refresh_from_job(
                 }
             )
 
-    v: float | None = (n_out / api_sec) if api_sec > 0 and n_out > 0 else None
-    mult = 1.0 if v is None else multiplier_from_tps(v)
+    n_trials = len(records)
+    n_out = sum(int(r.get("output_tokens") or 0) for r in records)
+    api_sec = sum(float(r.get("api_sec") or 0.0) for r in records)
+    mean = mean_trial_tok_s(records)
+    v = DEFAULT_SEED_TPS if mean is None else mean
+    mult = multiplier_from_tps(v)
     state = {
         "n_trials": n_trials,
         "output_tokens": n_out,
         "api_sec": round(api_sec, 3),
-        "v": None if v is None else round(v, 3),
+        "v": round(v, 3),
         "multiplier": round(mult, 4),
         "canonical_tps": CANONICAL_TPS,
+        "seed_default": DEFAULT_SEED_TPS,
         "band": [BAND_LO, BAND_HI],
-        "reason": multiplier_reason(v, round(mult, 4)),
+        "reason": multiplier_reason(mean, round(mult, 4), n_trials=n_trials),
+        "trials": records,
         "events": events,
     }
     changed = (

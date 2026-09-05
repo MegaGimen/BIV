@@ -900,7 +900,7 @@ def _print_smart_timeout_state(
                 f"[harbor] done {name}\n"
                 f"         this {ev.get('tok_s')} tok/s  "
                 f"({ev.get('output_tokens')} tok / {ev.get('api_sec')} s API)\n"
-                f"         session {v} tok/s over {n} LLM trial(s) → timeout ×{mult}\n"
+                f"         mean {v} tok/s over {n} LLM trial(s) → timeout ×{mult}\n"
                 f"         {reason}",
                 job_dir=job_dir,
             )
@@ -908,7 +908,7 @@ def _print_smart_timeout_state(
             exc = ev.get("exception") or "no exception"
             _emit_toks(
                 f"[harbor] done {name}\n"
-                f"         no LLM ({exc})  session {v} tok/s over {n} "
+                f"         no LLM ({exc})  mean {v} tok/s over {n} "
                 f"LLM trial(s) → timeout ×{mult}\n"
                 f"         {reason}",
                 job_dir=job_dir,
@@ -989,15 +989,9 @@ def _execute_harbor(
     )
 
     if smart_timeout:
-        from eval.smart_timeout import (
-            empty_state,
-            refresh_from_job,
-            state_path,
-            write_state,
-        )
+        from eval.smart_timeout import refresh_from_job, state_path
 
         tpath = state_path(job_dir)
-        write_state(tpath, empty_state())
         seeded = refresh_from_job(job_dir, seed=True)
         env = dict(env)
         env["BIV_SMART_TIMEOUT_PATH"] = str(tpath)

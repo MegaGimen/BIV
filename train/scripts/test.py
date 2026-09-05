@@ -475,8 +475,8 @@ def main() -> None:
     print(f"  max_model_len: {args.max_model_len}", flush=True)
     if agent_timeout_mult is None:
         print(
-            "  agent_timeout: task.toml; later trials ×(40/v) if tok/s "
-            "leaves 30–50 (canonical 40)",
+            "  agent_timeout: task.toml; mean of per-trial tok/s; "
+            "seed 42 if none; later trials ×(40/v) outside 30–50",
             flush=True,
         )
     else:
