@@ -195,7 +195,53 @@ def _patch_harbor_aliyun_template_retry() -> None:
     E2BEnvironment._biv_aliyun_no_retry = True
 
 
+def _read_smart_timeout_mult() -> float:
+    import json
+    import os
+    from pathlib import Path
+
+    raw = os.environ.get("BIV_SMART_TIMEOUT_PATH", "").strip()
+    if not raw:
+        return 1.0
+    path = Path(raw)
+    if not path.is_file():
+        return 1.0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        extra = float(data.get("multiplier") or 1.0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1.0
+    if extra <= 0:
+        return 1.0
+    return extra
+
+
+def _patch_smart_agent_timeout() -> None:
+    """Apply live 40 tok/s timeout scale to trials that start after we measure v."""
+    try:
+        from harbor.trial.trial import Trial
+    except ImportError:
+        return
+    if getattr(Trial, "_biv_smart_timeout", False):
+        return
+
+    orig = Trial._compute_agent_timeout_sec
+
+    def _compute(self):
+        base = orig(self)
+        if base is None:
+            return None
+        extra = _read_smart_timeout_mult()
+        if extra == 1.0:
+            return base
+        return float(base) * extra
+
+    Trial._compute_agent_timeout_sec = _compute  # type: ignore[method-assign]
+    Trial._biv_smart_timeout = True
+
+
 _patch_terminus_tmux()
 _patch_litellm_max_tokens_clamp()
 _patch_aliyun_e2b_template_headers()
 _patch_harbor_aliyun_template_retry()
+_patch_smart_agent_timeout()

@@ -34,7 +34,6 @@ if str(ROOT) not in sys.path:
 from eval.env_check import check_environment, format_report  # noqa: E402
 from eval.run_harbor import (  # noqa: E402
     DAYTONA_DEFAULT_N_CONCURRENT,
-    DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
     DEFAULT_SUITES,
     DEFAULT_TERMINUS_MAX_TURNS,
     SUITES,
@@ -215,8 +214,10 @@ def _parse_args() -> argparse.Namespace:
         "--agent-timeout-multiplier",
         type=float,
         default=None,
-        help="Harbor --agent-timeout-multiplier (default 100 so 900s tasks "
-        "become ~25h wall-clock).",
+        help="Fixed Harbor --agent-timeout-multiplier. Default: omit (task.toml "
+        "timeout_sec as-is) and scale later trials toward 40 tok/s when the "
+        "session rate leaves 30–50 tok/s. Pass a number to freeze the scale "
+        "and disable that live adjustment.",
     )
     p.add_argument(
         "--timeout-multiplier",
@@ -416,7 +417,7 @@ def main() -> None:
     else:
         max_turns = int(args.max_turns)
     agent_timeout_mult = (
-        DEFAULT_AGENT_TIMEOUT_MULTIPLIER
+        None
         if args.agent_timeout_multiplier is None
         else float(args.agent_timeout_multiplier)
     )
@@ -445,11 +446,18 @@ def main() -> None:
         flush=True,
     )
     print(f"  max_model_len: {args.max_model_len}", flush=True)
-    print(
-        f"  agent_timeout_mult: {agent_timeout_mult} "
-        f"(task agent timeout_sec × this)",
-        flush=True,
-    )
+    if agent_timeout_mult is None:
+        print(
+            "  agent_timeout: task.toml; later trials ×(40/v) if tok/s "
+            "leaves 30–50 (canonical 40)",
+            flush=True,
+        )
+    else:
+        print(
+            f"  agent_timeout_mult: {agent_timeout_mult} "
+            f"(fixed; live tok/s scale off)",
+            flush=True,
+        )
     print(
         "  NOTE: no local --ckpt; AutoDL serve:\n"
         f"    {serve_hint}",
@@ -547,6 +555,8 @@ def main() -> None:
                 max_model_len=args.max_model_len,
                 n_concurrent=args.n_concurrent,
                 env=args.env,
+                timeout_multiplier=float(args.timeout_multiplier),
+                agent_timeout_multiplier=agent_timeout_mult,
             )
             suite = str(result.get("suite") or job_dir.name)
             result["arm"] = arm

@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -18,12 +19,8 @@ EVAL_ROOT = Path(__file__).resolve().parent
 TRAIN_ROOT = EVAL_ROOT.parent
 META_REF_PATH = EVAL_ROOT / "meta_reference.json"
 
-# Daytona tier-2 per-sandbox cap (4 vCPU / 8 GiB / 10 GiB). Account live
-# budget is 100 vCPU / 200 GiB / 300 GiB → ~25 boxes; default n=16 leaves
-# headroom for AutoDL vLLM.
-DAYTONA_OVERRIDE_CPUS = 4
-DAYTONA_OVERRIDE_MEMORY_MB = 8 * 1024
-DAYTONA_OVERRIDE_STORAGE_MB = 10 * 1024
+# Daytona account live budget is 100 vCPU / 200 GiB / 300 GiB. Per-box
+# cpus/memory/storage come from each task.toml (most TB 2.1 tasks are 1/2G/10G).
 DAYTONA_DEFAULT_N_CONCURRENT = 16
 
 # Suite id → Harbor dataset + agent (three-way align).
@@ -56,8 +53,9 @@ DEFAULT_SUITES = tuple(SUITES.keys())
 # Terminus-2: task.toml only sets wall-clock agent timeout_sec (often 900), NOT max_turns.
 # Default: omit --ak max_turns (Harbor ~1e6, effectively unlimited).
 DEFAULT_TERMINUS_MAX_TURNS = None
-# Stretch task timeouts so slow remote vLLM is not killed by 900s wall-clock first.
-DEFAULT_AGENT_TIMEOUT_MULTIPLIER = 100.0
+# Default: use task.toml agent timeout as-is. Live tok/s scaling (canonical 40)
+# is applied in harbor_runtime after each finished trial; do not pass ×100.
+DEFAULT_AGENT_TIMEOUT_MULTIPLIER = None
 # Terminus/LiteLLM fallback is 1e6 if the model is unmapped; that makes vLLM
 # reject long chat.completions with HTTP 400. Match serve max-model-len.
 DEFAULT_MAX_MODEL_LEN = 65536
@@ -181,16 +179,16 @@ def apply_n_concurrent_to_job_config(job_dir: Path, n_concurrent: int) -> None:
 
 
 def environment_payload(env: str) -> dict[str, Any]:
-    """Job/trial ``environment`` dict for a Harbor ``-e`` type."""
+    """Job/trial ``environment`` dict for a Harbor ``-e`` type.
+
+    Cpus/memory/storage follow each task.toml. Daytona only pins ``override_gpus=0``
+    so a task cannot accidentally request a GPU box.
+    """
     name = env.strip().lower()
     if not name:
         raise SystemExit("--env must be a non-empty Harbor environment type")
     payload: dict[str, Any] = {"type": name}
-    if name in ("daytona", "e2b"):
-        payload["override_cpus"] = DAYTONA_OVERRIDE_CPUS
-        payload["override_memory_mb"] = DAYTONA_OVERRIDE_MEMORY_MB
     if name == "daytona":
-        payload["override_storage_mb"] = DAYTONA_OVERRIDE_STORAGE_MB
         payload["override_gpus"] = 0
     return payload
 
@@ -202,9 +200,11 @@ def _patch_environment_obj(container: dict[str, Any], payload: dict[str, Any]) -
         return True
     changed = False
     drop: set[str] = set()
-    if payload.get("type") == "e2b":
-        drop.update(("override_storage_mb", "override_gpus"))
-    elif payload.get("type") not in ("daytona", "e2b"):
+    if payload.get("type") in ("daytona", "e2b"):
+        drop.update(("override_cpus", "override_memory_mb", "override_storage_mb"))
+        if payload.get("type") == "e2b":
+            drop.add("override_gpus")
+    else:
         drop.update(
             (
                 "override_cpus",
@@ -272,6 +272,77 @@ def apply_env_to_job_config(job_dir: Path, env: str) -> None:
     print(
         f"[harbor] set environment {payload} in {n_files} file(s) "
         f"under {job_dir} (trial configs={n_trials})",
+        flush=True,
+    )
+
+
+def _set_timeout_fields(
+    container: dict[str, Any],
+    *,
+    timeout_multiplier: float,
+    agent_timeout_multiplier: float | None,
+) -> bool:
+    changed = False
+    if container.get("timeout_multiplier") != timeout_multiplier:
+        container["timeout_multiplier"] = timeout_multiplier
+        changed = True
+    if container.get("agent_timeout_multiplier") != agent_timeout_multiplier:
+        container["agent_timeout_multiplier"] = agent_timeout_multiplier
+        changed = True
+    return changed
+
+
+def apply_timeout_multipliers_to_job_config(
+    job_dir: Path,
+    *,
+    timeout_multiplier: float = 1.0,
+    agent_timeout_multiplier: float | None = None,
+) -> None:
+    """Rewrite saved job timeouts so resume uses task.toml × this run's scale."""
+    n_files = 0
+    n_trials = 0
+    kwargs = {
+        "timeout_multiplier": float(timeout_multiplier),
+        "agent_timeout_multiplier": agent_timeout_multiplier,
+    }
+
+    cfg_path = job_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if _set_timeout_fields(raw, **kwargs):
+        cfg_path.write_text(
+            json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        n_files += 1
+
+    for trial_cfg in job_dir.glob("*/config.json"):
+        trial = json.loads(trial_cfg.read_text(encoding="utf-8"))
+        if _set_timeout_fields(trial, **kwargs):
+            trial_cfg.write_text(
+                json.dumps(trial, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_trials += 1
+            n_files += 1
+
+    lock_path = job_dir / "lock.json"
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock_changed = False
+        for trial in lock.get("trials") or []:
+            if isinstance(trial, dict) and _set_timeout_fields(trial, **kwargs):
+                lock_changed = True
+        if lock_changed:
+            lock_path.write_text(
+                json.dumps(lock, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_files += 1
+
+    print(
+        f"[harbor] set timeout_multiplier={timeout_multiplier} "
+        f"agent_timeout_multiplier={agent_timeout_multiplier} in {n_files} "
+        f"file(s) under {job_dir} (trial configs={n_trials})",
         flush=True,
     )
 
@@ -362,24 +433,8 @@ class HarborRunSpec:
             cmd.extend(["-i", name])
         if self.n_tasks is not None:
             cmd.extend(["-l", str(self.n_tasks)])
-        if self.env in ("daytona", "e2b"):
-            cmd.extend(
-                [
-                    "--override-cpus",
-                    str(DAYTONA_OVERRIDE_CPUS),
-                    "--override-memory-mb",
-                    str(DAYTONA_OVERRIDE_MEMORY_MB),
-                ]
-            )
-            if self.env == "daytona":
-                cmd.extend(
-                    [
-                        "--override-storage-mb",
-                        str(DAYTONA_OVERRIDE_STORAGE_MB),
-                        "--override-gpus",
-                        "0",
-                    ]
-                )
+        if self.env == "daytona":
+            cmd.extend(["--override-gpus", "0"])
 
         if self.base_url:
             base = self.base_url.rstrip("/")
@@ -571,6 +626,7 @@ def _harbor_subprocess_env(
     *,
     base_url: str | None,
     api_key: str | None,
+    extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
     runtime = str(_HARBOR_RUNTIME_DIR)
@@ -585,7 +641,109 @@ def _harbor_subprocess_env(
         env.setdefault("OPENAI_API_KEY", api_key)
     else:
         env.setdefault("OPENAI_API_KEY", "EMPTY")
+    if extra:
+        env.update(extra)
     return env
+
+
+def destroy_harbor_daytona_sandboxes() -> int:
+    """Delete leftover Harbor-managed Daytona sandboxes (Ctrl+C path)."""
+    if not (
+        os.environ.get("DAYTONA_API_KEY")
+        or (
+            os.environ.get("DAYTONA_JWT_TOKEN")
+            and os.environ.get("DAYTONA_ORGANIZATION_ID")
+        )
+    ):
+        print("[harbor] Daytona credentials unset; skip sandbox sweep", flush=True)
+        return 0
+    try:
+        from daytona import Daytona, ListSandboxesQuery
+    except ImportError:
+        print("[harbor] daytona SDK missing; skip sandbox sweep", flush=True)
+        return 0
+
+    n = 0
+    client = Daytona()
+    query = ListSandboxesQuery(labels={"harbor.managed": "true"})
+    for sb in client.list(query):
+        sid = getattr(sb, "id", None)
+        try:
+            client.delete(sb, timeout=30, wait=False)
+            n += 1
+            print(f"[harbor] deleted Daytona sandbox {sid}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[harbor] delete sandbox {sid} failed: {e!r}", flush=True)
+    print(f"[harbor] Daytona sweep deleted {n} sandbox(es)", flush=True)
+    return n
+
+
+def _terminate_process_group(proc: subprocess.Popen[Any], *, wait_s: float = 20.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGINT)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=wait_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _start_smart_timeout_thread(
+    job_dir: Path,
+    *,
+    interval_s: float,
+) -> tuple[threading.Event, threading.Thread]:
+    from eval.smart_timeout import refresh_from_job
+
+    refresh_from_job(job_dir)
+    stop = threading.Event()
+
+    def _loop() -> None:
+        last_mult: float | None = None
+        last_n = -1
+        while not stop.wait(interval_s):
+            try:
+                state = refresh_from_job(job_dir)
+            except Exception as e:  # noqa: BLE001
+                print(f"[harbor] smart timeout refresh failed: {e!r}", flush=True)
+                continue
+            if state is None:
+                continue
+            n = int(state.get("n_trials") or 0)
+            mult = float(state.get("multiplier") or 1.0)
+            if n == last_n and mult == last_mult:
+                continue
+            last_n = n
+            last_mult = mult
+            v = state.get("v")
+            print(
+                f"[harbor] tok/s={v} over {n} trial(s) → agent timeout ×{mult} "
+                f"(canonical {state.get('canonical_tps')} tok/s, "
+                f"band {state.get('band')})",
+                flush=True,
+            )
+
+    th = threading.Thread(
+        target=_loop, name=f"harbor-tps-{job_dir.name}", daemon=True
+    )
+    th.start()
+    return stop, th
 
 
 def _execute_harbor(
@@ -598,6 +756,8 @@ def _execute_harbor(
     follow_traj: bool = False,
     on_score_update: Callable[[dict[str, Any]], None] | None = None,
     score_poll_interval_s: float = 15.0,
+    smart_timeout: bool = True,
+    sandbox_env: str | None = None,
 ) -> dict[str, Any]:
     printable = " ".join(shlex.quote(c) for c in cmd)
     result["cmd"] = cmd
@@ -613,6 +773,27 @@ def _execute_harbor(
         flush=True,
     )
 
+    if smart_timeout:
+        from eval.smart_timeout import (
+            empty_state,
+            refresh_from_job,
+            state_path,
+            write_state,
+        )
+
+        tpath = state_path(job_dir)
+        write_state(tpath, empty_state())
+        seeded = refresh_from_job(job_dir)
+        env = dict(env)
+        env["BIV_SMART_TIMEOUT_PATH"] = str(tpath)
+        if seeded is not None:
+            print(
+                f"[harbor] seeded tok/s={seeded.get('v')} → agent timeout "
+                f"×{seeded.get('multiplier')} from {seeded.get('n_trials')} "
+                "finished trial(s)",
+                flush=True,
+            )
+
     stops: list[threading.Event] = []
     if follow_traj:
         from eval.follow_traj import start_follow_thread
@@ -620,7 +801,6 @@ def _execute_harbor(
         stop, _th = start_follow_thread(job_dir)
         stops.append(stop)
     if on_score_update is not None:
-        # Push current partial score immediately (useful on resume).
         try:
             on_score_update(parse_job_score(job_dir))
         except Exception as e:  # noqa: BLE001
@@ -631,16 +811,34 @@ def _execute_harbor(
             interval_s=score_poll_interval_s,
         )
         stops.append(stop)
+    if smart_timeout:
+        stop, _th = _start_smart_timeout_thread(
+            job_dir, interval_s=min(10.0, score_poll_interval_s)
+        )
+        stops.append(stop)
 
+    interrupted = False
     try:
-        proc = subprocess.run(cmd, cwd=str(TRAIN_ROOT), env=env, check=False)
+        proc = subprocess.Popen(cmd, cwd=str(TRAIN_ROOT), env=env, start_new_session=True)
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            interrupted = True
+            print(
+                "[harbor] interrupt: stopping Harbor and sweeping Daytona sandboxes",
+                flush=True,
+            )
+            _terminate_process_group(proc)
+            if (sandbox_env or "").strip().lower() == "daytona":
+                destroy_harbor_daytona_sandboxes()
+            rc = proc.returncode if proc.returncode is not None else 130
     finally:
         for stop in stops:
             stop.set()
         if stops:
             time.sleep(0.2)
 
-    result["returncode"] = proc.returncode
+    result["returncode"] = rc
     result.update(parse_job_score(job_dir))
     if on_score_update is not None:
         try:
@@ -653,8 +851,11 @@ def _execute_harbor(
             )
         except Exception as e:  # noqa: BLE001
             print(f"[harbor] final score callback failed: {e!r}", flush=True)
-    if proc.returncode != 0:
-        result["error"] = f"harbor exited {proc.returncode}"
+    if interrupted:
+        result["error"] = "interrupted"
+        raise KeyboardInterrupt
+    if rc != 0:
+        result["error"] = f"harbor exited {rc}"
     return result
 
 
@@ -692,6 +893,8 @@ def run_spec(
         follow_traj=follow_traj,
         on_score_update=on_score_update,
         score_poll_interval_s=score_poll_interval_s,
+        smart_timeout=spec.agent_timeout_multiplier is None,
+        sandbox_env=spec.env,
     )
 
 
@@ -708,6 +911,8 @@ def resume_job(
     max_model_len: int | None = DEFAULT_MAX_MODEL_LEN,
     n_concurrent: int | None = None,
     env: str | None = None,
+    timeout_multiplier: float = 1.0,
+    agent_timeout_multiplier: float | None = DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
 ) -> dict[str, Any]:
     """Continue an interrupted Harbor job via ``harbor job resume -p``."""
     job_dir = job_dir if job_dir.is_absolute() else (TRAIN_ROOT / job_dir)
@@ -721,6 +926,12 @@ def resume_job(
         apply_n_concurrent_to_job_config(job_dir, n_concurrent)
     if env is not None and not dry_run:
         apply_env_to_job_config(job_dir, env)
+    if not dry_run:
+        apply_timeout_multipliers_to_job_config(
+            job_dir,
+            timeout_multiplier=float(timeout_multiplier),
+            agent_timeout_multiplier=agent_timeout_multiplier,
+        )
 
     suite = infer_suite_from_job_dir(job_dir) or "unknown"
     meta = SUITES.get(suite) or {}
@@ -747,6 +958,15 @@ def resume_job(
     except json.JSONDecodeError:
         pass
 
+    sweep_env = env
+    if sweep_env is None:
+        try:
+            env_obj = json.loads(cfg.read_text(encoding="utf-8")).get("environment")
+            if isinstance(env_obj, dict):
+                sweep_env = env_obj.get("type")
+        except (OSError, json.JSONDecodeError):
+            sweep_env = None
+
     return _execute_harbor(
         cmd,
         job_dir=job_dir,
@@ -756,6 +976,8 @@ def resume_job(
         follow_traj=follow_traj,
         on_score_update=on_score_update,
         score_poll_interval_s=score_poll_interval_s,
+        smart_timeout=agent_timeout_multiplier is None,
+        sandbox_env=sweep_env if isinstance(sweep_env, str) else env,
     )
 
 
