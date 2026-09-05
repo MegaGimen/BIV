@@ -18,6 +18,14 @@ EVAL_ROOT = Path(__file__).resolve().parent
 TRAIN_ROOT = EVAL_ROOT.parent
 META_REF_PATH = EVAL_ROOT / "meta_reference.json"
 
+# Daytona tier-2 per-sandbox cap (4 vCPU / 8 GiB / 10 GiB). Account live
+# budget is 100 vCPU / 200 GiB / 300 GiB → ~25 boxes; default n=16 leaves
+# headroom for AutoDL vLLM.
+DAYTONA_OVERRIDE_CPUS = 4
+DAYTONA_OVERRIDE_MEMORY_MB = 8 * 1024
+DAYTONA_OVERRIDE_STORAGE_MB = 10 * 1024
+DAYTONA_DEFAULT_N_CONCURRENT = 16
+
 # Suite id → Harbor dataset + agent (three-way align).
 SUITES: dict[str, dict[str, Any]] = {
     "terminal_bench_2_1": {
@@ -259,6 +267,21 @@ class HarborRunSpec:
             cmd.extend(["-i", name])
         if self.n_tasks is not None:
             cmd.extend(["-l", str(self.n_tasks)])
+        if self.env == "daytona":
+            cmd.extend(
+                [
+                    "--override-cpus",
+                    str(DAYTONA_OVERRIDE_CPUS),
+                    "--override-memory-mb",
+                    str(DAYTONA_OVERRIDE_MEMORY_MB),
+                    "--override-storage-mb",
+                    str(DAYTONA_OVERRIDE_STORAGE_MB),
+                    "--override-gpus",
+                    "0",
+                    "--ek",
+                    "auto_snapshot=true",
+                ]
+            )
 
         if self.base_url:
             base = self.base_url.rstrip("/")

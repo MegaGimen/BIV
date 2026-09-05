@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -33,8 +34,8 @@ def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
         return 124, "timeout"
 
 
-def check_environment() -> dict[str, Any]:
-    report: dict[str, Any] = {"ok": True, "checks": {}}
+def check_environment(*, env: str = "daytona") -> dict[str, Any]:
+    report: dict[str, Any] = {"ok": True, "checks": {}, "env": env}
 
     try:
         hb = harbor_bin()
@@ -55,8 +56,23 @@ def check_environment() -> dict[str, Any]:
     rc, out = _run(["docker", "info"])
     docker_ok = rc == 0 and "Server Version" in out
     report["checks"]["docker"] = "ok" if docker_ok else f"fail rc={rc}"
-    if not docker_ok:
+    if env == "docker" and not docker_ok:
         report["ok"] = False
+
+    if env == "daytona":
+        key_ok = bool(os.environ.get("DAYTONA_API_KEY"))
+        report["checks"]["DAYTONA_API_KEY"] = "set" if key_ok else "unset"
+        if not key_ok:
+            report["ok"] = False
+        venv_py = TRAIN_ROOT / ".venv-eval" / "bin" / "python"
+        if venv_py.is_file():
+            rc_d, out_d = _run([str(venv_py), "-c", "import daytona; print('ok')"])
+            report["checks"]["daytona_sdk"] = out_d if rc_d == 0 else f"fail {out_d}"
+            if rc_d != 0:
+                report["ok"] = False
+        else:
+            report["checks"]["daytona_sdk"] = "venv python missing"
+            report["ok"] = False
 
     rc, _ = _run(["nvidia-smi", "-L"])
     report["checks"]["gpu"] = "present" if rc == 0 else "none (expected on this app host)"

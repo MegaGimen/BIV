@@ -14,7 +14,7 @@ Qwen3.5 ACT merge (Instruct + AgentWorld mask rows)::
     Here:         python scripts/test.py --act
                   python scripts/test.py --act-instruct
 
-Harbor ``--env docker`` on this machine. No local checkpoint path.
+Harbor ``--env daytona`` (cloud sandbox). No local checkpoint path.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ if str(ROOT) not in sys.path:
 
 from eval.env_check import check_environment, format_report  # noqa: E402
 from eval.run_harbor import (  # noqa: E402
+    DAYTONA_DEFAULT_N_CONCURRENT,
     DEFAULT_AGENT_TIMEOUT_MULTIPLIER,
     DEFAULT_SUITES,
     DEFAULT_TERMINUS_MAX_TURNS,
@@ -140,15 +141,17 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--env",
         type=str,
-        default=os.environ.get("HARBOR_ENV", "docker"),
-        help="Harbor sandbox backend on THIS host (default: docker).",
+        default=os.environ.get("HARBOR_ENV", "daytona"),
+        help="Harbor sandbox backend (default: daytona).",
     )
     p.add_argument("--n-attempts", "-k", type=int, default=None)
     p.add_argument(
         "--n-concurrent",
         "-n",
         type=int,
-        default=int(os.environ.get("HARBOR_N_CONCURRENT", "4")),
+        default=None,
+        help="Parallel trials. Default 16 on daytona, 4 on docker. "
+        "Override with -n or $HARBOR_N_CONCURRENT.",
     )
     p.add_argument("--include-task", action="append", dest="include_tasks", default=None)
     p.add_argument(
@@ -364,6 +367,14 @@ def _print_summary_table(rows: list[dict[str, Any]], meta: dict[str, Any]) -> No
 
 def main() -> None:
     args = _parse_args()
+    if args.n_concurrent is None:
+        env_n = os.environ.get("HARBOR_N_CONCURRENT")
+        if env_n:
+            args.n_concurrent = int(env_n)
+        elif args.env == "daytona":
+            args.n_concurrent = DAYTONA_DEFAULT_N_CONCURRENT
+        else:
+            args.n_concurrent = 4
     meta = load_meta_reference()
     target = _resolve_eval_target(args)
     suites = target["suites"]
@@ -420,6 +431,7 @@ def main() -> None:
         print(f"  n_concurrent: {args.n_concurrent}", flush=True)
     else:
         print(f"  suites:    {suites}", flush=True)
+        print(f"  n_concurrent: {args.n_concurrent}", flush=True)
     print(f"  base_url:  {base_url}", flush=True)
     print(f"  harbor_env:{args.env}", flush=True)
     print(f"  model_id:  {model_id}", flush=True)
@@ -446,14 +458,21 @@ def main() -> None:
         print(serve_hint, flush=True)
         return
 
-    env_report = check_environment()
+    env_report = check_environment(env=args.env)
     print(format_report(env_report), flush=True)
-    if args.env == "docker" and env_report.get("checks", {}).get("docker") != "ok":
-        print(
-            "[test] ERROR: --env docker but docker check failed. "
-            "Fix Docker on this host, or pass --env <other>.",
-            flush=True,
-        )
+    if not env_report.get("ok"):
+        print("[test] ERROR: env check failed.", flush=True)
+        if args.env == "docker":
+            print(
+                "[test] --env docker needs a working Docker daemon.",
+                flush=True,
+            )
+        elif args.env == "daytona":
+            print(
+                "[test] --env daytona needs DAYTONA_API_KEY and "
+                "pip install 'harbor[daytona]' in .venv-eval.",
+                flush=True,
+            )
         if not args.dry_run:
             raise SystemExit(2)
     if args.env == "e2b" and not os.environ.get("E2B_API_KEY"):
