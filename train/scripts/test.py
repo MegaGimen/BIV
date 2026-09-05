@@ -142,7 +142,9 @@ def _parse_args() -> argparse.Namespace:
         "--env",
         type=str,
         default=os.environ.get("HARBOR_ENV", "e2b"),
-        help="Harbor sandbox backend (default: e2b / Aliyun).",
+        help="Harbor sandbox backend (default: e2b / Aliyun). "
+        "On --resume this overwrites the saved job's environment.type "
+        "so leftover trials use the new sandbox; scored result.json stay.",
     )
     p.add_argument("--n-attempts", "-k", type=int, default=None)
     p.add_argument(
@@ -540,6 +542,7 @@ def main() -> None:
                 api_key=args.api_key,
                 max_model_len=args.max_model_len,
                 n_concurrent=args.n_concurrent,
+                env=args.env,
             )
             suite = str(result.get("suite") or job_dir.name)
             result["arm"] = arm

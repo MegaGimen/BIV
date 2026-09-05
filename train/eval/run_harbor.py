@@ -180,6 +180,102 @@ def apply_n_concurrent_to_job_config(job_dir: Path, n_concurrent: int) -> None:
     print(f"[harbor] set n_concurrent_trials={n} in {job_dir}", flush=True)
 
 
+def environment_payload(env: str) -> dict[str, Any]:
+    """Job/trial ``environment`` dict for a Harbor ``-e`` type."""
+    name = env.strip().lower()
+    if not name:
+        raise SystemExit("--env must be a non-empty Harbor environment type")
+    payload: dict[str, Any] = {"type": name}
+    if name in ("daytona", "e2b"):
+        payload["override_cpus"] = DAYTONA_OVERRIDE_CPUS
+        payload["override_memory_mb"] = DAYTONA_OVERRIDE_MEMORY_MB
+    if name == "daytona":
+        payload["override_storage_mb"] = DAYTONA_OVERRIDE_STORAGE_MB
+        payload["override_gpus"] = 0
+    return payload
+
+
+def _patch_environment_obj(container: dict[str, Any], payload: dict[str, Any]) -> bool:
+    env = container.get("environment")
+    if not isinstance(env, dict):
+        container["environment"] = dict(payload)
+        return True
+    changed = False
+    drop: set[str] = set()
+    if payload.get("type") == "e2b":
+        drop.update(("override_storage_mb", "override_gpus"))
+    elif payload.get("type") not in ("daytona", "e2b"):
+        drop.update(
+            (
+                "override_cpus",
+                "override_memory_mb",
+                "override_storage_mb",
+                "override_gpus",
+            )
+        )
+    for key in drop:
+        if key in env and key not in payload:
+            del env[key]
+            changed = True
+    for key, value in payload.items():
+        if env.get(key) != value:
+            env[key] = value
+            changed = True
+    return changed
+
+
+def apply_env_to_job_config(job_dir: Path, env: str) -> None:
+    """Rewrite sandbox type on a saved job so ``harbor job resume`` uses ``--env``.
+
+    Harbor resume rereads ``config.json`` and requires finished trial configs to
+    equal the planned ``TrialConfig`` (including ``environment``). Patch job,
+    every trial ``config.json``, and ``lock.json``. Trials that already have
+    ``result.json`` stay; Harbor only rebuilds dirs that never scored.
+    """
+    payload = environment_payload(env)
+    n_files = 0
+    n_trials = 0
+
+    cfg_path = job_dir / "config.json"
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if _patch_environment_obj(raw, payload):
+        cfg_path.write_text(
+            json.dumps(raw, indent=4, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        n_files += 1
+
+    for trial_cfg in job_dir.glob("*/config.json"):
+        trial = json.loads(trial_cfg.read_text(encoding="utf-8"))
+        if _patch_environment_obj(trial, payload):
+            trial_cfg.write_text(
+                json.dumps(trial, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_trials += 1
+            n_files += 1
+
+    lock_path = job_dir / "lock.json"
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock_changed = False
+        for trial in lock.get("trials") or []:
+            if isinstance(trial, dict) and _patch_environment_obj(trial, payload):
+                lock_changed = True
+        if lock_changed:
+            lock_path.write_text(
+                json.dumps(lock, indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            n_files += 1
+
+    print(
+        f"[harbor] set environment {payload} in {n_files} file(s) "
+        f"under {job_dir} (trial configs={n_trials})",
+        flush=True,
+    )
+
+
 def load_meta_reference() -> dict[str, Any]:
     return json.loads(META_REF_PATH.read_text(encoding="utf-8"))
 
@@ -611,6 +707,7 @@ def resume_job(
     api_key: str | None = None,
     max_model_len: int | None = DEFAULT_MAX_MODEL_LEN,
     n_concurrent: int | None = None,
+    env: str | None = None,
 ) -> dict[str, Any]:
     """Continue an interrupted Harbor job via ``harbor job resume -p``."""
     job_dir = job_dir if job_dir.is_absolute() else (TRAIN_ROOT / job_dir)
@@ -622,6 +719,8 @@ def resume_job(
         apply_model_info_to_job_config(job_dir, max_model_len)
     if n_concurrent is not None and not dry_run:
         apply_n_concurrent_to_job_config(job_dir, n_concurrent)
+    if env is not None and not dry_run:
+        apply_env_to_job_config(job_dir, env)
 
     suite = infer_suite_from_job_dir(job_dir) or "unknown"
     meta = SUITES.get(suite) or {}
