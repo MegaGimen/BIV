@@ -25,6 +25,7 @@ import gc
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -626,15 +627,30 @@ def run_compare_act(
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
 
+    def _format_eta(elapsed: float, done: int, total: int) -> str:
+        if done <= 0:
+            return "--:--:--"
+        rate = elapsed / done
+        rem = rate * (total - done)
+        return time.strftime("%H:%M:%S", time.gmtime(rem))
+
     log("loading AgentWorld")
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
     log(f"  class={wname}")
     world_caps: list[dict[str, Any]] = []
+    t0 = time.time()
     for idx, (ids, pos, _) in enumerate(jobs, 1):
-        if idx == 1 or idx % 10 == 0 or idx == len(jobs):
-            log(f"  AgentWorld forwarding sample {idx}/{len(jobs)} (len={len(ids)}, ans={len(pos)})")
+        if idx == 1 or idx % 5 == 0 or idx == len(jobs):
+            elapsed = time.time() - t0
+            eta_str = _format_eta(elapsed, idx - 1, len(jobs))
+            speed = (idx - 1) / elapsed if elapsed > 0 and idx > 1 else 0.0
+            log(
+                f"  AgentWorld sample {idx}/{len(jobs)} "
+                f"(len={len(ids)}, ans={len(pos)}) "
+                f"[{speed:.2f}s/it, ETA: {eta_str}]"
+            )
         world_caps.append(capture_one(world, ids, pos, include_experts=include_experts))
-    log(f"  captured {len(world_caps[0]) if world_caps else 0} modules")
+    log(f"  captured {len(world_caps[0]) if world_caps else 0} modules in {time.time()-t0:.1f}s")
     _free(world)
 
     log("loading Instruct")
@@ -643,15 +659,24 @@ def run_compare_act(
     running: dict[str, tuple[list[float], int]] = {}
     skipped: set[str] = set()
     n_inst = 0
+    t1 = time.time()
     for idx, (cap_w, (ids, pos, _)) in enumerate(zip(world_caps, jobs, strict=True), 1):
-        if idx == 1 or idx % 10 == 0 or idx == len(jobs):
-            log(f"  Instruct forwarding sample {idx}/{len(jobs)} (len={len(ids)}, ans={len(pos)})")
+        if idx == 1 or idx % 5 == 0 or idx == len(jobs):
+            elapsed = time.time() - t1
+            eta_str = _format_eta(elapsed, idx - 1, len(jobs))
+            speed = (idx - 1) / elapsed if elapsed > 0 and idx > 1 else 0.0
+            log(
+                f"  Instruct sample {idx}/{len(jobs)} "
+                f"(len={len(ids)}, ans={len(pos)}) "
+                f"[{speed:.2f}s/it, ETA: {eta_str}]"
+            )
         cap_a = capture_one(agent, ids, pos, include_experts=include_experts)
         n_inst = len(cap_a)
         acc_pair(running, cap_w, cap_a, skipped)
         del cap_w, cap_a
     _free(agent)
     del world_caps
+    log(f"  captured Instruct in {time.time()-t1:.1f}s")
     n_body = sum(1 for k in running if k != "lm_head")
     log(f"  captured {n_inst} modules; paired={len(running)} (non-lm_head={n_body}) skipped={len(skipped)}")
     if n_body == 0:
