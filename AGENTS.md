@@ -10,7 +10,7 @@ This file provides guidance to AI coding agents working with this repository.
 2. **模型架构** — 两条独立 backbone（AgentWorld / Instruct）、草稿 / JEPA / 打分器 / 线性层 \(W\) / `lm_head` 怎么接、每个 Stage 跑哪一段。切鱼为什么放弃见本节开头。
 3. **Stage + Step** — 从切回合到评测的走法。
 
-运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。
+运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。ACT 融合后的 Harbor TB 2.1 分数在 **计分板：ACT 融合 · Terminal-Bench 2.1**（当前全局平均 **29.55%**）。
 
 ---
 
@@ -278,6 +278,26 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 - **Step 4.** 对照臂（与主线并行）：同一批命令行打在 Instruct 上。排序和保真度分开报。
 
 **用例子串一遍。** Stage Data 切出删除回合和恢复回合。Stage 1 吃删除：\(z_t\) 编「还有 `a.txt`」，\(u\) 编 `rm a.txt`，Pred 去贴「没了」的 \(z_{t+1}\)（`h+rm+gone` 一起编），LDAD 用差值还原这条 `rm`；训完整体冻死。Stage 2 吃恢复：Instruct 的 backbone 给出「已经没了」，草稿头提出恢复 / 再删 / 去 cat 三个候选，冻死的世界模型对三条各跑 Pred 打出 \(\hat z\)，打分器学会给恢复这条打最高分，推理时 \(\arg\max\) 选中它，\(W(u_i^A)\) 写出 `git checkout a.txt`。Stage Eval Step 3 把删除成功的观察藏起来，问恢复是不是已经被选中。
+
+---
+
+## 计分板：ACT 融合 · Terminal-Bench 2.1
+
+这是 **ACT 融合之后** 的 Harbor / Terminal-Bench 2.1 跑分，还没接到 Stage 1 JEPA。做法：`compare_act.py` 在同一串 token 上比 AgentWorld 和 Instruct 的模块输出通道，取出差异最大的 top \(p\%\) 当掩码；`merge/act.py` 只把这些通道按 \(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\) 写进 Instruct（默认 \(\lambda=0.4\)），词表和 `lm_head` 仍是 Instruct 的嘴。Harbor 连的是这份合并权重，model id **`qwen-act`**。
+
+**口径是全局分数平均。** 每道题独立跑 3 次；题分 = 这 3 次成功（1）或失败（0）的算术平均；总分再对所有题做算术平均。三次里过一次就是 1/3，过两次就是 2/3。每题次数相同，所以这也等于全部有效尝试直接平均。
+
+| 线 | 模型 | job | 题数 | 全局平均 |
+|----|------|-----|------|----------|
+| ACT 融合 | `qwen-act`（Instruct ← AgentWorld ACT \(\lambda=0.4\)） | `outputs/agent_eval/20260905T213120Z_qwen-act` | 88 | **29.55%** |
+
+记分时额外卡了三条，避免 Harbor 进度条 Mean（当时 82/263 ≈ 31.2%）把超时交卷和没出场的题混在一起：
+
+1. 超时（`AgentTimeoutError`）却 `reward=1` 的 6 次卡成 0。
+2. agent 没出场的去掉：`cancel-async-tasks` 三次都是沙箱没起来（`EnvironmentStartTimeoutError`），整题不进分母。89 题里剩 88 题 × 3 = 264 次。
+3. 收尾时仍在跑的 4 次（`build-pov-ray__jDndE9G`、`winning-avg-corewars__sxYJysh`、`distribution-search__bJ4uyX9`、`mailman__KqvSAkz`）按对一半记 0.5。
+
+264 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0，合计 78.0 / 264 = **29.55%**。按题看：3/3 全过 17 道，2/3 有 8 道，1/3 有 8 道，0/3 有 51 道；另外 4 道掺了未完成的 0.5。轨迹在该 job 的 `<题名>__<id>/agent/trajectory.json`（264 次有会话；`recording.cast` 是终端录像）。Instruct 对照臂还没打进这张表。
 
 ---
 
