@@ -7,7 +7,8 @@ over pooled answer tokens, rank every channel together, take top p% as the
 ability mask. No residual stream, no layer-cut table.
 
     python train/scripts/compare_act.py
-    python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 8
+    python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
+    CUDA_VISIBLE_DEVICES=0,1 python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
 
 Writes under ``train/outputs/act/``:
   summary.txt, report.json, mask.json, channels.jsonl
@@ -276,16 +277,85 @@ def _language_model_only(model_dir: Path) -> bool:
     return bool(cfg.get("language_model_only"))
 
 
+def _gpu_max_memory(*, reserve_gib: float, n_gpu: int | None = None) -> dict[Any, Any] | None:
+    """Cap per-GPU weight placement so a 32k MoE forward still has activation room."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    n = torch.cuda.device_count() if n_gpu is None else n_gpu
+    if n <= 0:
+        return None
+    out: dict[Any, Any] = {}
+    for i in range(n):
+        total = torch.cuda.get_device_properties(i).total_memory
+        reserve = int(reserve_gib * (1024**3))
+        cap = total - reserve
+        floor = int(total * 0.55)
+        if cap < floor:
+            cap = floor
+        out[i] = cap
+    return out
+
+
+def _offload_unused_multimodal(model) -> None:
+    """ACT only runs the text backbone. Park ViT / MTP on CPU if they landed on GPU."""
+    import torch
+
+    root = getattr(model, "model", model)
+    moved: list[str] = []
+    for name in ("visual", "vision_tower", "mtp"):
+        mod = getattr(model, name, None)
+        if mod is None:
+            mod = getattr(root, name, None)
+        if mod is None:
+            continue
+        try:
+            mod.to("cpu")
+            moved.append(name)
+        except Exception:
+            continue
+    if moved:
+        log(f"  offloaded to cpu: {', '.join(moved)}")
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+
+
 def _load_model(model_dir: Path, *, dtype, device_map: str):
+    import torch
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "torch_dtype": dtype,
         "dtype": dtype,
         "low_cpu_mem_usage": True,
         "device_map": device_map,
     }
+    n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    # Instruct is a VLM (ViT + MTP) on top of the same 35B MoE; World is LM-only.
+    # One 95GiB card fills with Instruct weights, then the 32k expert grouped-mm
+    # cannot allocate 1GiB. Two visible cards split the weights. One card keeps
+    # ~22GiB free for activations (more if this checkpoint still has ViT).
+    multimodal = not _language_model_only(model_dir)
+    if n_gpu >= 2:
+        reserve = 12.0
+    else:
+        reserve = 28.0 if multimodal else 18.0
+    mem = _gpu_max_memory(reserve_gib=reserve)
+    if mem is not None and device_map == "auto":
+        kwargs["max_memory"] = mem
+        log(
+            f"  device_map=auto n_gpu={n_gpu} reserve={reserve:.0f}GiB max_memory_gib="
+            + ",".join(f"{i}:{v / 1024**3:.0f}" for i, v in mem.items())
+        )
+        if n_gpu == 1 and multimodal:
+            log(
+                "  1 GPU + Instruct: extra CPU offload so 32k activations fit; "
+                "CUDA_VISIBLE_DEVICES=0,1 is faster if a second card exists"
+            )
     # AgentWorld is language_model_only (no ViT). ImageTextToText would
     # randomly init model.visual and print a MISSING dump; CausalLM first.
     loaders = (AutoModelForCausalLM, AutoModelForImageTextToText)
@@ -294,11 +364,15 @@ def _load_model(model_dir: Path, *, dtype, device_map: str):
     last = None
     for loader in loaders:
         try:
-            return loader.from_pretrained(str(model_dir), **kwargs), loader.__name__
+            model = loader.from_pretrained(str(model_dir), **kwargs)
+            _offload_unused_multimodal(model)
+            return model, loader.__name__
         except TypeError:
             kwargs.pop("dtype", None)
             try:
-                return loader.from_pretrained(str(model_dir), **kwargs), loader.__name__
+                model = loader.from_pretrained(str(model_dir), **kwargs)
+                _offload_unused_multimodal(model)
+                return model, loader.__name__
             except Exception as e:
                 last = e
         except Exception as e:
@@ -312,7 +386,9 @@ def _free(model) -> None:
     del model
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        for i in range(torch.cuda.device_count()):
+            with torch.cuda.device(i):
+                torch.cuda.empty_cache()
 
 
 def thin_answer_pos(pos: list[int], max_answer: int | None) -> list[int]:
@@ -342,7 +418,10 @@ def _answer_cpu(t, answer_idx):
     n = int(row.shape[0])
     if int(answer_idx[-1]) >= n:
         return None
-    sl = row.index_select(0, answer_idx)
+    idx = answer_idx
+    if idx.device != row.device:
+        idx = idx.to(device=row.device)
+    sl = row.index_select(0, idx)
     return sl.detach().to(device="cpu", dtype=torch.bfloat16)
 
 
@@ -673,6 +752,8 @@ def run_compare_act(
     )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    log(f"cuda_gpus={n_gpu} device_map={device_map}")
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
     n_jobs = len(jobs)
     n_chunks = max(1, math.ceil(n_jobs / chunk_size))
