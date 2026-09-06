@@ -291,7 +291,7 @@ Harbor 打 TB 2.1 的通用读法。后面每条计分板（ACT、以后的 Inst
 
 `train/outputs/agent_eval/<stamp>_<model>/<model>_terminal_bench_2_1/`
 
-整棵 `train/outputs/` 都在 `.gitignore` 里，git 克隆和 GPU 训练机默认没有这些文件。目录不存在 = 当前机器没跑过那次 Harbor，去评测机上看绝对路径，不要在仓库里找。
+整棵 `train/outputs/` 都在 `.gitignore` 里，git 克隆和 GPU 训练机默认没有这些文件。就算人就在这台评测机上，**Cursor 的 Glob / Grep 从仓库根搜也会返回 0 条**（工具默认跳过 gitignore），看起来像「目录不存在」。目录在磁盘上：用 Shell `ls`，或把 Glob 的搜索根设成绝对路径 `/home/BIV/train/outputs/agent_eval/<stamp>_...`，或直接 `Read` 那个 `trajectory.json`。不要只用仓库根搜索下结论。
 
 整份 Harbor 启动参数在该目录的 `config.json`。每一题目录里：
 
