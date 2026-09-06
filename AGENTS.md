@@ -10,7 +10,7 @@ This file provides guidance to AI coding agents working with this repository.
 2. **模型架构** — 两条独立 backbone（AgentWorld / Instruct）、草稿 / JEPA / 打分器 / 线性层 \(W\) / `lm_head` 怎么接、每个 Stage 跑哪一段。切鱼为什么放弃见本节开头。
 3. **Stage + Step** — 从切回合到评测的走法。
 
-运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。ACT 融合后的 Harbor TB 2.1 分数在 **计分板：ACT 融合 · Terminal-Bench 2.1**（当前全局平均 **29.64%**）。
+运行时产品（缸中之脑 / Demon）和上游 nanobot 在文后 **BIV 运行时**、**开发命令**。`Muse` 上的 Glimmer-30B LoRA 是**另一条** checkpoint 线，不要和本线混对照。Harbor TB 2.1 的读轨迹方法和 ACT 计分板在 **Terminal-Bench 2.1**（当前 ACT 全局平均 **29.64%**）。
 
 ---
 
@@ -281,7 +281,58 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 
 ---
 
-## 计分板：ACT 融合 · Terminal-Bench 2.1
+## Terminal-Bench 2.1
+
+Harbor 打 TB 2.1 的通用读法。后面每条计分板（ACT、以后的 Instruct 对照）共用这一段，只换 job 目录。
+
+### 怎么读轨迹
+
+一次完整尝试是 job 下面的一个目录，名字是 `<题名>__<短 id>`（同一道题 3 次就有 3 个不同 id）。根目录：
+
+`train/outputs/agent_eval/<stamp>_<model>/<model>_terminal_bench_2_1/`
+
+整份 Harbor 启动参数在该目录的 `config.json`。每一题目录里：
+
+| 文件 | 看什么 |
+|------|--------|
+| `agent/trajectory.json` | 主轨迹（ATIF）。模型在干什么，读这个。 |
+| `agent/trajectory.summarization-*.json` | 上下文被摘要时的切片；主线仍看 `trajectory.json`。 |
+| `agent/recording.cast` | 终端录像（asciinema）。 |
+| `agent/terminus_2.pane` | 当时 pane 快照。 |
+| `result.json` | `verifier_result.rewards.reward`（0/1）、`exception_info.exception_type`、token 数。 |
+| `verifier/test-stdout.txt`、`verifier/reward.txt` | Harbor 官方测试原文；模型自以为过了时，对错以这里为准。 |
+| `exception.txt` | 超时 / 沙箱错误栈。 |
+| `biv_toks.json` | 这一次的 tok/s。 |
+| `trial.log` | Harbor 跑这一格的日志。 |
+
+`trajectory.json` 的 `steps[]` 里，**Analysis/Plan 在 `message`，真正思考在 `reasoning_content`，真正打进终端的键在 `tool_calls[].arguments.keystrokes`，终端回显在 `observation`。** 只读 `message` 会以为它只在写计划；命令和「它点了完成」都在 `tool_calls`（函数名 `bash_command` 或 `mark_task_complete`）。过了的题和交卷却 0 分的题，最后几乎都会 `mark_task_complete`；超时的题几乎都不按。Terminus 会再问一句「确认完成吗」，最后一段 `reasoning_content` 常常从这句确认开始，把题面清单一项项勾完——那是它的内部验收，不是 Harbor 的。
+
+打开一道题最快的办法：先看 `result.json` 的 reward / exception，再抽最后两步的思考和命令：
+
+```python
+import json
+from pathlib import Path
+d = Path("train/outputs/agent_eval/<stamp>_<model>/<model>_terminal_bench_2_1/<题名>__<id>")
+trial = json.loads((d / "result.json").read_text())
+print(trial.get("exception_info"), (trial.get("verifier_result") or {}).get("rewards"))
+traj = json.loads((d / "agent" / "trajectory.json").read_text())
+for s in traj["steps"]:
+    if s.get("source") != "agent":
+        continue
+    think = (s.get("reasoning_content") or "").replace("\n", " ")
+    msg = (s.get("message") or "").replace("\n", " ")
+    cmds = [
+        (tc.get("function_name"), (tc.get("arguments") or {}).get("keystrokes"))
+        for tc in (s.get("tool_calls") or [])
+    ]
+    print(s["step_id"], cmds)
+    print(" THINK", think[:400])
+    print(" MSG", msg[:200])
+```
+
+对照官方失败原因，读同目录 `verifier/test-stdout.txt` 里的 `AssertionError` / `FAILED`。空输出加上退出码 0，模型经常当成绿灯。
+
+### 计分板：ACT 融合
 
 这是 **ACT 融合之后** 的 Harbor / Terminal-Bench 2.1 跑分，还没接到 Stage 1 JEPA。做法：`compare_act.py` 在同一串 token 上比 AgentWorld 和 Instruct 的模块输出通道，取出差异最大的 top \(p\%\) 当掩码；`merge/act.py` 只把这些通道按 \(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\) 写进 Instruct（默认 \(\lambda=0.4\)），词表和 `lm_head` 仍是 Instruct 的嘴。Harbor 连的是这份合并权重，model id **`qwen-act`**。
 
@@ -298,7 +349,30 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 3. 收尾时仍在跑的 4 次（`build-pov-ray__jDndE9G`、`winning-avg-corewars__sxYJysh`、`distribution-search__bJ4uyX9`、`mailman__KqvSAkz`）按对一半记 0.5。
 4. **第三类不算：** 模型已经在干、沙箱先没了的尝试不进分母。9 次 `DaytonaNotFoundError` / `DaytonaBadGatewayError`（`qemu-alpine-ssh`、`schemelike-metacircular-eval`、`build-pov-ray`、`gpt2-codegolf`、`llm-inference-batching-scheduler`、`make-doom-for-mips`、`path-tracing`、`regex-chess`、`write-compressor` 各一次），外加 1 次 tmux 已死的 `RuntimeError`（`count-dataset-tokens`）。这 10 道题按剩下 2 次平均。
 
-有效 254 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0。各题平均（78 道仍是 3 次、10 道是 2 次）= **29.64%**。轨迹在该 job 的 `<题名>__<id>/agent/trajectory.json`。Instruct 对照臂还没打进这张表。
+有效 254 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0。各题平均（78 道仍是 3 次、10 道是 2 次）= **29.64%**。Instruct 对照臂还没打进这张表。
+
+**本 job 轨迹根目录：** `train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
+Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
+
+**这次启动写进计分板的配置**（对照下次跑 Instruct / 换 λ 用同一张表）。数字来自该 job 的 `config.json` + 每题 `result.json` 里的 `config`，以及产出这份权重/服务的脚本默认值：
+
+| 旋钮 | 这次的值 |
+|------|----------|
+| ACT 掩码 | `python train/scripts/compare_act.py`，通道差 top \(p=1\%\)（`DEFAULT_TOP_P=0.01`），写出 `train/outputs/compare_act/mask.json` |
+| ACT 融合 | `python merge/act.py`：\(\lambda=0.4\)，目标 Instruct、能力侧 AgentWorld，输出 `merge/output/act`；词表 sidecar 从 Instruct 拷贝 |
+| vLLM | `python merge/eval.py --act --max-model-len 65536`；served id `qwen-act`；`--language-model-only`；`--reasoning-parser qwen3`；`--tool-call-parser qwen3_coder`；`--dtype bfloat16`；`--gpu-memory-utilization 0.90` |
+| Harbor 入口 | `cd train && python scripts/test.py --act --suite terminal_bench_2_1 --env daytona` |
+| 数据集 | `terminal-bench/terminal-bench-2-1`（job 钉死 `sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a`） |
+| agent | Terminus 2（`terminus-2` 2.0.0） |
+| 模型 id | `openai/qwen-act` |
+| 沙箱 | Daytona；`--override-gpus 0`；磁盘按题面 `task.toml` 的 `storage_mb`（没有 `override_storage`） |
+| 尝试次数 | \(k=3\) |
+| 并行格数 | `-n 16` |
+| 采样 | `temperature=1.0`，`reasoning_effort=high`，`top_p=0.95`，`top_k=64`（对齐 `train/eval/meta_reference.json` 的 sampling） |
+| 窗口 | vLLM `max_model_len=65536`；Terminus `model_info`：`max_tokens=65536`，`max_input_tokens=45056`，`max_output_tokens=16384` |
+| 超时 | `--timeout-multiplier 1.0`；`--agent-timeout-multiplier` 不传（用各题 `task.toml` 的 `timeout_sec`，事后按会话 tok/s 往 40 靠） |
+| 回合上限 | 不传 `max_turns`（Harbor 视为不限） |
+| API | `https://u741253-tujr-a523480e.westd.seetacloud.com:8443/v1` |
 
 ---
 
