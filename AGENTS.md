@@ -411,7 +411,7 @@ for s in traj["steps"]:
 python train/scripts/compare.py
 
 # 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力）
-python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 1500
+python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 python merge/act.py --no-lm-head

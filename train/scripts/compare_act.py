@@ -507,21 +507,47 @@ def format_summary(report: dict[str, Any]) -> str:
 
 
 def load_jsonl_chats(path: Path, max_rows: int) -> list[list[dict[str, Any]]]:
+    """Read full chat messages from a single JSONL or a multi-source mix directory."""
+    paths: list[Path] = []
+    if path.is_file():
+        paths = [path]
+    elif path.is_dir():
+        # Like train_jepa.py: check subdirectories (wm_code, wm_os, etc.) or root
+        for src in ("wm_code", "wm_os", "anti_forget"):
+            cand = path / src / "train.jsonl"
+            if cand.is_file():
+                paths.append(cand)
+        if not paths:
+            for cand in path.glob("*.jsonl"):
+                if "train" in cand.name:
+                    paths.append(cand)
+        if not paths:
+            raise FileNotFoundError(f"no .jsonl files found under directory {path}")
+    else:
+        raise FileNotFoundError(f"No such file or directory: {path}")
+
     rows: list[list[dict[str, Any]]] = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            msgs = obj.get("messages") if isinstance(obj, dict) else None
-            if not isinstance(msgs, list) or split_hao(msgs) is None:
-                continue
-            rows.append(msgs)
-            if len(rows) >= max_rows:
-                break
+    per_file_limit = max(1, math.ceil(max_rows / len(paths))) if paths else max_rows
+    for p in paths:
+        sub_count = 0
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                msgs = obj.get("messages") if isinstance(obj, dict) else None
+                if not isinstance(msgs, list) or split_hao(msgs) is None:
+                    continue
+                rows.append(msgs)
+                sub_count += 1
+                if sub_count >= per_file_limit or len(rows) >= max_rows:
+                    break
+        if len(rows) >= max_rows:
+            break
+
     if not rows:
-        raise ValueError(f"no complete (h,a,o) chats in {path}")
+        raise ValueError(f"no complete (h,a,o) chats found via {path}")
     return rows
 
 
@@ -687,7 +713,7 @@ def main() -> None:
     jsonl = args.jsonl
     if jsonl is not None and not jsonl.is_absolute():
         for cand in (jsonl, ROOT / jsonl, ROOT / "train" / jsonl):
-            if cand.is_file():
+            if cand.exists():
                 jsonl = cand
                 break
     report = run_compare_act(
