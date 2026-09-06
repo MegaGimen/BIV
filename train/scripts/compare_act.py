@@ -217,6 +217,7 @@ def encode_prompt(
     text: str | None,
     messages: list[dict[str, str]] | None,
     token_mode: str,
+    max_length: int | None = None,
 ) -> tuple[list[int], list[int], str]:
     """Return (input_ids, answer_positions, note)."""
     if text is not None:
@@ -228,6 +229,8 @@ def encode_prompt(
                 "--text has no chat answer span; pass --tokens all (not ACT) "
                 "or use the default chat / --jsonl"
             )
+        if max_length is not None and len(ids) > max_length:
+            ids = ids[-max_length:]
         pos = list(range(len(ids)))
         return ids, pos, "raw --text; mean over all tokens (not ACT answer mask)"
 
@@ -237,16 +240,25 @@ def encode_prompt(
     if not full:
         raise ValueError("empty chat tokenization")
     if token_mode == "all":
+        if max_length is not None and len(full) > max_length:
+            full = full[-max_length:]
         return full, list(range(len(full))), "chat; mean over all tokens (not ACT answer mask)"
 
     prefix = chat_ids(tokenizer, messages[:-1], add_generation_prompt=True)
     start = len(prefix)
     if start >= len(full) or full[: min(start, len(full))] != prefix[: min(start, len(full))]:
         start = max(0, len(full) - max(1, len(full) // 4))
-        note = (
-            f"chat; prefix not a prefix of full (start clamped to {start}); "
-            "ACT mean over that suffix"
-        )
+
+    if max_length is not None and len(full) > max_length:
+        ans_len = len(full) - start
+        if ans_len >= max_length:
+            full = full[start : start + max_length]
+            start = 0
+        else:
+            offset = len(full) - max_length
+            full = full[offset:]
+            start = max(0, start - offset)
+        note = f"chat; truncated to {max_length}; ACT mean over last-assistant tokens [{start}:{len(full)}]"
     else:
         note = f"chat; ACT mean over last-assistant tokens [{start}:{len(full)}]"
     return full, list(range(start, len(full))), note
@@ -559,6 +571,7 @@ def run_compare_act(
     text: str | None,
     jsonl: Path | None,
     max_rows: int,
+    max_length: int | None = 32768,
     device_map: str,
     token_mode: str,
     p: float,
@@ -572,16 +585,34 @@ def run_compare_act(
     if jsonl is not None:
         for msgs in load_jsonl_chats(jsonl, max_rows):
             jobs.append(
-                encode_prompt(tokenizer, text=None, messages=msgs, token_mode=token_mode)
+                encode_prompt(
+                    tokenizer,
+                    text=None,
+                    messages=msgs,
+                    token_mode=token_mode,
+                    max_length=max_length,
+                )
             )
         prompt_note = f"jsonl={jsonl} n={len(jobs)}; " + jobs[0][2]
     elif text is not None:
-        jobs.append(encode_prompt(tokenizer, text=text, messages=None, token_mode=token_mode))
+        jobs.append(
+            encode_prompt(
+                tokenizer,
+                text=text,
+                messages=None,
+                token_mode=token_mode,
+                max_length=max_length,
+            )
+        )
         prompt_note = jobs[0][2]
     else:
         jobs.append(
             encode_prompt(
-                tokenizer, text=None, messages=DEFAULT_MESSAGES, token_mode=token_mode
+                tokenizer,
+                text=None,
+                messages=DEFAULT_MESSAGES,
+                token_mode=token_mode,
+                max_length=max_length,
             )
         )
         prompt_note = jobs[0][2]
@@ -598,7 +629,11 @@ def run_compare_act(
     log("loading AgentWorld")
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
     log(f"  class={wname}")
-    world_caps = [capture_one(world, ids, pos, include_experts=include_experts) for ids, pos, _ in jobs]
+    world_caps: list[dict[str, Any]] = []
+    for idx, (ids, pos, _) in enumerate(jobs, 1):
+        if idx == 1 or idx % 10 == 0 or idx == len(jobs):
+            log(f"  AgentWorld forwarding sample {idx}/{len(jobs)} (len={len(ids)}, ans={len(pos)})")
+        world_caps.append(capture_one(world, ids, pos, include_experts=include_experts))
     log(f"  captured {len(world_caps[0]) if world_caps else 0} modules")
     _free(world)
 
@@ -608,7 +643,9 @@ def run_compare_act(
     running: dict[str, tuple[list[float], int]] = {}
     skipped: set[str] = set()
     n_inst = 0
-    for cap_w, (ids, pos, _) in zip(world_caps, jobs, strict=True):
+    for idx, (cap_w, (ids, pos, _)) in enumerate(zip(world_caps, jobs, strict=True), 1):
+        if idx == 1 or idx % 10 == 0 or idx == len(jobs):
+            log(f"  Instruct forwarding sample {idx}/{len(jobs)} (len={len(ids)}, ans={len(pos)})")
         cap_a = capture_one(agent, ids, pos, include_experts=include_experts)
         n_inst = len(cap_a)
         acc_pair(running, cap_w, cap_a, skipped)
@@ -675,6 +712,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--max-rows", type=int, default=8, help="with --jsonl, how many complete chats")
     p.add_argument(
+        "--max-length",
+        type=int,
+        default=32768,
+        help="truncate input tokens (preserves last assistant answer). default: 32768",
+    )
+    p.add_argument(
         "--tokens",
         choices=["answer", "all"],
         default="answer",
@@ -723,6 +766,7 @@ def main() -> None:
         text=args.text,
         jsonl=jsonl,
         max_rows=args.max_rows,
+        max_length=args.max_length,
         device_map=args.device_map,
         token_mode=token_mode,
         p=args.p,

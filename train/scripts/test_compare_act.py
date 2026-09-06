@@ -189,6 +189,14 @@ def test_encode_prompt_string_chat_template() -> None:
     assert pos[-1] == len(ids) - 1
     assert all(isinstance(ids[i], int) for i in pos)
 
+    # Test truncation preserves answer
+    ids_trunc, pos_trunc, note_trunc = encode_prompt(
+        _Tok(), text=None, messages=msgs, token_mode="answer", max_length=10
+    )
+    assert len(ids_trunc) <= 10
+    assert len(pos_trunc) > 0
+    assert "truncated to 10" in note_trunc
+
 
 def test_summary_is_channel_not_layer_cut() -> None:
     named = {

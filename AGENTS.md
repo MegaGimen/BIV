@@ -410,8 +410,8 @@ for s in traj["steps"]:
 # 可选诊断：相对 Base 的行-MAV 文本表（不再决定任何切点，纯测量）
 python train/scripts/compare.py
 
-# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力）
-python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
+# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力，默认 32k 截断）
+python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 100 --max-length 32768
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 python merge/act.py --no-lm-head
