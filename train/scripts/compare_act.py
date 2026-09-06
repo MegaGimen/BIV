@@ -24,7 +24,6 @@ import argparse
 import gc
 import json
 import math
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -353,6 +352,7 @@ def capture_one(
     answer_pos: list[int],
     *,
     include_experts: bool = True,
+    include_lm_head: bool = False,
 ) -> dict[str, Any]:
     """Forward once; keep only answer-token module outputs on CPU (bf16)."""
     import torch
@@ -407,15 +407,15 @@ def capture_one(
     for h in handles:
         h.remove()
 
-    last = getattr(out, "last_hidden_state", None)
-    if last is None:
-        raise RuntimeError("forward returned no last_hidden_state")
-    last_ans = last[0].index_select(0, answer_idx)
-
-    head = lm_head_module(model)
-    if head is not None:
-        logits = _apply_lm_head(head, last_ans)
-        captures["lm_head"] = logits.detach().to(device="cpu", dtype=torch.bfloat16)
+    if include_lm_head:
+        last = getattr(out, "last_hidden_state", None)
+        if last is None:
+            raise RuntimeError("forward returned no last_hidden_state")
+        last_ans = last[0].index_select(0, answer_idx)
+        head = lm_head_module(model)
+        if head is not None:
+            logits = _apply_lm_head(head, last_ans)
+            captures["lm_head"] = logits.detach().to(device="cpu", dtype=torch.bfloat16)
 
     return captures
 
@@ -612,6 +612,8 @@ def run_compare_act(
     token_mode: str,
     p: float,
     include_experts: bool = True,
+    include_lm_head: bool = False,
+    chunk_size: int = 32,
     cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     import torch
@@ -667,78 +669,75 @@ def run_compare_act(
     log(
         f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} "
         f"(raw_tokens={n_tokens_raw} raw_answer={n_answer_raw} "
-        f"max_answer_tokens={max_answer_tokens}) ({prompt_note})"
+        f"max_answer_tokens={max_answer_tokens} chunk_size={chunk_size}) ({prompt_note})"
     )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
+    n_jobs = len(jobs)
+    n_chunks = max(1, math.ceil(n_jobs / chunk_size))
+    total_fwds = 2 * n_jobs
 
     def _format_eta(elapsed: float, done: int, total: int) -> str:
         if done <= 0:
             return "--:--:--"
-        rate = elapsed / done
-        rem = rate * (total - done)
+        rem = (elapsed / done) * (total - done)
         return time.strftime("%H:%M:%S", time.gmtime(rem))
 
-    log("loading AgentWorld...")
-    world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
-    log(f"  AgentWorld class={wname}")
-
-    tmp_root = cache_dir if cache_dir is not None else Path.cwd()
-    act_tmp_dir = tmp_root / "_act_world_caps_tmp"
-    if act_tmp_dir.exists():
-        shutil.rmtree(act_tmp_dir)
-    act_tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    t0 = time.time()
-    for idx, (ids, pos, _) in enumerate(jobs, 1):
-        if idx == 1 or idx % 5 == 0 or idx == len(jobs):
+    def _log_fwd(phase: str, idx: int, ids: list[int], pos: list[int], t0: float, done: int) -> None:
+        if idx == 1 or idx % 5 == 0 or idx == n_jobs:
             elapsed = time.time() - t0
-            eta_str = _format_eta(elapsed, idx - 1, len(jobs))
-            speed = (idx - 1) / elapsed if elapsed > 0 and idx > 1 else 0.0
+            speed = done / elapsed if elapsed > 0 and done else 0.0
             log(
-                f"  AgentWorld sample {idx}/{len(jobs)} "
+                f"  {phase} sample {idx}/{n_jobs} "
                 f"(len={len(ids)}, ans={len(pos)}) "
-                f"[{speed:.2f}s/it, ETA: {eta_str}]"
+                f"[{speed:.2f} it/s, ETA: {_format_eta(elapsed, done, total_fwds)}]"
             )
-        cap = capture_one(world, ids, pos, include_experts=include_experts)
-        torch.save(cap, act_tmp_dir / f"cap_{idx}.pt")
-        del cap
-
-    log(f"  AgentWorld finished {len(jobs)} samples (saved to disk) in {time.time()-t0:.1f}s")
-    _free(world)
-
-    log("loading Instruct...")
-    agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
-    log(f"  Instruct class={aname}")
 
     running: dict[str, tuple[Any, int]] = {}
     skipped: set[str] = set()
+    n_inst = 0
+    t0 = time.time()
+    fwds_done = 0
+    cap_kw = dict(include_experts=include_experts, include_lm_head=include_lm_head)
 
-    t1 = time.time()
-    for idx, (ids, pos, _) in enumerate(jobs, 1):
-        if idx == 1 or idx % 5 == 0 or idx == len(jobs):
-            elapsed = time.time() - t1
-            eta_str = _format_eta(elapsed, idx - 1, len(jobs))
-            speed = (idx - 1) / elapsed if elapsed > 0 and idx > 1 else 0.0
-            log(
-                f"  Instruct sample {idx}/{len(jobs)} "
-                f"(len={len(ids)}, ans={len(pos)}) "
-                f"[{speed:.2f}s/it, ETA: {eta_str}]"
-            )
+    for c in range(n_chunks):
+        sl = slice(c * chunk_size, min(n_jobs, (c + 1) * chunk_size))
+        chunk = jobs[sl]
+        log(f"chunk {c + 1}/{n_chunks} ({len(chunk)} samples): loading AgentWorld")
+        world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
+        if c == 0:
+            log(f"  class={wname}")
+        world_caps: list[dict[str, Any]] = []
+        for j, (ids, pos, _) in enumerate(chunk):
+            idx = c * chunk_size + j + 1
+            _log_fwd("AgentWorld", idx, ids, pos, t0, fwds_done)
+            world_caps.append(capture_one(world, ids, pos, **cap_kw))
+            fwds_done += 1
+        _free(world)
 
-        cap_pt_path = act_tmp_dir / f"cap_{idx}.pt"
-        cap_w = torch.load(cap_pt_path, map_location="cpu", weights_only=False)
-        cap_a = capture_one(agent, ids, pos, include_experts=include_experts)
-        acc_pair(running, cap_w, cap_a, skipped)
-        del cap_w, cap_a
-        if cap_pt_path.exists():
-            cap_pt_path.unlink()
+        log(f"chunk {c + 1}/{n_chunks}: loading Instruct")
+        agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
+        if c == 0:
+            log(f"  class={aname}")
+        for j, ((ids, pos, _), cap_w) in enumerate(zip(chunk, world_caps, strict=True)):
+            idx = c * chunk_size + j + 1
+            _log_fwd("Instruct", idx, ids, pos, t0, fwds_done)
+            cap_a = capture_one(agent, ids, pos, **cap_kw)
+            n_inst = len(cap_a)
+            acc_pair(running, cap_w, cap_a, skipped)
+            del cap_w, cap_a
+            fwds_done += 1
+        del world_caps
+        _free(agent)
 
-    _free(agent)
-    shutil.rmtree(act_tmp_dir, ignore_errors=True)
-    log(f"  Instruct finished & accumulated modules={len(running)} in {time.time()-t1:.1f}s")
-
+    n_body = sum(1 for k in running if k != "lm_head")
+    log(
+        f"  captured {n_inst} modules; paired={len(running)} "
+        f"(non-lm_head={n_body}) skipped={len(skipped)} in {time.time() - t0:.1f}s"
+    )
+    if n_body == 0:
+        log("WARNING: only lm_head paired — module names did not align")
 
     mod_delta = finalize_running(running)
     analysis = analyze_channels(mod_delta, p=p, layer_types=types)
@@ -748,13 +747,15 @@ def run_compare_act(
         "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
         "mean over pooled answer tokens, rank all channels, keep top p% "
         "(arXiv:2601.09398). Residual stream is not used. "
-        "Two-stage disk-buffered execution: AgentWorld answer activations saved to disk per sample, "
-        "Instruct processes and accumulates Δa on the fly, keeping RAM and GPU usage minimal. "
+        f"Chunked in-RAM (chunk_size={chunk_size}): World then Instruct per chunk, "
+        "accumulate Δa, drop activations. "
     )
     if include_experts:
         method_note += "Routed MoE experts and shared experts are both hooked."
     else:
         method_note += "Routed MoE experts skipped. Shared-expert gate/up/down is the dense-MLP analog."
+    if not include_lm_head:
+        method_note += " lm_head not captured (merge default --no-lm-head)."
 
     return {
         "method": method_note,
@@ -833,6 +834,18 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="skip routed MoE experts.* (only hook shared_expert for FFN)",
     )
+    p.add_argument(
+        "--lm-head",
+        action="store_true",
+        default=False,
+        help="also capture lm_head (large; merge uses --no-lm-head by default)",
+    )
+    p.add_argument(
+        "--chunk-size",
+        type=int,
+        default=32,
+        help="World/Instruct swap every N samples (in RAM, no 1500-file dump)",
+    )
     p.add_argument("--device-map", default="auto")
     return p.parse_args()
 
@@ -875,6 +888,8 @@ def main() -> None:
         token_mode=token_mode,
         p=args.p,
         include_experts=not args.skip_experts,
+        include_lm_head=args.lm_head,
+        chunk_size=max(1, args.chunk_size),
     )
     ranked = report.pop("ranked")
     mask = {
