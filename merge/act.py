@@ -10,7 +10,7 @@ Unmasked rows stay Instruct. Tokenizer / config stay Instruct so Harbor
 Terminus still talks to the command mouth. Default λ=0.4 (ACT transfer-only).
 
 Mask comes from ``python train/scripts/compare_act.py`` →
-``train/outputs/compare_act/mask.json``.
+``train/outputs/act/mask.json``.
 
     python merge/act.py
     python merge/act.py --lambda 0.4 --no-lm-head
@@ -57,7 +57,7 @@ from biv_wm.act import (  # noqa: E402
     world_param_candidates,
 )
 
-DEFAULT_MASK = ROOT / "train" / "outputs" / "compare_act" / "mask.json"
+DEFAULT_MASK = ROOT / "train" / "outputs" / "act" / "mask.json"
 DEFAULT_OUT = ROOT / "merge" / "output" / "act"
 DEFAULT_LAMBDA = 0.4
 
@@ -307,7 +307,7 @@ def parse_args() -> argparse.Namespace:
         "--mask",
         type=Path,
         default=DEFAULT_MASK,
-        help="compare_act mask.json (default: train/outputs/compare_act/mask.json)",
+        help="compare_act mask.json (default: train/outputs/act/mask.json)",
     )
     p.add_argument(
         "--lambda",

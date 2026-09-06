@@ -149,7 +149,7 @@ flowchart LR
 
 Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。激活差探针：`python train/scripts/compare_act.py`（同一串 token 进 AgentWorld 和 Instruct；按 ACT 对**模块输出通道**在答案 token 上取 \(|a^{AW}-a^{Instruct}|\)，全局排序取 top \(p\%\) 掩码。写出 `train/outputs/compare_act/`：`summary.txt`、`report.json`、`mask.json`、`channels.jsonl`）。把掩码行按 ACT 写进 Instruct：`python merge/act.py`（\(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\)，默认 \(\lambda=0.4\)，输出 `merge/output/act`），再 `python merge/eval.py --act` 起 vLLM。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
+`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。激活差探针：`python train/scripts/compare_act.py`（同一串 token 进 AgentWorld 和 Instruct；按 ACT 对**模块输出通道**在答案 token 上取 \(|a^{AW}-a^{Instruct}|\)，全局排序取 top \(p\%\) 掩码。写出 `train/outputs/act/`：`summary.txt`、`report.json`、`mask.json`、`channels.jsonl`）。把掩码行按 ACT 写进 Instruct：`python merge/act.py`（\(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\)，默认 \(\lambda=0.4\)，输出 `merge/output/act`），再 `python merge/eval.py --act` 起 vLLM。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
@@ -360,7 +360,7 @@ for s in traj["steps"]:
 
 | 旋钮 | 这次的值 |
 |------|----------|
-| ACT 掩码 | `python train/scripts/compare_act.py`，通道差 top \(p=1\%\)（`DEFAULT_TOP_P=0.01`），写出 `train/outputs/compare_act/mask.json` |
+| ACT 掩码 | `python train/scripts/compare_act.py`，通道差 top \(p=1\%\)（`DEFAULT_TOP_P=0.01`），写出 `train/outputs/act/mask.json` |
 | ACT 融合 | `python merge/act.py`：\(\lambda=0.4\)，目标 Instruct、能力侧 AgentWorld，输出 `merge/output/act`；词表 sidecar 从 Instruct 拷贝 |
 | vLLM | `python merge/eval.py --act --max-model-len 65536`；served id `qwen-act`；`--language-model-only`；`--reasoning-parser qwen3`；`--tool-call-parser qwen3_coder`；`--dtype bfloat16`；`--gpu-memory-utilization 0.90` |
 | Harbor 入口 | `cd train && python scripts/test.py --act --suite terminal_bench_2_1 --env daytona` |
@@ -411,7 +411,7 @@ for s in traj["steps"]:
 python train/scripts/compare.py
 
 # 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力，默认 32k 截断）
-python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 100 --max-length 32768
+python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 python merge/act.py --no-lm-head

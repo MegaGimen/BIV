@@ -9,7 +9,7 @@ ability mask. No residual stream, no layer-cut table.
     python train/scripts/compare_act.py
     python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 8
 
-Writes under ``train/outputs/compare_act/``:
+Writes under ``train/outputs/act/``:
   summary.txt, report.json, mask.json, channels.jsonl
 
 Merge those mask rows into Instruct::
@@ -57,7 +57,7 @@ from download import (  # noqa: E402
     resolve_model,
 )
 
-DEFAULT_OUT = ROOT / "train" / "outputs" / "compare_act"
+DEFAULT_OUT = ROOT / "train" / "outputs" / "act"
 
 DEFAULT_MESSAGES = [
     {"role": "user", "content": "ls"},

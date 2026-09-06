@@ -62,7 +62,7 @@ Claim protocol unchanged: real-I/O vs **shuffled** twin + same-scaffold agent me
 python train/scripts/compare.py
 
 # Optional diagnostic: ACT module-channel |a_AW - a_Instruct| on answer tokens
-# (CCDF + top-p% mask, not a layer-cut table; writes train/outputs/compare_act/)
+# (CCDF + top-p% mask, not a layer-cut table; writes train/outputs/act/)
 python train/scripts/compare_act.py
 
 # ACT merge: copy top-p% rows from AgentWorld into Instruct (λ=0.4)
