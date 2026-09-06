@@ -287,9 +287,11 @@ Harbor 打 TB 2.1 的通用读法。后面每条计分板（ACT、以后的 Inst
 
 ### 怎么读轨迹
 
-一次完整尝试是 job 下面的一个目录，名字是 `<题名>__<短 id>`（同一道题 3 次就有 3 个不同 id）。根目录：
+一次完整尝试是 job 下面的一个目录，名字是 `<题名>__<短 id>`（同一道题 3 次就有 3 个不同 id）。根目录在 **跑 Harbor 的那台机器** 上：
 
 `train/outputs/agent_eval/<stamp>_<model>/<model>_terminal_bench_2_1/`
+
+整棵 `train/outputs/` 都在 `.gitignore` 里，git 克隆和 GPU 训练机默认没有这些文件。目录不存在 = 当前机器没跑过那次 Harbor，去评测机上看绝对路径，不要在仓库里找。
 
 整份 Harbor 启动参数在该目录的 `config.json`。每一题目录里：
 
@@ -351,8 +353,8 @@ for s in traj["steps"]:
 
 有效 254 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0。各题平均（78 道仍是 3 次、10 道是 2 次）= **29.64%**。Instruct 对照臂还没打进这张表。
 
-**本 job 轨迹根目录：** `train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
-Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
+**本 job 轨迹根目录（只在跑 Harbor 的那台机器上）：** `/home/BIV/train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
+`.gitignore` 里有整棵 `train/outputs/`，所以 **git 里没有这份目录**：`git pull`、AutoDL GPU 机、别的 clone 上都看不到。轨迹是 Harbor 写在本机磁盘上的评测产物（约 1.7G），不是仓库文件。Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
 
 **这次启动写进计分板的配置**（对照下次跑 Instruct / 换 λ 用同一张表）。数字来自该 job 的 `config.json` + 每题 `result.json` 里的 `config`，以及产出这份权重/服务的脚本默认值：
 
