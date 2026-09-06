@@ -32,6 +32,7 @@ from compare_act import (  # noqa: E402
     _module_exec_device,
     encode_prompt,
     format_summary,
+    thin_answer_pos,
 )
 
 
@@ -40,6 +41,15 @@ def test_channel_delta_mean() -> None:
     b = [[0.0, 0.0], [0.0, 0.0]]
     d = channel_delta(a, b)
     assert d == [2.0, 4.0], d
+
+
+def test_thin_answer_pos() -> None:
+    assert thin_answer_pos(list(range(10)), None) == list(range(10))
+    assert thin_answer_pos(list(range(10)), 10) == list(range(10))
+    assert thin_answer_pos(list(range(10)), 1) == [9]
+    got = thin_answer_pos(list(range(100)), 4)
+    assert got[0] == 0 and got[-1] == 99
+    assert len(got) == 4
 
 
 def test_token_weighted_across_samples() -> None:
@@ -230,6 +240,7 @@ def test_summary_is_channel_not_layer_cut() -> None:
 
 def main() -> None:
     test_channel_delta_mean()
+    test_thin_answer_pos()
     test_token_weighted_across_samples()
     test_canonical_module_key_aligns_backbones()
     test_hook_kind_act_modules_only()

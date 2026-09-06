@@ -24,6 +24,7 @@ import argparse
 import gc
 import json
 import math
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -315,6 +316,37 @@ def _free(model) -> None:
         torch.cuda.empty_cache()
 
 
+def thin_answer_pos(pos: list[int], max_answer: int | None) -> list[int]:
+    """Evenly keep at most ``max_answer`` positions from the answer span."""
+    if not pos or max_answer is None or max_answer <= 0 or len(pos) <= max_answer:
+        return list(pos)
+    if max_answer == 1:
+        return [pos[-1]]
+    last = len(pos) - 1
+    picks = [round(i * last / (max_answer - 1)) for i in range(max_answer)]
+    return [pos[i] for i in picks]
+
+
+def _answer_cpu(t, answer_idx):
+    """Index answer tokens on-device, then one small bf16 copy to CPU.
+
+    Do not ``.cpu()`` the full sequence first: a 32k × 8k activation is ~1GB
+    per module, and hundreds of those modules are why 1500-row runs fill RAM.
+    """
+    import torch
+
+    row = t[0] if t.ndim == 3 else t
+    if row.ndim != 2:
+        return None
+    if answer_idx.numel() == 0:
+        return None
+    n = int(row.shape[0])
+    if int(answer_idx[-1]) >= n:
+        return None
+    sl = row.index_select(0, answer_idx)
+    return sl.detach().to(device="cpu", dtype=torch.bfloat16)
+
+
 def capture_one(
     model,
     input_ids: list[int],
@@ -322,25 +354,25 @@ def capture_one(
     *,
     include_experts: bool = True,
 ) -> dict[str, Any]:
-    """Forward once; CPU float32 *module* outputs at answer positions."""
+    """Forward once; keep only answer-token module outputs on CPU (bf16)."""
     import torch
 
     device = _embed_device(model)
     ids = torch.tensor([input_ids], device=device)
     mask = torch.ones_like(ids)
+    answer_idx = torch.tensor(answer_pos, device=device, dtype=torch.long)
 
     captures: dict[str, Any] = {}
     handles = []
-
-    def _answer(t):
-        return t[0].detach().float().cpu()[answer_pos]
 
     def make_hook(name: str):
         def _hook(_mod, _inp, out):
             t = _as_btc(out)
             if t is None:
                 return
-            captures[name] = _answer(t)
+            sl = _answer_cpu(t, answer_idx)
+            if sl is not None:
+                captures[name] = sl
 
         return _hook
 
@@ -378,23 +410,25 @@ def capture_one(
     last = getattr(out, "last_hidden_state", None)
     if last is None:
         raise RuntimeError("forward returned no last_hidden_state")
-    last_ans = _answer(last)
+    last_ans = last[0].index_select(0, answer_idx)
 
     head = lm_head_module(model)
     if head is not None:
         logits = _apply_lm_head(head, last_ans)
-        captures["lm_head"] = logits.detach().float().cpu()
+        captures["lm_head"] = logits.detach().to(device="cpu", dtype=torch.bfloat16)
 
     return captures
 
 
 def acc_pair(
-    running: dict[str, tuple[list[float], int]],
+    running: dict[str, tuple[Any, int]],
     left: dict[str, Any],
     right: dict[str, Any],
     skipped: set[str],
 ) -> None:
     for k in sorted(set(left) & set(right)):
+        if k.startswith("_"):
+            continue
         a, b = left[k], right[k]
         if tuple(a.shape) != tuple(b.shape):
             skipped.add(f"{k}:shape {tuple(a.shape)} vs {tuple(b.shape)}")
@@ -573,10 +607,12 @@ def run_compare_act(
     jsonl: Path | None,
     max_rows: int,
     max_length: int | None = 32768,
+    max_answer_tokens: int = 256,
     device_map: str,
     token_mode: str,
     p: float,
     include_experts: bool = True,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     import torch
     from transformers import AutoTokenizer
@@ -618,11 +654,21 @@ def run_compare_act(
         )
         prompt_note = jobs[0][2]
 
+    n_tokens_raw = sum(len(ids) for ids, _, _ in jobs)
+    n_answer_raw = sum(len(pos) for _, pos, _ in jobs)
+    jobs = [
+        (ids, thin_answer_pos(pos, max_answer_tokens), note)
+        for ids, pos, note in jobs
+    ]
     n_tokens = sum(len(ids) for ids, _, _ in jobs)
     n_answer = sum(len(pos) for _, pos, _ in jobs)
     ans_ids = [int(jobs[0][0][i]) for i in jobs[0][1]]
     decoded = tokenizer.decode(ans_ids, skip_special_tokens=False) if ans_ids else ""
-    log(f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} ({prompt_note})")
+    log(
+        f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} "
+        f"(raw_tokens={n_tokens_raw} raw_answer={n_answer_raw} "
+        f"max_answer_tokens={max_answer_tokens}) ({prompt_note})"
+    )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
@@ -634,10 +680,16 @@ def run_compare_act(
         rem = rate * (total - done)
         return time.strftime("%H:%M:%S", time.gmtime(rem))
 
-    log("loading AgentWorld")
+    log("loading AgentWorld...")
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
-    log(f"  class={wname}")
-    world_caps: list[dict[str, Any]] = []
+    log(f"  AgentWorld class={wname}")
+
+    tmp_root = cache_dir if cache_dir is not None else Path.cwd()
+    act_tmp_dir = tmp_root / "_act_world_caps_tmp"
+    if act_tmp_dir.exists():
+        shutil.rmtree(act_tmp_dir)
+    act_tmp_dir.mkdir(parents=True, exist_ok=True)
+
     t0 = time.time()
     for idx, (ids, pos, _) in enumerate(jobs, 1):
         if idx == 1 or idx % 5 == 0 or idx == len(jobs):
@@ -649,18 +701,22 @@ def run_compare_act(
                 f"(len={len(ids)}, ans={len(pos)}) "
                 f"[{speed:.2f}s/it, ETA: {eta_str}]"
             )
-        world_caps.append(capture_one(world, ids, pos, include_experts=include_experts))
-    log(f"  captured {len(world_caps[0]) if world_caps else 0} modules in {time.time()-t0:.1f}s")
+        cap = capture_one(world, ids, pos, include_experts=include_experts)
+        torch.save(cap, act_tmp_dir / f"cap_{idx}.pt")
+        del cap
+
+    log(f"  AgentWorld finished {len(jobs)} samples (saved to disk) in {time.time()-t0:.1f}s")
     _free(world)
 
-    log("loading Instruct")
+    log("loading Instruct...")
     agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
-    log(f"  class={aname}")
-    running: dict[str, tuple[list[float], int]] = {}
+    log(f"  Instruct class={aname}")
+
+    running: dict[str, tuple[Any, int]] = {}
     skipped: set[str] = set()
-    n_inst = 0
+
     t1 = time.time()
-    for idx, (cap_w, (ids, pos, _)) in enumerate(zip(world_caps, jobs, strict=True), 1):
+    for idx, (ids, pos, _) in enumerate(jobs, 1):
         if idx == 1 or idx % 5 == 0 or idx == len(jobs):
             elapsed = time.time() - t1
             eta_str = _format_eta(elapsed, idx - 1, len(jobs))
@@ -670,17 +726,19 @@ def run_compare_act(
                 f"(len={len(ids)}, ans={len(pos)}) "
                 f"[{speed:.2f}s/it, ETA: {eta_str}]"
             )
+
+        cap_pt_path = act_tmp_dir / f"cap_{idx}.pt"
+        cap_w = torch.load(cap_pt_path, map_location="cpu", weights_only=False)
         cap_a = capture_one(agent, ids, pos, include_experts=include_experts)
-        n_inst = len(cap_a)
         acc_pair(running, cap_w, cap_a, skipped)
         del cap_w, cap_a
+        if cap_pt_path.exists():
+            cap_pt_path.unlink()
+
     _free(agent)
-    del world_caps
-    log(f"  captured Instruct in {time.time()-t1:.1f}s")
-    n_body = sum(1 for k in running if k != "lm_head")
-    log(f"  captured {n_inst} modules; paired={len(running)} (non-lm_head={n_body}) skipped={len(skipped)}")
-    if n_body == 0:
-        log("WARNING: only lm_head paired — module names did not align")
+    shutil.rmtree(act_tmp_dir, ignore_errors=True)
+    log(f"  Instruct finished & accumulated modules={len(running)} in {time.time()-t1:.1f}s")
+
 
     mod_delta = finalize_running(running)
     analysis = analyze_channels(mod_delta, p=p, layer_types=types)
@@ -690,6 +748,8 @@ def run_compare_act(
         "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
         "mean over pooled answer tokens, rank all channels, keep top p% "
         "(arXiv:2601.09398). Residual stream is not used. "
+        "Two-stage disk-buffered execution: AgentWorld answer activations saved to disk per sample, "
+        "Instruct processes and accumulates Δa on the fly, keeping RAM and GPU usage minimal. "
     )
     if include_experts:
         method_note += "Routed MoE experts and shared experts are both hooked."
@@ -720,6 +780,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="alias for --out-dir; a .json path uses the parent directory",
+    )
+    p.add_argument(
         "--source",
         choices=["modelscope", "huggingface"],
         default=DEFAULT_SOURCE,
@@ -741,6 +807,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=32768,
         help="truncate input tokens (preserves last assistant answer). default: 32768",
+    )
+    p.add_argument(
+        "--max-answer-tokens",
+        type=int,
+        default=256,
+        help="evenly subsample the ACT answer span (default 256). "
+        "keeps RAM/disk small; the mean is still over this pooled set",
     )
     p.add_argument(
         "--tokens",
@@ -767,7 +840,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cache_dir = args.cache_dir if args.cache_dir.is_absolute() else (ROOT / args.cache_dir)
-    out_dir = args.out_dir if args.out_dir.is_absolute() else (ROOT / args.out_dir)
+    out_dir = args.output if args.output is not None else args.out_dir
+    if not out_dir.is_absolute():
+        out_dir = Path.cwd() / out_dir
+    if out_dir.suffix == ".json":
+        out_dir = out_dir.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"source={args.source} cache={cache_dir}")
@@ -792,6 +869,8 @@ def main() -> None:
         jsonl=jsonl,
         max_rows=args.max_rows,
         max_length=args.max_length,
+        max_answer_tokens=args.max_answer_tokens,
+        cache_dir=cache_dir,
         device_map=args.device_map,
         token_mode=token_mode,
         p=args.p,
