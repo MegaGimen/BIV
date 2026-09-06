@@ -305,6 +305,8 @@ def capture_one(
     model,
     input_ids: list[int],
     answer_pos: list[int],
+    *,
+    include_experts: bool = True,
 ) -> dict[str, Any]:
     """Forward once; CPU float32 *module* outputs at answer positions."""
     import torch
@@ -332,7 +334,7 @@ def capture_one(
     named = list(model.named_modules())
     named.sort(key=lambda x: (0 if "language_model." in x[0] else 1, x[0]))
     for name, mod in named:
-        kind = hook_kind(name)
+        kind = hook_kind(name, include_experts=include_experts)
         if kind is None or kind == "lm_head":
             continue
         canon = canonical_module_key(name)
@@ -533,6 +535,7 @@ def run_compare_act(
     device_map: str,
     token_mode: str,
     p: float,
+    include_experts: bool = True,
 ) -> dict[str, Any]:
     import torch
     from transformers import AutoTokenizer
@@ -568,7 +571,7 @@ def run_compare_act(
     log("loading AgentWorld")
     world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
     log(f"  class={wname}")
-    world_caps = [capture_one(world, ids, pos) for ids, pos, _ in jobs]
+    world_caps = [capture_one(world, ids, pos, include_experts=include_experts) for ids, pos, _ in jobs]
     log(f"  captured {len(world_caps[0]) if world_caps else 0} modules")
     _free(world)
 
@@ -579,7 +582,7 @@ def run_compare_act(
     skipped: set[str] = set()
     n_inst = 0
     for cap_w, (ids, pos, _) in zip(world_caps, jobs, strict=True):
-        cap_a = capture_one(agent, ids, pos)
+        cap_a = capture_one(agent, ids, pos, include_experts=include_experts)
         n_inst = len(cap_a)
         acc_pair(running, cap_w, cap_a, skipped)
         del cap_w, cap_a
@@ -594,13 +597,18 @@ def run_compare_act(
     analysis = analyze_channels(mod_delta, p=p, layer_types=types)
     ranked = analysis.pop("ranked")
 
+    method_note = (
+        "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
+        "mean over pooled answer tokens, rank all channels, keep top p% "
+        "(arXiv:2601.09398). Residual stream is not used. "
+    )
+    if include_experts:
+        method_note += "Routed MoE experts and shared experts are both hooked."
+    else:
+        method_note += "Routed MoE experts skipped. Shared-expert gate/up/down is the dense-MLP analog."
+
     return {
-        "method": (
-            "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
-            "mean over pooled answer tokens, rank all channels, keep top p% "
-            "(arXiv:2601.09398). Residual stream is not used. Routed MoE experts "
-            "skipped. Shared-expert gate/up/down is the dense-MLP analog."
-        ),
+        "method": method_note,
         "prompt_note": prompt_note,
         "n_samples": len(jobs),
         "n_tokens": n_tokens,
@@ -651,6 +659,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TOP_P,
         help="ACT top-p fraction for the channel mask (paper default 0.01)",
     )
+    p.add_argument(
+        "--skip-experts",
+        action="store_true",
+        default=False,
+        help="skip routed MoE experts.* (only hook shared_expert for FFN)",
+    )
     p.add_argument("--device-map", default="auto")
     return p.parse_args()
 
@@ -685,6 +699,7 @@ def main() -> None:
         device_map=args.device_map,
         token_mode=token_mode,
         p=args.p,
+        include_experts=not args.skip_experts,
     )
     ranked = report.pop("ranked")
     mask = {

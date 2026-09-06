@@ -70,6 +70,11 @@ def test_canonical_module_key_aligns_backbones() -> None:
 def test_hook_kind_act_modules_only() -> None:
     assert hook_kind("language_model.layers.3.self_attn.q_proj") == "attn"
     assert hook_kind("language_model.layers.1.mlp.shared_expert.down_proj") == "ffn"
+    assert hook_kind("language_model.layers.1.mlp.experts.0.down_proj") == "ffn"
+    assert (
+        hook_kind("language_model.layers.1.mlp.experts.0.down_proj", include_experts=False)
+        is None
+    )
     assert hook_kind("language_model.layers.1.mlp") is None
     assert hook_kind("lm_head") == "lm_head"
     assert layer_index("language_model.layers.12.self_attn.q_proj") == 12

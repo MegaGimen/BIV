@@ -353,8 +353,8 @@ for s in traj["steps"]:
 
 有效 254 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0。各题平均（78 道仍是 3 次、10 道是 2 次）= **29.64%**。Instruct 对照臂还没打进这张表。
 
-**本 job 轨迹根目录（只在跑 Harbor 的那台机器上）：** `/home/BIV/train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
-`.gitignore` 里有整棵 `train/outputs/`，所以 **git 里没有这份目录**：`git pull`、AutoDL GPU 机、别的 clone 上都看不到。轨迹是 Harbor 写在本机磁盘上的评测产物（约 1.7G），不是仓库文件。Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
+**本 job 轨迹根目录：** `/home/BIV/train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
+`.gitignore` 里有整棵 `train/outputs/`，git 不带这份目录。就在这台评测机上，从仓库根 Glob/Grep 也会搜不到（工具跳过 gitignore）；用 `ls` 这条绝对路径，或把搜索根指到该目录。Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
 
 **这次启动写进计分板的配置**（对照下次跑 Instruct / 换 λ 用同一张表）。数字来自该 job 的 `config.json` + 每题 `result.json` 里的 `config`，以及产出这份权重/服务的脚本默认值：
 
@@ -410,11 +410,11 @@ for s in traj["steps"]:
 # 可选诊断：相对 Base 的行-MAV 文本表（不再决定任何切点，纯测量）
 python train/scripts/compare.py
 
-# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（不是权重差）
-python train/scripts/compare_act.py
+# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力）
+python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2/train.jsonl --max-rows 1500
 
-# 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（输出 merge/output/act）
-python merge/act.py
+# 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
+python merge/act.py --no-lm-head
 
 # GPU 机起 vLLM：:6006 ACT 合并模型，:6008 原 Instruct
 python merge/eval.py --act --max-model-len 32768

@@ -96,22 +96,21 @@ def canonical_module_key(name: str) -> str:
     return n
 
 
-def hook_kind(name: str) -> str | None:
+def hook_kind(name: str, *, include_experts: bool = True) -> str | None:
     """Which ACT bucket a ``named_modules`` path belongs to, or None to skip.
 
     ACT §3.1 / footnote 1: outputs of trainable modules — attention Q/K/V/O,
     MLP gate/up/down, layer norms, token embedding, ``lm_head``. A channel is
     one output dimension of that module, not a residual-stream coordinate.
 
-    Qwen3.5-35B-A3B is MoE: routed ``experts.*`` projections are skipped
-    because a token does not pass every expert (ACT's dense MLP does). The
-    shared expert's gate/up/down is the dense-MLP analog. The mixed ``mlp``
-    block output is not a projection and is not hooked.
+    Qwen3.5-35B-A3B is MoE: routed ``experts.*`` projections can be included
+    (when include_experts=True) or skipped. The shared expert's gate/up/down
+    is also FFN. The mixed ``mlp`` block output is not a projection and is not hooked.
     """
     n = name
     if any(s in n for s in SKIP_SUBSTR):
         return None
-    if ".experts." in n:
+    if not include_experts and ".experts." in n:
         return None
     leaf = n.rsplit(".", 1)[-1]
     if leaf in {"embed_tokens", "embed"}:
