@@ -141,8 +141,28 @@ def test_language_model_only_flag() -> None:
         assert _language_model_only(d) is True
 
 
+def test_load_jsonl_chats_dir(tmp_path: Path) -> None:
+    from compare_act import load_jsonl_chats
+
+    d = tmp_path / "mix"
+    w1 = d / "wm_code"
+    w1.mkdir(parents=True)
+    row = {
+        "messages": [
+            {"role": "user", "content": "ls"},
+            {"role": "assistant", "content": "a.txt"},
+            {"role": "user", "content": "rm a.txt"},
+            {"role": "assistant", "content": "gone"},
+        ]
+    }
+    import json
+    (w1 / "train.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    loaded = load_jsonl_chats(d, 10)
+    assert len(loaded) == 1
+    assert loaded[0][-1]["content"] == "gone"
+
+
 def test_encode_prompt_string_chat_template() -> None:
-    """Qwen tokenizers may return a string from apply_chat_template; ids must be ints."""
 
     class _Tok:
         def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
