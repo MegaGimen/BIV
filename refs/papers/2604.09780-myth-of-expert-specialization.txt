@@ -1,0 +1,1284 @@
+source: https://arxiv.org/html/2604.09780
+arxiv: https://arxiv.org/abs/2604.09780
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Related work
+     1. Identification of domain-specialized experts
+     2. Applications of expert specialization
+     3. Expert specialization insights from pre-trained MoE reports
+     4. Layer-wise behavior of hidden states in dense models
+ 4. 3 Background: MoE
+     1. Decoder only LLM
+     2. Token-choice sparse MoE
+ 5. 4 Expert “specialization” arises from hidden state similarity
+     1. 4.1 Hidden states, expert usage, and the role of auxiliary loss
+         1. Triangle shape of hidden states vs logit distances
+         2. Impact of load-balancing
+         3. Auxiliary loss pushes router to de-correlate hidden states
+         4. Router confidence detects OOD inputs
+     2. 4.2 Expert activation patterns are context dependent
+     3. 4.3 Sequence and dataset-level expert specialization
+ 6. 5 Why expert specialization patterns are hard to understand
+     1. 5.1 Math solutions from different models activate different experts
+     2. 5.2 Rollout content dominates expert usage
+     3. 5.3 Router collapse for prefilling stage
+ 7. 6 Conclusion
+ 8. References
+ 9. A Summarization of analysis metric
+     1. RMS Distance
+     2. Directional energy and retained energy
+     3. Average cosine similarity (inter-sequence)
+     4. Router Hamming Similarity
+     5. Router confidence
+     6. Sequence-level expert frequency cosine similarity
+     7. Pooled hidden states cosine similarity
+     8. Overlap under top-PP
+10. B Expert properties arise from the embeddings
+     1. B.1 Shared directions become routing-insignificant under load balancing.
+         1. Geometric interpretation.
+11. C Example model outputs
+     1. C.1 GPT-OSS-20b
+     2. C.2 Duplication
+
+License: CC BY 4.0
+arXiv:2604.09780v1 [cs.AI] 10 Apr 2026
+
+The Myth of Expert Specialization in MoEs: Why Routing Reflects Geometry, Not Necessarily Domain
+Expertise.
+
+Xi Wang Affiliation: Johns Hopkins University Email: xwang457@cs.jhu.edu    Soufiane Hayou 
+Affiliation: Johns Hopkins University Email: hayou@jhu.edu    Eric Nalisnick Affiliation: Johns
+Hopkins University Email: nalisnick@jhu.edu
+
+Abstract
+
+Mixture of Experts (MoEs) are now ubiquitous in large language models, yet the mechanisms behind
+their "expert specialization" remain poorly understood. We show that, since MoE routers are linear
+maps, hidden state similarity is both necessary and sufficient to explain expert usage similarity,
+and specialization is therefore an emergent property of the representation space, not of the
+routing architecture itself. We confirm this at both token and sequence level across five
+pre-trained models. We additionally prove that load-balancing loss suppresses shared hidden state
+directions to maintain routing diversity, which might provide a theoretical explanation for
+specialization collapse under less diverse data, e.g. small batch. Despite this clean mechanistic
+account, we find that specialization patterns in pre-trained MoEs resist human interpretation:
+expert overlap between different models answering the same question is no higher than between
+entirely different questions (∼\sim60%); prompt-level routing does not predict rollout-level
+routing; and deeper layers exhibit near-identical expert activation across semantically unrelated
+inputs, especially in reasoning models. We conclude that, while the efficiency perspective of MoEs
+is well understood, understanding expert specialization is at least as hard as understanding LLM
+hidden state geometry, a long-standing open problem in the literature.
+
+
+
+1 Introduction
+
+Mixture of Experts (Jacobs, 1988; Fedus et al., 2022, MoEs,) have become a standard architecture
+for large language models (LLMs). Compared with decoder-only LLMs (Radford et al., 2018), MoEs
+replace the dense feed-forward network (FFN) at each transformer block with a sparse mixture of
+expert blocks, where each token activates only a sparse subset of FFNs, keeping per-token compute
+manageable while scaling total model capacity.
+
+An expert specialization behavior has been widely observed in pre-trained MoEs: sequences from
+different domains tend to activate markedly different expert subsets (e.g., Sec. 5 in Muennighoff
+et al. (2024), Fig. 9 in Liu et al. (2024)). Yet despite its importance as both a signal of
+meaningful feature learning and a prerequisite for parameter efficiency, its mechanistic origins
+remain largely unexplained. This paper asks: (1) what mechanism produces expert specialization? and
+(2) to what extent are the resulting patterns humanly interpretable?
+
+The key observation is simple: the MoE router is a linear projection from token hidden states to
+expert logits, therefore tokens with similar hidden states must activate similar experts. We
+formalize this as Prop. 1, a tight data-geometry-aware upper bound on logit distance, verified
+empirically across five pre-trained MoEs (Fig. 1). Specialization is therefore a consequence of how
+the model organizes its representation space, not a property of the routing mechanism itself. We
+further show (Prop. 2) that when using a load-balancing loss to train MoEs, the router is forced to
+“suppress” shared directions in correlated hidden states, which might provide a theoretical
+explanation to the specialization collapse observed by Qiu et al. (2025) under small-batch
+training.
+
+Despite this clean mechanistic picture, specialization patterns frequently defy human intuition. We
+demonstrate three cases: (1) different models solving the same math question activate expert
+patterns as dissimilar as those for entirely different questions (∼\sim60% overlap, Fig. 6); (2)
+semantically different prompts activate nearly identical experts during prefilling, but diverge
+during generation (Fig. 7); (3) in deeper layers, sequences from unrelated domains can collapse to
+identical expert usage during prefilling (Figs.9, 10), yet the suppressed experts remain
+consequential once generation begins.
+
+Together, these findings reframe expert specialization as a consequence of the geometry of LLM
+hidden states, rather than as a standalone interpretable phenomenon. Understanding it is therefore
+at least as difficult as understanding geometry, which remains an open question even in dense
+models (Lad et al., 2024; Skean et al., 2025). It may even be harder, since tokens with different
+hidden states can still activate similar experts.
+
+2 Related work
+
+Identification of domain-specialized experts
+
+Several works study expert specialization from an interpretability perspective, aiming to verify
+its existence and locate domain-specific experts in pre-trained MoEs. Chaudhari et al. (2025)
+introduces a LogitLens-based framework for analyzing MoE specialization patterns, Hu et al. (2026)
+proposes a causal-effect method to identify which experts are domain-specific while Wang et al.
+(2026) propose a CommitteeAudit framework. Overall, these works share similar observations: There
+exists a compact, domain-invariant expert that captures the majority of routing mass across all
+domains, with some peripheral experts showing domain sensitivity. Our findings offer a mechanistic
+explanation for this pattern: shared committee experts likely reflect shared information in the
+hidden state space, potentially arising from shared syntax structure in the datasets they studied
+or simply from LLM internal computation. Our work differs from these in two key ways. First, rather
+than cataloguing which experts are domain-specific, we identify why expert usage may or may not
+correlate with domain / semantic at all, grounding the phenomenon in hidden state geometry. Second,
+these works rely on short benchmark inputs (MMLU: <<100 tokens; GSM8K: <<200 tokens), whereas we
+study much longer sequences, including multi-thousand-token reasoning chains, where the gap between
+prefilling and generation behavior becomes critical.
+
+Applications of expert specialization
+
+Beyond interpretability, expert specialization has found practical applications in several domains.
+In multilingual settings, Chen et al. (2026) and Bandarkar et al. (2026) leverage routing patterns
+to identify language-specific experts and improve MoE performance on low-resource languages. From a
+different angle, recent work in the security community (Ding et al., 2025; Nuriyev and Kulp, 2026)
+independently arrives at a perspective closely related to ours: because expert usage patterns are a
+deterministic function of input hidden states, they constitute a side channel that can leak
+information about user queries, raising significant privacy concerns.
+
+Expert specialization insights from pre-trained MoE reports
+
+Many open-sourced MoEs’ reports have discussed expert specialization, typically by comparing expert
+activation patterns across corpora drawn from different domains, e.g., Appendix C in DeepSeek V3 (
+Liu et al., 2024), Sec 6 in dots.llm1 (Huo et al., 2025), and Figure 22 in OLMoE (Muennighoff et
+al., 2024). A notable exception is Mistral (Jiang et al., 2024), whose experts show little
+specialization, likely a consequence of sparse upcycling during training. It is worth noting that
+the goal of monitoring specialization during pre-training is primarily practical rather than
+interpretive: the goal is to prevent expert homogenization, i.e. the failure mode in which all
+experts converge to redundant representations, wasting model capacity. DeepSeek V3 (Liu et al.,
+2024) operationalizes this by studying the sensitivity of removing top experts, arguing that MoE
+with better specialization shows higher sensitivity to expert removal, indicating less redundancy;
+
+Layer-wise behavior of hidden states in dense models
+
+A key implication of our work is that expert specialization can vary across depth because hidden
+state geometry evolves across layers. A growing body of work studies this evolution in dense
+transformers. Lad et al. (2024) identifies four functional stages of inference — detokenization,
+feature engineering, prediction ensembling, and residual sharpening — to explain non-uniform
+performance degradation under layer removal. Skean et al. (2025) shows that intermediate layers
+consistently produce richer representations than final layers for downstream tasks. Acevedo et al.
+(2026) further finds that syntactic and semantic information are encoded differently across layers.
+These results translate directly to expert specialization: what a layer’s hidden states encode
+determines which experts it activates, explaining why specialization patterns differ between early
+and late layers.
+
+3 Background: MoE
+
+Decoder only LLM
+
+For a decoder only LLM with LL layers, let 𝑿ℓ={𝒙tℓ}t=1T∈ℝT×D\bm{X}^{\ell}=\{\bm{x}_{t}^{\ell}\}_{t=
+1}^{T}\in\mathbb{R}^{T\times D} denote the input to layer ℓ\ell, where TT is the sequence length
+and DD is the residual-stream dimension. A standard transformer block first applies self-attention
+and then an MLP sublayer, each wrapped with layer normalization and a residual connection:
+
+  𝑯ℓ=𝑿ℓ+SelfAttention​(LN​(𝑿ℓ)),\displaystyle\bm   𝒀ℓ=𝑯ℓ+FFN​(LN​(𝑯ℓ)),\displaystyle\bm{{Y}}^
+  {{H}}^{\ell}=\bm{X}^{\ell}+\text{SelfAttention}  {\ell}=\bm{{H}}^{\ell}+\text{FFN}(\text{LN}  (1)
+  (\text{LN}(\bm{X}^{\ell})),                      (\bm{{H}}^{\ell})),
+
+where we assume a pre-norm formulation, LN​(⋅)\text{LN}(\cdot) denotes layernorm, 𝑯ℓ\bm{{H}}^{\ell}
+is the intermediate hidden representation after attention and 𝒀ℓ\bm{{Y}}^{\ell} is the output of
+layer ℓ\ell.
+
+Token-choice sparse MoE
+
+Recent models replace the dense MLP with a sparse mixture-of-experts (MoE) module, so that only a
+small subset of parameters is activated for each token while maintaining the total model capacity
+unchanged. Concretely, for a token representation 𝒉tℓ∈ℝD\bm{{h}}_{t}^{\ell}\in\mathbb{R}^{D}, i.e.
+a row from LN​(𝑯ℓ)\text{LN}(\bm{{H}}^{\ell}), the MoE router computes routing logits
+
+ 𝒈tℓ=Pℓ​𝒉tℓ∈ℝE,\bm{g}_{t}^{\ell}=P^{\ell}\bm{{h}}_{t}^{\ell}\in\mathbb{R}^{E},  (2)
+
+where Pℓ∈ℝE×DP^{\ell}\in\mathbb{R}^{E\times D} is the router weight matrix and EE is the number of
+experts. Based on these logits, the router selects a small subset 𝒮tℓ⊆{1,…,E}\mathcal{S}_{t}^{\ell}
+\subseteq\{1,\dots,E\} of size kk, typically the top-kk experts with the largest logit value. Let
+st,eℓ=σ​(𝒈tℓ)es_{t,e}^{\ell}=\sigma(\bm{g}_{t}^{\ell})_{e} denote the routing weight assigned to
+expert ee, usually obtained by setting σ⁡(⋅)\sigma(\cdot) to be a softmax or sigmoid-and-normalize.
+The MoE output is then computed as
+
+ MoE​(𝒉tℓ)=Σe∈𝒮tℓ​st,eℓ​FFNeℓ​(𝒉tℓ),\text{MoE}(\bm{{h}}_{t}^{\ell})=\Sigma_{e\in\mathcal{S}_    (3)
+ {t}^{\ell}}s_{t,e}^{\ell}\,\text{FFN}_{e}^{\ell}(\bm{{h}}_{t}^{\ell}),
+
+where FFNeℓ​(⋅)\text{FFN}_{e}^{\ell}(\cdot) is the feed-forward network corresponding to expert ee.
+Thus, different tokens may be processed by different fixed-size subsets of experts, enabling the
+model to increase parameter count while keeping per-token computation relatively small. This
+token-choice routing formulation covers the most recent sparse MoE models. Variations of model
+structures usually occur in including extra shared experts, whether a jitter noise is added to 𝒉\bm
+{{h}} before routing, different sparsity ratios kE\frac{k}{E}, or the design of σ\sigma.
+
+4 Expert “specialization” arises from hidden state similarity
+
+4.1 Hidden states, expert usage, and the role of auxiliary loss
+
+To understand the expert activation pattern, we begin by looking at the relationship between the
+tokens’ hidden state (𝒉\bm{{h}}) and corresponding router outputs (𝒈\bm{g}). The idea is simple:
+since the router Eq. (2) is a linear projection, we expect tokens with similar 𝒉\bm{{h}} to show
+similar 𝒈\bm{g}. To formalize this intuition, we measure the similarity between the hidden states
+using the Euclidean distance in a data-dependent space, and obtain a tight upperbound on how router
+outputs behave as a function of hidden states.
+
+Proposition 1.
+
+Let H∈ℝN×DH\in\mathbb{R}^{N\times D} be a data matrix whose rows are 𝐡1⊤,…,𝐡N⊤\bm{{h}}_{1}^{\top},\
+dots,\bm{{h}}_{N}^{\top}, and let H=U​Σ​V⊤H=U\Sigma V^{\top} be its singular value decomposition.
+Denote by m=min⁡{N,D}m=\min\{N,D\} the rank of HH. Fix r∈{1,2,…,m}r\in\{1,2,\dots,m\}, and let
+Vr∈ℝD×rV_{r}\in\mathbb{R}^{D\times r} be the matrix formed by the top rr right singular vectors of
+HH. Define the orthogonal projector onto the corresponding principal subspace by Πr:=Vr​Vr⊤∈ℝD×D.\
+Pi_{r}:=V_{r}V_{r}^{\top}\in\mathbb{R}^{D\times D}. Let P∈ℝE×DP\in\mathbb{R}^{E\times D} be the
+router weight matrix. Then, for any i,j∈{1,…,N}i,j\in\{1,\dots,N\},
+
+ ‖P​𝒉i−P​𝒉j‖2⏟Logits similarity≤‖P​Πr‖2⏟Router-data alignment​‖𝒉i−𝒉j‖Πr⏟Hidden state
+ similarity+‖P⁡(I−Πr)​(𝒉i−𝒉j)‖2⏟R​e​s​i​d​u​a​l.\underbrace{\|P\bm{{h}}_{i}-P\bm{{h}}_{j}\|_
+ {2}}_{\text{Logits similarity}}\leq\underbrace{\|P\Pi_{r}\|_{2}}_{\text{Router-data            (4)
+ alignment}}\,\underbrace{\|\bm{{h}}_{i}-\bm{{h}}_{j}\|_{\Pi_{r}}}_{\text{Hidden state
+ similarity}}+\underbrace{\|P(I-\Pi_{r})(\bm{{h}}_{i}-\bm{{h}}_{j})\|_{2}}_{Residual}.
+
+‖⋅‖2\left\lVert\cdot\right\rVert_{2} denotes operator norm (maximum singular value) for matrix
+input, and ‖z‖Πr=‖Πr​z‖2\|z\|_{\Pi_{r}}=\|\Pi_{r}z\|_{2} denotes the norm in the space
+corresponding to the projector Πr\Pi_{r}. The full proof is provided in App. B, which first
+projects each 𝒉i\bm{{h}}_{i} on Πr\Pi_{r} and then applies the triangle inequality.
+
+Refer to caption
+
+Figure 1: Empirical verification of Prop. 1. On the middle layer of 5 models, using 16 sequences
+from OpenWebText, we compare the RMS distance (Eq. (5)) of all token pairs’ hidden state v.s. their
+router logits. Bottom left corners: Across all models, similar hidden states induce similar router
+logits, i.e. similar expert usage. Middle right: When the hidden states are different, the router
+logits can be similar or different. Outlier dots are from distances to the massive activation of
+the first token, i.e. attention sink (Sun et al., 2024).
+
+Triangle shape of hidden states vs logit distances
+
+Under the assumption that the data variance is mostly concentrated in the top rr directions
+(right-most columns in Fig. 16,17,18,19), the residual term is negligible compared to the first
+term. Proposition 1 suggests that when two tokens’ hidden states are similar in the sense of norm
+∥.∥Πr\|.\|_{\Pi_{r}}, the upper bound collapses; their corresponding logits, i.e., the activated
+experts, must be similar. This is a much sharper bound than the trivial bound ‖P‖2​‖hj−hj‖2\|P\|_
+{2}\|h_{j}-h_{j}\|_{2} (verified in Fig. 13, Appendix). However, when the hidden states differ,
+their router logits can be either similar or dissimilar. Fig. 1 empirically verifies this using
+OpenWebText on 5 different MoEs, where we observe the dots to demonstrate a triangle shape with
+small / large hidden state distance regions being the triangle’s angle / side.
+
+Impact of load-balancing
+
+From Proposition 1, if two hidden states are highly correlated (and there norms are roughly of the
+same order), router outputs will be similar. This could happen for several reasons. One structural
+reason is depth: as depth grows, correlation between hidden states increases between token hidden
+states, leading to increasing similarity as we will see below. In the next result, we show that
+load-balancing loss helps mitigate this problem by forcing the router to ignore directions shared
+by hidden states to achieve balanced expert usage.
+
+Proposition 2 (Informal).
+
+We consider a simple hidden state correlation model where the hidden states are represented by
+
+ 𝒉i=μ+ξi,i=1,….N,\bm{{h}}_{i}=\mu+\xi_{i},\quad i=1,\ldots.N,
+
+where μ∈ℝD\mu\in\mathbb{R}^{D} is a shared direction and ξi\xi_{i} are terms that differentiate
+each hidden state. We assume that ξi\xi_{i} are centered and i.i.d. Consider a simplified load
+balancing loss for router P∈ℝE×DP\in\mathbb{R}^{E\times D}
+
+ ℒbal​(P):=‖1N​∑i=1Nsoftmax⁡(P​𝒉i)−1E​𝟏‖2.\mathcal{L}_{\text{bal}}(P):=\left\lVert\frac{1}{N}\sum_
+ {i=1}^{N}{\operatorname{softmax}}\left({P\bm{{h}}_{i}}\right)-\frac{1}{E}\mathbf{1}\right\rVert^
+ {2}.
+
+Then, a near-minimizer of ℒbal​(P)\mathcal{L}_{\text{bal}}(P) must satisfy P​μ≈P​μ¯​ 1,where​P​μ¯:=
+1E​𝟏⊤​P​μP\mu\approx\overline{P\mu}\,\mathbf{1},~\text{where}~~\overline{P\mu}:=\frac{1}{E}\mathbf
+{1}^{\top}P\mu. That is, the shared direction does not affect the routing as softmax and top-K are
+invariant to constant shift.
+
+The proof is presented in Appendix B.1, where we assume the small-logit regime under which softmax
+can be linearized. Proposition 2 shows that the load-balancing objective forces the router to
+suppress the shared direction μ\mu, which is expected since the shared direction pushes the hidden
+states to use similar experts. Realistically, load-balancing is added to the pre-training
+objective, which means that we should only partially observe this effect. We believe this result
+could provide a theoretical explanation for the observation in Qiu et al. (2025), which suggests
+that when load-balancing is applied on small micro-batches (rather than the large global-batches),
+the resulting model loses any form of expert specialization, showing same expert usage patterns for
+inputs of different topics. Intuitively, small batches are not diverse enough, and therefore shared
+directions within small batches can significantly vary from one batch to another. This constant
+change in shared directions from one batch to another prevents the router from finding the
+informative directions. Similarly, Fig. 5 in Wang et al. (2024) showed that auxiliary loss-free
+approach works better with larger batch size.
+
+
+(a) gpt-oss-20b, trained with AdamW and auxiliary load balancing loss.
+
+
+(b) Trinity-Mini-Base, trained with Muon and auxiliary-free load balancing.
+
+
+Figure 2: On gpt-oss-20b and Trinity-Mini-Base, we studied tokens in 16 random sequences from
+OpenWebText. Lines / bars denote the mean / 1-std. over 16 sequences. Two models use different
+training configurations, resulting in distinct patterns across depth. Top Left: Token hidden states
+become more correlated with depth, indicated by stronger energy (Eq. (7)) from the shared direction
+(first right singular vector). Top Middle: After layer 11, the router output does not show a
+significant increase in cosine similarity, while hidden states do (Eq. (10)). Top Right: Looking at
+the router, it learns to suppress the shared direction to maintain diversity of router outputs: The
+trace of router’s projection (averaged over rows) onto the shared direction (red line, Eq. (8))
+aligns with the shape of router output similarity (blue lines, Eq. (11)) Bottom left: Under Muon
+trained model, token hidden states does not show increased correlation with depth. Bottom middle
+and right: When no load balancing loss is used, the router does not show evidence of suppressing
+shared direction.
+
+Auxiliary loss pushes router to de-correlate hidden states
+
+The upper bound in Eq. (4) involves the term ‖P​Πr‖\|P\Pi_{r}\| which measures router ↔\
+leftrightarrow hidden-state alignment. Intuitively, if this term vanishes, the logits would fail to
+capture the differences in the hidden states, effectively ignoring the data. While we did not
+empirically verify this,^1^1 1 To rigorously verify this, a comprehensive set of experiments with
+MoE pretraining is required. such a scenario could happen during MoE pre-training when the data is
+not diverse or the load balancing loss coefficient is set too large^2^2 2 Regularizing the router
+to orthogonal (Omi et al., 2025; Baidu-ERNIE-Team, 2025) cannot alleviate this, as the router can
+be an orthogonal matrix with all rows orthogonal to the data principal directions.. We did not
+observe such extreme “dead router” patterns in open-sourced MoEs, as these models often show
+suboptimal performance and would not be released to the public. However, a related behavior can be
+observed in deeper layers of MoEs. In particular, LLM’s hidden states across tokens inside a
+sequence tend to show increasing similarity with depth (left Fig. 2 for GPT-OSS, and Fig. 12 for
+dense models), which effectively decreases the diversity of expert usage. This is consistent with
+the rank-collapse phenomenon that occurs with depth (Schoenholz et al., 2017; Hayou et al., 2019;
+Hayou et al., 2021; Noci et al., 2022). The router, driven by auxiliary load-balancing loss, would
+learn to suppress the shared direction (first singular vector) to maintain diverse router outputs.
+We confirm such suppression by comparing the router’s retained energy on the shared direction with
+the expert usage similarity (right-most Fig. 2, or by looking at the router – singular-direction
+alignments, where the router shows less alignment with the first / shared direction compared with
+the second / third one (Middle columns, Fig. 16,18). In contrast, in models that are “auxiliary
+loss free”, such as Moonlight 16B (Liu et al., 2025) or Trinity Mini (Singh et al., 2026), we do
+not observe such patterns (Fig. 15(c),15(d), 19, 17).
+
+
+(a) ERNIE-4.5-21B
+
+
+(b) GPT-OSS-20B
+
+
+(c) Qwen-3-30B
+
+
+Figure 3: We shuffled and reversed 16 sequences from OpenWebText to simulate OOD inputs. Router
+outputs show less confidence (measured by maximum softmax probability, Eq. (12)) on OOD inputs
+compared with the original ones (green line), due to the reduced alignment data router alignment
+(Eq. (4), verified in Fig. 23).
+
+Router confidence detects OOD inputs
+
+Lastly, the router in pre-trained MoE is not a random matrix; it shows alignment with the data
+subspace during pre-training (left-most columns in Fig. 16,17,18,19). This suggests that when the
+input sequence is out-of-distribution (OOD), its hidden states could show less alignment with the
+router, reducing the upper bound and outputting more uniform logits. We simulate OOD by reversing
+and shuffling tokens in the sequences. Indeed, in Fig. 3 we see the confidence, measured by maximum
+softmax probability (Hendrycks and Gimpel, 2016), is lower for OOD inputs compared with ordinary
+inputs. In Fig. 23 in Appendix, we further verified the reduced alignment between router and
+reversed inputs compared with standard inputs.
+
+4.2 Expert activation patterns are context dependent
+
+In the previous section, we argued that for reasonably trained routers (non-collapsed), the
+token-wise expert usage is determined by its hidden state, whose value depends on: a) the token ID;
+b) the context. In earlier layers, we expect the hidden state to be mainly dependent on the token
+ID as it is closer to the input embedding layer. In deeper layers, strong correlation between
+hidden states for different tokens appears because depth and self-attention induce more interaction
+with the other tokens, and therefore the hidden states and the expert usage become more context
+dependent.
+
+We empirically verify expert usage’s context dependency by putting the same token(s) under
+different contexts on gpt-oss-20b. In Fig. 4 (top), we plot the activated experts for “apple” in
+daily context v.s. in coding context. Broadly, in first layer, there exists a high overlap across
+context (more purple blocks); but in later layers, the overlap starts to reduce. Fig. 4 (bottom)
+performs a similar study but for a 6-token sentence in daily v.s. medical context, where we look at
+expert activation frequency for the 6 tokens. Note that our observations go against the
+“Context-Independent Specialization” behavior observed by OpenMoe (Xue et al., 2024), which we
+believe arises from insufficient training.
+
+Refer to caption
+
+Figure 4: Same token (top) / sentence (bottom), different context, the expert usage is context
+dependent in deep layers.
+
+4.3 Sequence and dataset-level expert specialization
+
+Refer to caption
+
+Figure 5: Pairwise comparisons of inputs drawn from Nemotron-CC-Math-v1, OpenWebText, and across
+these two datasets, plotting pooled hidden-state similarity (Eq. (17)) against expert-usage
+frequency similarity (Eq. (14)). Consistent with the token-level findings in Fig. 1, more similar
+sequences tend to activate more similar experts.
+
+The preceding analysis examined expert usage at the token level, showing that tokens with similar
+hidden states tend to route to similar experts. We now extend this view to the sequence level by
+comparing the cosine similarity of pooled hidden states (Eq. (17)) against the cosine similarity of
+sequence-level expert activation frequencies (Eq. (14)). Fig. 5 reports pairwise comparisons of 100
+sequences from OpenWebText and 100 from Nemotron-CC-Math (Mahabadi et al., 2025), evaluated both
+within and across datasets at the middle layer of five models (full results appear in Fig. 20,22,21
+in Appendix).
+
+Two patterns emerge. First, sequence similarity strongly correlates with expert-usage similarity
+across all models. Second, some models exhibit a triangular point cloud: while similar sequences
+consistently activate similar experts, dissimilar sequences can activate either similar or
+different experts, a many-to-one relationship that already hints at interpretive difficulty.
+Notably, cross-dataset pairs cluster at lower hidden-state similarity than intra-dataset pairs,
+offering a straightforward explanation for the specialist behavior observed in prior work: inputs
+from different domains tend to have different hidden-state distributions, and therefore engage
+different sets of experts.
+
+So far, the picture seems tractable: understand the hidden states, and expert usage follows. But
+this view holds only at a coarse, dataset level. As soon as we ask finer-grained questions, e.g. do
+two models solving the same problem use the same experts? does the prompt predict the rollout’s
+routing behaviour? The tractability breaks down. This leads us to a key tension:
+
+Understanding expert specialization is at least as hard as understanding hidden states, and
+potentially harder, since inputs with different hidden states can activate similar experts; inputs
+with similar hidden states can activate different experts once generation begins.
+
+The three examples in the following section each stress-test one facet of this tension:
+specialization across models, across rollout length, and across layers.
+
+
+
+Figure 6: Expert overlap (Jaccard similarity at Top-p=0.8p{=}0.8, Eq. (19)) between rollout pairs
+on 30 HMMT February 2025 questions, averaged over 4 seeds and three MoEs. Different models solving
+the same question (orange) share only ∼\sim60% of their most-used experts, on par with the same
+model solving different questions (blue), and well below the same-question, same-model baseline
+(green). The gap is consistent across all layers.
+
+
+
+Figure 7: Expert-usage similarity between paired queries on Ling-mini, tracked from prompt through
+rollout. The dashed line marks the prompt boundary. Across all three query pairs, prompt-phase
+similarity is near-identical; once generation begins, similarity either holds or drops sharply
+depending on the query and is not predictable from the prompt alone.
+
+5 Why expert specialization patterns are hard to understand
+
+The analysis above might suggest that expert specialization is a stable, semantics-driven
+phenomenon that can be read off from the inputs. We show this fails at the level of individual
+problems, generations, and layers, and identify what drives each breakdown.
+
+5.1 Math solutions from different models activate different experts
+
+Balunović et al. (2025) benchmarked a wide range of reasoning LLMs on math datasets, enabling us to
+study expert activation patterns across reasoning trajectories produced by different models on the
+same problems. The natural expectation is that solutions to the same question should engage the
+same experts, regardless of which model generated them.
+
+Our results contradict this expectation. We consider 30 questions from HMMT February 2025 solved by
+60 (reasoning) models, and study all (question, model, seed) combinations via pairwise comparisons
+that fix two of the three axes. For each pair, we measure overlap at Top-pp (Eq. (19)): the
+fraction of shared experts responsible for p%p\% of the tokens processed.
+
+Results at p=0.8p=0.8 are shown in Fig. 6. Strikingly, solutions from two different models to the
+same question show only ∼\sim60% expert overlap on average, comparable to the overlap between
+solutions from the same model on different questions, and far below the same-model same-question
+baseline. This gap is consistent across all layers and all three evaluated MoEs In terms of expert
+activation, solving the same problem with a different model is as “foreign” as solving an entirely
+different problem. Results under other values of pp are shown in Fig. 25, where similar patterns
+hold.
+
+This highlights the difficulty of making micro-level claims about expert specialization: even when
+two trajectories address identical mathematical content, model-specific factors can drive expert
+usage further apart than content differences do.
+
+5.2 Rollout content dominates expert usage
+
+
+
+Figure 8: On gpt-oss-20b, we keep the 1212 most-used experts (out of 32) in the last kk layers,
+using usage frequency from a single hand-written paragraph. First four columns: Pruning up to 2
+layers has a negligible effect (<<10% NLL increase) on prompt-only inputs, indicating router
+collapse during prefilling. Last two columns: Adding completions makes the pruned experts
+consequential, with NLL increasing substantially for on- or off-policy rollout.
+
+
+
+Figure 9: Per-expert activation frequencies for an HLE question (orange, 411 tokens) and a
+Wimbledon Wikipedia passage (purple, 2500 tokens) across four layers and five generation lengths
+for answering the HLE question. During prefilling, the two unrelated sequences activate nearly
+identical experts in deeper layers. As the generation proceeds, their activation profiles diverge,
+with the split emerging earlier in later layers.
+
+We prompt an instruction-tuned MoE (Team, 2025, Ling-mini) with query pairs that are matched along
+one axis but differ along another: (i) different concepts explained in the same style; (ii) the
+same concept explained in plain v.s mathematical language; (iii) AIME problems prompted to be
+solved in different languages. We then track expert-usage similarity between paired queries’
+evolution from the prompt tokens through progressively longer rollouts.
+
+Fig. 7 reveals that during the prefill phase, all three query pairs show nearly identical expert
+usage. What happens during generation, however, depends on the query: for some pairs the similarity
+remains high throughout, while for others it drops sharply as the rollout lengthens. Critically,
+which regime applies is not predictable from the prompt alone.
+
+The implication is consequential for any analysis that inspects only the prompt: prefill-phase
+expert usage is not a reliable proxy for full generation usage pattern, as rollout content is
+unknown in advance, characterizing specialization requires observing complete trajectories.
+
+5.3 Router collapse for prefilling stage
+
+
+(a) Ling-mini-base, no chat template
+
+
+(b) gpt-oss-20b, no chat template
+
+
+(c) gpt-oss-20b, with chat template
+
+
+(d) ERNIE-4.5-21B-A3B-Base, with chat template
+
+
+Figure 10: Cross-domain expert-usage similarity under increasing input duplication (1×\times to 12×
+\times) across models; dashed grey shows intra-domain similarity. For models except gpt-oss with
+chat template (10(c)), hidden state similarity alone does not produce router collapse under no
+duplication. Duplication amplifies the dominant hidden-state direction, progressively collapsing
+cross-domain expert usage toward the intra-domain baseline.
+
+Our third finding is perhaps the most counterintuitive: during prefilling, semantically unrelated
+sequences can activate exactly the same experts.
+
+As an illustrative example, the bottom left of Fig. 9 shows that in the later layers of gpt-oss-20b
+, a question from the Humanity’s Last Exam (Phan et al., 2025, HLE,) and a passage on the history
+of Wimbledon engage an identical set of experts. To probe how widespread this “router collapse” is,
+we adopt an extreme pruning protocol: using a single hand-written paragraph as the validation data,
+we retain only the top-12 experts at the bottom layers and examine NLL changes across a variety of
+corpora. The first four columns of Fig. 8 shows that pruning experts in the last two layers has a
+negligible effect (<10%{<}10\% NLL increase) for prompt-only input across four different topics.
+
+The picture changes once the model begins generating. Bottom right in Fig. 9 shows that
+expert-usage patterns indistinguishable during prefilling begin to diverge as the reasoning chain
+unfolds; and the last two columns of Fig. 8 confirm that the pruned experts are highly
+consequential for the model output’s (conditional) likelihoods, both on- and off-policy. The hidden
+state similarity across depth (Fig. 14(a), appendix) further verifies the phase change.
+
+We hypothesize that router collapse during prefilling is a property arising from gpt-oss’s
+structured reasoning output: The input-invariant initial decoding tokens (examples shown in App. 
+C.1) are largely controlled by the final-layer hidden states, which converge to similar
+representations across diverse prompts, causing the router to select the same experts. Consistent
+with this, we do not observe a comparable collapse in a non-reasoning instruction-tuned model (
+ERNIE-4.5-21B-A3B-PT; Fig. 28). Removing the chat template also reduces the collapse (lightest
+line, Fig. 10(b) and leftmost column, top figure in Fig. 27), though expert-usage similarity still
+increases with depth in those models, likely due to the hidden state correlation discussed in the
+previous section. Finally, Fig. 10 shows that this collapse is not inevitable: for models that do
+not exhibit it naturally, prefill-stage hidden state similarity alone is insufficient to produce
+router collapse. However, duplicating the input sequences (excluding the chat template) amplifies
+the shared direction in the hidden states enough to force expert-usage convergence even across
+semantically unrelated inputs (Fig. 10).
+
+Taken together, these three examples illustrate why deeper layers can behave differently from
+shallower ones: while early-layer hidden states reflect the token distribution and thus the input’s
+semantics, later-layer representations may instead encode the model’s anticipated output, rendering
+the mapping from surface content to expert usage opaque.
+
+6 Conclusion
+
+Expert specialization is crucial for MoE’s practical performance: First, it confirms that the model
+is performing proper feature learning, producing diverse hidden states for different inputs.
+Secondly, from the MoE perspective, expert specialization is a necessary condition for parameter
+efficiency: If the router fails to route different inputs to different experts, all experts will
+end up being duplicates of each other, effectively wasting parameters. However, our observation
+indicates that, unless an explicit objective is introduced (e.g. Li et al. (2026)), we should not
+expect the hidden state and router logit space to have a metric system aligned with human
+standards.
+
+References
+
+  • Acevedo et al. (2026) S. Acevedo, A. Laio, and M. Baroni Differential syntactic and semantic
+    encoding in llms. arXiv preprint arXiv:2601.04765. Cited by: §2.
+  • Baidu-ERNIE-Team (2025) Baidu-ERNIE-Team ERNIE 4.5 technical report. Note: https://
+    ernie.baidu.com/blog/publication/ERNIE_Technical_Report.pdf Cited by: footnote 2.
+  • Balunović et al. (2025) M. Balunović, J. Dekoninck, I. Petrov, N. Jovanović, and M. Vechev 
+    MathArena: evaluating llms on uncontaminated math competitions. SRI Lab, ETH Zurich. External
+    Links: Link Cited by: §5.1.
+  • Bandarkar et al. (2026) L. Bandarkar, C. Yang, M. Fayyaz, J. Hu, and N. Peng Multilingual
+    routing in mixture-of-experts. In The Fourteenth International Conference on Learning
+    Representations, External Links: Link Cited by: §2.
+  • Chaudhari et al. (2025) M. Chaudhari, I. Gulati, N. Hundia, P. Karra, and S. Raval Moe lens-an
+    expert is all you need. In Sparsity in LLMs (SLLM): Deep Dive into Mixture of Experts,
+    Quantization, Hardware, and Inference, Cited by: §2.
+  • Chen et al. (2026) Y. Chen, Z. Cai, X. Ji, W. Zhao, A. Zhang, X. Wang, and T. Chua 
+    Understanding multilingualism in mixture-of-experts llms: routing mechanism, expert
+    specialization, and layerwise steering. arXiv preprint arXiv:2601.14050. Cited by: §2.
+  • Ding et al. (2025) R. Ding, T. Xu, X. Shen, A. A. Ding, and Y. Fei MoEcho: exploiting
+    side-channel attacks to compromise user privacy in mixture-of-experts llms. In Proceedings of
+    the 2025 ACM SIGSAC Conference on Computer and Communications Security, pp. 2159–2173. Cited
+    by: §2.
+  • Fedus et al. (2022) W. Fedus, B. Zoph, and N. Shazeer Switch transformers: scaling to trillion
+    parameter models with simple and efficient sparsity. Journal of Machine Learning Research 23 (
+    120), pp. 1–39. Cited by: §1.
+  • Hayou et al. (2021) S. Hayou, E. Clerico, B. He, G. Deligiannidis, A. Doucet, and J. Rousseau 
+    Stable resnet. External Links: 2010.12859, Link Cited by: §4.1.
+  • Hayou et al. (2019) S. Hayou, A. Doucet, and J. Rousseau On the impact of the activation
+    function on deep neural networks training. External Links: 1902.06853, Link Cited by: §4.1.
+  • Hendrycks and Gimpel (2016) D. Hendrycks and K. Gimpel A baseline for detecting misclassified
+    and out-of-distribution examples in neural networks. arXiv preprint arXiv:1610.02136. Cited by:
+    §4.1.
+  • Hu et al. (2026) G. Hu, M. Li, Q. Peng, L. Hu, B. Xu, and R. Cai What gets activated:
+    uncovering domain and driver experts in moe language models. arXiv preprint arXiv:2601.10159. 
+    Cited by: §2.
+  • Huo et al. (2025) B. Huo, B. Tu, C. Qin, D. Zheng, D. Zhang, D. Zhang, E. Li, F. Guo, J. Yao,
+    J. Lou, et al. Dots. llm1 technical report. arXiv preprint arXiv:2506.05767. Cited by: §2.
+  • Jacobs (1988) R. A. Jacobs Increased rates of convergence through learning rate adaptation. 
+    Neural networks 1 (4), pp. 295–307. Cited by: §1.
+  • Jiang et al. (2024) A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary, C. Bamford, D.
+    S. Chaplot, D. d. l. Casas, E. B. Hanna, F. Bressand, et al. Mixtral of experts. arXiv preprint
+    arXiv:2401.04088. Cited by: §2.
+  • Lad et al. (2024) V. Lad, J. H. Lee, W. Gurnee, and M. Tegmark The remarkable robustness of
+    llms: stages of inference?. arXiv preprint arXiv:2406.19384. Cited by: §1, §2.
+  • Li et al. (2026) J. Li, H. Chen, L. Liu, Y. Yuan, Y. Wang, Y. Zhang, C. Yu, X. Tong, W. Zhang,
+    S. Liu, et al. Expert divergence learning for moe-based language models. arXiv preprint
+    arXiv:2603.00054. Cited by: §6.
+  • Liu et al. (2024) A. Liu, B. Feng, B. Xue, B. Wang, B. Wu, C. Lu, C. Zhao, C. Deng, C. Zhang,
+    C. Ruan, et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437. Cited by: §1, §2
+    .
+  • Liu et al. (2025) J. Liu, J. Su, X. Yao, Z. Jiang, G. Lai, Y. Du, Y. Qin, W. Xu, E. Lu, J. Yan,
+    et al. Muon is scalable for llm training. arXiv preprint arXiv:2502.16982. Cited by: §4.1.
+  • Mahabadi et al. (2025) R. K. Mahabadi, S. Satheesh, S. Prabhumoye, M. Patwary, M. Shoeybi, and
+    B. Catanzaro Nemotron-cc-math: a 133 billion-token-scale high quality math pretraining dataset.
+    External Links: Link Cited by: §4.3.
+  • Muennighoff et al. (2024) N. Muennighoff, L. Soldaini, D. Groeneveld, K. Lo, J. Morrison, S.
+    Min, W. Shi, P. Walsh, O. Tafjord, N. Lambert, et al. Olmoe: open mixture-of-experts language
+    models. arXiv preprint arXiv:2409.02060. Cited by: §1, §2.
+  • Noci et al. (2022) L. Noci, S. Anagnostidis, L. Biggio, A. Orvieto, S. P. Singh, and A. Lucchi 
+    Signal propagation in transformers: theoretical perspectives and the role of rank collapse. 
+    External Links: 2206.03126, Link Cited by: §4.1.
+  • Nuriyev and Kulp (2026) A. Nuriyev and G. Kulp Expert selections in moe models reveal (almost)
+    as much as text. arXiv preprint arXiv:2602.04105. Cited by: §2.
+  • Omi et al. (2025) N. Omi, S. Sen, and A. Farhadi Load balancing mixture of experts with
+    similarity preserving routers. arXiv preprint arXiv:2506.14038. Cited by: footnote 2.
+  • Phan et al. (2025) L. Phan, A. Gatti, Z. Han, N. Li, J. Hu, H. Zhang, C. B. C. Zhang, M.
+    Shaaban, J. Ling, S. Shi, et al. Humanity’s last exam. arXiv preprint arXiv:2501.14249. Cited
+    by: §5.3.
+  • Qiu et al. (2025) Z. Qiu, Z. Huang, B. Zheng, K. Wen, Z. Wang, R. Men, I. Titov, D. Liu, J.
+    Zhou, and J. Lin Demons in the detail: on implementing load balancing loss for training
+    specialized mixture-of-expert models. In Proceedings of the 63rd Annual Meeting of the
+    Association for Computational Linguistics (Volume 1: Long Papers), pp. 5005–5018. Cited by: §1,
+    §4.1.
+  • Radford et al. (2018) A. Radford, K. Narasimhan, T. Salimans, I. Sutskever, et al. Improving
+    language understanding by generative pre-training. Cited by: §1.
+  • Schoenholz et al. (2017) S. S. Schoenholz, J. Gilmer, S. Ganguli, and J. Sohl-Dickstein Deep
+    information propagation. External Links: 1611.01232, Link Cited by: §4.1.
+  • Singh et al. (2026) V. Singh, L. Krauss, S. Jaghouar, M. Sirovatka, C. Goddard, F. Obied, J. M.
+    Ong, J. Straube, A. Harley, C. Stewart, et al. Arcee trinity large technical report. arXiv
+    preprint arXiv:2602.17004. Cited by: §4.1.
+  • Skean et al. (2025) O. Skean, M. R. Arefin, D. Zhao, N. Patel, J. Naghiyev, Y. LeCun, and R.
+    Shwartz-Ziv Layer by layer: uncovering hidden representations in language models. arXiv
+    preprint arXiv:2502.02013. Cited by: §1, §2.
+  • Sun et al. (2024) M. Sun, X. Chen, J. Z. Kolter, and Z. Liu Massive activations in large
+    language models. arXiv preprint arXiv:2402.17762. Cited by: Figure 1.
+  • Team (2025) L. Team Every flop counts: scaling a 300b mixture-of-experts ling llm without
+    premium gpus. arXiv preprint arXiv:2503.05139. Cited by: §5.2.
+  • Wang et al. (2024) L. Wang, H. Gao, C. Zhao, X. Sun, and D. Dai Auxiliary-loss-free load
+    balancing strategy for mixture-of-experts. arXiv preprint arXiv:2408.15664. Cited by: §4.1.
+  • Wang et al. (2026) Y. Wang, Y. Xu, N. Shen, J. Su, J. Huang, and Z. Zhu The illusion of
+    specialization: unveiling the domain-invariant" standing committee" in mixture-of-experts
+    models. arXiv preprint arXiv:2601.03425. Cited by: §2.
+  • Xue et al. (2024) F. Xue, Z. Zheng, Y. Fu, J. Ni, Z. Zheng, W. Zhou, and Y. You Openmoe: an
+    early effort on open mixture-of-experts language models. arXiv preprint arXiv:2402.01739. Cited
+    by: §4.2.
+
+Appendix A Summarization of analysis metric
+
+RMS Distance
+
+In Fig. 1, we compared tokens’ hidden states RMS distance with their logits’ RMS distance. Given
+two vectors 𝒙i,𝒙j∈ℝD\bm{x}_{i},\bm{x}_{j}\in\mathbb{R}^{D}, their RMS distance is defined as
+
+ RMSDist⁡(𝒙i,𝒙j)=1D​∑d=1D(xi,d−xj,d)2,\mathrm{RMSDist}(\bm{x}_{i},\bm{x}_{j})=\sqrt{\frac{1}    (5)
+ {D}\sum_{d=1}^{D}\bigl(x_{i,d}-x_{j,d}\bigr)^{2}},
+
+where xi,dx_{i,d} denotes the dd-th coordinate of 𝒙i\bm{x}_{i}.
+
+Directional energy and retained energy
+
+In the left most and right most columns of Fig. 2,15(b),15(c),15(d), we studied the directional
+energy Energyℓ:ρ\mathrm{Energy}_{\ell:\rho} and the retained energy for the first directions across
+layers, averaged over 16 sequences. For a TT-token sequence, at a particular layer, let H∈ℝT×DH\in\
+mathbb{R}^{T\times D} be a data matrix whose rows are 𝒉1⊤,…,𝒉T⊤\bm{{h}}_{1}^{\top},\dots,\bm{{h}}_
+{T}^{\top}, i.e. the hidden state of the ttth token and let
+
+ H=𝑼​diag​(s1,…,sD)​𝑽⊤,H=\bm{U}\mathrm{diag}\left(s_{1},\ldots,s_{D}\right)\bm{V}^{\top},  (6)
+
+denotes its SVD. The directional energy is defined as
+
+ Energyℓ:ρ=∑i=ℓρsi2∑j=1rsj2,\mathrm{Energy}_{\ell:\rho}=\frac{\sum_{i=\ell}^{\rho}s_{i}^{2}}{\  (7)
+ sum_{j=1}^{r}s_{j}^{2}},
+
+which measures how much of the total feature energy is captured by singular directions ℓ,…,ρ\ell,\
+ldots,\rho. Then, given a router PP and the iith right singular direction 𝒗i\bm{v}_{i}, we define
+
+ RetainedEnergyi=1T​∑t=1T∥P𝒗i⊙𝒎t|22‖P‖F2.\mathrm{RetainedEnergy}_{i}=\frac{1}{T}\sum_{t=1}^{T}  (8)
+ \frac{\|P\bm{v}_{i}\odot\bm{m}_{t}|_{2}^{2}}{\|P\|_{F}^{2}}.
+
+where 𝒎t∈{0,1}E\bm{m}_{t}\in\{0,1\}^{E} is a binary vector denoting whether token tt usesd the eeth
+vector. Since
+
+ ‖P​𝒗i⊙𝒎t‖22=∑e=1E𝒎te​⟨re,𝒗i⟩2,\|P\bm{v}_{i}\odot\bm{m}_{t}\|_{2}^{2}=\sum_{e=1}^{E}\bm{m}_{t}  (9)
+ ^{e}\langle r_{e},\bm{v}_{i}\rangle^{2},
+
+this quantity measures how strongly the router preserves direction 𝒗i\bm{v}_{i}. A small value of
+RetainedEnergyi\mathrm{RetainedEnergy}_{i} for dominant shared directions (e.g., 𝒗1\bm{v}_{1})
+suggests that the router suppresses those directions, which may help maintain balanced expert
+usage.
+
+Average cosine similarity (inter-sequence)
+
+Given a sequence of TT tokens, denote the hidden states / router logits at a particular layer as
+{𝒙t}t=1T\{\bm{x}_{t}\}_{t=1}^{T} , average cosine similarity computes the average over the lower
+triangular of the kernel matrix, defined as:
+
+ cos¯​({𝒙t})=2T⁡(T−1)​∑i=2T∑j=1i−1𝒙i⊤​𝒙j‖𝒙i‖​‖𝒙j‖.\overline{\mathrm{cos}}(\{\bm{x}_{t}\})=\
+ frac{2}{T(T-1)}\sum_{i=2}^{T}\sum_{j=1}^{i-1}\frac{\bm{x}_{i}^{\top}\bm{x}_{j}}{\|\bm{x}_{i}  (10)
+ \|\,\|\bm{x}_{j}\|}.
+
+Router Hamming Similarity
+
+Given a sequence of TT tokens, denote every token’s expert usage at a particular layer as {𝒎t}t=1T\
+{\bm{m}_{t}\}_{t=1}^{T}, where 𝒎t∈{0,1}E\bm{m}_{t}\in\{0,1\}^{E} is a binary vector denoting
+whether token tt used the ee-th expert. The router Hamming similarity is computed as
+
+ Hamming¯​({𝒎t})=2T⁡(T−1)​∑i=2T∑j=1i−1𝒎i⊤​𝒎jE,\overline{\mathrm{Hamming}}(\{\bm{m}_{t}\})=\    (11)
+ frac{2}{T(T-1)}\sum_{i=2}^{T}\sum_{j=1}^{i-1}\frac{\bm{m}_{i}^{\top}\bm{m}_{j}}{E},
+
+where we average over all pairwise Hamming similarity. Compared with Eq. (10), the hamming
+similarity measures expert usage similarity more directly.
+
+Router confidence
+
+In Fig. 3, we looked at the router confidence averaged over 16 sequences. For each sequence of TT
+tokens, at a particular layer, the router confidence is defined as the average maximum softmax
+probability over all tokens:
+
+ 1T​∑t=1Tmaxe⁡softmax⁡(P​𝒉t)e,\frac{1}{T}\sum_{t=1}^{T}\max_{e}\,\operatorname{softmax}(P\bm   (12)
+ {{h}}_{t})_{e},
+
+where PP denotes the router and 𝒉t\bm{{h}}_{t} denotes the hidden state.
+
+Sequence-level expert frequency cosine similarity
+
+In Figs. 5, 7, 10, we compared two different sequences’ expert usage frequency. In particular, for
+each sequence of TT tokens, we count the frequency of token visits for each expert and normalize it
+into a probability vector:
+
+ 𝒑(s)=1T​K​∑t=1T𝒎t(s)∈ΔE−1,\bm{p}^{(s)}=\frac{1}{TK}\sum_{t=1}^{T}\bm{m}_{t}^{(s)}\in\Delta^   (13)
+ {E-1},
+
+where KK denotes the number of activated experts and 𝒎t(s)∈{0,1}E\bm{m}_{t}^{(s)}\in\{0,1\}^{E} is
+the expert-usage vector of token tt in sequence ss, and ΔE−1\Delta^{E-1} denotes the (E−1)(E-1)
+-simplex. Then we compute the cosine similarity between two frequency vectors 𝒑(s)\bm{p}^{(s)} and
+𝒑(s′)\bm{p}^{(s^{\prime})},
+
+ FreqSim⁡(s,s′)=𝒑(s)⊤​𝒑(s′)‖𝒑(s)‖​‖𝒑(s′)‖,\mathrm{FreqSim}(s,s^{\prime})=\frac{\bm{p}^{(s)\    (14)
+ top}\bm{p}^{(s^{\prime})}}{\|\bm{p}^{(s)}\|\,\|\bm{p}^{(s^{\prime})}\|},
+
+as a measure of sequence-level expert usage difference.
+
+Pooled hidden states cosine similarity
+
+In Fig. 5, the xx-axis denotes the cosine similarity between two sequences’ pooled hidden states.
+Given two sequences ii and jj of length LiL_{i} and LjL_{j} respectively, we first normalise each
+token’s hidden state at layer ℓ\ell:
+
+ 𝒉~tℓ=𝒉tℓ‖𝒉tℓ‖2+ε,\tilde{\bm{{h}}}_{t}^{\ell}=\frac{\bm{{h}}_{t}^{\ell}}{\|\bm{{h}}_{t}^{\     (15)
+ ell}\|_{2}+\varepsilon},
+
+and pool across tokens to obtain a sequence-level representation:
+
+ 𝒉¯iℓ=1Li​∑t=1Li𝒉~tℓ.\bar{\bm{{h}}}_{i}^{\ell}=\frac{1}{L_{i}}\sum_{t=1}^{L_{i}}\tilde{\bm     (16)
+ {{h}}}_{t}^{\ell}.
+
+The pooled cosine similarity between sequences ii and jj is then:
+
+ di,jℓ=cos⁡(𝒉¯iℓ,𝒉¯jℓ),d_{i,j}^{\ell}=\cos\!\left(\bar{\bm{{h}}}_{i}^{\ell},\,\bar{\bm{{h}}}_  (17)
+ {j}^{\ell}\right),
+
+where ε>0\varepsilon>0 is a small constant for numerical stability.
+
+Overlap under top-PP
+
+Given two sequences ss and s′s^{\prime}, we look at the overlap ratio of their top-PP expert sets.
+Using the empirical expert frequency vector 𝒑(s)\bm{p}^{(s)} defined above, we define the top-PP
+expert set of sequence ss as the smallest set of experts (sorted by decreasing frequency) whose
+cumulative probability mass exceeds PP:
+
+ ℰP(s)=arg⁡minS⊆[E]​|S|s.t.∑e∈Spe(s)≥P,pe(s)≥pe′(s)​∀e∈S,e′∉S,\mathcal{E}_{P}^{(s)}=\underset
+ {S\subseteq[E]}{\arg\min}\;|S|\quad\text{s.t.}\quad\sum_{e\in S}p_{e}^{(s)}\geq P,\quad p_    (18)
+ {e}^{(s)}\geq p_{e^{\prime}}^{(s)}\;\forall e\in S,e^{\prime}\notin S,
+
+and the overlap ratio between sequences ss and s′s^{\prime} is then their Jaccard similarity:
+
+ OverlapP​(s,s′)=|ℰP(s)∩ℰP(s′)||ℰP(s)∪ℰP(s′)|.\mathrm{Overlap}_{P}(s,s^{\prime})=\frac{|\
+ mathcal{E}_{P}^{(s)}\cap\mathcal{E}_{P}^{(s^{\prime})}|}{|\mathcal{E}_{P}^{(s)}\cup\mathcal   (19)
+ {E}_{P}^{(s^{\prime})}|}.
+
+Compared with cosine similarity, Eq. (14), OverlapP​(s,s′)\mathrm{Overlap}_{P}(s,s^{\prime})
+measures expert usage similarity more directly, and the value is more interpretable.
+
+Appendix B Expert properties arise from the embeddings
+
+Given two hidden states xi,xj∈ℝDx_{i},x_{j}\in\mathbb{R}^{D} and the router P∈ℝE×DP\in\mathbb{R}^{E
+\times D}.
+
+Naively, we have
+
+ ‖P​xi−P​xj‖2≤‖P‖2​‖xi−xj‖2\left\lVert Px_{i}-Px_{j}\right\rVert_{2}\leq\left\lVert P\right\   (20)
+ rVert_{2}\left\lVert x_{i}-x_{j}\right\rVert_{2}
+
+this bound is too loose, and it does not take into account data geometry. We can introduce an
+orthogonal base Q∈ℝD×DQ\in\mathbb{R}^{D\times D}, and we look at
+
+ ‖(P​Q⊤)​Q​xi−(P​Q⊤)​Q​xj‖2≤‖P​Q‖2​‖Q⁡(xi−xj)‖2\left\lVert(PQ^{\top})Qx_{i}-(PQ^{\top})Qx_{j}  (21)
+ \right\rVert_{2}\leq\left\lVert PQ\right\rVert_{2}\left\lVert Q(x_{i}-x_{j})\right\rVert_{2}
+
+now if xi−xjx_{i}-x_{j} lies on span​(Q)\text{span}(Q), we have ‖Q⁡(xi−xj)‖2=‖xi−xj‖2\left\lVert Q
+(x_{i}-x_{j})\right\rVert_{2}=\left\lVert x_{i}-x_{j}\right\rVert_{2}.
+
+To construct such QQ, we could consider having QQ as the right singular matrix of 𝑿\bm{X}. This is
+formalized in the next lemma.
+
+Lemma 1 (Data-aware Lipschitz bound via principal subspace projection).
+
+Let X∈ℝN×DX\in\mathbb{R}^{N\times D} be a data matrix whose rows are x1⊤,…,xN⊤x_{1}^{\top},\dots,x_
+{N}^{\top}, and let
+
+ X=U​Σ​V⊤X=U\Sigma V^{\top}
+
+be its singular value decomposition. Denote by m=min⁡{N,D}m=\min\{N,D\} the rank of XX. Fix r∈
+{1,2,…,m}r\in\{1,2,\dots,m\}, and let
+
+ Vr∈ℝD×rV_{r}\in\mathbb{R}^{D\times r}
+
+be the matrix formed by the top rr right singular vectors of XX. Define the orthogonal projector
+onto the corresponding principal subspace by
+
+ Πr:=Vr​Vr⊤∈ℝD×D.\Pi_{r}:=V_{r}V_{r}^{\top}\in\mathbb{R}^{D\times D}.
+
+Let P∈ℝE×DP\in\mathbb{R}^{E\times D} be the router weight matrix. Then, for any i,j∈{1,…,N}i,j\in\
+{1,\dots,N\},
+
+ ‖P​xi−P​xj‖2≤‖P​Πr‖2​‖Πr​(xi−xj)‖2+‖P⁡(I−Πr)​(xi−xj)‖2.\|Px_{i}-Px_{j}\|_{2}\leq\|P\Pi_{r}\|_{2}
+ \,\|\Pi_{r}(x_{i}-x_{j})\|_{2}+\|P(I-\Pi_{r})(x_{i}-x_{j})\|_{2}.
+
+In particular,
+
+ ‖P​xi−P​xj‖2≤‖P​Πr‖2​‖xi−xj‖2+‖P⁡(I−Πr)‖2​‖(I−Πr)​(xi−xj)‖2,\|Px_{i}-Px_{j}\|_{2}\leq\|P\Pi_{r}\|
+ _{2}\,\|x_{i}-x_{j}\|_{2}+\|P(I-\Pi_{r})\|_{2}\,\|(I-\Pi_{r})(x_{i}-x_{j})\|_{2},
+
+and
+
+ ‖(I−Πr)​(xi−xj)‖22=∑k=r+1D⟨xi−xj,vk⟩2.\|(I-\Pi_{r})(x_{i}-x_{j})\|_{2}^{2}=\sum_{k=r+1}^{D}\
+ langle x_{i}-x_{j},v_{k}\rangle^{2}.
+
+Proof.
+
+Fix i,ji,j, and define
+
+ Δi​j:=xi−xj∈ℝD.\Delta_{ij}:=x_{i}-x_{j}\in\mathbb{R}^{D}.
+
+Since Πr\Pi_{r} is the orthogonal projector onto span⁡(Vr)\operatorname{span}(V_{r}), we have the
+decomposition
+
+ Δi​j=Πr​Δi​j+(I−Πr)​Δi​j.\Delta_{ij}=\Pi_{r}\Delta_{ij}+(I-\Pi_{r})\Delta_{ij}.
+
+Applying PP to both sides yields
+
+ P​Δi​j=P​Πr​Δi​j+P⁡(I−Πr)​Δi​j.P\Delta_{ij}=P\Pi_{r}\Delta_{ij}+P(I-\Pi_{r})\Delta_{ij}.
+
+By the triangle inequality,
+
+ ‖P​Δi​j‖2≤‖P​Πr​Δi​j‖2+‖P⁡(I−Πr)​Δi​j‖2.\|P\Delta_{ij}\|_{2}\leq\|P\Pi_{r}\Delta_{ij}\|_{2}+\|P
+ (I-\Pi_{r})\Delta_{ij}\|_{2}.
+
+Using the operator norm bound on the first term,
+
+ ‖P​Πr​Δi​j‖2≤‖P​Πr‖2​‖Δi​j‖2,\|P\Pi_{r}\Delta_{ij}\|_{2}\leq\|P\Pi_{r}\|_{2}\,\|\Delta_{ij}\|_
+ {2},
+
+we obtain
+
+ ‖P​Δi​j‖2≤‖P​Πr‖2​‖Δi​j‖2+‖P⁡(I−Πr)​Δi​j‖2.\|P\Delta_{ij}\|_{2}\leq\|P\Pi_{r}\|_{2}\,\|\Delta_
+ {ij}\|_{2}+\|P(I-\Pi_{r})\Delta_{ij}\|_{2}.
+
+Recalling that Δi​j=xi−xj\Delta_{ij}=x_{i}-x_{j}, this proves
+
+ ‖P​xi−P​xj‖2≤‖P​Πr‖2​‖xi−xj‖2+‖P⁡(I−Πr)​(xi−xj)‖2.\|Px_{i}-Px_{j}\|_{2}\leq\|P\Pi_{r}\|_{2}\,\|x_
+ {i}-x_{j}\|_{2}+\|P(I-\Pi_{r})(x_{i}-x_{j})\|_{2}.
+
+For the second bound, apply again the operator norm inequality:
+
+ ‖P⁡(I−Πr)​(xi−xj)‖2≤‖P⁡(I−Πr)‖2​‖(I−Πr)​(xi−xj)‖2,\|P(I-\Pi_{r})(x_{i}-x_{j})\|_{2}\leq\|P(I-\Pi_
+ {r})\|_{2}\,\|(I-\Pi_{r})(x_{i}-x_{j})\|_{2},
+
+where we have used the fact that I−Πr=(I−Πr)2I-\Pi_{r}=(I-\Pi_{r})^{2}.
+
+Now let v1,…,vDv_{1},\dots,v_{D} denote the columns of VV. Since Πr=∑k=1rvk​vk⊤\Pi_{r}=\sum_{k=1}^
+{r}v_{k}v_{k}^{\top}, we have
+
+ I−Πr=∑k=r+1Dvk​vk⊤.I-\Pi_{r}=\sum_{k=r+1}^{D}v_{k}v_{k}^{\top}.
+
+Therefore,
+
+ (I−Πr)​(xi−xj)=∑k=r+1D⟨xi−xj,vk⟩​vk.(I-\Pi_{r})(x_{i}-x_{j})=\sum_{k=r+1}^{D}\langle x_{i}-x_
+ {j},v_{k}\rangle v_{k}.
+
+Because vr+1,…,vDv_{r+1},\dots,v_{D} are orthonormal, it follows from Pythagoras’ theorem that
+
+ ‖(I−Πr)​(xi−xj)‖22=∑k=r+1D⟨xi−xj,vk⟩2.\|(I-\Pi_{r})(x_{i}-x_{j})\|_{2}^{2}=\sum_{k=r+1}^{D}\
+ langle x_{i}-x_{j},v_{k}\rangle^{2}.
+
+This concludes the proof. ∎
+
+The result of Lemma 1 suggests that when data variance is mostly concentrated on few principal
+directions, the lipschitz constant ‖P​Πr‖2\|P\Pi_{r}\|_{2} is much sharper than the naive constant
+‖P‖2\|P\|_{2}. Intuitively, this is the case when the hidden states exhibit significant
+correlation.
+
+B.1 Shared directions become routing-insignificant under load balancing.
+
+Consider a router matrix P∈ℝE×DP\in\mathbb{R}^{E\times D} with logits
+
+ g⁡(x)=P​x∈ℝE,p⁡(x)=softmax⁡(P​x)∈ℝE.g(x)=Px\in\mathbb{R}^{E},\qquad p(x)=\operatorname{softmax}
+ (Px)\in\mathbb{R}^{E}.
+
+Since softmax⁡(z+α​𝟏)=softmax⁡(z)\operatorname{softmax}(z+\alpha\mathbf{1})=\operatorname{softmax}
+(z) for every z∈ℝEz\in\mathbb{R}^{E}, α∈ℝ\alpha\in\mathbb{R}, only the component of P​xPx
+orthogonal to 𝟏\mathbf{1} matters for routing. Let
+
+ ΠE:=IE−1E​𝟏𝟏⊤\Pi_{E}:=I_{E}-\frac{1}{E}\mathbf{1}\mathbf{1}^{\top}
+
+denote the orthogonal projector onto 𝟏⟂\mathbf{1}^{\perp}. Then the effective routing signal is
+ΠE​P​x\Pi_{E}Px.
+
+We study the simple correlated data model
+
+ xi=μ+ξi,i=1,…,N,x_{i}=\mu+\xi_{i},\qquad i=1,\dots,N,
+
+where μ∈ℝD\mu\in\mathbb{R}^{D} is a shared direction and 1N​∑i=1Nξi≈0\frac{1}{N}\sum_{i=1}^{N}\xi_
+{i}\approx 0 (uncorrelated centered ξ\xi’s). For tractability, we consider a simplified
+load-balancing loss
+
+ ℒbal​(P):=‖1N​∑i=1Nsoftmax⁡(P​xi)−1E​𝟏‖2.\mathcal{L}_{\mathrm{bal}}(P):=\left\|\frac{1}{N}\sum_{i
+ =1}^{N}\operatorname{softmax}(Px_{i})-\frac{1}{E}\mathbf{1}\right\|^{2}.
+
+The following lemma shows that, in the small-logit regime, minimizing load balancing forces the
+shared direction μ\mu to become routing-insignificant.
+
+Lemma 2.
+
+Assume that max1≤i≤N⁡‖P⁡(μ+ξi)‖≤ε\max_{1\leq i\leq N}\left\lVert P(\mu+\xi_{i})\right\rVert\leq\
+varepsilon for some ε>0\varepsilon>0, and that 1N​∑i=1Nξi≈0\frac{1}{N}\sum_{i=1}^{N}\xi_{i}\approx
+0. Then
+
+ 1N​∑i=1Nsoftmax⁡(P​xi)≈1E​𝟏+1E​ΠE​P​μ+O⁡(ε2),\frac{1}{N}\sum_{i=1}^{N}\operatorname{softmax}(Px_
+ {i})\approx\frac{1}{E}\mathbf{1}+\frac{1}{E}\Pi_{E}P\mu+O(\varepsilon^{2}),
+
+and therefore
+
+ ℒbal​(P)≈1E2​‖ΠE​P​μ‖2+O⁡(ε3).\mathcal{L}_{\mathrm{bal}}(P)\approx\frac{1}{E^{2}}\left\lVert\Pi_
+ {E}P\mu\right\rVert^{2}+O(\varepsilon^{3}).
+
+In particular, any near-minimizer of ℒbal\mathcal{L}_{\mathrm{bal}} must satisfy
+
+ ΠEPμ≈0⟺Pμ≈P​μ¯ 1,\Pi_{E}P\mu\approx 0\qquad\Longleftrightarrow\qquad P\mu\approx\overline{P\mu}\,
+ \mathbf{1},
+
+where P​μ¯:=1E​𝟏⊤​P​μ\overline{P\mu}:=\frac{1}{E}\mathbf{1}^{\top}P\mu.
+
+Proof.
+
+Using the Taylor expansion of softmax\operatorname{softmax} at 00, for any z∈ℝEz\in\mathbb{R}^{E}
+with ‖z‖≤ε\left\lVert z\right\rVert\leq\varepsilon,
+
+ softmax⁡(z)=1E​𝟏+1E​ΠE​z+O⁡(‖z‖2),\operatorname{softmax}(z)=\frac{1}{E}\mathbf{1}+\frac{1}{E}\Pi_
+ {E}z+O(\left\lVert z\right\rVert^{2}),
+
+where the O⁡(‖z‖2)O(\left\lVert z\right\rVert^{2}) term is uniform for ‖z‖≤ε\left\lVert z\right\
+rVert\leq\varepsilon. Applying this with zi=P⁡(μ+ξi)z_{i}=P(\mu+\xi_{i}), we get
+
+ softmax⁡(P​xi)=1E​𝟏+1E​ΠE​P​(μ+ξi)+O⁡(ε2).\operatorname{softmax}(Px_{i})=\frac{1}{E}\mathbf{1}+\
+ frac{1}{E}\Pi_{E}P(\mu+\xi_{i})+O(\varepsilon^{2}).
+
+Averaging over ii and using 1N​∑iξi=0\frac{1}{N}\sum_{i}\xi_{i}=0,
+
+ 1N​∑i=1Nsoftmax⁡(P​xi)=1E​𝟏+1E​ΠE​P​μ+O⁡(ε2).\frac{1}{N}\sum_{i=1}^{N}\operatorname{softmax}(Px_
+ {i})=\frac{1}{E}\mathbf{1}+\frac{1}{E}\Pi_{E}P\mu+O(\varepsilon^{2}).
+
+Subtracting 1E​𝟏\frac{1}{E}\mathbf{1} and squaring yields
+
+ ℒbal​(P)=‖1E​ΠE​P​μ+O⁡(ε2)‖2=1E2​‖ΠE​P​μ‖2+O⁡(ε3),\mathcal{L}_{\mathrm{bal}}(P)=\left\|\frac{1}
+ {E}\Pi_{E}P\mu+O(\varepsilon^{2})\right\|^{2}=\frac{1}{E^{2}}\left\lVert\Pi_{E}P\mu\right\rVert^
+ {2}+O(\varepsilon^{3}),
+
+since ‖ΠE​P​μ‖=O⁡(ε)\left\lVert\Pi_{E}P\mu\right\rVert=O(\varepsilon) in the small-logit regime.
+This proves the claim. ∎
+
+Geometric interpretation.
+
+The condition P​μ=P​μ¯​ 1P\mu=\overline{P\mu}\,\mathbf{1} means that the shared direction μ\mu
+contributes the same logit shift to every expert. Hence μ\mu induces no relative preference between
+experts and is invisible to routing. Equivalently,
+
+ ΠE​P​μ=0,\Pi_{E}P\mu=0,
+
+so μ\mu lies in the kernel of the discriminative part of the router ΠE​P\Pi_{E}P. Writing the rows
+of PP as p1⊤,…,pE⊤p_{1}^{\top},\dots,p_{E}^{\top}, this is also equivalent to
+
+ ⟨pe−pe′,μ⟩=0∀e,e′∈{1,…,E},\langle p_{e}-p_{e^{\prime}},\mu\rangle=0\qquad\forall e,e^{\prime}\in\
+ {1,\dots,E\},
+
+showing that all expert-separating directions are orthogonal to μ\mu. Thus the routing decision is
+invariant along the shared direction.
+
+This gives a simple theoretical explanation for why highly correlated inputs tend to make the
+router suppress shared directions. In the model xi=μ+ξix_{i}=\mu+\xi_{i}, when μ\mu is large, every
+token carries the same strong common component. Load balancing discourages such common structure
+from affecting routing, because it would create the same expert bias across the batch. The optimal
+response is therefore to make μ\mu routing-insignificant, namely P​μ∈span⁡(𝟏)P\mu\in\mathrm{span}(\
+mathbf{1}). Since adding a multiple of 𝟏\mathbf{1} does not change softmax, the router effectively
+ignores the shared direction and routes using only the residual variations ξi\xi_{i}. In more
+geometric terms, balanced routing factors through the quotient that removes the common correlated
+direction.
+
+This analysis considered a router PP trained to achieve load-balancing only. Realistically, the
+training of PP is conducted simultaneously with other weight matrices in pretraining, and the
+load-balancing loss is an auxiliary loss. Therefore, the conclusions from this analysis should only
+be partially observed in practice. Specifically, instead of the router PP making high correlation
+directions fully insignificant, it should be expected that PP downscales the magnitude of those
+directions instead.
+
+Appendix C Example model outputs
+
+C.1 GPT-OSS-20b
+
+⬇
+Model input:
+Summarize the following paragraph: [history of wimbledon]
+Model output:
+<|channel|>analysis<|message|>We need to summarize the text. Very long history.
+⬇
+Model input:
+Think step by step, answer the question: [HLE question]
+Model output:
+<|channel|>analysis<|message|>We need to interpret the problem:
+
+C.2 Duplication
+
+Under duplications, we considered an instruction tuned model, while we did not see outputs of
+different inputs collapse to the same output (despite expert usage similarity increases), we did
+observe the output to lose randomness under random decoding.
+
+⬇
+Duplication x 1:
+Query 1 output:
+If you’re a coder: What language are you coding in, and what does your current stack look like?
+Some key shifts:
+- More attention on internal tooling (infrastructure, DevOps, internal APIs)
+- Higher value on high-quality, maintainable code
+- Smaller, faster iterations with
+******************************
+Query 2 output:
+‘‘‘
+#@title Sampling
+def p_sample_loop_score(model, shape, clip_denoised=True, denoised_fn=None, transform=None):
+’’’
+A generic function to follow the denoising refinemnet API.
+’’’
+assert transform is not None
+b =
+------------------------------------------------------------
+Duplication x 4:
+Query 1 output:
+OpenAI and xAI are finally deprioritizing side quests and focusing on coding, while Anthropic has 
+been focused on coding from the start.
+We’re likely heading toward 3-4 top-tier coding models (including Gemini), it’s not a winner-take-
+all market. Each model will excel
+******************************
+Query 2 output:
+1. The Forward Process: The SDEThe forward diffusion process $\{ \mathbf{x}_t \}_{t=0}^T$ 
+transforms a data sample $\mathbf{x}_0 \sim p_{data}(\mathbf{x})$ into Gaussian noise $\mathbf{x}_T
+\sim \mathcal{N}(\mathbf{0},
+------------------------------------------------------------
+Duplication x 16:
+Query 1 output:
+OpenAI and xAI are finally deprioritizing side quests and focusing on coding, while Anthropic has 
+been focused on coding from the start.
+We’re likely heading toward 3-4 top-tier coding models (including Gemini), it’s not a winner-take-
+all market. Each model will excel
+******************************
+Query 2 output:
+1. The Forward Process: The SDEThe forward diffusion process $\{ \mathbf{x}_t \}_{t=0}^T$ 
+transforms a data sample $\mathbf{x}_0 \sim p_{data}(\mathbf{x})$ into Gaussian noise $\mathbf{x}_T
+\sim \mathcal{N}(\mathbf{0},
+------------------------------------------------------------
+Duplication x 32:
+Query 1 output:
+OpenAI and xAI are finally deprioritizing side quests and focusing on coding, while Anthropic has 
+been focused on coding from the start.
+We’re likely heading toward 3-4 top-tier coding models (including Gemini), it’s not a winner-take-
+all market. Each model will excel
+******************************
+Query 2 output:
+1. The Forward Process: The SDEThe forward diffusion process $\{ \mathbf{x}_t \}_{t=0}^T$ 
+transforms a data sample $\mathbf{x}_0 \sim p_{data}(\mathbf{x})$ into Gaussian noise $\mathbf{x}_T
+\sim \mathcal{N}(\mathbf{0},
+------------------------------------------------------------
+
+
+Figure 11: Same model architecture, different optimizers induce different feature space properties.
+At the same layer, given the same sequence, both models show a similar distribution of pairwise
+cosine similarity (over all tokens). However, embeddings in the model trained with AdamW show, on
+average, a higher RMS distance, indicating that different tokens exhibit high variation in norm (25
+- 35). In contrast, Muon trained model shows more concentrated distribution of feature norm (12 -
+14) and smaller pairwise RMS distances.
+
+
+Figure 12: On dense model, except for Gemma3, which uses sandwich norm, token similarities also
+increase with depth.
+
+Refer to caption
+Refer to caption
+
+Figure 13: On Deepseek v2 lite, empirical comparison of the naive bound ‖P‖2​‖δi,j‖\|P\|_{2}\|\
+delta_{i,j}\| versus the tighter projection-based bound ‖P​Πr‖2​‖δi,j‖Πr\|P\Pi_{r}\|_{2}\|\delta_
+{i,j}\|_{\Pi_{r}} from Proposition 1, where δi,j=𝒉i−𝒉j\delta_{i,j}=\boldsymbol{h}_{i}-\boldsymbol
+{h}_{j}. Left: the residual ratio |(I−Πr)​δi,j|/|δi,j|Πr|(I-\Pi_{r})\delta_{i,j}|\,/\,|\delta_{i,j}
+|_{\Pi_{r}} is sharply concentrated near zero under r=1200r=1200, confirming that the residual term
+‖P⁡(I−Πr)​δi,j‖2\|P(I-\Pi_{r})\delta_{i,j}\|_{2} is negligible and the bound in Eq. (4) is
+approximately tight with respect to the SVD truncation. Right: the actual router logit differences
+|P​δ||P\delta| (orange dots) fall far below both upper bounds. While the projection-based bound
+‖P​Πr‖2​|δ|Πr\|P\Pi_{r}\|_{2}\,|\delta|_{\Pi_{r}} (blue line) is theoretically tighter than the
+naive bound ‖P‖2​|δ|\|P\|_{2}\,|\delta| (orange line), PP is already well-aligned with the
+principal subspace of the data, the gap between the two bounds is less significant in pre-trained
+models.
+
+Refer to caption
+(a) gpt-oss-20b
+
+Refer to caption
+(b) Qwen3-4B-Thinking-2507
+
+
+Figure 14: Hidden states similarity (measured by Eq. (17)) v.s. depth for the prompt / question
+part v.s. question + rollout on two different reasoning models tested on 10 questions from HLE. 
+Left On gpt-oss, the similarity of the rollout part falls below the question-only line and does not
+show collapsing, aligning with the observations in Fig. 9. Right On a dense reasoning model from
+different lab, while we did see an increment of hidden state similarity across depth, we did not
+observe a clear separation in deeper layers.
+
+
+(a) GPT-OSS-20B (post-trained): AdamW + explicit auxiliary loss
+
+
+(b) DeepSeek-V2-Lite (base): AdamW + explicit auxiliary loss
+
+
+(c) Moonlight 16B (structure identical to DeepSeek-V2-Lite): Muon + auxiliary-loss-free
+
+
+(d) Trinity-Mini-Base: Muon + auxiliary-loss-free
+
+
+Figure 15: Similar to Fig. 2 in the main text, but for more models
+
+
+Figure 16: gpt-oss-20b (w/ auxiliary loss)
+
+
+Figure 17: Trinity Mini Base (Muon, no auxiliary loss)
+
+
+Figure 18: DeepSeek V2 Lite (AdamW, w/ auxiliary loss)
+
+
+Figure 19: Moonlight 16B A3B, same architecture as DeepSeek V2 Lite, trianed with Muon and no
+auxiliary loss
+
+Refer to caption
+Figure 20: gpt-oss-20b
+
+Refer to caption
+Figure 21: Ernie 4.5 21B-A3B-Base
+
+Refer to caption
+Figure 22: Qwen3-30B-A3B
+
+
+Figure 23: OOD inputs reduce router data alignment (‖P​Q‖2\left\lVert PQ\right\rVert_{2}), where Q=
+Vr​Vr⊤Q=V_{r}V_{r}^{\top} denotes the orthogonal projector onto the subspace spanned by the data’s
+top rr right singular vectors.
+
+
+Figure 24: Keeping only top-K directions (VK{V}_{K}) of the data (i.e. the post attention hidden
+states, denoted by hth_{t}), we study the ratio of expert usage agreement compared with the
+original inputs, averaged over 50,000 tokens from nvidia/Nemotron-CC-Math-v1 at the 1010th layer of
+each model. The expert receiving the largest logits (brown line, m=1m=1) shows high agreement over
+all tokens. Lower rank experts (e.g. the 6th expert, m=6m=6) demonstrate a higher degree of
+perturbations when the tail directions are removed; more than 40% of the tokens end up using a
+different expert compared with the original inputs at K=1200K=1200 (out of 20482048 directions in
+total).
+
+
+Figure 25: Similiar to Fig. 6 in the main text, but for more values of pp.
+
+Refer to caption
+Figure 26: On Ernie-4.5, duplicating sequences increases token hidden states similarity (first
+column), i.e. stronger shared direction, resulting in higher sequence hidden state similarity
+(second column). The increment in hidden state space results in increased expert usage similarity
+(last two columns).
+
+
+Figure 27: Comparison of expert usage under duplication for gpt-oss-20b with (bottom) and without
+(top) chat template on two pieces of input.
+
+
+Figure 28: Comparison of expert usage under duplication for ERNIE-4.5-21B-A3B with (bottom) and
+without (top) chat template on two pieces of input.
+
+Refer to caption
+Figure 29: Duplication increases logit magnitude, increasing model confidence and causes random
+decoding to collapse.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

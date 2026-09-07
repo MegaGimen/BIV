@@ -1,0 +1,1031 @@
+source: https://arxiv.org/html/2606.12397
+arxiv: https://arxiv.org/abs/2606.12397
+note: HTML dump via w3m; not a PDF.
+========================================================================
+
+Report GitHub Issue
+
+×
+Title: [                    ]
+
+Content selection saved. Describe the issue below:
+
+Description: [                    ]
+Submit without GitHub Submit in GitHub
+[smileybone] arXiv is now an independent nonprofit! Learn more ×
+arXiv logo Back to arXiv
+Why HTML? Report Issue Back to Abstract Download PDF   
+
+ 1. Abstract
+ 2. 1 Introduction
+ 3. 2 Background: Mixture-of-Experts
+ 4. 3 Methodology
+     1. 3.1 Motivation
+     2. 3.2 Routers with Manifold Power-Iteration
+         1. Manifold Power-Iteration.
+         2. Design Principle.
+     3. 3.3 From Maximum Projection Constraints to Manifold Power-Iteration
+ 5. 4 Experiment
+     1. 4.1 MPI is an Optimizer-Agnostic Design
+     2. 4.2 Comparative Analysis with vanilla MoE
+         1. Convergence and Performance.
+         2. Load Balancing.
+         3. Efficiency Analysis.
+ 6. 5 Method Analysis
+     1. 5.1 Enhanced Router-Expert Alignment Along the Principle Singular direction
+     2. 5.2 Ablation Studies
+         1. 5.2.1 Impact of the Key Design Choices
+             1. Ablation on Power Iteration Design.
+             2. Router Retraction Enables Stable Training.
+         2. 5.2.2 Sensitivity Analysis of Constant CC
+     3. 5.3 Expert Weight Choice for Power Iteration
+ 7. 6 Compatibility of Manifold Power- Iteration with other Router Designs
+     1. Auxiliary loss for MoE.
+     2. Alternative of Activation functions.
+ 8. 7 Related Work
+ 9. 8 Conclusion
+10. References
+11. A Supplementary Derivations for Approximation in Equation 
+12. B Details for Pretraining Experiments
+     1. B.1 Implementation Details
+     2. B.2 Optimizer Setup Details
+13. C Evaluation Setup
+
+License: arXiv.org perpetual non-exclusive license
+arXiv:2606.12397v1 [cs.LG] 10 Jun 2026
+
+Redesign Mixture-of-Experts Routers with Manifold Power Iteration
+
+Songhao Wu Affiliation:  Gaoling School of Artificial Intelligence, Renmin University of China 
+Email: songhaowu@ruc.edu.cn    Ang Lv Affiliation:  Gaoling School of Artificial Intelligence,
+Renmin University of China Email: anglv@ruc.edu.cn    Ruobing Xie ^†^†thanks: Correspondence to:
+Ruobing Xie, Yankai Lin. Affiliation:  Large Language Model Department, Tencent Email: 
+yankailin@ruc.edu.cn    Yankai Lin^1^1footnotemark: 1 Affiliation:  Gaoling School of Artificial
+Intelligence, Renmin University of China Email: xrbsnowing@163.com
+
+Abstract
+
+Router is the cornerstone component to the Mixture-of-Experts models. Serving as expert proxies,
+the rows of the router matrix compute their similarity to the MoE inputs to determine which subset
+of experts is activated. Ideally, each router row is designed to encode the expert matrix into this
+representative vector, such that its dot-product with token can better reflect token-expert
+affinity. However, there exists no design principles to enforce this condensation. In this paper,
+we propose to align each router row with the principal singular direction of the associated expert,
+as this direction provides the most expressive mathematical description of a matrix. Based on this
+principle, we propose a router redesign with Manifold Power Iteration (MPI). Specifically, it
+introduces a “Power-then-Retract” paradigm, where a power iteration step is performed on the router
+weights, followed by a retraction to impose a norm constraint to ensure both efficiency and
+stability. Theoretically, we show that MPI drives router rows to converge toward the principal
+singular directions of associated experts. Empirically, we pretrain MoE model across scales from 1B
+to 11B parameters to confirm that this alignment facilitates more effective MoE models.
+
+1 Introduction
+
+Mixture-of-Experts (MoE, Muennighoff et al., 2025; OpenAI, 2025; DeepSeek-AI, 2026; GLM-5-Team et
+al., 2026) stands as a pivotal model architecture in LLMs to scale model capacity with a
+constrained computational budget. Specifically, it replaces standard Transformer Feed Forward
+Networks (FFNs) with an ensemble of expert modules, using a router to select experts per token for
+sparse activation. MoE enables more efficient training given the same computation budget, paving
+the way for LLM training with trillions of parameters DeepSeek-AI (2026); Team et al. (2026).
+
+At the heart of MoE lies the router, which is typically parameterized as a linear matrix. For each
+input token, the router computes similarity scores against the matrix rows and dispatches the token
+to the experts corresponding to the top-scoring rows. While this design is straightforward and has
+long been accepted as a matter of course, we challenge this conventional wisdom. Ideally, each
+individual row in MoE router matrix should faithfully reflect the expert’s intrinsic features. The
+router matrix can thus better ground the identity of each expert, allowing token–router affinity to
+serve as a precise proxy for token–expert assignment. However, there lacks a constraint in MoE
+router to enforce the encoding of expert features into router rows of limited expressivity. This
+absence may lead to suboptimal router design, compromising both training convergence and competence
+of MoE models.
+
+We propose to align each router row with the principal singular direction of its corresponding
+expert’s weight matrix. This choice is grounded in a linear algebraic intuition: the principal
+singular direction preserves the highest density of information within a matrix Golub and Van Loan
+(1996); Halko et al. (2010), making it the optimal compressed representation to characterize that
+matrix. Since each expert module is parameterized as weight matrices, encoding it into a single
+router vector is exactly the task of capturing its most informative direction. To avoid the
+prohibitive cost of exact singular value decomposition (SVD), we leverage power iteration Halko et
+al. (2010) as a lightweight alternative to obtain this principal direction online. Specifically,
+the power iteration scheme uses only standard matrix-vector products to solve for the principal
+singular vector, obviating the need for expensive full matrix factorization.
+
+In practice, we perform only one single power iteration on the router weights during each training
+step. After that, a retraction step is introduced to regularize the L2L_{2} norm of the router
+weights, maintaining them at a constant scale to prevent potential explosion or collapse. This
+“Power-then-Retract" paradigm gives our design its name: Routers with Manifold Power-Iteration
+(MPI). We prove that this online update rule is equivalent to a steepest ascent optimization that
+maximize the router’s projection onto the expert weight under the principle of minimal updates.
+From a theoretical perspective, this confirms that each update step drives an adaptive convergence
+of router rows toward the principal singular direction of their associated experts. Consequently,
+this imposes an explicit constraint on router optimization to encode the most dominant expert
+features into router vectors, which has been overlooked in conventional router designs.
+
+We conduct extensive pretraining experiments across a wide range of MoE model scales using billions
+of tokens. We contend that our router redesign with Manifold Power Iteration presents a fundamental
+departure from conventional MoE routers and brings intrinsic improvements. While it retains the
+standard interface of MoE routers, it provides a fresh perspective to rethink the interplay between
+routers and experts. Empirical evaluations, scaling up to 11B parameters, show that MoE with MPI
+consistently facilitates faster convergence, superior downstream performance, and improved load
+balancing. We further demonstrate that this superiority is robust to shifts in model features,
+stemming entirely from our principled router design. We hope these insights shed light on the
+intrinsic nature of MoE router and inspire future exploration.
+
+2 Background: Mixture-of-Experts
+
+We center our discussion on MoE-based LLMs. The key component of an MoE is the router, which
+dispatches inputs to a sparse subset of the experts. Typically, the router employs a 2D linear
+weight matrix 𝑹∈ℝN×D{\bm{R}}\in\mathbb{R}^{N\times D} to project the input 𝒙∈ℝD{\bm{x}}\in\mathbb
+{R}^{D} into gating weight vector 𝒘{\bm{w}} over the NN experts:
+
+ 𝒘=Softmax​(TopK​(𝒙​𝑹⊤)).{\bm{w}}=\texttt{Softmax}\left(\texttt{TopK}\left({\bm{x}}{\bm{R}}^{\  (1)
+ top}\right)\right).
+
+where experts with the top-KK largest gating weights are selected. MoE layer output is then
+computed as weighted sum of the selected experts:
+
+ MoE​(𝒙)=∑k=1K𝒘k⋅𝑬k​(𝒙),\textrm{MoE}\left({\bm{x}}\right)\;=\;\sum_{k=1}^{K}{{\bm{w}}_{k}\cdot  (2)
+ {\bm{E}}_{k}({\bm{x}})},
+
+where each expert module is Gated Linear Unit Shazeer (2020) with the Swish Ramachandran et al.
+(2017) activation function:
+
+ 𝑬k​(𝒙)=(SiLU​(𝒙​𝑾gk)⊙(𝒙​𝑾pk))​𝑾ok.{\bm{E}}_{k}({\bm{x}})=\left(\texttt{SiLU}({\bm{x}}{\bm{W}}^{k}
+ _{g})\odot({\bm{x}}{\bm{W}}^{k}_{p})\right){\bm{W}}^{k}_{o}\;.
+
+While this router design is straightforward and sufficient in most cases, certain limitations
+persist at the design stage and hinder its optimal performance. For instance, no explicit
+constraint is imposed to ensure that routers can faithfully reflect the experts’ intrinsic
+features. For input 𝒙{\bm{x}}, its affinity with the ii-th expert is defined as its inner product
+with 𝑹[i]{\bm{R}}_{[i]}. Ideally, 𝑹[i]{\bm{R}}_{[i]} should maximally preserve the geometry of the
+ii-th expert weights to better act as a feature vector; however, such a constraint is absent and
+may result in suboptimal convergence as a consequence. Leveraging this insight, we propose a
+redesign of MoE router and empirically confirm its effectiveness in the following sections.
+
+3 Methodology
+
+We first elucidate our motivation, derive framework for Manifold Power Iteration and interpret some
+key design principles. We then revisit the essence of our method from optimization perspective and
+provide accessible insights into how it works.
+
+3.1 Motivation
+
+In MoE routing, 𝐑[i]\mathbf{R}_{[i]} is designed to serve as a representative vector for the ii-th
+expert, ensuring that its inner product with an input faithfully reflects their mutual affinity.
+Consequently, the token is routed to the experts with the highest affinity scores. This suggests
+that an ideal 𝑹[i]{\bm{R}}_{[i]} should be optimized to effectively encode the distinctive
+characteristics of the expert matrix 𝑾∗i{\bm{W}}_{*}^{i} within a constrained vector space. From a
+matrix-theoretic perspective, a vector is best aligned with a matrix’s principal singular
+directions to capture its most essential traits Eckart and Young (1936). In the context of MoE,
+this principle dictates that a well-coupled router 𝑹[i]{\bm{R}}_{[i]} should be guided toward the
+principal singular direction of expert weights 𝑾∗i{\bm{W}}_{*}^{i}. Geometrically, this is
+equivalent to maximizing squared projection of 𝐑[i]\mathbf{R}_{[i]} onto the row space spanned by
+𝐖∗i\mathbf{W}_{*}^{i}, which is given by:
+
+ max𝑹[i]ϕ⁡(𝑾∗i,𝑹[i])=‖𝑹[i]​𝑾∗i‖22‖𝑹[i]‖22\max_{{\bm{R}}_{[i]}}\quad{\bm{\phi}({\bm{W}}_{*}^
+ {i},\,{\bm{R}}_{[i]})=\frac{\|{\bm{R}}_{[i]}{\bm{W}}_{*}^{i}\|_{2}^{2}}{\|{\bm{R}}_{[i]}\|_    (3)
+ {2}^{2}}}
+
+where ϕ⁡(⋅)\bm{\phi}(\cdot) is the objective function, also known as the Rayleigh quotient with
+𝑾∗i​𝑾∗i⊤{\bm{W}}_{*}^{i}{\bm{W}}_{*}^{i\top} and 𝑹[i]{\bm{R}}_{[i]}^1^1 1 Unless specified
+otherwise, we substitute 𝐖gi\mathbf{W}_{g}^{i} for 𝐖∗i∈{𝐖gi,𝐖oi,𝐖pi}\mathbf{W}_{*}^{i}\in\{\mathbf
+{W}_{g}^{i},\mathbf{W}_{o}^{i},\mathbf{W}_{p}^{i}\} hereafter for the sake of simplicity.
+
+However, it is prohibitive to execute an exact singular value decomposition (SVD) for all expert
+matrices to obtain the principal singular vector at each training step. To address the issue, we
+leverage power iteration onto 𝑹[i]{\bm{R}}_{[i]} as a lightweight alternative to SVD. Backed by
+power method theory Golub and Van Loan (1996), it enables 𝐑[i]\mathbf{R}_{[i]} to progressively
+track and converge toward the principal singular direction over training steps through efficient
+matrix-vector products. This motivates the core design of our routers, which is built upon Power
+Iteration followed by a row-wise normalization. We first outline the implementation details and
+defer an in-depth discussion to a later section.
+
+3.2 Routers with Manifold Power-Iteration
+
+Manifold Power-Iteration.
+
+Specifically, the proposed approach follows a "Power-then-Retract" paradigm, which involves (1) a
+power iteration step that aligns the router with the principal direction of expert weights,
+followed by (2) a L2L_{2} retraction step for weight containment and numerical stability.
+
+For an arbitrary row 𝑹[i]{\bm{R}}_{[i]} of the router weights, we first fetch its associated expert
+weights 𝑾gi{\bm{W}}_{g}^{i} and perform a single step of power iteration on it:
+
+ 𝑹[i]^=𝑹[i]​𝑾gi​𝑾gi⊤.\hat{{\bm{R}}_{[i]}}\;=\;{\bm{R}}_{[i]}\;{\bm{W}}_{g}^{i}\;{\bm{W}}_{g}^   (4)
+ {i\top}.
+
+The cumulative execution of power iteration across training steps can induce numerical instability,
+causing L2L_{2} norm of 𝐑^[i]\hat{\mathbf{R}}_{[i]} to diverge. To counteract this divergence, we
+constrain the L2L_{2} norm of 𝐑^[i]\hat{\mathbf{R}}_{[i]} to a hyperparameter CC after each
+iteration:
+
+ 𝑹[i]′=C⋅𝑹[i]^‖𝑹[i]^‖2,{\bm{R}}_{[i]}^{\prime}=C\cdot\frac{\hat{{\bm{R}}_{[i]}}}{\|\hat{{\bm    (5)
+ {R}}_{[i]}}\|_{2}},
+
+while designed to avoid instability, this retraction provides additional benefits. Conceptually, it
+rectifies the potential expert bias induced by scale disparities in router norms, where an
+amplified norm can easily inflate gating weights and consequently overload the corresponding
+expert. Based on these two designs, the original router matrix 𝑹{\bm{R}} is substituted with the
+concatenated formulation:
+
+ 𝑹′⁣⊤=[𝑹[1]^∣𝑹[2]^​∣⋯∣​𝑹[N]^],{\bm{R}}^{\prime\top}=\big[\,\hat{{\bm{R}}_{[1]}}\mid\hat{{\bm{R}}_
+ {[2]}}\mid\cdots\mid\hat{{\bm{R}}_{[N]}}\,\big],
+
+and the final gating weights 𝒘{\bm{w}} are recomputed as:
+
+ 𝒘′=Softmax​(TopK​(𝒙​𝑹′⁣⊤)).{\bm{w}}^{\prime}=\texttt{Softmax}\left(\texttt{TopK}\left({\bm     (6)
+ {x}}{\bm{R}}^{\prime\top}\right)\right).
+
+We designate this refined router 𝑹′{\bm{R}}^{\prime} as Routers with Manifold Power-Iteration (MPI)
+, to fully manifest the Power-then-Retract paradigm.
+
+Figure 1 provides a Pytorch-style pseudo-code to help understand our implementation.
+
+⬇
+from torch.nn.functional import normalize
+from megablocks.layers.moe import MoE
+class MoE_MPI(MoE):
+def foward(self, x, C_prime = 1):
+# R: [N, D], wg: [N, D, d]
+# PowerIter: ([N, 1, D] @ [N, D, d])
+# @ [N, d, D] -> [N, D]
+  R_hat = (self.R.unsqueeze(1) @ wg.
+  transpose(1, 2) @ wg).squeeze()
+# Retracition: [N, D] -> [N, D]
+  R_prime = normalize(R_hat, p=2, dim=-1)
+  C = C_prime * (N ** -0.5)
+  logits = C * (x @ R_prime.T)
+s_prime = logits.softmax(dim=-1)
+w_prime, _ = torch.topk(s_prime, dim=-1)
+return self.experts(x, s_prime, w_prime)
+
+Figure 1: Pseudo code for Manifold Power-Iteration.
+
+Design Principle.
+
+We also establish a principle to guide the configuration of CC. To this end, we introduce an
+assumption that routing logits should be bounded at a constant scale to to prevent explosion,
+inspired by insights in (Pethick et al., ):
+
+ ‖𝒙​𝑹′⁣⊤‖∞∼O⁡(1),{\|\,{\bm{x}}{\bm{R}}^{\prime\top}\,\|_{\infty}}\;\sim\;O(1),
+
+Given a scale-invariant 𝐱\mathbf{x}, this upper bound inherently implies that C∼Θ⁡(1N)C\sim\Theta(\
+frac{1}{\sqrt{N}}) with respect to NN. This is evidenced by the following derivation:
+
+ ‖𝒙​𝑹′⁣⊤‖∞≤∑i=1N(𝒙​𝑹[i]⊤)2∼O⁡(C​N),\displaystyle\|\,{\bm{x}}{\bm{R}}^{\prime\top}\,\|_{\infty}
+ \leq\,\sqrt{\sum_{i=1}^{N}{({\bm{x}}{\bm{R}}_{[i]}^{\top})^{2}}}\;\sim\;O(C\sqrt{N}),
+ where𝒙​𝑹[i]⊤∼O⁡(C)for each expert.\displaystyle\texttt{where}\quad{\bm{x}}{\bm{R}}_{[i]}^{\    (7)
+ top}\;\sim\;O(C)\quad\text{for each expert}.
+
+Therefore, to enforce the O⁡(1)O(1) ceiling and decouple the scaling effect from the expert count
+NN, we introduce a redefinition: C≔C′NC\coloneqq\frac{C^{\prime}}{\sqrt{N}}, where C′C^{\prime} is
+a scale-invariant global hyperparameter.
+
+3.3 From Maximum Projection Constraints to Manifold Power-Iteration
+
+Section 3.1 provides an intuitive motivation explaining the introduction of Power-Iteration into
+our router design. This section extends the maximum projection objective in Eq. 3 to align with our
+formulation, which can be expressed as:
+
+ maxΔ​𝒓𝚽⁡(𝑾g,𝑹[i]′+Δ​𝒓)\displaystyle\max_{\Delta{\bm{r}}}\quad\bm{\Phi}({\bm{W}}_{g},\,{\bm     (8)
+ {R}}_{[i]}^{\prime}+\Delta{\bm{r}})
+ s.t.​‖𝑹[i]′‖2=‖𝑹[i]′+Δ​𝒓‖2=C,‖Δ​𝒓‖2≤η,\displaystyle\mathrm{\textbf{s.t.}}\,\;\|{\bm{R}}_{[i]}
+ ^{\prime}\|_{2}=\|{\bm{R}}_{[i]}^{\prime}+\Delta{\bm{r}}\|_{2}=C,\;\;\|\Delta{\bm{r}}\|_{2}\
+ leq\eta,
+
+since the normalization ensures a constant denominator, the original objective reduces to:
+
+ 𝚽⁡(𝑾∗i,𝑹[i]′)=‖𝑹[i]′​𝑾∗i‖22=𝑹[i]′​𝑾∗i​𝑾∗i⊤​𝑹[i]′⁣⊤,\bm{\Phi}({\bm{W}}_{*}^{i},\,{\bm{R}}_{[i]}^{\
+ prime})=\|{\bm{R}}_{[i]}^{\prime}{\bm{W}}_{*}^{i}\|_{2}^{2}={\bm{R}}_{[i]}^{\prime}{\bm{W}}_{*}^
+ {i}{\bm{W}}_{*}^{i\top}{\bm{R}}_{[i]}^{\prime\top},
+
+Δ​𝒓\Delta{\bm{r}} represents the update, and η\eta constrains the update within a small bounded
+region. We impose norm constraints on both 𝑹[i]′{\bm{R}}_{[i]}^{\prime} and 𝑹[i]′+Δ​𝒓{\bm{R}}_{[i]}
+^{\prime}+\Delta{\bm{r}} . To analyze this optimization landscape, we consider a first-order Taylor
+approximation of the objective:
+
+ 𝚽⁡(𝑾g,𝑹[i]′+Δ​𝒓)=𝚽⁡(𝑾g,𝑹[i]′)+⟨𝑮,Δ​𝒓⟩,\bm{\Phi}({\bm{W}}_{g},\,{\bm{R}}_{[i]}^{\prime}+\Delta{\bm
+ {r}})\;=\;\bm{\Phi}({\bm{W}}_{g},\,{\bm{R}}_{[i]}^{\prime})\,+\,\langle{\bm{G}},\,\Delta{\bm{r}}\
+ rangle,
+
+where 𝑮=2​𝑹[i]′​𝑾g​𝑾g⊤{\bm{G}}=2\,{\bm{R}}_{[i]}^{\prime}{\bm{W}}_{g}{\bm{W}}_{g}^{\top} represents
+the gradient of 𝑹[i]{\bm{R}}_{[i]}. The Taylor approximation reduces the objective to maximizing
+the inner product ⟨𝑮,Δ​𝒓⟩\langle{\bm{G}},\,\Delta{\bm{r}}\rangle. To satisfy the norm constraint
+and ensure that the updated router 𝑹[i]′{\bm{R}}_{[i]}^{\prime} remains on the spherical manifold,
+we project the gradient 𝑮{\bm{G}} onto the tangent space of the sphere. Defining 𝑴≔𝑾g​𝑾g⊤{\bm{M}}\
+coloneqq{\bm{W}}_{g}{\bm{W}}_{g}^{\top} to simplify notation, and setting C=1C=1 without loss of
+generality, the gradient ascent update Δ​𝒓g\Delta{\bm{r}}_{g} on the manifold is formulated as:
+
+ Δ​𝒓g\            =η​𝑮​(𝑰−𝑹[i]′⁣⊤​𝑹[i]′𝑹[i]′​𝑹[i]′⁣⊤)\displaystyle=\eta\,\,{\bm{G}}\,\left({\
+ displaystyle\    bm{I}}-\frac{{\bm{R}}_{[i]}^{\prime\top}{\bm{R}}_{[i]}^{\prime}}{{\bm{R}}_
+ Delta{\bm{r}}_   {[i]}^{\prime}{\bm{R}}_{[i]}^{\prime\top}}\right)
+ {g}
+                  =η⁡(𝑹[i]′​𝑴−𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤)),\displaystyle=\eta\left({\bm{R}}_{[i]}^
+                  {\prime}{\bm{M}}-{\bm{R}}_{[i]}^{\prime}\left({\bm{R}}_{[i]}^{\prime}{\bm     (9)
+                  {M}}{\bm{R}}_{[i]}^{\prime\top}\right)\right),
+
+where the scaling constants are absorbed into η\eta. We also derive an approximation for the exact
+update Δ​𝒓M\Delta{\bm{r}}_{M} introduced by Manifold Power-Iteration:
+
+ Δ​𝒓M≈1𝑹[i]′​𝑴​𝑹[i]′⁣⊤​(𝑹[i]′​𝑴−𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤)).\Delta{\bm{r}}_{M}\approx\frac{1}{{\
+ bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top}}{\left({\bm{R}}_{[i]}^{\prime}{\bm   (10)
+ {M}}-{\bm{R}}_{[i]}^{\prime}({\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top})\
+ right)}.
+
+By comparing steepest ascent (Δ​𝒓g\Delta{\bm{r}}_{g}) with our router update (Δ​𝒓M\Delta{\bm{r}}_
+{M}), we observe a striking structural alignment. In this light, our proposed router design
+constitutes an optimization tailored for maximum projection constraints with an adaptive step-size.
+Specifically, it drives a steady convergence of the router weights toward the principal singular
+vector, with the step size decreasing and updates becoming more careful as 𝑹[i]′{\bm{R}}_{[i]}^{\
+prime} are mostly aligned with the principal direction of 𝑾gi{\bm{W}}_{g}^{i} (i.e. Δ​𝒓M\Delta{\bm
+{r}}_{M} is moderated because the denominator 𝑹[i]′​𝑴​𝑹[i]′⁣⊤{\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm
+{R}}_{[i]}^{\prime\top} in Eq. 10 increases), and vice versa.
+
+The update can also be interpreted from an SVD perspective. After sufficiently many training steps
+(or power iterations), the term 𝑹[i]′​𝑴{\bm{R}}_{[i]}^{\prime}{\bm{M}} in Eq. 10 approaches the
+dominant singular vector of 𝑾g{\bm{W}}_{g}. At that stage, the scalar quantity 𝑹[i]′​𝑴​𝑹[i]′⁣⊤{\bm
+{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top} corresponds to the L2L_{2} norm when feeding
+𝑹[i]′{\bm{R}}_{[i]}^{\prime} into 𝑾g{\bm{W}}_{g}, yielding a scalar that scales 𝑹[i]′{\bm{R}}_{[i]}
+^{\prime}. The subtraction term in Eq. 10 therefore derives an update direction that points toward
+the residual mismatch between 𝑹[i]{\bm{R}}_{[i]} and the dominant singular vector. Applying the
+update progressively rotates 𝑹[i]{\bm{R}}_{[i]} toward the principal singular subspace of 𝑾g{\bm
+{W}}_{g}.
+
+These interpretations help explain why the proposed method effectively optimizes the router to
+encode the most informative expert features. We provide supplementary derivation in Appendix A and
+hope this perspective can inspire readers.
+
+
+Figure 2: Convergence comparisons for MoE with MPI, exemplified by MuonH-1B. Our router design
+achieves a 0.013 reduction in pretraining loss. Similar observations for other optimizers are
+provided in the Appendix.
+
+      AdamW AdamH Muon  MuonH
+ MoE  42.26 42.59 43.01 42.78
++ MPI 43.56 43.93 43.55 43.98
+
+
+
+Table 1: Downstream performance (average accuracy across 25 benchmarks). MPI consistently improves
+downstream performance across different optimizers. Detailed task-specific results are provided in
+Table 9. In the remainder of this paper, unless otherwise specified, we only report the average
+results across the 25 tasks.
+
+
+Figure 3: Convergence and Downstream Performance Comparison. Manifold Power Iteration facilitates
+faster convergence and superior downstream task performance throughout the entire course of 11B MoE
+pretraining.
+
+4 Experiment
+
+4.1 MPI is an Optimizer-Agnostic Design
+
+We first pretrain 1B MoE models using different optimizers, guided by two primary motivations:
+
+(1) To substantiate that MPI is an intrinsic improvement to router design, which remains agnostic
+to shifts in model features across optimizers
+
+(2) To provide a foundational analysis to justify our setup for the large-scale experiments.
+
+Specifically, we pretrain these 1B models with AdamW Loshchilov and Hutter (2019) and Muon Jordan
+et al. (2024), alongside their Hyperball Opimization Wen et al. (2026) variants, AdamH and MuonH.^2
+^2 2 For readers unfamiliar with these advanced optimizers, please refer to the related work
+section (Section 7). Detailed model and optimizer configurations are provided in Appendix B.
+
+We pretrain the baselines on 100B tokens and analyze the resulting convergence and downstream
+performance. Figure 2 plots the convergence comparisons, using MuonH as representative. Table 1
+reports the average downstream performance over a task suite of 25 benchmarks. Crucially, MoE with
+MPI achieves both accelerated convergence and improved downstream performance across all optimizer
+setups at the 1B scale. Motivated by this, we scale our experiments to confirm these benefits at
+larger capacities. We select MuonH for the large-scale experiments owing to (1) its hyperparameter
+transferability, and (2) its optimal convergence performance among all 1B MoE baselines.
+
+4.2 Comparative Analysis with vanilla MoE
+
+We pretrain MoE with MPI at two larger scales: 3B and 11B. All models are pretrained on 350B tokens
+sampled from FineWeb-Edu dataset Lozhkov et al. (2024), with 1B tokens reserved to serve as the
+validation set. We then midtrain the models on 100B tokens from Olmo et al., 2025. Full
+architecture hyperparameters, training configurations are available in Appendix B.
+
+PPL (↓\downarrow)  Validation Math  Code
+      MoE 3B       0.764      1.688 1.376
+    MoE w. MPI     0.754      1.581 1.296
+     MoE 11B       0.728      1.852 1.263
+    MoE w. MPI     0.723      1.581 1.259
+
+
+Table 2: Perplexity in bits per byte for MoE with MPI.
+
+We forgo comparisons with other baselines since our design conforms to the standard router form and
+is theoretically orthogonal to these studies. Section 6 explores this compatibility to provide an
+investigation.
+
+Convergence and Performance.
+
+We conduct pretraining on two scales and confirm that MoE with MPI achieves faster convergence and
+improved downstream performance. Figure 3 (a) and (b) present a comparison of pretraining loss and
+downstream performance evolution for 11B MoE.
+
+We observe that MoE with MPI leads to more effective training and maintains this loss advantage
+throughout. We also report perplexity comparison evaluated on both validation set and held-out Math
+and Code sets from Olmo 3 Olmo et al. (2025). As shown in Table 2, the advantage for language
+modeling remains consistent across all domains.
+
+Task  (→\rightarrow) ARC-C   MMLU  TriviaQA NaturalQs    BBH       GSM8K     MBPP  AVG.
+Setup (→\rightarrow) 5-shot 5-shot 5-shot   5-shot    3-shot CoT 8-shot CoT 3-shot 
+       MoE 3B        55.91  47.01  45.78    17.87     29.53      16.22      42.25  36.37
+        w. MPI       58.96  48.83  46.52    20.13     30.99      20.92      44.54  38.70
+      MoE 11B        61.54  50.00  55.41    25.30     31.17      17.89      45.12  40.92
+        w. MPI       62.24  50.93  56.89    25.36     31.45      27.60      44.87  42.76
+
+
+Table 3: Performance of MoE with Manifold Power Iteration on challenging benchmarks at both 3B and
+11B scales.
+
+We evaluate downstream tasks to confirm that the loss reduction manifests as superior model
+competence. Specifically, we use a suite of 9 core tasks to monitor and Figure 3 (b) plots the
+evolution of average accuracy throughout pretraining. We observe that MPI maintains the advantage
+on downstream tasks throughout pretraining. Furthermore, we extend our evaluation to more challenge
+tasks after mid-training, including benchmarks across knowledge-intensive QA Clark et al. (2018);
+Hendrycks et al. (2021), reading comprehension Joshi et al. (2017); Kwiatkowski et al. (2019),
+language understanding and reasoning Suzgun et al. (2022), math skills and code generation Cobbe et
+al. (2021); Austin et al. (2021). As summarized in Table 3, MoE with MPI delivers consistent
+performance gain, which further validates the effectiveness of our router design. Our evaluation
+setups are available in Appendix C.
+
+Load Balancing.
+
+As shown in Figure 4, a noticeable decrease in balance loss is observed for MoE with MPI during
+pretraining. Specifically, this loss drops sharply during the early stages and remains at a low
+level thereafter. We suspect that this reduction might be an artifact of router retraction.
+Therefore, we report MaxVio on validation set as a more accurate reflection of load balance.
+
+
+Figure 4: Load balancing loss for 3B MoE with MPI.
+
+Table 4 reports both MaxVioB​a​t​c​h\mathrm{MaxVio}_{Batch} and MaxVioG​l​o​b​a​l\mathrm{MaxVio}_
+{Global} of different models. The reported MaxVio\mathrm{MaxVio} confirms that MPI is compatible
+with the load balancing loss and achieves a more equitable load distribution than the vanilla MoE
+as an unexpected bonus. Tentatively, we attribute the improved balance to our retraction design,
+and leave a deeper investigation into it to future work.
+
+Efficiency Analysis.
+
+We provide a breakdown efficiency analysis into MoE with MPI to confirm its practicality in
+large-scale MoE pretraining.
+
+(1) Our router design introduces negligible overhead with respect to training efficiency. In our
+11B pretraining experiments, vanilla MoE sustains a throughput of 34.97 billion tokens per day,
+while MPI incurs a mere slowdown of 0.2%. Intuitively, the computational cost exerted by MPI does
+not exceed that of NN extra tokens, which is a negligible fraction of the total tokens per batch.
+Our MPI design introduces zero communication overhead and avoids conflicts with standard training
+frameworks.
+
+(2) At inference time, the router weights can be pre-computed with power iteration as the model
+loads. Therefore, our design incurs zero inference overhead and maintains compatible with standard
+inference engines out-of-the-box.
+
+Taken together, we believe in scalability of MPI toward larger-scale MoE training and deployment.
+
+  MaxVioBatch(↓)\mathrm{MaxVio_{Batch}}\,\;(\      MaxVioGlobal(↓)\mathrm{MaxVio_{Global}}\,\;(\
+                   downarrow)                                        downarrow)
+MoE                   w. MPI                     MoE                    w. MPI
+1.133                 1.024                      0.964                  0.711
+
+
+Table 4: MaxVio\mathrm{MaxVio} comparisons for 3B MoE with MPI.
+
+5 Method Analysis
+
+5.1 Enhanced Router-Expert Alignment Along the Principle Singular direction
+
+We perform a post-hoc parameter analysis to verify that our design better aligns router rows with
+the principal singular vector of the associated experts. Following Section 3.2, we report the
+projection of 𝑹[i]′{\bm{R}}_{[i]}^{\prime} onto 𝑾gi{\bm{W}}_{g}^{i} as the quantitative metric:
+
+ λ=‖𝑹[i]′​𝑾gi‖2‖𝑹[i]′‖2​‖𝑾gi‖2,\lambda=\frac{\|{\bm{R}}_{[i]}^{\prime}{\bm{W}}_{g}^{i}\|_{2}}  (11)
+ {\|{\bm{R}}_{[i]}^{\prime}\|_{2}\;\|{\bm{W}}_{g}^{i}\|_{2}},
+
+where λ\lambda is normalized by the spectral norm to constrain within [0,1][0,1]. Table 5 compares
+the λ\lambda distributions, where the average values across experts per layer are reported.
+Compared to vanilla MoE, MoE with MPI achieves a tighter couple of router vectors with the
+principal directions of expert weights, manifest as a prominently higher λ\lambda.
+
+  Layer    1    2    3    4    5    6    7    8    9    10   11   12
+   MoE    0.37 0.31 0.31 0.28 0.28 0.25 0.24 0.23 0.24 0.24 0.22 0.26
+   w. MPI 0.67 0.66 0.69 0.70 0.68 0.67 0.64 0.63 0.62 0.62 0.62 0.69
+
+
+Table 5: Comparison of λ\lambda distributions. Router with Manifold Power Iteration exhibits an
+enhanced alignment between 𝑹[i]′{\bm{R}}_{[i]}^{\prime} and the principal singular direction of
+expert weights, manifested by significantly larger λ\lambda values.
+
+The analysis in Section 3.3 explains why a single power iteration suffices to achieve router–expert
+alignment along the principal singular direction. Readers may wonder whether additional iterations
+could further enhance through a tighter alignment. To investigate this, we increase the iteration
+count to 10 to ensure full convergence. We observe that this more precise estimation results in a
+5% lower throughput, and provides no further convergence advantage or downstream performance
+improvement (with a pre-training loss increase of 0.002 to 0.003 and a downstream drop of 1.39
+percentage points). In our view, aggressive alignment disrupt the stability of router optimization,
+making a single power iteration a more robust and efficient choice.
+
+5.2 Ablation Studies
+
+We conduct ablation studies to validate the design choices of routers with Manifold
+Power-Iteration.
+
+5.2.1 Impact of the Key Design Choices
+
+We pretrain ablated 3B models on 200B tokens to validate the effectiveness of the two core designs:
+(1) Power Iteration and (2) Router Retraction.
+
+Ablation on Power Iteration Design.
+
+We introduce a baseline that solely performs row-wise normalization on router weights 𝑹{\bm{R}}.
+This replaces the original 𝑹[i]′{\bm{R}}_{[i]}^{\prime} with 𝑹[i]np{\bm{R}}_{[i]}^{\mathrm{np}},
+which is defined as:
+
+ 𝑹[i]n​p=C⋅𝑹[i]‖𝑹[i]‖2.{\bm{R}}_{[i]}^{{np}}\,=\,C\cdot\frac{{\bm{R}}_{[i]}}{\|{\bm{R}}_{[i]}\|_
+ {2}}.
+
+As shown in Figure 5, this ablated variant underperforms our routers with MPI, achieving nearly
+identical performance to the vanilla MoE. This confirms that our improvements cannot be attributed
+to router weights retraction. However, we observe that it exhibits a similar balance loss
+distribution to that of our MPI. We leave it to future work to investigate whether this
+normalization can lead to improved load balancing as a side benefit.
+
+
+Figure 5: Ablation studies for the key design choices: (1) Power Iteration and (2) Router
+Retraction. We observe pretraining collapses without Router Retraction when using AdamW and Muon,
+showcasing that Router Retraction is critical for maintaining training stability, especially for
+optimizers that lack weight constraints.
+
+Router Retraction Enables Stable Training.
+
+To resolve the instability caused by power iteration, we adopt router retraction to mitigate the
+risk of L2L_{2}-Norm explosion or collapse. We replace 𝑹[i]′{\bm{R}}_{[i]}^{\prime} with 𝑹[i]^\hat
+{{\bm{R}}_{[i]}} and first conduct ablation on 1B models.
+
+Specifically, we observe loss spikes and abnormal gradients for 1B baselines pretrained with AdamW
+and Muon. In the absence of router retraction, the power iteration destabilizes pretraining and
+leads to suboptimal model convergence. While hyperball optimization can relieve this instability,
+it impose no constaint on the spectral norm of expert matrices, risking L2L_{2} norm collapse as NN
+increases. Although the ablated variant remains competitive on downstream tasks, we observe its
+elevation in pretraining loss of 0.003. Combining our empircial observations and analysis, we
+strongly advocate for this retraction design.
+
+5.2.2 Sensitivity Analysis of Constant CC
+
+We benchmark small-scale MoE models with 256 experts, conducting a hyperparameter search over over
+C′∈{1,2,4,8}C^{\prime}\in\{1,2,4,8\}. Each model variant is pretrained on 50B tokens and optimized
+with MuonH. Table 6 presents the validation perplexity (PPL) across different choices of C′C^{\
+prime}.
+
+𝐂′\mathbf{C^{\prime}}   1      2      4      8     MoE
+Val PPL               0.8896 0.8547 0.8533 0.8563 0.8884
+
+
+Table 6: Validation perplexity across choices of C′C^{\prime}.
+
+Specifically, we have the following observations: (1) In most cases, MoE with MPI outperforms the
+vanilla MoE, which demonstrate that our router design is relatively insensitive to the choice of
+C′C^{\prime}; (2) The optimal choice of C′C^{\prime} basically aligns with the design principles we
+established in Section 3.2. Leveraging the Hyperball Optimization properties, we directly transfer
+the optimal C′C^{\prime} identified in small-scale sweep into our 11B pretraining. As is shown in
+Section 4.2, no performance collapse is observed. We argue that this hyperparameter is mostly
+insensitive and transferable with the help of advanced optimizer designs.
+
+5.3 Expert Weight Choice for Power Iteration
+
+We pretrain 1B MoE baselines on 50B tokens to explore the optimal choice among the three candidate
+expert weight matrices (𝑾g{\bm{W}}_{g}, 𝑾p{\bm{W}}_{p} and 𝑾o{\bm{W}}_{o}) for power iteration. No
+significant divergence in pre-training loss or downstream performance is observed for these
+candidates. Therefore, we adopt 𝑾g{\bm{W}}_{g} as our default choice, as it holds a marginal
+advantage across all candidates in current experimental setup. We leave it to future work to
+explore the potential of expert matrices combinations.
+
+6 Compatibility of Manifold Power- Iteration with other Router Designs
+
+Routers with MPI preserve the gating weights computation and modify only the router weights.
+Conceptually, this refinement is orthogonal to most alternative router designs. We pretrain 1B
+baselines on 50B tokens to explore this compatibility.
+
+Auxiliary loss for MoE.
+
+In standard MoE practices, auxiliary losses are designed to regularize routing to address specific
+issues (load balance, expert specialization etc.). Section 4.2 confirms the compatibility of our
+router design with load balancing loss. We further integrate our method with router z-loss using a
+coefficient of 0.001 Zoph et al. (2022). Our small-scale trials exhibit no loss or gradient
+anomalies, and the z-loss variant yields a 0.68-point improvement in downstream tasks, further
+confirming its compatibility.
+
+Alternative of Activation functions.
+
+By default, we adopt Softmax\operatorname{Softmax} as the activation function. In this section, we
+also explore Sigmoid\operatorname{Sigmoid} as an alternative. Specifically, we fix C=1C=1 without
+searching to align with the Frobenius norm of MuonH. Compared with Softmax\operatorname{Softmax},
+the pretraining loss advantage narrows, while downstream performance stills improves from 41.64 to
+42.05. We reserve thorough exploration on Sigmoid\operatorname{Sigmoid} and other activation
+functions to future work.
+
+7 Related Work
+
+We provide an overview of the optimizers used in this paper, which are well-established for model
+convergence acceleration. Beyond convergence, we seek to leverage their scalability, in the hope
+that our empirical insights, from model up to 11B parameters trained on 350B tokens, can be
+extrapolated and validated efficacy at larger scales.
+
+We begin with an introduction of Muon Jordan et al. (2024), which orthogonalizes momentum with
+Newton-Schulz iterations to update parameters. Recent studies have validated its effectiveness in
+pretraining models with up to trillions of parameters Team et al. (2026); DeepSeek-AI (2026).
+Further analysis interprets it as a steepest descent under spectral norm, which inspires other
+norm-constrained optimizer designs Pethick et al. ().
+
+More recently, a line of work proposes imposing norm constraints on both weights and updates Wen et
+al. (2026); Xie et al. (2026). The intuition behind is that norm constraints on weights enable
+stable and scalable optimization, which in turn accelerates convergence across scales and allows
+for hyperparameter transfer without further tuning. This paper provides a preliminary practice of
+these optimizers and empirically validates their effectiveness.
+
+8 Conclusion
+
+We revisited the design of MoE routers from a row-wise expert-proxy representation perspective and
+proposed Manifold Power Iteration (MPI). MPI is an efficient and theoretically grounded alternative
+to conventional router designs, and establishes a principled connection between router
+representations and expert parameters. It requires only lightweight iterative updates while
+maintaining scalability. Extensive experiments validates MPI across diverse architectures and
+training settings. We hope this work inspires future research on mathematically principled router
+design and advances the understanding of the representation geometry in MoEs.
+
+References
+
+  • Austin et al. (2021) J. Austin, A. Odena, M. Nye, M. Bosma, H. Michalewski, D. Dohan, E. Jiang,
+    C. Cai, M. Terry, Q. Le, et al. Program synthesis with large language models. arXiv preprint
+    arXiv:2108.07732. Cited by: §4.2.
+  • Bisk et al. (2020) Y. Bisk, R. Zellers, R. L. Bras, J. Gao, and Y. Choi PIQA: reasoning about
+    physical commonsense in natural language. In Thirty-Fourth AAAI Conference on Artificial
+    Intelligence, Cited by: Table 9, Appendix C.
+  • Clark et al. (2018) P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and
+    O. Tafjord Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+    arXiv:1803.05457v1. Cited by: Table 9, Table 9, Appendix C, §4.2.
+  • Cobbe et al. (2021) K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M.
+    Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman Training verifiers to
+    solve math word problems. arXiv preprint arXiv:2110.14168. Cited by: §4.2.
+  • Dasigi et al. (2021) P. Dasigi, K. Lo, I. Beltagy, A. Cohan, N. A. Smith, and M. Gardner A
+    dataset of information-seeking questions and answers anchored in research papers. In 
+    Proceedings of the 2021 Conference of the North American Chapter of the Association for
+    Computational Linguistics: Human Language Technologies, K. Toutanova, A. Rumshisky, L.
+    Zettlemoyer, D. Hakkani-Tur, I. Beltagy, S. Bethard, R. Cotterell, T. Chakraborty, and Y. Zhou
+    (Eds.), Online, pp. 4599–4610. External Links: Link, Document Cited by: Table 9.
+  • DeepSeek-AI (2026) DeepSeek-AI DeepSeek-v4: towards highly efficient million-token context
+    intelligence. Cited by: §1, §7.
+  • Dua et al. (2019) D. Dua, Y. Wang, P. Dasigi, G. Stanovsky, S. Singh, and M. Gardner DROP: a
+    reading comprehension benchmark requiring discrete reasoning over paragraphs. In Proceedings of
+    the 2019 Conference of the North American Chapter of the Association for Computational
+    Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), J. Burstein, C.
+    Doran, and T. Solorio (Eds.), Minneapolis, Minnesota, pp. 2368–2378. External Links: Link,
+    Document Cited by: Table 9.
+  • Eckart and Young (1936) C. Eckart and G. Young The approximation of one matrix by another of
+    lower rank. Psychometrika 1, pp. 211–218. External Links: Link Cited by: §3.1.
+  • Gale et al. (2023) T. Gale, D. Narayanan, C. Young, and M. Zaharia Megablocks: efficient sparse
+    training with mixture-of-experts. Proceedings of Machine Learning and Systems 5, pp. 288–304. 
+    Cited by: §B.1.
+  • GLM-5-Team et al. (2026) GLM-5-Team, :, A. Zeng, X. Lv, Z. Hou, Z. Du, Q. Zheng, B. Chen, D.
+    Yin, C. Ge, C. Huang, C. Xie, C. Zhu, C. Yin, C. Wang, G. Pan, H. Zeng, H. Zhang, H. Wang, H.
+    Chen, J. Zhang, J. Jiao, J. Guo, J. Wang, J. Du, J. Wu, K. Wang, L. Li, L. Fan, L. Zhong, M.
+    Liu, M. Zhao, P. Du, Q. Dong, R. Lu, Shuang-Li, S. Cao, S. Liu, T. Jiang, X. Chen, X. Zhang, X.
+    Huang, X. Dong, Y. Xu, Y. Wei, Y. An, Y. Niu, Y. Zhu, Y. Wen, Y. Cen, Y. Bai, Z. Qiao, Z. Wang,
+    Z. Wang, Z. Zhu, Z. Liu, Z. Li, B. Wang, B. Wen, C. Huang, C. Cai, C. Yu, C. Li, C. Hu, C.
+    Zhang, D. Zhang, D. Lin, D. Yang, D. Wang, D. Ai, E. Zhu, F. Yi, F. Chen, G. Wen, H. Sun, H.
+    Zhao, H. Hu, H. Zhang, H. Liu, H. Zhang, H. Peng, H. Tai, H. Zhang, H. Liu, H. Wang, H. Yan, H.
+    Ge, H. Liu, H. Chu, J. Zhao, J. Wang, J. Zhao, J. Ren, J. Wang, J. Zhang, J. Gui, J. Zhao, J.
+    Li, J. An, J. Li, J. Yuan, J. Du, J. Liu, J. Zhi, J. Duan, K. Zhou, K. Wei, K. Wang, K. Luo, L.
+    Zhang, L. Sha, L. Xu, L. Wu, L. Ding, L. Chen, M. Li, N. Lin, P. Ta, Q. Zou, R. Song, R. Yang,
+    S. Tu, S. Yang, S. Wu, S. Zhang, S. Li, S. Li, S. Fan, W. Qin, W. Tian, W. Zhang, W. Yu, W.
+    Liang, X. Kuang, X. Cheng, X. Li, X. Yan, X. Hu, X. Ling, X. Fan, X. Xia, X. Zhang, X. Zhang,
+    X. Pan, X. Zou, X. Zhang, Y. Liu, Y. Wu, Y. Li, Y. Wang, Y. Zhu, Y. Tan, Y. Zhou, Y. Pan, Y.
+    Zhang, Y. Su, Y. Geng, Y. Yan, Y. Tan, Y. Bi, Y. Shen, Y. Yang, Y. Li, Y. Liu, Y. Wang, Y. Li,
+    Y. Wu, Y. Zhang, Y. Duan, Y. Zhang, Z. Liu, Z. Jiang, Z. Yan, Z. Zhang, Z. Wei, Z. Chen, Z.
+    Feng, Z. Yao, Z. Chai, Z. Wang, Z. Zhang, B. Xu, M. Huang, H. Wang, J. Li, Y. Dong, and J. Tang
+    GLM-5: from vibe coding to agentic engineering. External Links: 2602.15763, Link Cited by: §1.
+  • Golub and Van Loan (1996) G. H. Golub and C. F. Van Loan Matrix computations (3rd ed.). Johns
+    Hopkins University Press, USA. External Links: ISBN 0801854148 Cited by: §1, §3.1.
+  • Gu et al. (2025) Y. Gu, O. Tafjord, B. Kuehl, D. Haddad, J. Dodge, and H. Hajishirzi OLMES: a
+    standard for language model evaluations. External Links: 2406.08446, Link Cited by: Appendix C.
+  • Halko et al. (2010) N. Halko, P. Martinsson, and J. A. Tropp Finding structure with randomness:
+    probabilistic algorithms for constructing approximate matrix decompositions. External Links: 
+    0909.4061, Link Cited by: §1.
+  • Hendrycks et al. (2021) D. Hendrycks, C. Burns, S. Basart, A. Zou, M. Mazeika, D. Song, and J.
+    Steinhardt Measuring massive multitask language understanding. External Links: 2009.03300, Link
+    Cited by: Table 9, Table 9, Table 9, Table 9, Appendix C, §4.2.
+  • Jin et al. (2020) D. Jin, E. Pan, N. Oufattole, W. Weng, H. Fang, and P. Szolovits What disease
+    does this patient have? a large-scale open domain question answering dataset from medical exams
+    . External Links: 2009.13081, Link Cited by: Table 9.
+  • Jordan et al. (2024) K. Jordan, Y. Jin, V. Boza, Y. Jiacheng, F. Cesista, L. Newhouse, and J.
+    Bernstein Muon: an optimizer for hidden layers in neural networks. External Links: Link Cited
+    by: §4.1, §7.
+  • Joshi et al. (2017) M. Joshi, E. Choi, D. Weld, and L. Zettlemoyer TriviaQA: a large scale
+    distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th
+    Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), R.
+    Barzilay and M. Kan (Eds.), Vancouver, Canada, pp. 1601–1611. External Links: Link, Document 
+    Cited by: §4.2.
+  • Kwiatkowski et al. (2019) T. Kwiatkowski, J. Palomaki, O. Redfield, M. Collins, A. Parikh, C.
+    Alberti, D. Epstein, I. Polosukhin, J. Devlin, K. Lee, K. Toutanova, L. Jones, M. Kelcey, M.
+    Chang, A. M. Dai, J. Uszkoreit, Q. Le, and S. Petrov Natural questions: a benchmark for
+    question answering research. Transactions of the Association for Computational Linguistics 7, 
+    pp. 452–466. External Links: Link, Document Cited by: Table 9, §4.2.
+  • Laurent et al. (2024) J. M. Laurent, J. D. Janizek, M. Ruzo, M. M. Hinks, M. J. Hammerling, S.
+    Narayanan, M. Ponnapati, A. D. White, and S. G. Rodriques LAB-bench: measuring capabilities of
+    language models for biology research. External Links: 2407.10362, Link Cited by: Table 9, Table
+    9.
+  • Liang et al. (2025) W. Liang, T. Liu, L. Wright, W. Constable, A. Gu, C. Huang, I. Zhang, W.
+    Feng, H. Huang, J. Wang, S. Purandare, G. Nadathur, and S. Idreos TorchTitan: one-stop pytorch
+    native solution for production ready LLM pretraining. In The Thirteenth International
+    Conference on Learning Representations, External Links: Link Cited by: §B.1.
+  • Loshchilov and Hutter (2019) I. Loshchilov and F. Hutter Decoupled weight decay regularization.
+    In International Conference on Learning Representations, External Links: Link Cited by: §4.1.
+  • Lozhkov et al. (2024) A. Lozhkov, L. Ben Allal, L. von Werra, and T. Wolf FineWeb-edu: the
+    finest collection of educational content. Hugging Face. External Links: Link, Document Cited
+    by: §4.2.
+  • Muennighoff et al. (2025) N. Muennighoff, L. Soldaini, D. Groeneveld, K. Lo, J. Morrison, S.
+    Min, W. Shi, P. Walsh, O. Tafjord, N. Lambert, Y. Gu, S. Arora, A. Bhagia, D. Schwenk, D.
+    Wadden, A. Wettig, B. Hui, T. Dettmers, D. Kiela, A. Farhadi, N. A. Smith, P. W. Koh, A. Singh,
+    and H. Hajishirzi OLMoE: open mixture-of-experts language models. External Links: 2409.02060,
+    Link Cited by: §1.
+  • Olmo et al. (2025) T. Olmo, A. Ettinger, A. Bertsch, B. Kuehl, D. Graham, D. Heineman, D.
+    Groeneveld, F. Brahman, F. Timbers, H. Ivison, J. Morrison, J. Poznanski, K. Lo, L. Soldaini,
+    M. Jordan, M. Chen, M. Noukhovitch, N. Lambert, P. Walsh, P. Dasigi, R. Berry, S. Malik, S.
+    Shah, S. Geng, S. Arora, S. Gupta, T. Anderson, T. Xiao, T. Murray, T. Romero, V. Graf, A.
+    Asai, A. Bhagia, A. Wettig, A. Liu, A. Rangapur, C. Anastasiades, C. Huang, D. Schwenk, H.
+    Trivedi, I. Magnusson, J. Lochner, J. Liu, L. J. V. Miranda, M. Sap, M. Morgan, M. Schmitz, M.
+    Guerquin, M. Wilson, R. Huff, R. L. Bras, R. Xin, R. Shao, S. Skjonsberg, S. Z. Shen, S. S. Li,
+    T. Wilde, V. Pyatkin, W. Merrill, Y. Chang, Y. Gu, Z. Zeng, A. Sabharwal, L. Zettlemoyer, P. W.
+    Koh, A. Farhadi, N. A. Smith, and H. Hajishirzi Olmo 3. External Links: 2512.13961, Link Cited
+    by: Table 9, Appendix C, §4.2, §4.2.
+  • OpenAI (2025) OpenAI Gpt-oss-120b & gpt-oss-20b model card. External Links: 2508.10925, Link 
+    Cited by: §1.
+  • Pal et al. (2022) A. Pal, L. K. Umapathi, and M. Sankarasubbu MedMCQA: a large-scale
+    multi-subject multi-choice dataset for medical domain question answering. In Proceedings of the
+    Conference on Health, Inference, and Learning, G. Flores, G. H. Chen, T. Pollard, J. C. Ho, and
+    T. Naumann (Eds.), Proceedings of Machine Learning Research, Vol. 174, pp. 248–260. External
+    Links: Link Cited by: Table 9.
+  • Paperno et al. (2016) D. Paperno, G. Kruszewski, A. Lazaridou, N. Q. Pham, R. Bernardi, S.
+    Pezzelle, M. Baroni, G. Boleda, and R. Fernández The LAMBADA dataset: word prediction requiring
+    a broad discourse context. In Proceedings of the 54th Annual Meeting of the Association for
+    Computational Linguistics (Volume 1: Long Papers), K. Erk and N. A. Smith (Eds.), Berlin,
+    Germany, pp. 1525–1534. External Links: Link, Document Cited by: Table 9.
+  • Paszke et al. (2019) A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T.
+    Killeen, Z. Lin, N. Gimelshein, L. Antiga, A. Desmaison, A. Kopf, E. Yang, Z. DeVito, M.
+    Raison, A. Tejani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala PyTorch: an
+    imperative style, high-performance deep learning library. In Advances in Neural Information
+    Processing Systems, H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc, E. Fox, and R.
+    Garnett (Eds.), Vol. 32, pp. . External Links: Link Cited by: §B.1.
+  • [29] T. Pethick, W. Xie, K. Antonakopoulos, Z. Zhu, A. Silveti-Falls, and V. Cevher Training
+    deep learning models with norm-constrained lmos. In Forty-second International Conference on
+    Machine Learning, Cited by: §3.2, §7.
+  • Rajbhandari et al. (2020) S. Rajbhandari, J. Rasley, O. Ruwase, and Y. He ZeRO: memory
+    optimizations toward training trillion parameter models. External Links: 1910.02054, Link Cited
+    by: §B.1.
+  • Rajpurkar et al. (2016) P. Rajpurkar, J. Zhang, K. Lopyrev, and P. Liang SQuAD: 100,000+
+    questions for machine comprehension of text. In Proceedings of the 2016 Conference on Empirical
+    Methods in Natural Language Processing, J. Su, K. Duh, and X. Carreras (Eds.), Austin, Texas, 
+    pp. 2383–2392. External Links: Link, Document Cited by: Table 9.
+  • Ramachandran et al. (2017) P. Ramachandran, B. Zoph, and Q. V. Le Searching for activation
+    functions. External Links: 1710.05941, Link Cited by: §2.
+  • Reddy et al. (2019) S. Reddy, D. Chen, and C. D. Manning CoQA: a conversational question
+    answering challenge. Transactions of the Association for Computational Linguistics 7, 
+    pp. 249–266. External Links: Link, Document Cited by: Table 9.
+  • Sakaguchi et al. (2019) K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi WinoGrande: an
+    adversarial winograd schema challenge at scale. arXiv preprint arXiv:1907.10641. Cited by:
+    Table 9, Appendix C.
+  • Sap et al. (2019) M. Sap, H. Rashkin, D. Chen, R. LeBras, and Y. Choi SocialIQA: commonsense
+    reasoning about social interactions. External Links: 1904.09728, Link Cited by: Table 9,
+    Appendix C.
+  • Shazeer (2020) N. Shazeer Glu variants improve transformer. arXiv preprint arXiv:2002.05202. 
+    Cited by: §2.
+  • Suzgun et al. (2022) M. Suzgun, N. Scales, N. Schärli, S. Gehrmann, Y. Tay, H. W. Chung, A.
+    Chowdhery, Q. V. Le, E. H. Chi, D. Zhou, and J. Wei Challenging big-bench tasks and whether
+    chain-of-thought can solve them. arXiv preprint arXiv:2210.09261. Cited by: §4.2.
+  • Talmor et al. (2019) A. Talmor, J. Herzig, N. Lourie, and J. Berant CommonsenseQA: a question
+    answering challenge targeting commonsense knowledge. In Proceedings of the 2019 Conference of
+    the North American Chapter of the Association for Computational Linguistics: Human Language
+    Technologies, Volume 1 (Long and Short Papers), J. Burstein, C. Doran, and T. Solorio (Eds.), 
+    Minneapolis, Minnesota, pp. 4149–4158. External Links: Link, Document Cited by: Table 9,
+    Appendix C.
+  • Team et al. (2026) K. Team, Y. Bai, Y. Bao, Y. Charles, C. Chen, G. Chen, H. Chen, H. Chen, J.
+    Chen, N. Chen, R. Chen, Y. Chen, Y. Chen, Y. Chen, Z. Chen, J. Cui, H. Ding, M. Dong, A. Du, C.
+    Du, D. Du, Y. Du, Y. Fan, Y. Feng, K. Fu, B. Gao, C. Gao, H. Gao, P. Gao, T. Gao, Y. Ge, S.
+    Geng, Q. Gu, X. Gu, L. Guan, H. Guo, J. Guo, X. Hao, T. He, W. He, W. He, Y. He, C. Hong, H.
+    Hu, Y. Hu, Z. Hu, W. Huang, Z. Huang, Z. Huang, T. Jiang, Z. Jiang, X. Jin, Y. Kang, G. Lai, C.
+    Li, F. Li, H. Li, M. Li, W. Li, Y. Li, Y. Li, Y. Li, Z. Li, Z. Li, H. Lin, X. Lin, Z. Lin, C.
+    Liu, C. Liu, H. Liu, J. Liu, J. Liu, L. Liu, S. Liu, T. Y. Liu, T. Liu, W. Liu, Y. Liu, Y. Liu,
+    Y. Liu, Y. Liu, Z. Liu, E. Lu, H. Lu, L. Lu, Y. Luo, S. Ma, X. Ma, Y. Ma, S. Mao, J. Mei, X.
+    Men, Y. Miao, S. Pan, Y. Peng, R. Qin, Z. Qin, B. Qu, Z. Shang, L. Shi, S. Shi, F. Song, J. Su,
+    Z. Su, L. Sui, X. Sun, F. Sung, Y. Tai, H. Tang, J. Tao, Q. Teng, C. Tian, C. Wang, D. Wang, F.
+    Wang, H. Wang, H. Wang, J. Wang, J. Wang, J. Wang, S. Wang, S. Wang, S. Wang, X. Wang, Y. Wang,
+    Y. Wang, Y. Wang, Y. Wang, Y. Wang, Z. Wang, Z. Wang, Z. Wang, Z. Wang, C. Wei, Q. Wei, H. Wu,
+    W. Wu, X. Wu, Y. Wu, C. Xiao, J. Xie, X. Xie, W. Xiong, B. Xu, J. Xu, L. H. Xu, L. Xu, S. Xu,
+    W. Xu, X. Xu, Y. Xu, Z. Xu, J. Xu, J. Xu, J. Yan, Y. Yan, H. Yang, X. Yang, Y. Yang, Y. Yang,
+    Z. Yang, Z. Yang, Z. Yang, H. Yao, X. Yao, W. Ye, Z. Ye, B. Yin, L. Yu, E. Yuan, H. Yuan, M.
+    Yuan, S. Yuan, H. Zhan, D. Zhang, H. Zhang, W. Zhang, X. Zhang, Y. Zhang, Y. Zhang, Y. Zhang,
+    Y. Zhang, Y. Zhang, Y. Zhang, Y. Zhang, Y. Zhang, Z. Zhang, H. Zhao, Y. Zhao, Z. Zhao, H.
+    Zheng, S. Zheng, L. Zhong, J. Zhou, X. Zhou, Z. Zhou, J. Zhu, Z. Zhu, W. Zhuang, and X. Zu Kimi
+    k2: open agentic intelligence. External Links: 2507.20534, Link Cited by: §B.2, §1, §7.
+  • Wadden et al. (2025) D. Wadden, K. Shi, J. Morrison, A. Li, A. Naik, S. Singh, N. Barzilay, K.
+    Lo, T. Hope, L. Soldaini, S. Z. Shen, D. Downey, H. Hajishirzi, and A. Cohan SciRIFF: a
+    resource to enhance language model instruction-following over scientific literature. In 
+    Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, C.
+    Christodoulopoulos, T. Chakraborty, C. Rose, and V. Peng (Eds.), Suzhou, China, pp. 6072–6109. 
+    External Links: Link, Document, ISBN 979-8-89176-332-6 Cited by: Table 9.
+  • Welbl et al. (2017) J. Welbl, N. F. Liu, and M. Gardner Crowdsourcing multiple choice science
+    questions. In Proceedings of the 3rd Workshop on Noisy User-generated Text, L. Derczynski, W.
+    Xu, A. Ritter, and T. Baldwin (Eds.), Copenhagen, Denmark, pp. 94–106. External Links: Link,
+    Document Cited by: Table 9, Appendix C.
+  • Wen et al. (2026) K. Wen, D. L. W. Hall, T. Ma, and P. Liang Fantastic pretraining optimizers
+    and where to find them. In The Fourteenth International Conference on Learning Representations,
+    External Links: Link Cited by: §4.1, §7.
+  • Xie et al. (2026) T. Xie, H. Luo, H. Tang, Y. Hu, J. K. Liu, Q. Ren, Y. Wang, W. X. Zhao, R.
+    Yan, B. Su, C. Luo, and B. Guo Controlled llm training on spectral sphere. External Links: 
+    2601.08393, Link Cited by: §7.
+  • Zellers et al. (2019) R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi HellaSwag: can
+    a machine really finish your sentence?. In Proceedings of the 57th Annual Meeting of the
+    Association for Computational Linguistics, A. Korhonen, D. Traum, and L. Màrquez (Eds.), 
+    Florence, Italy, pp. 4791–4800. External Links: Link, Document Cited by: Table 9, Appendix C.
+  • Zoph et al. (2022) B. Zoph, I. Bello, S. Kumar, N. Du, Y. Huang, J. Dean, N. Shazeer, and W.
+    Fedus ST-moe: designing stable and transferable sparse expert models. External Links: 
+    2202.08906, Link Cited by: §6.
+
+Appendix A Supplementary Derivations for Approximation in Equation 10
+
+In what follows, we provide detailed derivation for weights update Δ​𝒓\Delta{\bm{r}} of router 𝑹[i]
+′{\bm{R}}_{[i]}^{\prime} within Manifold Power Iteration. Formally, Δ​𝒓\Delta{\bm{r}} is given as:
+
+ Δ​𝒓M=𝑹[i]′​𝑴‖𝑹[i]′​𝑴‖2−𝑹[i]′,{\Delta{\bm{r}}}_{M}=\frac{{\bm{R}}_{[i]}^{\prime}{\bm{M}}}{\|{\bm
+ {R}}_{[i]}^{\prime}{\bm{M}}\|_{2}}-{\bm{R}}_{[i]}^{\prime},
+
+where 𝑹[i]′​𝑴‖𝑹[i]′​𝑴‖2\frac{{\bm{R}}_{[i]}^{\prime}{\bm{M}}}{\|{\bm{R}}_{[i]}^{\prime}{\bm{M}}\|_
+{2}} denotes the updated 𝑹[i]′{\bm{R}}_{[i]}^{\prime} via power iteration. We project 𝑹[i]′​𝑴{\bm
+{R}}_{[i]}^{\prime}{\bm{M}} onto the subspace spanned by 𝑹[i]′{\bm{R}}_{[i]}^{\prime} and its
+orthogonal complement:
+
+ 𝑹[i]′𝑴=𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤)+(𝑹[i]′​𝑴−𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤))⏟orthogonal to ​𝑹[i]′.\begin
+ {split}{\bm{R}}_{[i]}^{\prime}&{}{\bm{M}}\quad=\quad{\bm{R}}_{[i]}^{\prime}\left({\bm{R}}_{[i]}^
+ {\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top}\right)\\ &+\underbrace{\Big({\bm{R}}_{[i]}^{\prime}{\
+ bm{M}}-{\bm{R}}_{[i]}^{\prime}\left({\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top}\
+ right)\Big)}_{\text{orthogonal to }{\bm{R}}_{[i]}^{\prime}}.\end{split}
+
+As the power iteration proceeds, 𝑹[i]′{\bm{R}}_{[i]}^{\prime} asymptotically toward the dominant
+subspace, and the orthogonal component (the second term above) becomes negligible. Consequently, we
+can arrive at the following approximation:
+
+ 𝑹[i]′​𝑴‖𝑹[i]′​𝑴‖2≈𝑹[i]′+𝑹[i]′​𝑴−𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤)𝑹[i]′​𝑴​𝑹[i]′⁣⊤,\frac{{\bm{R}}_{[i]}^{\
+ prime}{\bm{M}}}{\|{\bm{R}}_{[i]}^{\prime}{\bm{M}}\|_{2}}\approx{\bm{R}}_{[i]}^{\prime}+\frac{{\bm
+ {R}}_{[i]}^{\prime}{\bm{M}}-{\bm{R}}_{[i]}^{\prime}({\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}
+ ^{\prime\top})}{{\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top}},
+
+through a simple rearrangement of terms, we obtain
+
+ Δ​𝒓M≈1𝑹[i]′​𝑴​𝑹[i]′⁣⊤​(𝑹[i]′​𝑴−𝑹[i]′​(𝑹[i]′​𝑴​𝑹[i]′⁣⊤)).{\Delta{\bm{r}}}_{M}\approx\frac{1}{{\bm
+ {R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top}}{\left({\bm{R}}_{[i]}^{\prime}{\bm{M}}-{\
+ bm{R}}_{[i]}^{\prime}({\bm{R}}_{[i]}^{\prime}{\bm{M}}{\bm{R}}_{[i]}^{\prime\top})\right)}.
+
+which completes the derivation of Eq. 10.
+
+Appendix B Details for Pretraining Experiments
+
+B.1 Implementation Details
+
+Table 7 summarizes the hyperparameters of the model architectures across experiments. To support
+large-scale experiments, we scale our 3B model to 11B by expanding the experts counts from 64 to
+256, resulting in a sparse MoE model with 11B total parameters and 470M activated parameters.
+
+Our training pipeline is built upon the TorchTitan framework (Liang et al., 2025). For Transformer
+components, we adopt PyTorch’s SDPA for attention  (Paszke et al., 2019), and MegaBlocks MLP\mathrm
+{MLP} for efficient MoE implementation (Gale et al., 2023). In terms of model parallelism, we adopt
+Fully Sharded Data Parallel (Rajbhandari et al., 2020) across all pretraining experiments.
+
+    Configuration     1 B     3 B     11 B
+      Dimension       1024    1536    1536
+       Layers         8       12      12
+   Attention Heads    8       16      16
+   Key-value Heads    8       8       8
+RoPE Theta (θ\theta)  500,000 500,000 500,000
+    FFN Dimension     512     768     768
+  Activated Experts   8       8       8
+   Routed Experts     64      64      256
+   Sequence Length    2048    4096    4096
+     Vocab Size       128,256 128,256 128,256
+   # Dense Params     296 M   479 M   479 M
+   # Sparse Params    806 M   2.72 B  10.88 B
+ # Activated Params   397 M   823 M   823 M
+   # Total Params     1.10 B  3.20 B  11.36 B
+
+
+Table 7: Hyperparameters of model architectures.
+
+B.2 Optimizer Setup Details
+
+Table 8 presents the hyperparameters used for pretraining the 1B MoE model with AdamW. This
+parameter set was identified through our hyperparameter search over key configurations. For
+pretraining 1B models with other optimizers, we simply align their update RMS with AdamW. This
+ensures fair convergence comparisons and avoid the cost for extensive hyperparameter search.
+
+For Muon, this alignment equates to scaling the learning rate of Muon-optimized parameters by
+0.2×max⁡(di​n,do​u​t)0.2\times\sqrt{\max(d_{in},d_{out})} Team et al. (2026). More details
+regarding our Muon implementation are available in the code.
+
+For Hyperball Optimization, we fix the Frobenius norm of the weight matrix 𝑾∈ℝdi​n×do​u​t{\bm{W}}\
+in\mathbb{R}^{d_{in}\times d_{out}} at do​u​t\sqrt{d_{out}}. To align the update RMS, this
+translates to a learning rate scaler of 0.2×di​n0.2\times\sqrt{d_{in}}. We substitute the di​nd_
+{in} value from a 1B model into this formula, using the resulting value as a scale-invariant
+constant across all model scales.
+
+Appendix C Evaluation Setup
+
+We perform all downstream task evaluations using OLMES (Gu et al., 2025). During pretraining, we
+evaluate the model on 9 core tasks—ARC-Easy Clark et al. (2018), ARC-Challenge Clark et al. (2018),
+MMLU Hendrycks et al. (2021), CommonsenseQA Talmor et al. (2019), SocialIQA Sap et al. (2019),
+HellaSwag Zellers et al. (2019), WinoGrande Sakaguchi et al. (2019), PIQA Bisk et al. (2020), and
+SciQ Welbl et al. (2017)—to quickly assess the fundamental capabilities of these checkpoints.
+Unless otherwise specified, we follow Olmo et al. (2025) and evaluate on a benchmark consisting of
+25 multiple-choice tasks; a complete list of these tasks is provided in Table 9. To save space, we
+do not report the detailed scores for these 25 tasks unless explicitly specified.
+
+        Configuration         1B
+          Optimizer           AdamW
+(β1,β2)(\beta_{1},\beta_{2})  (0.9,0.95)(0.9,0.95)
+           Peak LR            1.0E-03
+         Minimum LR           0
+        LR scheduler          cosine
+        Warmup steps          1000
+        Weight decay          0.1
+        Gradient clip         1.0
+         LBL weight           0.01
+
+
+Table 8: Pretraining hyperparameters (1B AdamW).
+
+                                                AdamW         AdamH         Muon         MuonH
+                                            MoE   w. MPI  MoE   w. MPI  MoE   w. MPI   MoE   w.
+                                                                                          MPI
+       Arc-Easy Clark et al. (2018)         59.64  64.05  64.09  66.88  60.65  62.16  61.82 65.36
+     Arc-Challenge Clark et al. (2018)      32.51  36.26  35.15  37.37  34.90  35.75  35.24 33.62
+     MMLU-Stem Hendrycks et al. (2021)      28.13  27.80  28.19  28.66  28.26  27.60  27.87 28.33
+  MMLU-Humanities Hendrycks et al. (2021)   34.38  34.68  35.03  35.55  33.77  34.38  33.96 34.51
+MMLU-Social Science Hendrycks et al. (2021) 29.12  29.12  28.20  29.08  28.48  29.50  29.25 29.07
+    MMLU-Other Hendrycks et al. (2021)      33.41  35.84  35.47  37.05  35.35  35.84  33.47 36.64
+         CSQA Talmor et al. (2019)          38.25  48.73  38.00  48.08  44.14  45.37  42.83 46.76
+      HellaSwag Zellers et al. (2019)       47.18  47.68  48.52  48.35  46.52  48.16  46.31 45.24
+    WinoGrande Sakaguchi et al. (2019)      52.25  51.93  51.70  51.93  51.78  52.01  52.25 51.93
+        SocialIQA Sap et al. (2019)         41.91  44.58  42.02  43.86  42.99  44.11  41.91 43.86
+          PiQA Bisk et al. (2020)           69.04  68.82  69.04  69.91  68.61  69.64  67.74 67.90
+         CoQA Reddy et al. (2019)           47.09  52.39  47.00  37.84  54.37  53.61  51.27 54.00
+          DROP Dua et al. (2019)            30.79  27.71  26.83  29.03  28.53  28.34  28.72 28.15
+                 Jeopardy                   46.92  43.82  50.02  54.51  49.02  49.64  52.98 53.36
+    NaturalQs Kwiatkowski et al. (2019)     24.31  25.76  23.71  25.57  25.31  23.51  24.21 26.11
+       SQuAD Rajpurkar et al. (2016)        49.91  48.96  50.47  51.04  49.86  48.63  53.65 52.70
+         SciQ Welbl et al. (2017)           70.90  76.70  74.50  76.80  73.20  73.60  72.30 72.60
+        QASPER Dasigi et al. (2021)         67.40  68.02  58.93  67.40  62.07  68.03  61.44 67.40
+        DBQA Laurent et al. (2024)          27.12  23.84  26.15  25.38  24.81  26.54  23.85 26.35
+     ProtocalQA Laurent et al. (2024)       25.00  27.78  26.85  27.78  30.56  27.78  26.85 29.63
+       Lambada Paperno et al. (2016)        39.34  39.39  41.57  40.15  39.76  39.24  38.95 40.99
+         MedMCQA Pal et al. (2022)          27.16  28.26  26.99  28.66  27.32  28.16  28.42 28.14
+          MedQA Jin et al. (2020)           23.17  23.80  24.04  24.90  24.90  23.57  21.84 23.96
+       SciRIFF Wadden et al. (2025)         72.44  72.44  71.93  72.82  71.11  71.87  72.44 72.00
+      Basic Skills Olmo et al. (2025)       39.23  40.73  40.27  39.73  39.03  39.54  39.90 40.78
+                Avg RC Acc.                 42.26  43.93  42.59  43.93  43.01  43.55  42.78 43.98
+
+
+Table 9: Task-specific performance comparisons for 1B MoE with different optimizers.
+
+
+Figure 6: Pre-training loss comparison for a 1B MoE model across optimizers (AdamW, AdamH, Muon).
+MoE with MPI achieves a convergence advantages over all alternative setups.
+
+Experimental support, please view the build logs for errors. Generated by L A T E xml [LOGO] .
+
+Instructions for reporting errors
+
+We are continuing to improve HTML versions of papers, and your feedback helps enhance accessibility
+and mobile support. To report errors in the HTML that will help us improve conversion and
+rendering, choose any of the methods listed below:
+
+  • Click the "Report Issue" ( ) button, located in the page header.
+
+Tip: You can select the relevant text first, to include it in your report.
+
+Our team has already identified the following issues. We appreciate your time reviewing and
+reporting rendering errors we may not have found yet. Your efforts will help us improve the HTML
+versions for all readers, because disability should not be a barrier to accessing research. Thank
+you for your continued support in championing open access for all.
+
+Have a free development cycle? Help support accessibility at arXiv! Our collaborators at LaTeXML
+maintain a list of packages that need conversion, and welcome developer contributions.
+
+We gratefully acknowledge support from our major funders, member institutions, , and all
+contributors.
+About · Help · Contact · Subscribe · Copyright · Privacy · Accessibility · Operational Status
+(opens in new tab)
+Major funding support from
+Simons Foundation Simons Foundation International Schmidt Sciences
+ 

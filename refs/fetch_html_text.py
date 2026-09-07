@@ -238,6 +238,10 @@ PAPERS: list[tuple[str, str]] = [
     ("2603.10422", "world2act"),
     ("2607.26924", "sigreg-collapse-regularizer"),
     ("2603.19312", "jepa-paradox-representation-collapse"),
+    # MoE-specific activation transfer (user notes 2026-09-08)
+    ("2604.09780", "myth-of-expert-specialization"),
+    ("2204.08396", "stablemoe"),
+    ("2606.12397", "mpi-manifold-power-iteration-router"),
 ]
 
 UA = "BIV-refs/1.0 (research text mirror; +https://arxiv.org)"
