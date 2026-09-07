@@ -334,29 +334,26 @@ for s in traj["steps"]:
 
 对照官方失败原因，读同目录 `verifier/test-stdout.txt` 里的 `AssertionError` / `FAILED`。空输出加上退出码 0，模型经常当成绿灯。
 
-### 计分板：ACT 融合
+### 计分板：Naive ACT 融合（直接把全部 MoE 专家算入 ACT 掩码替换）
 
-这是 **ACT 融合之后** 的 Harbor / Terminal-Bench 2.1 跑分，还没接到 Stage 1 JEPA。做法：`compare_act.py` 在同一串 token 上比 AgentWorld 和 Instruct 的模块输出通道，取出差异最大的 top \(p\%\) 当掩码；`merge/act.py` 只把这些通道按 \(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\) 写进 Instruct（默认 \(\lambda=0.4\)），词表和 `lm_head` 仍是 Instruct 的嘴。Harbor 连的是这份合并权重，model id **`qwen-act`**。
+这是 **Naive ACT 融合** 的 Harbor / Terminal-Bench 2.1 跑分情况（直接对 MoE 专家通道进行 ACT 掩码计算与权重替换）。**注意：** 原计分板记录的 29.64%（`20260905T213120Z_qwen-act`）存在缺陷，当时的探针由于未处理 packed 3D 参数导致全部 256 个 MoE 专家未算进去（`ffn=0`），实质上只改了注意力和 LN 通道。本次修复后，在 1500 条样本下把全部 256 个 MoE 专家真实纳入激活差统计（占掩码 70.7%），再通过 `merge/act.py` 直接替换，结果发生严重性能塌陷，即使面对简单基础题也仅对了大约 1/4。
 
-**口径是全局分数平均。** 每道题独立跑 3 次；题分 = 有效次数里成功（1）或失败（0）的算术平均；总分再对所有题做算术平均。三次里过一次就是 1/3，过两次就是 2/3。沙箱先死的那几次不进该题分母，那道题就按剩下的 2 次平均。
+> **当前状态（进行中切片）：** 该评测目前运行到 **31/267** 尝试（Harbor 实时 Mean 仅 **0.258**，即 8/31 命中，原有 baseline agent 运行到此处时进度条 Mean 仍在 **0.6+**）。
 
-| 线 | 模型 | job | 题数 | 全局平均 |
-|----|------|-----|------|----------|
-| ACT 融合 | `qwen-act`（Instruct ← AgentWorld ACT \(\lambda=0.4\)） | `outputs/agent_eval/20260905T213120Z_qwen-act` | 88 | **29.64%** |
+| 线 | 模型 | job | 尝试进度 | 当前进度条 Mean | 备注 |
+|----|------|-----|----------|-----------------|------|
+| Naive ACT（MoE 强行全替） | `qwen-act`（Instruct ← AgentWorld Naive ACT \(\lambda=0.4\)） | `outputs/agent_eval/20260907T195237Z_qwen-act` | **31 / 267** | **25.8% (0.258)** | 强行纳入 256 专家 gate_up 导致能力塌陷，远低于前序水平 |
 
-记分时额外卡了四条，避免 Harbor 进度条 Mean（当时 82/263 ≈ 31.2%）把超时交卷、没出场、以及沙箱中途蒸发混在一起：
+**本次 Job 轨迹根目录与 Resume 信息：**
+* 根目录：`/home/BIV/train/outputs/agent_eval/20260907T195237Z_qwen-act/qwen-act_terminal_bench_2_1/`
+* 实时轨迹查看命令：`python -m eval.follow_traj /home/BIV/train/outputs/agent_eval/20260907T195237Z_qwen-act/qwen-act_terminal_bench_2_1`
+* 后续断点续跑（Resume）命令：
+  ```bash
+  cd /home/BIV/train && source .venv-eval/bin/activate
+  python scripts/test.py --resume outputs/agent_eval/20260907T195237Z_qwen-act/qwen-act_terminal_bench_2_1 --act --env daytona
+  ```
 
-1. 超时（`AgentTimeoutError`）却 `reward=1` 的 6 次卡成 0。
-2. agent 没出场的去掉：`cancel-async-tasks` 三次都是沙箱没起来（`EnvironmentStartTimeoutError`），整题不进分母。89 题里剩 88 题。
-3. 收尾时仍在跑的 4 次（`build-pov-ray__jDndE9G`、`winning-avg-corewars__sxYJysh`、`distribution-search__bJ4uyX9`、`mailman__KqvSAkz`）按对一半记 0.5。
-4. **第三类不算：** 模型已经在干、沙箱先没了的尝试不进分母。9 次 `DaytonaNotFoundError` / `DaytonaBadGatewayError`（`qemu-alpine-ssh`、`schemelike-metacircular-eval`、`build-pov-ray`、`gpt2-codegolf`、`llm-inference-batching-scheduler`、`make-doom-for-mips`、`path-tracing`、`regex-chess`、`write-compressor` 各一次），外加 1 次 tmux 已死的 `RuntimeError`（`count-dataset-tokens`）。这 10 道题按剩下 2 次平均。
-
-有效 254 次里：76 次按时过（1）+ 4 次按一半（0.5）+ 其余 0。各题平均（78 道仍是 3 次、10 道是 2 次）= **29.64%**。Instruct 对照臂还没打进这张表。
-
-**本 job 轨迹根目录：** `/home/BIV/train/outputs/agent_eval/20260905T213120Z_qwen-act/qwen-act_terminal_bench_2_1/`  
-`.gitignore` 里有整棵 `train/outputs/`，git 不带这份目录。就在这台评测机上，从仓库根 Glob/Grep 也会搜不到（工具跳过 gitignore）；用 `ls` 这条绝对路径，或把搜索根指到该目录。Harbor 总配置：同目录 `config.json`。单次会话：`<题名>__<id>/agent/trajectory.json`（264 次有文件；`cancel-async-tasks` 三次沙箱没起来，没有 `agent/`）。例子：`configure-git-webserver__pZiu8i3/agent/trajectory.json`、`mteb-retrieve__DjMMtyz/agent/trajectory.json`、`qemu-alpine-ssh__F6YnoPP/agent/trajectory.json`。
-
-**这次启动写进计分板的配置**（对照下次跑 Instruct / 换 λ 用同一张表）。数字来自该 job 的 `config.json` + 每题 `result.json` 里的 `config`，以及产出这份权重/服务的脚本默认值：
+**这次启动写进计分板的配置**（与本次 Naive ACT 对齐）：
 
 | 旋钮 | 这次的值 |
 |------|----------|
