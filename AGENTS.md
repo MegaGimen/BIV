@@ -410,9 +410,11 @@ for s in traj["steps"]:
 # 可选诊断：相对 Base 的行-MAV 文本表（不再决定任何切点，纯测量）
 python train/scripts/compare.py
 
-# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力，默认 32k 截断；双卡时 World 常驻 GPU0、Instruct 常驻 GPU1）
+# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（默认 32k；双卡 World=GPU0、Instruct=GPU1）
 cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
 # 等价：python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
+# MoE 通道有没有真正被 hook：CPU 读权重头，不占卡
+#   cd train && bash scripts/probe_act_moe.sh
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（默认读 compare 的 train/outputs/act/mask.json，跳过 lm_head）

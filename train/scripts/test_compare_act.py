@@ -14,6 +14,7 @@ from biv_wm.act import (  # noqa: E402
     add_abs_sum,
     analyze_channels,
     canonical_module_key,
+    channel_axis,
     channel_delta,
     finalize_running,
     hook_kind,
@@ -245,12 +246,56 @@ def test_summary_is_channel_not_layer_cut() -> None:
     assert "ACT_Δa" not in text
 
 
+def test_packed_moe_is_not_hooked() -> None:
+    """Qwen3.5 stores 256 experts as 3D Parameters, not experts.0.down_proj."""
+    packed = "model.layers.1.mlp.experts.gate_up_proj"
+    down = "model.layers.1.mlp.experts.down_proj"
+    experts_mod = "model.layers.1.mlp.experts"
+    router = "model.layers.1.mlp.gate.weight"
+    shared = "model.layers.1.mlp.shared_expert.down_proj.weight"
+    gate = "model.layers.1.mlp.shared_expert_gate.weight"
+    assert hook_kind(packed) is None
+    # leaf is down_proj so hook_kind says ffn — but it is a packed Parameter,
+    # not a Linear child. ActCapture never sees this path.
+    assert hook_kind(down) == "ffn"
+    assert hook_kind(experts_mod) is None
+    assert hook_kind(param_canonical_key(router)) is None
+    assert hook_kind(param_canonical_key(gate)) is None
+    assert hook_kind(param_canonical_key(shared)) == "ffn"
+    # skip_experts looks for '.experts.' — packed module path has no trailing child
+    assert hook_kind(experts_mod, include_experts=False) is None
+    assert ".experts." not in "layers.1.mlp.experts"
+    assert channel_axis(packed, 3) == 0
+    from probe_act_moe import classify_weight_key, would_register_hook
+
+    assert classify_weight_key(packed) == "packed_expert_gate_up"
+    assert classify_weight_key(down) == "packed_expert_down"
+    assert classify_weight_key(shared) == "shared_expert_ffn"
+    assert classify_weight_key(router) == "router"
+    assert classify_weight_key(gate) == "shared_expert_gate"
+    assert would_register_hook(down) is False
+    assert would_register_hook(shared) is True
+
+
+def test_as_btc_drops_moe_2d() -> None:
+    try:
+        import torch
+    except Exception:
+        return
+    from compare_act import _as_btc
+
+    assert _as_btc(torch.zeros(1, 4, 8)) is not None
+    assert _as_btc(torch.zeros(4, 8)) is None
+
+
 def main() -> None:
     test_channel_delta_mean()
     test_thin_answer_pos()
     test_token_weighted_across_samples()
     test_canonical_module_key_aligns_backbones()
     test_hook_kind_act_modules_only()
+    test_packed_moe_is_not_hooked()
+    test_as_btc_drops_moe_2d()
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()
     test_language_model_only_flag()
