@@ -412,7 +412,8 @@ python train/scripts/compare.py
 
 # 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（默认 32k；双卡 World=GPU0、Instruct=GPU1）
 cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
-# 等价：python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
+# 冒烟：MAX_ROWS=20 CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
+# 脚本会 echo 全部 flag；结束时读 outputs/act/report.json + mask.json 打 SELF-CHECK
 # MoE 通道有没有真正被 hook：CPU 读权重头，不占卡
 #   cd train && bash scripts/probe_act_moe.sh
 # compare_act 修复后会 hook shared_expert / router，并对 packed 3D 专家做 answer-token dense-eval
