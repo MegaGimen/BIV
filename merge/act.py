@@ -106,6 +106,7 @@ def _process_instruct_shard(
     agent_dir: Path,
     out_dir: Path,
     world_map: dict[str, str],
+    agent_map: dict[str, str],
     lam: float,
 ) -> dict[str, Any]:
     """Copy or rewrite one Instruct shard. Own TensorStore handles (thread-safe)."""
@@ -290,6 +291,7 @@ def merge_act(
             agent_dir=agent_dir,
             out_dir=out_dir,
             world_map=world_map,
+            agent_map=agent_map,
             lam=lam,
         )
         return i, result
