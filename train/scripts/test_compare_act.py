@@ -33,6 +33,7 @@ from compare_act import (  # noqa: E402
     encode_prompt,
     format_summary,
     thin_answer_pos,
+    use_dual_gpus,
 )
 
 
@@ -151,6 +152,12 @@ def test_language_model_only_flag() -> None:
         assert _language_model_only(d) is True
 
 
+def test_use_dual_gpus() -> None:
+    assert use_dual_gpus(2, "auto") is True
+    assert use_dual_gpus(1, "auto") is False
+    assert use_dual_gpus(2, "cuda:0") is False
+
+
 def test_load_jsonl_chats_dir(tmp_path: Path) -> None:
     from compare_act import load_jsonl_chats
 
@@ -247,6 +254,7 @@ def main() -> None:
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()
     test_language_model_only_flag()
+    test_use_dual_gpus()
     test_encode_prompt_string_chat_template()
     test_summary_is_channel_not_layer_cut()
     print("ok", flush=True)

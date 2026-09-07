@@ -8,7 +8,7 @@ ability mask. No residual stream, no layer-cut table.
 
     python train/scripts/compare_act.py
     python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
-    CUDA_VISIBLE_DEVICES=0,1 python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500
+    cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
 
 Writes under ``train/outputs/act/``:
   summary.txt, report.json, mask.json, channels.jsonl
@@ -27,6 +27,8 @@ import json
 import math
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -298,6 +300,29 @@ def _gpu_max_memory(*, reserve_gib: float, n_gpu: int | None = None) -> dict[Any
     return out
 
 
+def _one_gpu_max_memory(gpu_id: int, reserve_gib: float) -> dict[Any, Any] | None:
+    """Place this model on one GPU; forbid the other card so dual-resident fits."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    out: dict[Any, Any] = {}
+    for i in range(torch.cuda.device_count()):
+        if i == gpu_id:
+            total = torch.cuda.get_device_properties(i).total_memory
+            cap = total - int(reserve_gib * (1024**3))
+            out[i] = max(cap, int(total * 0.55))
+        else:
+            out[i] = 1
+    out["cpu"] = "256GiB"
+    return out
+
+
+def use_dual_gpus(n_gpu: int, device_map: str) -> bool:
+    """Two visible cards + default auto map → one model per GPU, stay resident."""
+    return n_gpu >= 2 and device_map == "auto"
+
+
 def _offload_unused_multimodal(model) -> None:
     """ACT only runs the text backbone. Park ViT / MTP on CPU if they landed on GPU."""
     import torch
@@ -323,54 +348,26 @@ def _offload_unused_multimodal(model) -> None:
                     torch.cuda.empty_cache()
 
 
-def _load_model(model_dir: Path, *, dtype, device_map: str):
-    import torch
+def _try_from_pretrained(model_dir: Path, kwargs: dict[str, Any]):
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
-    kwargs: dict[str, Any] = {
-        "trust_remote_code": True,
-        "torch_dtype": dtype,
-        "dtype": dtype,
-        "low_cpu_mem_usage": True,
-        "device_map": device_map,
-    }
-    n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    # Instruct is a VLM (ViT + MTP) on top of the same 35B MoE; World is LM-only.
-    # One 95GiB card fills with Instruct weights, then the 32k expert grouped-mm
-    # cannot allocate 1GiB. Two visible cards split the weights. One card keeps
-    # ~22GiB free for activations (more if this checkpoint still has ViT).
-    multimodal = not _language_model_only(model_dir)
-    if n_gpu >= 2:
-        reserve = 12.0
-    else:
-        reserve = 28.0 if multimodal else 18.0
-    mem = _gpu_max_memory(reserve_gib=reserve)
-    if mem is not None and device_map == "auto":
-        kwargs["max_memory"] = mem
-        log(
-            f"  device_map=auto n_gpu={n_gpu} reserve={reserve:.0f}GiB max_memory_gib="
-            + ",".join(f"{i}:{v / 1024**3:.0f}" for i, v in mem.items())
-        )
-        if n_gpu == 1 and multimodal:
-            log(
-                "  1 GPU + Instruct: extra CPU offload so 32k activations fit; "
-                "CUDA_VISIBLE_DEVICES=0,1 is faster if a second card exists"
-            )
     # AgentWorld is language_model_only (no ViT). ImageTextToText would
     # randomly init model.visual and print a MISSING dump; CausalLM first.
+
     loaders = (AutoModelForCausalLM, AutoModelForImageTextToText)
     if not _language_model_only(model_dir):
         loaders = (AutoModelForImageTextToText, AutoModelForCausalLM)
     last = None
+    local = dict(kwargs)
     for loader in loaders:
         try:
-            model = loader.from_pretrained(str(model_dir), **kwargs)
+            model = loader.from_pretrained(str(model_dir), **local)
             _offload_unused_multimodal(model)
             return model, loader.__name__
         except TypeError:
-            kwargs.pop("dtype", None)
+            local.pop("dtype", None)
             try:
-                model = loader.from_pretrained(str(model_dir), **kwargs)
+                model = loader.from_pretrained(str(model_dir), **local)
                 _offload_unused_multimodal(model)
                 return model, loader.__name__
             except Exception as e:
@@ -378,6 +375,56 @@ def _load_model(model_dir: Path, *, dtype, device_map: str):
         except Exception as e:
             last = e
     raise RuntimeError(f"from_pretrained failed: {last}")
+
+
+def _load_model(model_dir: Path, *, dtype, device_map: str | dict[str, Any] | int):
+    import torch
+
+    pin_id: int | None = None
+    if isinstance(device_map, int):
+        pin_id = device_map
+        mapped: str | dict[str, Any] = {"": f"cuda:{pin_id}"}
+    elif isinstance(device_map, str) and device_map.startswith("cuda:"):
+        pin_id = int(device_map.split(":")[-1])
+        mapped = {"": f"cuda:{pin_id}"}
+    else:
+        mapped = device_map
+
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "torch_dtype": dtype,
+        "dtype": dtype,
+        "low_cpu_mem_usage": True,
+        "device_map": mapped,
+    }
+    n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    multimodal = not _language_model_only(model_dir)
+    if pin_id is not None:
+        log(f"  pin gpu={pin_id} ({'Instruct VLM' if multimodal else 'AgentWorld'})")
+    elif mapped == "auto":
+        reserve = 28.0 if multimodal else 18.0
+        mem = _gpu_max_memory(reserve_gib=reserve)
+        if mem is not None:
+            kwargs["max_memory"] = mem
+            log(
+                f"  device_map=auto n_gpu={n_gpu} reserve={reserve:.0f}GiB max_memory_gib="
+                + ",".join(f"{i}:{v / 1024**3:.0f}" for i, v in mem.items() if isinstance(i, int))
+            )
+    try:
+        return _try_from_pretrained(model_dir, kwargs)
+    except Exception as e:
+        err = str(e).lower()
+        oom = "out of memory" in err or ("cuda" in err and "memory" in err)
+        if pin_id is None or not oom:
+            raise
+        log(f"  pin gpu={pin_id} OOM, retry with CPU offload on this card only")
+        kwargs["device_map"] = "auto"
+        mem = _one_gpu_max_memory(pin_id, reserve_gib=18.0 if multimodal else 12.0)
+        if mem is not None:
+            kwargs["max_memory"] = mem
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return _try_from_pretrained(model_dir, kwargs)
 
 
 def _free(model) -> None:
@@ -425,6 +472,95 @@ def _answer_cpu(t, answer_idx):
     return sl.detach().to(device="cpu", dtype=torch.bfloat16)
 
 
+class ActCapture:
+    """Register ACT hooks once; reuse across samples on a resident model."""
+
+    def __init__(
+        self,
+        model,
+        *,
+        include_experts: bool = True,
+        include_lm_head: bool = False,
+    ) -> None:
+        self.model = model
+        self.include_lm_head = include_lm_head
+        self.captures: dict[str, Any] = {}
+        self.answer_idx = None
+        self.handles = []
+        seen: set[str] = set()
+        named = list(model.named_modules())
+        named.sort(key=lambda x: (0 if "language_model." in x[0] else 1, x[0]))
+        for name, mod in named:
+            kind = hook_kind(name, include_experts=include_experts)
+            if kind is None or kind == "lm_head":
+                continue
+            canon = canonical_module_key(name)
+            if canon in seen:
+                continue
+            seen.add(canon)
+            self.handles.append(mod.register_forward_hook(self._make_hook(canon)))
+
+    def _make_hook(self, name: str):
+        def _hook(_mod, _inp, out):
+            t = _as_btc(out)
+            if t is None or self.answer_idx is None:
+                return
+            sl = _answer_cpu(t, self.answer_idx)
+            if sl is not None:
+                self.captures[name] = sl
+
+        return _hook
+
+    def forward(self, input_ids: list[int], answer_pos: list[int]) -> dict[str, Any]:
+        import torch
+
+        device = _embed_device(self.model)
+        cuda_ctx = (
+            torch.cuda.device(device)
+            if getattr(device, "type", None) == "cuda"
+            else nullcontext()
+        )
+        if getattr(device, "type", None) == "cuda":
+            torch.cuda.set_device(device)
+        ids = torch.tensor([input_ids], device=device)
+        mask = torch.ones_like(ids)
+        self.answer_idx = torch.tensor(answer_pos, device=device, dtype=torch.long)
+        self.captures = {}
+        inner = language_model(self.model)
+        fwd = inner.forward if inner is not None else self.model.forward
+        kwargs = _filter_kwargs(
+            fwd,
+            {
+                "input_ids": ids,
+                "attention_mask": mask,
+                "output_hidden_states": False,
+                "use_cache": False,
+                "return_dict": True,
+            },
+        )
+        with cuda_ctx, torch.inference_mode():
+            out = fwd(**kwargs)
+        if self.include_lm_head:
+            last = getattr(out, "last_hidden_state", None)
+            if last is None:
+                raise RuntimeError("forward returned no last_hidden_state")
+            last_ans = last[0].index_select(0, self.answer_idx)
+            head = lm_head_module(self.model)
+            if head is not None:
+                logits = _apply_lm_head(head, last_ans)
+                self.captures["lm_head"] = logits.detach().to(
+                    device="cpu", dtype=torch.bfloat16
+                )
+        return self.captures
+
+    def close(self) -> None:
+        for h in self.handles:
+            h.remove()
+        self.handles.clear()
+        self.answer_idx = None
+        self.captures = {}
+
+
 def capture_one(
     model,
     input_ids: list[int],
@@ -434,69 +570,13 @@ def capture_one(
     include_lm_head: bool = False,
 ) -> dict[str, Any]:
     """Forward once; keep only answer-token module outputs on CPU (bf16)."""
-    import torch
-
-    device = _embed_device(model)
-    ids = torch.tensor([input_ids], device=device)
-    mask = torch.ones_like(ids)
-    answer_idx = torch.tensor(answer_pos, device=device, dtype=torch.long)
-
-    captures: dict[str, Any] = {}
-    handles = []
-
-    def make_hook(name: str):
-        def _hook(_mod, _inp, out):
-            t = _as_btc(out)
-            if t is None:
-                return
-            sl = _answer_cpu(t, answer_idx)
-            if sl is not None:
-                captures[name] = sl
-
-        return _hook
-
-    seen: set[str] = set()
-    named = list(model.named_modules())
-    named.sort(key=lambda x: (0 if "language_model." in x[0] else 1, x[0]))
-    for name, mod in named:
-        kind = hook_kind(name, include_experts=include_experts)
-        if kind is None or kind == "lm_head":
-            continue
-        canon = canonical_module_key(name)
-        if canon in seen:
-            continue
-        seen.add(canon)
-        handles.append(mod.register_forward_hook(make_hook(canon)))
-
-    inner = language_model(model)
-    fwd = inner.forward if inner is not None else model.forward
-    kwargs = _filter_kwargs(
-        fwd,
-        {
-            "input_ids": ids,
-            "attention_mask": mask,
-            "output_hidden_states": False,
-            "use_cache": False,
-            "return_dict": True,
-        },
+    cap = ActCapture(
+        model, include_experts=include_experts, include_lm_head=include_lm_head
     )
-    with torch.inference_mode():
-        out = fwd(**kwargs)
-
-    for h in handles:
-        h.remove()
-
-    if include_lm_head:
-        last = getattr(out, "last_hidden_state", None)
-        if last is None:
-            raise RuntimeError("forward returned no last_hidden_state")
-        last_ans = last[0].index_select(0, answer_idx)
-        head = lm_head_module(model)
-        if head is not None:
-            logits = _apply_lm_head(head, last_ans)
-            captures["lm_head"] = logits.detach().to(device="cpu", dtype=torch.bfloat16)
-
-    return captures
+    try:
+        return cap.forward(input_ids, answer_pos)
+    finally:
+        cap.close()
 
 
 def acc_pair(
@@ -509,6 +589,15 @@ def acc_pair(
         if k.startswith("_"):
             continue
         a, b = left[k], right[k]
+        if hasattr(a, "shape") and hasattr(b, "shape") and tuple(a.shape) != tuple(b.shape):
+            skipped.add(f"{k}:shape {tuple(a.shape)} vs {tuple(b.shape)}")
+            continue
+        if hasattr(a, "detach") and hasattr(b, "detach"):
+            d = (a.detach().float() - b.detach().float()).abs()
+            if d.ndim == 1:
+                d = d.unsqueeze(0)
+            add_abs_sum(running, k, d.sum(dim=0).reshape(-1), int(d.shape[0]))
+            continue
         if tuple(a.shape) != tuple(b.shape):
             skipped.add(f"{k}:shape {tuple(a.shape)} vs {tuple(b.shape)}")
             continue
@@ -748,16 +837,15 @@ def run_compare_act(
     log(
         f"samples={len(jobs)} tokens={n_tokens} answer={n_answer} "
         f"(raw_tokens={n_tokens_raw} raw_answer={n_answer_raw} "
-        f"max_answer_tokens={max_answer_tokens} chunk_size={chunk_size}) ({prompt_note})"
+        f"max_answer_tokens={max_answer_tokens}) ({prompt_note})"
     )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    log(f"cuda_gpus={n_gpu} device_map={device_map}")
+    dual = use_dual_gpus(n_gpu, device_map)
+    log(f"cuda_gpus={n_gpu} device_map={device_map} layout={'dual' if dual else 'swap'}")
     types = load_layer_types(world_dir) or load_layer_types(agent_dir)
     n_jobs = len(jobs)
-    n_chunks = max(1, math.ceil(n_jobs / chunk_size))
-    total_fwds = 2 * n_jobs
 
     def _format_eta(elapsed: float, done: int, total: int) -> str:
         if done <= 0:
@@ -765,52 +853,97 @@ def run_compare_act(
         rem = (elapsed / done) * (total - done)
         return time.strftime("%H:%M:%S", time.gmtime(rem))
 
-    def _log_fwd(phase: str, idx: int, ids: list[int], pos: list[int], t0: float, done: int) -> None:
+    def _log_fwd(phase: str, idx: int, ids: list[int], pos: list[int], t0: float, done: int, total: int) -> None:
         if idx == 1 or idx % 5 == 0 or idx == n_jobs:
             elapsed = time.time() - t0
             speed = done / elapsed if elapsed > 0 and done else 0.0
             log(
                 f"  {phase} sample {idx}/{n_jobs} "
                 f"(len={len(ids)}, ans={len(pos)}) "
-                f"[{speed:.2f} it/s, ETA: {_format_eta(elapsed, done, total_fwds)}]"
+                f"[{speed:.2f} it/s, ETA: {_format_eta(elapsed, done, total)}]"
             )
 
     running: dict[str, tuple[Any, int]] = {}
     skipped: set[str] = set()
     n_inst = 0
     t0 = time.time()
-    fwds_done = 0
     cap_kw = dict(include_experts=include_experts, include_lm_head=include_lm_head)
 
-    for c in range(n_chunks):
-        sl = slice(c * chunk_size, min(n_jobs, (c + 1) * chunk_size))
-        chunk = jobs[sl]
-        log(f"chunk {c + 1}/{n_chunks} ({len(chunk)} samples): loading AgentWorld")
-        world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
-        if c == 0:
-            log(f"  class={wname}")
-        world_caps: list[dict[str, Any]] = []
-        for j, (ids, pos, _) in enumerate(chunk):
-            idx = c * chunk_size + j + 1
-            _log_fwd("AgentWorld", idx, ids, pos, t0, fwds_done)
-            world_caps.append(capture_one(world, ids, pos, **cap_kw))
-            fwds_done += 1
-        _free(world)
+    if dual:
+        log("loading AgentWorld on cuda:0 (stays resident)")
+        world, wname = _load_model(world_dir, dtype=dtype, device_map=0)
+        log(f"  class={wname}")
+        log("loading Instruct on cuda:1 (stays resident)")
+        agent, aname = _load_model(agent_dir, dtype=dtype, device_map=1)
+        log(f"  class={aname}")
+        cap_w = ActCapture(world, **cap_kw)
+        cap_a = ActCapture(agent, **cap_kw)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                for idx, (ids, pos, _) in enumerate(jobs, start=1):
+                    _log_fwd("pair", idx, ids, pos, t0, idx - 1, n_jobs)
+                    fut_w = pool.submit(cap_w.forward, ids, pos)
+                    fut_a = pool.submit(cap_a.forward, ids, pos)
+                    left, right = fut_w.result(), fut_a.result()
+                    n_inst = len(right)
+                    acc_pair(running, left, right, skipped)
+                    del left, right
+        finally:
+            cap_w.close()
+            cap_a.close()
+            _free(world)
+            world = None
+            _free(agent)
+            agent = None
+        layout_note = (
+            "Dual-GPU resident: AgentWorld on cuda:0, Instruct on cuda:1, "
+            "parallel forward per sample, hooks registered once. "
+        )
+    else:
+        n_chunks = max(1, math.ceil(n_jobs / chunk_size))
+        total_fwds = 2 * n_jobs
+        fwds_done = 0
+        for c in range(n_chunks):
+            sl = slice(c * chunk_size, min(n_jobs, (c + 1) * chunk_size))
+            chunk = jobs[sl]
+            log(f"chunk {c + 1}/{n_chunks} ({len(chunk)} samples): loading AgentWorld")
+            world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
+            if c == 0:
+                log(f"  class={wname}")
+            cap_w = ActCapture(world, **cap_kw)
+            world_caps: list[dict[str, Any]] = []
+            try:
+                for j, (ids, pos, _) in enumerate(chunk):
+                    idx = c * chunk_size + j + 1
+                    _log_fwd("AgentWorld", idx, ids, pos, t0, fwds_done, total_fwds)
+                    world_caps.append(cap_w.forward(ids, pos))
+                    fwds_done += 1
+            finally:
+                cap_w.close()
+                _free(world)
 
-        log(f"chunk {c + 1}/{n_chunks}: loading Instruct")
-        agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
-        if c == 0:
-            log(f"  class={aname}")
-        for j, ((ids, pos, _), cap_w) in enumerate(zip(chunk, world_caps, strict=True)):
-            idx = c * chunk_size + j + 1
-            _log_fwd("Instruct", idx, ids, pos, t0, fwds_done)
-            cap_a = capture_one(agent, ids, pos, **cap_kw)
-            n_inst = len(cap_a)
-            acc_pair(running, cap_w, cap_a, skipped)
-            del cap_w, cap_a
-            fwds_done += 1
-        del world_caps
-        _free(agent)
+            log(f"chunk {c + 1}/{n_chunks}: loading Instruct")
+            agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
+            if c == 0:
+                log(f"  class={aname}")
+            cap_a = ActCapture(agent, **cap_kw)
+            try:
+                for j, ((ids, pos, _), left) in enumerate(zip(chunk, world_caps, strict=True)):
+                    idx = c * chunk_size + j + 1
+                    _log_fwd("Instruct", idx, ids, pos, t0, fwds_done, total_fwds)
+                    right = cap_a.forward(ids, pos)
+                    n_inst = len(right)
+                    acc_pair(running, left, right, skipped)
+                    del left, right
+                    fwds_done += 1
+            finally:
+                cap_a.close()
+                _free(agent)
+            del world_caps
+        layout_note = (
+            f"Chunked in-RAM (chunk_size={chunk_size}): World then Instruct per chunk, "
+            "accumulate Δa, drop activations. "
+        )
 
     n_body = sum(1 for k in running if k != "lm_head")
     log(
@@ -828,8 +961,7 @@ def run_compare_act(
         "ACT §3.1 eq. (2) and §4.1: module-output channel |a_AW - a_Instruct|, "
         "mean over pooled answer tokens, rank all channels, keep top p% "
         "(arXiv:2601.09398). Residual stream is not used. "
-        f"Chunked in-RAM (chunk_size={chunk_size}): World then Instruct per chunk, "
-        "accumulate Δa, drop activations. "
+        + layout_note
     )
     if include_experts:
         method_note += "Routed MoE experts and shared experts are both hooked."
@@ -847,6 +979,7 @@ def run_compare_act(
         "decoded_answer": decoded,
         "skipped": sorted(skipped),
         "paths": {"world": str(world_dir), "instruct": str(agent_dir)},
+        "layout": "dual" if dual else "swap",
         "ranked": ranked,
         **analysis,
     }
@@ -883,7 +1016,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="mix JSONL; last assistant span is the ACT answer; average across rows",
     )
-    p.add_argument("--max-rows", type=int, default=8, help="with --jsonl, how many complete chats")
+    p.add_argument("--max-rows", type=int, default=1500, help="with --jsonl, how many complete chats")
     p.add_argument(
         "--max-length",
         type=int,
@@ -925,7 +1058,7 @@ def parse_args() -> argparse.Namespace:
         "--chunk-size",
         type=int,
         default=32,
-        help="World/Instruct swap every N samples (in RAM, no 1500-file dump)",
+        help="1-GPU only: World/Instruct swap every N samples. Dual GPU ignores this.",
     )
     p.add_argument("--device-map", default="auto")
     return p.parse_args()

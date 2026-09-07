@@ -360,7 +360,7 @@ for s in traj["steps"]:
 
 | 旋钮 | 这次的值 |
 |------|----------|
-| ACT 掩码 | `python train/scripts/compare_act.py`，通道差 top \(p=1\%\)（`DEFAULT_TOP_P=0.01`），写出 `train/outputs/act/mask.json` |
+| ACT 掩码 | `cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh`（mix 1500 条，双卡常驻），通道差 top \(p=1\%\)（`DEFAULT_TOP_P=0.01`），写出 `train/outputs/act/mask.json` |
 | ACT 融合 | `python merge/act.py`：\(\lambda=0.4\)，目标 Instruct、能力侧 AgentWorld，输出 `merge/output/act`；词表 sidecar 从 Instruct 拷贝 |
 | vLLM | `python merge/eval.py --act --max-model-len 65536`；served id `qwen-act`；`--language-model-only`；`--reasoning-parser qwen3`；`--tool-call-parser qwen3_coder`；`--dtype bfloat16`；`--gpu-memory-utilization 0.90` |
 | Harbor 入口 | `cd train && python scripts/test.py --act --suite terminal_bench_2_1 --env daytona` |
@@ -410,8 +410,9 @@ for s in traj["steps"]:
 # 可选诊断：相对 Base 的行-MAV 文本表（不再决定任何切点，纯测量）
 python train/scripts/compare.py
 
-# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力，默认 32k 截断）
-python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
+# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（包含 MoE 专家与注意力，默认 32k 截断；双卡时 World 常驻 GPU0、Instruct 常驻 GPU1）
+cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
+# 等价：python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 python merge/act.py --no-lm-head

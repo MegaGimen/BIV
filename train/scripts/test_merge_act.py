@@ -65,7 +65,7 @@ def test_load_mask_rows_no_lm_head() -> None:
 def _torch():
     try:
         import torch
-    except ImportError:
+    except Exception:
         return None
     return torch
 
@@ -166,6 +166,7 @@ def test_merge_act_two_tiny_shards(tmp_path: Path | None = None) -> None:
         mask_path=mask_path,
         lam=0.4,
         no_lm_head=False,
+        workers=2,
     )
     assert meta["n_tensors_patched"] == 1
     assert meta["n_rows_written"] == 1

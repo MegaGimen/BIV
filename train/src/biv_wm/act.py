@@ -153,6 +153,11 @@ def token_abs_sum(a: Any, b: Any) -> tuple[list[float], int]:
 
 
 def mean_from_sum(sum_abs: Sequence[float], n_tokens: int) -> list[float]:
+    if hasattr(sum_abs, "detach"):
+        n = int(sum_abs.numel()) if hasattr(sum_abs, "numel") else 0
+        if n_tokens <= 0:
+            return [0.0] * n
+        return (sum_abs.detach().float().reshape(-1) / float(n_tokens)).cpu().tolist()
     if n_tokens <= 0:
         return [0.0] * len(sum_abs)
     n = float(n_tokens)
@@ -166,20 +171,41 @@ def channel_delta(a: Any, b: Any) -> list[float]:
 
 
 def add_abs_sum(
-    running: dict[str, tuple[list[float], int]],
+    running: dict[str, tuple[Any, int]],
     key: str,
     sum_abs: Sequence[float],
     n_tokens: int,
 ) -> None:
     if n_tokens <= 0:
         return
+    if hasattr(sum_abs, "detach"):
+        incoming: Any = sum_abs.detach().float().reshape(-1).cpu()
+    else:
+        incoming = [float(x) for x in sum_abs]
     if key not in running:
-        running[key] = ([float(x) for x in sum_abs], int(n_tokens))
+        running[key] = (
+            incoming.clone() if hasattr(incoming, "detach") else list(incoming),
+            int(n_tokens),
+        )
         return
     prev, n0 = running[key]
-    if len(prev) != len(sum_abs):
-        raise ValueError(f"add_abs_sum: width {len(prev)} vs {len(sum_abs)} for {key}")
-    running[key] = ([x + float(y) for x, y in zip(prev, sum_abs, strict=True)], n0 + int(n_tokens))
+    if hasattr(prev, "detach"):
+        if hasattr(incoming, "detach"):
+            vec = incoming.to(dtype=prev.dtype)
+        else:
+            import torch
+
+            vec = torch.tensor(incoming, dtype=prev.dtype)
+        if int(prev.numel()) != int(vec.numel()):
+            raise ValueError(
+                f"add_abs_sum: width {int(prev.numel())} vs {int(vec.numel())} for {key}"
+            )
+        running[key] = (prev + vec, n0 + int(n_tokens))
+        return
+    vals = incoming.tolist() if hasattr(incoming, "tolist") else incoming
+    if len(prev) != len(vals):
+        raise ValueError(f"add_abs_sum: width {len(prev)} vs {len(vals)} for {key}")
+    running[key] = ([x + float(y) for x, y in zip(prev, vals, strict=True)], n0 + int(n_tokens))
 
 
 def finalize_running(running: dict[str, tuple[list[float], int]]) -> dict[str, list[float]]:
