@@ -415,7 +415,8 @@ cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
 # 等价：python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
-python merge/act.py --no-lm-head
+# 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（默认读 compare 的 train/outputs/act/mask.json，跳过 lm_head）
+python merge/act.py
 
 # GPU 机起 vLLM：:6006 ACT 合并模型，:6008 原 Instruct
 python merge/eval.py --act --max-model-len 32768

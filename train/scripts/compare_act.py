@@ -1132,6 +1132,7 @@ def main() -> None:
     log(f"wrote {out_dir / 'report.json'}")
     log(f"wrote {out_dir / 'mask.json'}")
     log(f"wrote {out_dir / 'channels.jsonl'} ({len(ranked)} channels)")
+    log(f"merge reuses {out_dir / 'mask.json'}: python merge/act.py")
 
 
 if __name__ == "__main__":

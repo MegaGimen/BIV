@@ -13,9 +13,11 @@ Mask comes from ``python train/scripts/compare_act.py`` →
 ``train/outputs/act/mask.json``.
 
     python merge/act.py
-    python merge/act.py --lambda 0.4 --no-lm-head
-    python merge/act.py --no-lm-head --workers 2
+    python merge/act.py --lambda 0.4
     python merge/eval.py --act --max-model-len 32768
+
+Reads ``train/outputs/act/mask.json`` from compare by default (no extra path).
+Skips ``lm_head`` unless ``--lm-head``.
 """
 
 from __future__ import annotations
@@ -403,8 +405,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--no-lm-head",
+        dest="no_lm_head",
         action="store_true",
-        help="Use mask_no_lm_head (keep Instruct's vocab rows)",
+        default=True,
+        help="use mask_no_lm_head (default; keep Instruct's vocab rows)",
+    )
+    p.add_argument(
+        "--lm-head",
+        dest="no_lm_head",
+        action="store_false",
+        help="include lm_head rows from the ACT mask",
     )
     p.add_argument(
         "--workers",
@@ -428,7 +438,7 @@ def main() -> None:
     if not mask_path.is_file():
         raise SystemExit(
             f"No ACT mask at {mask_path}\n"
-            "Run: python train/scripts/compare_act.py"
+            "Run compare first: cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh"
         )
     cache_dir = args.cache_dir if args.cache_dir.is_absolute() else (ROOT / args.cache_dir)
     out_dir = args.out if args.out.is_absolute() else (ROOT / args.out)
@@ -440,7 +450,7 @@ def main() -> None:
         f"ACT merge → Instruct  λ={args.lam}"
         + ("  (no lm_head)" if args.no_lm_head else "")
     )
-    log(f"  mask:  {mask_path}")
+    log(f"  mask:  {mask_path}  (reuse compare_act)")
     log(f"  world: {world_dir}")
     log(f"  agent: {agent_dir}")
     log(f"  out:   {out_dir}")
