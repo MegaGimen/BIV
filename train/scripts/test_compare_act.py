@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from compare_act import (  # noqa: E402
     format_summary,
     thin_answer_pos,
     use_dual_gpus,
+    verify_moe_coverage,
 )
 
 
@@ -279,6 +281,64 @@ def test_packed_moe_is_not_hooked() -> None:
     assert would_register_hook(shared) is True
 
 
+def test_verify_moe_coverage_reads_files(tmp_path: Path | None = None) -> None:
+    import tempfile
+
+    root = tmp_path if tmp_path is not None else Path(tempfile.mkdtemp(prefix="biv_act_chk_"))
+    bad = root / "bad"
+    bad.mkdir(parents=True, exist_ok=True)
+    (bad / "report.json").write_text(
+        json.dumps(
+            {
+                "n_channels": 712576,
+                "by_kind": {"attn": {"n_channels": 544640}, "ln": {"n_channels": 165888}},
+                "modules": [{"key": "layers.0.linear_attn.in_proj_qkv", "kind": "attn"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bad / "mask.json").write_text(
+        json.dumps({"mask": [{"key": "layers.0.linear_attn.in_proj_qkv", "channel": 1, "kind": "attn"}]}),
+        encoding="utf-8",
+    )
+    failed = verify_moe_coverage(bad, include_experts=True)
+    assert failed["ok"] is False
+    names = {c["name"]: c["ok"] for c in failed["checks"]}
+    assert names["ffn_in_by_kind"] is False
+    assert names["modules_packed_gate_up"] is False
+
+    good = root / "good"
+    good.mkdir(parents=True, exist_ok=True)
+    (good / "report.json").write_text(
+        json.dumps(
+            {
+                "n_channels": 32_000_000,
+                "by_kind": {"ffn": {"n_channels": 31_000_000}, "attn": {"n_channels": 500_000}},
+                "modules": [
+                    {"key": "layers.0.mlp.shared_expert.down_proj", "kind": "ffn"},
+                    {"key": "layers.0.mlp.experts.gate_up_proj", "kind": "ffn"},
+                    {"key": "layers.0.mlp.experts.down_proj", "kind": "ffn"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (good / "mask.json").write_text(
+        json.dumps(
+            {
+                "mask": [
+                    {"key": "layers.0.mlp.shared_expert.down_proj", "channel": 0, "kind": "ffn"},
+                    {"key": "layers.0.mlp.experts.gate_up_proj", "channel": 3, "kind": "ffn"},
+                    {"key": "layers.0.mlp.experts.down_proj", "channel": 7, "kind": "ffn"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    passed = verify_moe_coverage(good, include_experts=True)
+    assert passed["ok"] is True, passed
+
+
 def test_as_btc_keeps_moe_2d() -> None:
     try:
         import torch
@@ -299,6 +359,7 @@ def main() -> None:
     test_canonical_module_key_aligns_backbones()
     test_hook_kind_act_modules_only()
     test_packed_moe_is_not_hooked()
+    test_verify_moe_coverage_reads_files()
     test_as_btc_keeps_moe_2d()
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()

@@ -849,6 +849,106 @@ def format_summary(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+BROKEN_SMOKE_N_CHANNELS = 712576
+
+
+def verify_moe_coverage(out_dir: Path, *, include_experts: bool = True) -> dict[str, Any]:
+    """Read ``report.json`` + ``mask.json`` and say whether MoE channels landed.
+
+    Broken 20-row smoke had n_channels=712576, kinds attn/ln/embed, no ffn,
+    no ``mlp.experts.*`` / ``shared_expert`` in the mask.
+    """
+    report_path = out_dir / "report.json"
+    mask_path = out_dir / "mask.json"
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    if not report_path.is_file():
+        add("report.json", False, f"missing {report_path}")
+        return {"ok": False, "checks": checks, "report": str(report_path), "mask": str(mask_path)}
+    if not mask_path.is_file():
+        add("mask.json", False, f"missing {mask_path}")
+        return {"ok": False, "checks": checks, "report": str(report_path), "mask": str(mask_path)}
+    add("report.json", True, str(report_path))
+    add("mask.json", True, str(mask_path))
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    mask_payload = json.loads(mask_path.read_text(encoding="utf-8"))
+    by_kind = report.get("by_kind") or {}
+    n_ffn = int((by_kind.get("ffn") or {}).get("n_channels") or 0)
+    add("ffn_in_by_kind", n_ffn > 0, f"by_kind.ffn.n_channels={n_ffn}")
+
+    n_ch = int(report.get("n_channels") or 0)
+    add(
+        "n_channels_above_broken_smoke",
+        n_ch > BROKEN_SMOKE_N_CHANNELS,
+        f"n_channels={n_ch} (broken smoke was {BROKEN_SMOKE_N_CHANNELS})",
+    )
+
+    mod_keys = [str(m.get("key") or "") for m in (report.get("modules") or []) if isinstance(m, dict)]
+    n_shared_mod = sum(1 for k in mod_keys if ".mlp.shared_expert." in k)
+    add(
+        "modules_shared_expert",
+        n_shared_mod > 0,
+        f"{n_shared_mod} shared_expert modules in report.json",
+    )
+    if include_experts:
+        n_gu = sum(1 for k in mod_keys if k.endswith(".mlp.experts.gate_up_proj"))
+        n_dn = sum(1 for k in mod_keys if k.endswith(".mlp.experts.down_proj"))
+        add("modules_packed_gate_up", n_gu > 0, f"{n_gu} layers.mlp.experts.gate_up_proj")
+        add("modules_packed_down", n_dn > 0, f"{n_dn} layers.mlp.experts.down_proj")
+
+    mask_rows = [
+        r
+        for r in (mask_payload.get("mask") or mask_payload.get("mask_no_lm_head") or [])
+        if isinstance(r, dict)
+    ]
+    mask_keys = [str(r.get("key") or "") for r in mask_rows]
+    n_mask_ffn = sum(
+        1
+        for r, k in zip(mask_rows, mask_keys, strict=True)
+        if r.get("kind") == "ffn"
+        or "shared_expert" in k
+        or ".experts." in k
+        or k.endswith(".mlp.gate")
+    )
+    add("mask_has_ffn", n_mask_ffn > 0, f"{n_mask_ffn}/{len(mask_keys)} mask rows are MoE/FFN")
+    add(
+        "mask_shared_expert",
+        any(".mlp.shared_expert." in k for k in mask_keys),
+        "shared_expert in mask.json",
+    )
+    if include_experts:
+        add(
+            "mask_packed_gate_up",
+            any(k.endswith(".mlp.experts.gate_up_proj") for k in mask_keys),
+            "experts.gate_up_proj in mask.json",
+        )
+        add(
+            "mask_packed_down",
+            any(k.endswith(".mlp.experts.down_proj") for k in mask_keys),
+            "experts.down_proj in mask.json",
+        )
+
+    return {
+        "ok": all(c["ok"] for c in checks),
+        "checks": checks,
+        "report": str(report_path),
+        "mask": str(mask_path),
+        "include_experts": include_experts,
+    }
+
+
+def print_moe_self_check(verdict: dict[str, Any]) -> None:
+    log("[compare_act] self-check (read report.json + mask.json from disk)")
+    for c in verdict.get("checks") or []:
+        tag = "PASS" if c.get("ok") else "FAIL"
+        log(f"  {tag}  {c.get('name')}  {c.get('detail')}")
+    log("SELF-CHECK: PASS" if verdict.get("ok") else "SELF-CHECK: FAIL")
+
+
 def load_jsonl_chats(path: Path, max_rows: int) -> list[list[dict[str, Any]]]:
     """Read full chat messages from a single JSONL or a multi-source mix directory."""
     paths: list[Path] = []
@@ -1272,6 +1372,15 @@ def main() -> None:
     log(f"wrote {out_dir / 'mask.json'}")
     log(f"wrote {out_dir / 'channels.jsonl'} ({len(ranked)} channels)")
     log(f"merge reuses {out_dir / 'mask.json'}: python merge/act.py")
+    verdict = verify_moe_coverage(out_dir, include_experts=not args.skip_experts)
+    (out_dir / "self_check.json").write_text(
+        json.dumps(verdict, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    log(f"wrote {out_dir / 'self_check.json'}")
+    print_moe_self_check(verdict)
+    if not verdict["ok"]:
+        raise SystemExit("SELF-CHECK: FAIL — MoE channels did not land in report.json / mask.json")
 
 
 if __name__ == "__main__":
