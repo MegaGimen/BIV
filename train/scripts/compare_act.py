@@ -602,7 +602,7 @@ def acc_packed_experts(cap_w, cap_a, left, right, running, skipped, pool=None) -
             gu_a, dn_a = _eval(mod_a, right[hk])
         d, n = _channel_abs_sum_diff(gu_w, gu_a)
         add_abs_sum(running, f"{canon}.gate_up_proj", d, n)
-        d2, _n2 = _channel_abs_sum_diff(dn_w, dn_a)
+        d2, n2 = _channel_abs_sum_diff(dn_w, dn_a)
         add_abs_sum(running, f"{canon}.down_proj", d2, n2)
         del gu_w, gu_a, dn_w, dn_a, d, d2
 
