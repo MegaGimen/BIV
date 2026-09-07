@@ -61,8 +61,15 @@ class ContextBuilder:
     _MAX_HISTORY_TOKENS = 8_000  # hard cap on recent history section size (tokens)
     _RUNTIME_CONTEXT_END = RUNTIME_CONTEXT_END
 
-    def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        timezone: str | None = None,
+        disabled_skills: list[str] | None = None,
+        virtual_workspace: str | None = None,
+    ):
         self.workspace = workspace
+        self.virtual_workspace = virtual_workspace
         self.timezone = timezone
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace, disabled_skills=set(disabled_skills) if disabled_skills else None)
@@ -129,8 +136,14 @@ class ContextBuilder:
     def _get_identity(self, channel: str | None = None, workspace: Path | None = None) -> str:
         """Get the core identity section."""
         root = workspace or self.workspace
-        workspace_path = str(root.expanduser().resolve())
-        agent_workspace_path = str(self.workspace.expanduser().resolve())
+        if self.virtual_workspace:
+            workspace_path = self.virtual_workspace
+            agent_workspace_path = self.virtual_workspace
+            is_virtual = True
+        else:
+            workspace_path = str(root.expanduser().resolve())
+            agent_workspace_path = str(self.workspace.expanduser().resolve())
+            is_virtual = False
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
 
@@ -141,6 +154,7 @@ class ContextBuilder:
             runtime=runtime,
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
+            is_virtual=is_virtual,
         )
 
     @staticmethod

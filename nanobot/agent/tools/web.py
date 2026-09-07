@@ -982,18 +982,20 @@ class WebSearchTool(Tool):
             "type": "string",
             "enum": ["markdown", "text"],
             "default": "markdown",
+            "description": "Output format: markdown (default, web page converted to clean markdown text) or text.",
         },
         maxChars=IntegerSchema(minimum=100),
         required=["url"],
     )
 )
 class WebFetchTool(Tool):
-    """Fetch and extract content from a URL."""
+    """Fetch and extract content from a URL as markdown."""
     _scopes = {"core", "subagent"}
 
     name = "web_fetch"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     description = (  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
-        "Fetch a URL and extract readable content (HTML → markdown/text). "
+        "Fetch a URL and return the readable markdown version. "
+        "Converts web page information into clean markdown text with HTML tags, CSS styling, and scripts stripped. "
         "Output is capped at maxChars (default 50 000). "
         "Works for most web pages and docs; may fail on login-walled or JS-heavy sites."
     )

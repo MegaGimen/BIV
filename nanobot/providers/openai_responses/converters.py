@@ -45,6 +45,11 @@ def convert_messages(
                 if isinstance(reasoning, str) and reasoning:
                     input_items.append({
                         "type": "reasoning",
+                        "content": [{"type": "reasoning_text", "text": reasoning}],
+                    })
+                elif isinstance(reasoning, list) and reasoning:
+                    input_items.append({
+                        "type": "reasoning",
                         "content": reasoning,
                     })
             if isinstance(content, str) and content:

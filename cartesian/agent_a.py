@@ -73,6 +73,7 @@ async def get_agent_a() -> Nanobot:
             workspace=WORKSPACE_ROOT,
             model_preset="agentA",
         )
+        _bot._loop.context.virtual_workspace = "/workspace"
     if not _proxies_installed:
         wrapped = install_demon_proxies(_bot._loop.tools)  # noqa: SLF001
         print(f"[agent-a] Demon proxies installed for: {wrapped}", flush=True)
@@ -132,7 +133,7 @@ async def run_agent_a_turn(
     try:
         capture = SDKCaptureHook()
         kwargs = build_process_direct_kwargs(
-            session_key=f"cartesian:{session_id}",
+            session_key=session_id,
             channel="cartesian",
             chat_id=session_id,
             sender_id="dashboard",

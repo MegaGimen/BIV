@@ -1070,6 +1070,7 @@ class OpenAICompatProvider(LLMProvider):
             getattr(e, "body", None)
             or getattr(e, "doc", None)
             or getattr(response, "text", None)
+            or str(e)
         )
         body_text = str(body).lower() if body is not None else ""
         compatibility_markers = (
@@ -1082,6 +1083,12 @@ class OpenAICompatProvider(LLMProvider):
             "not supported",
             "unknown parameter",
             "unrecognized request argument",
+            "deserialize",
+            "failed to deserialize",
+            "invalid type",
+            "expected a sequence",
+            "schema validation",
+            "validation error",
         )
         return any(marker in body_text for marker in compatibility_markers)
 
@@ -1147,7 +1154,7 @@ class OpenAICompatProvider(LLMProvider):
 
         if not self._supports_temperature(model_name, reasoning_effort) and not preserve_reasoning:
             body["include"] = ["reasoning.encrypted_content"]
-        if reasoning_effort and reasoning_effort.lower() != "none":
+        if reasoning_effort is not None:
             body["reasoning"] = {"effort": reasoning_effort}
         if replayed and "gpt-5.6" in model_name.lower():
             body.setdefault("reasoning", {})["context"] = "all_turns"

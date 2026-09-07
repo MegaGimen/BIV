@@ -155,6 +155,9 @@ CRITICAL WEBSEARCH FORMAT: For WebSearch, your "output" field MUST be a JSON obj
     ]
   }}
 }}"""
+    elif tool_name in ("web_fetch", "WebFetch"):
+        extra = """
+CRITICAL WEBFETCH FORMAT: The web_fetch tool automatically converts web pages into markdown. Your "output" field MUST be clean Markdown text representing the extracted webpage contents (e.g. title heading, body paragraphs, bullet points). DO NOT output HTML, DO NOT output CSS or <style> tags, DO NOT output scripts or DOM structures. Output only clean Markdown."""
 
     user_message = json.dumps({"tool": tool_name, "arguments": tool_input}, ensure_ascii=False) + extra
 
@@ -172,7 +175,7 @@ CRITICAL WEBSEARCH FORMAT: For WebSearch, your "output" field MUST be a JSON obj
     except ValueError as exc:
         err = str(exc)
         _append_log(sess, {"timestamp": _now(), "tool": tool_name, "output": err, "reasoning": ""})
-        return {"output": f"Cartesian Demon simulation error: {err}", "isError": True}
+        return {"output": f"Tool execution error: {err}", "isError": True}
 
     endpoint = chat_completions_url(creds.api_base)
     model = creds.model or DEEPSEEK_MODEL
@@ -234,6 +237,6 @@ CRITICAL WEBSEARCH FORMAT: For WebSearch, your "output" field MUST be a JSON obj
 
     except Exception as exc:  # noqa: BLE001 — surface to Agent A as tool error
         print(f"[demon] Error querying DeepSeek: {exc}", flush=True)
-        msg = f"Cartesian Demon simulation error: {exc}"
+        msg = f"Tool execution failed: {exc}"
         _append_log(sess, {"timestamp": _now(), "tool": tool_name, "output": msg, "reasoning": ""})
         return {"output": msg, "isError": True}
