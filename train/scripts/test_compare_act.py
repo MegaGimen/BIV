@@ -352,6 +352,37 @@ def test_as_btc_keeps_moe_2d() -> None:
     assert t2 is not None and tuple(t2.shape) == (1, 4, 8)
 
 
+def test_packed_expert_outputs_and_gpu_reduce() -> None:
+    try:
+        import torch
+        import torch.nn.functional as F
+    except Exception:
+        print("skip test_packed_expert_outputs_and_gpu_reduce (no torch)", flush=True)
+        return
+    from types import SimpleNamespace
+
+    from compare_act import _channel_abs_sum_diff, packed_expert_outputs
+
+    e, o, hdim, t = 4, 6, 8, 3
+    inter = o // 2
+    mod = SimpleNamespace(
+        gate_up_proj=torch.randn(e, o, hdim),
+        down_proj=torch.randn(e, hdim, inter),
+        act_fn=F.silu,
+    )
+    hidden = torch.randn(t, hdim)
+    gu, dn = packed_expert_outputs(mod, hidden, to_cpu=True)
+    assert tuple(gu.shape) == (t, e * o)
+    assert tuple(dn.shape) == (t, e * hdim)
+    gu2, _dn2 = packed_expert_outputs(mod, hidden, to_cpu=False)
+    d, n = _channel_abs_sum_diff(gu2, gu2)
+    assert n == t
+    assert float(d.abs().max()) == 0.0
+    other = gu2 + 2
+    d2, _ = _channel_abs_sum_diff(gu2, other, col_chunk=5)
+    assert abs(float(d2[0]) - 2.0 * t) < 1e-4
+
+
 def main() -> None:
     test_channel_delta_mean()
     test_thin_answer_pos()
@@ -361,6 +392,7 @@ def main() -> None:
     test_packed_moe_is_not_hooked()
     test_verify_moe_coverage_reads_files()
     test_as_btc_keeps_moe_2d()
+    test_packed_expert_outputs_and_gpu_reduce()
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()
     test_language_model_only_flag()

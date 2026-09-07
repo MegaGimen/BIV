@@ -481,7 +481,11 @@ def _answer_cpu(t, answer_idx):
 
 
 def _hidden_answer(hidden, answer_idx):
-    """Answer-token rows of a MoE hidden ``[S, H]`` or ``[B, S, H]``."""
+    """Answer-token rows of a MoE hidden ``[S, H]`` or ``[B, S, H]``.
+
+    Keep them on the module GPU. Round-tripping 40 layers through CPU was the
+    bulk of dual-GPU MoE dense-eval time.
+    """
     import torch
 
     if hidden is None or not torch.is_tensor(hidden) or answer_idx is None:
@@ -494,15 +498,16 @@ def _hidden_answer(hidden, answer_idx):
         idx = idx.to(device=h.device)
     if idx.numel() == 0 or int(idx[-1]) >= int(h.shape[0]):
         return None
-    return h.index_select(0, idx).detach().to(device="cpu", dtype=torch.bfloat16)
+    return h.index_select(0, idx).detach()
 
 
-def packed_expert_outputs(mod, hidden_th):
+def packed_expert_outputs(mod, hidden_th, *, to_cpu: bool = True):
     """Dense-eval every packed expert on answer-token hiddens.
 
     Same ``h`` for both models, ignoring routing, so channel ``e*O + o`` is
     expert ``e``'s projection output dim ``o`` — the row merge writes in the
-    flattened 3D Parameter.
+    flattened 3D Parameter. Dual-GPU compare keeps the result on device and
+    only the per-channel ``|Δ|`` sum crosses to CPU.
     """
     import torch
     import torch.nn.functional as F
@@ -510,37 +515,73 @@ def packed_expert_outputs(mod, hidden_th):
     Wgu = mod.gate_up_proj
     Wd = mod.down_proj
     device = Wgu.device
+    if getattr(device, "type", None) == "cuda":
+        torch.cuda.set_device(device)
+        ctx = torch.cuda.device(device)
+    else:
+        ctx = nullcontext()
     h = hidden_th
     if h.ndim == 3:
         h = h.reshape(-1, h.shape[-1])
-    h = h.to(device=device, dtype=Wgu.dtype)
-    t, _hin = h.shape
-    e, o, _ = Wgu.shape
-    hout = int(Wd.shape[1])
     act = getattr(mod, "act_fn", None) or (lambda x: F.silu(x))
     chunk = 32
     gu_parts = []
     dn_parts = []
-    for e0 in range(0, e, chunk):
-        sl = slice(e0, min(e, e0 + chunk))
-        gu = torch.einsum("th,eoh->teo", h, Wgu[sl])
-        gate, up = gu.chunk(2, dim=-1)
-        inter = act(gate) * up
-        dn = torch.einsum("tei,ehi->teh", inter, Wd[sl])
-        gu_parts.append(gu)
-        dn_parts.append(dn)
-        del gu, gate, up, inter, dn
-    gu = torch.cat(gu_parts, dim=1).reshape(t, e * o)
-    dn = torch.cat(dn_parts, dim=1).reshape(t, e * hout)
-    return (
-        gu.detach().to(device="cpu", dtype=torch.bfloat16),
-        dn.detach().to(device="cpu", dtype=torch.bfloat16),
-    )
+    with ctx, torch.inference_mode():
+        h = h.to(device=device, dtype=Wgu.dtype)
+        t, _hin = h.shape
+        e, o, _ = Wgu.shape
+        hout = int(Wd.shape[1])
+        for e0 in range(0, e, chunk):
+            sl = slice(e0, min(e, e0 + chunk))
+            gu = torch.einsum("th,eoh->teo", h, Wgu[sl])
+            gate, up = gu.chunk(2, dim=-1)
+            inter = act(gate) * up
+            dn = torch.einsum("tei,ehi->teh", inter, Wd[sl])
+            gu_parts.append(gu)
+            dn_parts.append(dn)
+            del gate, up, inter
+        gu = torch.cat(gu_parts, dim=1).reshape(t, e * o)
+        dn = torch.cat(dn_parts, dim=1).reshape(t, e * hout)
+    if to_cpu:
+        return (
+            gu.detach().to(device="cpu", dtype=torch.bfloat16),
+            dn.detach().to(device="cpu", dtype=torch.bfloat16),
+        )
+    return gu.detach(), dn.detach()
 
 
-def acc_packed_experts(cap_w, cap_a, left, right, running, skipped) -> None:
-    """One layer at a time: |Pred_AW − Pred_Instruct| on packed expert channels."""
+def _channel_abs_sum_diff(left, right, *, col_chunk: int = 65536):
+    """``sum_t |a − b|`` as a 1-D CPU tensor. Copies ``b`` in column slices."""
+    import torch
+
+    if tuple(left.shape) != tuple(right.shape):
+        raise ValueError(f"packed delta shape {tuple(left.shape)} vs {tuple(right.shape)}")
+    t, c = int(left.shape[0]), int(left.shape[1])
+    parts = []
+    step = max(int(col_chunk), 1)
+    with torch.inference_mode():
+        for i0 in range(0, c, step):
+            sl = slice(i0, min(c, i0 + step))
+            a = left[:, sl].float()
+            b = right[:, sl].to(device=left.device, non_blocking=True).float()
+            parts.append((a - b).abs().sum(0))
+            del a, b
+        out = torch.cat(parts).contiguous()
+    return out.cpu(), t
+
+
+def acc_packed_experts(cap_w, cap_a, left, right, running, skipped, pool=None) -> None:
+    """One layer at a time: |Pred_AW − Pred_Instruct| on packed expert channels.
+
+    World and Instruct already sit on two GPUs; eval them together, keep the
+    ``[T, E*O]`` activations on-device, and only ship the channel sums.
+    """
     keys = sorted(k for k in left if str(k).startswith("_expert_h:"))
+
+    def _eval(mod, hidden):
+        return packed_expert_outputs(mod, hidden, to_cpu=False)
+
     for hk in keys:
         canon = str(hk).split(":", 1)[1]
         if hk not in right:
@@ -551,12 +592,18 @@ def acc_packed_experts(cap_w, cap_a, left, right, running, skipped) -> None:
         if mod_w is None or mod_a is None:
             skipped.add(f"{canon}:missing_mod")
             continue
-        gu_w, dn_w = packed_expert_outputs(mod_w, left[hk])
-        gu_a, dn_a = packed_expert_outputs(mod_a, right[hk])
-        d = (gu_w.float() - gu_a.float()).abs()
-        add_abs_sum(running, f"{canon}.gate_up_proj", d.sum(dim=0).reshape(-1), int(d.shape[0]))
-        d2 = (dn_w.float() - dn_a.float()).abs()
-        add_abs_sum(running, f"{canon}.down_proj", d2.sum(dim=0).reshape(-1), int(d2.shape[0]))
+        if pool is not None:
+            fut_w = pool.submit(_eval, mod_w, left[hk])
+            fut_a = pool.submit(_eval, mod_a, right[hk])
+            gu_w, dn_w = fut_w.result()
+            gu_a, dn_a = fut_a.result()
+        else:
+            gu_w, dn_w = _eval(mod_w, left[hk])
+            gu_a, dn_a = _eval(mod_a, right[hk])
+        d, n = _channel_abs_sum_diff(gu_w, gu_a)
+        add_abs_sum(running, f"{canon}.gate_up_proj", d, n)
+        d2, _n2 = _channel_abs_sum_diff(dn_w, dn_a)
+        add_abs_sum(running, f"{canon}.down_proj", d2, n2)
         del gu_w, gu_a, dn_w, dn_a, d, d2
 
 
@@ -1105,7 +1152,10 @@ def run_compare_act(
         log(f"  class={aname}")
         cap_w = ActCapture(world, eager_packed_experts=False, **cap_kw)
         cap_a = ActCapture(agent, eager_packed_experts=False, **cap_kw)
-        log(f"  packed_expert_blocks={len(cap_w.expert_mods)} (dense-eval all experts on answer tokens)")
+        log(
+            f"  packed_expert_blocks={len(cap_w.expert_mods)} "
+            "(dense-eval all experts on-GPU, both models in parallel)"
+        )
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 for idx, (ids, pos, _) in enumerate(jobs, start=1):
@@ -1116,7 +1166,9 @@ def run_compare_act(
                     n_inst = sum(1 for k in right if not str(k).startswith("_"))
                     acc_pair(running, left, right, skipped)
                     if include_experts:
-                        acc_packed_experts(cap_w, cap_a, left, right, running, skipped)
+                        acc_packed_experts(
+                            cap_w, cap_a, left, right, running, skipped, pool=pool
+                        )
                     del left, right
         finally:
             cap_w.close()
@@ -1128,8 +1180,8 @@ def run_compare_act(
         layout_note = (
             "Dual-GPU resident: AgentWorld on cuda:0, Instruct on cuda:1, "
             "parallel forward per sample, hooks registered once. "
-            "Packed routed experts: save answer-token hiddens, then dense-eval "
-            "all experts on that h so each (expert, out_dim) is an ACT channel. "
+            "Packed routed experts: save answer-token hiddens on GPU, then dense-eval "
+            "all experts on both cards in parallel; only channel |Δ| sums hit CPU. "
         )
     else:
         if include_experts and chunk_size > 1:
