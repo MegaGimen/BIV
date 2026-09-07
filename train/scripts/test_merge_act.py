@@ -200,6 +200,59 @@ def test_merge_act_two_tiny_shards(tmp_path: Path | None = None) -> None:
     assert (out_dir / "tokenizer_config.json").is_file()
 
 
+def test_check_act_reads_merge_dir() -> None:
+    import importlib.util
+    import tempfile
+
+    merge_dir = Path(__file__).resolve().parents[2] / "merge"
+    spec = importlib.util.spec_from_file_location("biv_check_act", merge_dir / "check_act.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with tempfile.TemporaryDirectory(prefix="biv_check_act_") as tmp:
+        d = Path(tmp)
+        mask = {
+            "mask": [
+                {"key": "layers.0.mlp.experts.gate_up_proj", "channel": 1, "kind": "ffn"},
+                {"key": "lm_head", "channel": 0, "kind": "lm_head"},
+            ],
+            "mask_no_lm_head": [
+                {"key": "layers.0.mlp.experts.gate_up_proj", "channel": 1, "kind": "ffn"},
+            ],
+        }
+        (d / "mask.json").write_text(json.dumps(mask), encoding="utf-8")
+        (d / "merge_meta.json").write_text(
+            json.dumps(
+                {
+                    "lambda": 0.4,
+                    "no_lm_head": True,
+                    "n_mask_rows": 1,
+                    "n_lm_head_rows": 0,
+                    "n_tensors_patched": 1,
+                    "n_rows_written": 1,
+                    "n_rewritten_shards": 1,
+                    "n_copied_shards": 0,
+                    "n_unmatched_modules": 0,
+                    "n_missing_world": 0,
+                    "n_shape_mismatch": 0,
+                    "n_oob_skipped": 0,
+                    "unmatched_modules": [],
+                    "patched_examples": [
+                        "model.language_model.layers.0.mlp.experts.gate_up_proj packed[E*O]=n n=1"
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        report = mod.inspect(d)
+        assert report["ok"]
+        assert report["moe_written"]
+        assert report["buckets"]["packed_gate_up"] == 1
+        assert report["buckets"]["lm_head"] == 0
+        text = mod.render(report)
+        assert "OVERALL: PASS" in text
+
+
 def test_prepare_serve_env_uses_writable_workspace() -> None:
     import importlib.util
     import os
@@ -245,6 +298,7 @@ def main() -> None:
     test_blend_linear_rows()
     test_blend_embed_columns()
     test_merge_act_two_tiny_shards()
+    test_check_act_reads_merge_dir()
     test_prepare_serve_env_uses_writable_workspace()
     print("ok", flush=True)
 
