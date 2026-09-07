@@ -39,6 +39,17 @@ def test_empty_job_seeds_42() -> None:
         assert state["multiplier"] == 1.0
 
 
+def test_missing_job_dir_seeds_without_crash() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        job = Path(d) / "not-created-yet"
+        assert not job.exists()
+        state = refresh_from_job(job, seed=True)
+        assert state is not None
+        assert state["v"] == DEFAULT_SEED_TPS
+        assert state["n_trials"] == 0
+        assert (job / "biv_timeout.json").is_file()
+
+
 def test_mean_of_trial_rates_and_sidecar() -> None:
     with tempfile.TemporaryDirectory() as d:
         job = Path(d)
@@ -90,6 +101,7 @@ def test_resume_keeps_mean_when_new_trial_arrives() -> None:
 
 if __name__ == "__main__":
     test_empty_job_seeds_42()
+    test_missing_job_dir_seeds_without_crash()
     test_mean_of_trial_rates_and_sidecar()
     test_resume_keeps_mean_when_new_trial_arrives()
     print("ok")

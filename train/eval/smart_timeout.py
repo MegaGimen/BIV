@@ -180,7 +180,12 @@ def refresh_from_job(
     records: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
 
-    for child in sorted(job_dir.iterdir(), key=lambda p: p.name):
+    # Fresh Harbor jobs: run_spec only mkdir's jobs_dir; Harbor creates
+    # job_dir after spawn. Seed must not crash on the empty path.
+    children = (
+        sorted(job_dir.iterdir(), key=lambda p: p.name) if job_dir.is_dir() else []
+    )
+    for child in children:
         if not child.is_dir():
             continue
         result_path = _trial_result_file(child)

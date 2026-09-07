@@ -1091,6 +1091,7 @@ def run_spec(
 
     spec.jobs_dir.mkdir(parents=True, exist_ok=True)
     job_dir = spec.jobs_dir / spec.job_name
+    job_dir.mkdir(parents=True, exist_ok=True)
     return _execute_harbor(
         cmd,
         job_dir=job_dir,
