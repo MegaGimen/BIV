@@ -55,7 +55,9 @@ from merge import (  # noqa: E402
 from biv_wm.act import (  # noqa: E402
     blend_masked_channels,
     channel_axis,
+    flatten_packed_expert_weight,
     group_mask_channels,
+    is_packed_expert_param,
     load_mask_rows,
     param_canonical_key,
     world_param_candidates,
@@ -161,6 +163,29 @@ def _process_instruct_shard(
             if tuple(world_t.shape) != tuple(agent_t.shape):
                 tensors[key] = agent_t.contiguous()
                 n_shape_mismatch += 1
+                continue
+            packed = is_packed_expert_param(key) and int(agent_t.ndim) == 3
+            if packed:
+                e, o, i = (int(x) for x in agent_t.shape)
+                n_axis = e * o
+                valid = [c for c in chans if 0 <= c < n_axis]
+                n_oob_skipped += len(chans) - len(valid)
+                if not valid:
+                    tensors[key] = agent_t.contiguous()
+                    continue
+                merged = blend_masked_channels(
+                    flatten_packed_expert_weight(agent_t),
+                    flatten_packed_expert_weight(world_t),
+                    valid,
+                    lam,
+                    axis=0,
+                ).reshape(e, o, i)
+                tensors[key] = merged.contiguous()
+                n_patched += 1
+                n_rows += len(valid)
+                if len(examples) < 16:
+                    examples.append(f"{key} packed[E*O]={n_axis} n={len(valid)}")
+                del merged, world_t, agent_t
                 continue
             axis = channel_axis(key, int(agent_t.ndim))
             n_axis = int(agent_t.shape[axis])

@@ -55,7 +55,15 @@ ATTN_LEAVES = frozenset(
         "in_proj",
     }
 )
-FFN_PROJ_LEAVES = frozenset({"gate_proj", "up_proj", "down_proj"})
+FFN_PROJ_LEAVES = frozenset(
+    {
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "gate_up_proj",
+        "shared_expert_gate",
+    }
+)
 LN_LEAVES = frozenset(
     {
         "input_layernorm",
@@ -103,15 +111,20 @@ def hook_kind(name: str, *, include_experts: bool = True) -> str | None:
     MLP gate/up/down, layer norms, token embedding, ``lm_head``. A channel is
     one output dimension of that module, not a residual-stream coordinate.
 
-    Qwen3.5-35B-A3B is MoE: routed ``experts.*`` projections can be included
-    (when include_experts=True) or skipped. The shared expert's gate/up/down
-    is also FFN. The mixed ``mlp`` block output is not a projection and is not hooked.
+    Qwen3.5-35B-A3B is MoE: routed experts are packed 3D Parameters
+    (``mlp.experts.gate_up_proj`` / ``down_proj``), not ``experts.0.down_proj``
+    Linear children. Capture keys use those Parameter names so merge can
+    flatten ``[E, O, I]`` to ``E*O`` channels. Shared-expert gate/up/down and
+    the router ``mlp.gate`` are ordinary FFN. The mixed ``mlp`` block output
+    is not a projection and is not hooked.
     """
     n = name
     if any(s in n for s in SKIP_SUBSTR):
         return None
-    if not include_experts and ".experts." in n:
+    if not include_experts and (".experts." in n or n.endswith(".experts")):
         return None
+    if n.endswith(".mlp.gate") or n.endswith(".mlp.gate.weight"):
+        return "ffn"
     leaf = n.rsplit(".", 1)[-1]
     if leaf in {"embed_tokens", "embed"}:
         return "embed"
@@ -126,6 +139,35 @@ def hook_kind(name: str, *, include_experts: bool = True) -> str | None:
     if leaf == "norm" and "layers" not in n:
         return "ln"
     return None
+
+
+def is_packed_experts_module(mod: Any, name: str = "") -> bool:
+    """True for Qwen3_5MoeExperts: 3D ``gate_up_proj`` + ``down_proj`` Parameters."""
+    if name and any(s in name for s in SKIP_SUBSTR):
+        return False
+    gu = getattr(mod, "gate_up_proj", None)
+    dn = getattr(mod, "down_proj", None)
+    return (
+        gu is not None
+        and dn is not None
+        and int(getattr(gu, "ndim", 0) or 0) == 3
+        and int(getattr(dn, "ndim", 0) or 0) == 3
+    )
+
+
+def is_packed_expert_param(param_name: str) -> bool:
+    n = param_canonical_key(param_name)
+    return n.endswith(".experts.gate_up_proj") or n.endswith(".experts.down_proj")
+
+
+def flatten_packed_expert_weight(tensor: Any) -> Any:
+    """``[E, O, I]`` → ``[E*O, I]`` so ACT channel ``e*O + o`` is a matrix row."""
+    if int(getattr(tensor, "ndim", 0) or 0) != 3:
+        raise ValueError(
+            f"flatten_packed_expert_weight: expected 3D, got shape {tuple(tensor.shape)}"
+        )
+    e, o, i = (int(x) for x in tensor.shape)
+    return tensor.reshape(e * o, i)
 
 
 def token_abs_sum(a: Any, b: Any) -> tuple[list[float], int]:
@@ -229,19 +271,48 @@ def _percentile(sorted_vals: Sequence[float], p: float) -> float:
 
 def channel_stats(delta: Sequence[float]) -> dict[str, Any]:
     """Summarize a pool of Δa_i (mean / percentiles / tail mass)."""
-    if not delta:
+    empty = {
+        "n_channels": 0,
+        "mean": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0,
+        "top1pct_mean": 0.0,
+        "frac_gt": {str(t): 0.0 for t in CCDF_THRESHOLDS},
+    }
+    try:
+        import numpy as np
+
+        arr = np.asarray(
+            delta.detach().float().cpu().numpy() if hasattr(delta, "detach") else delta,
+            dtype=np.float64,
+        ).reshape(-1)
+        n = int(arr.size)
+        if n == 0:
+            return empty
+        s = np.sort(arr)
+        k = max(1, int(n * 0.01))
+        top = s[-k:]
         return {
-            "n_channels": 0,
-            "mean": 0.0,
-            "p50": 0.0,
-            "p90": 0.0,
-            "p99": 0.0,
-            "max": 0.0,
-            "top1pct_mean": 0.0,
-            "frac_gt": {str(t): 0.0 for t in CCDF_THRESHOLDS},
+            "n_channels": n,
+            "mean": float(s.mean()),
+            "p50": float(_percentile(s, 50)),
+            "p90": float(_percentile(s, 90)),
+            "p99": float(_percentile(s, 99)),
+            "max": float(s[-1]),
+            "top1pct_mean": float(top.mean()),
+            "frac_gt": {str(t): float((arr > t).mean()) for t in CCDF_THRESHOLDS},
         }
+    except Exception:
+        pass
+    if hasattr(delta, "numel"):
+        n = int(delta.numel())
+    else:
+        n = len(delta) if delta is not None else 0
+    if n == 0:
+        return empty
     s = _sorted(delta)
-    n = len(s)
     k = max(1, int(n * 0.01))
     top = s[-k:]
     return {
@@ -257,6 +328,19 @@ def channel_stats(delta: Sequence[float]) -> dict[str, Any]:
 
 
 def ccdf(delta: Sequence[float], thresholds: Iterable[float] = CCDF_THRESHOLDS) -> dict[str, float]:
+    try:
+        import numpy as np
+
+        arr = np.asarray(
+            delta.detach().float().cpu().numpy() if hasattr(delta, "detach") else delta,
+            dtype=np.float64,
+        ).reshape(-1)
+        n = int(arr.size)
+        if n == 0:
+            return {str(t): 0.0 for t in thresholds}
+        return {str(t): float((arr > float(t)).mean()) for t in thresholds}
+    except Exception:
+        pass
     vals = [float(v) for v in delta]
     n = len(vals)
     if n == 0:
@@ -328,6 +412,14 @@ def analyze_channels(
     layer_types: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """ACT analysis payload: global/kind/layer CCDF, per-module stats, top-p mask."""
+    n_total = 0
+    for vec in named.values():
+        n_total += int(vec.numel()) if hasattr(vec, "numel") else len(vec)
+    if n_total >= 50_000:
+        try:
+            return _analyze_channels_numpy(named, p=p, layer_types=layer_types)
+        except ImportError:
+            pass
     ranked = ranked_channels(named)
     ranked_no_head = [r for r in ranked if r.get("kind") != "lm_head"]
     mask = top_p_mask(ranked, p)
@@ -377,6 +469,174 @@ def analyze_channels(
         "mask_threshold": threshold,
         "global": _stats_ccdf([r["delta"] for r in ranked]),
         "global_no_lm_head": _stats_ccdf([r["delta"] for r in ranked_no_head]),
+        "by_kind": by_kind,
+        "by_layer": by_layer,
+        "modules": modules,
+        "mask": mask,
+        "mask_no_lm_head": mask_no_head,
+        "ranked": ranked,
+    }
+
+
+_RANKED_KEEP = 50_000
+
+
+def _as_np1d(vec: Sequence[float]) -> Any:
+    import numpy as np
+
+    if hasattr(vec, "detach"):
+        return vec.detach().float().reshape(-1).cpu().numpy()
+    return np.asarray(list(vec), dtype=np.float64).reshape(-1)
+
+
+def _rows_from_flat_index(
+    records: list[tuple[str, str | None, int | None, int]],
+    offsets: Any,
+    flat_idx: Any,
+    deltas: Any,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rank, fi in enumerate(flat_idx, start=1):
+        fi = int(fi)
+        mod_i = int(offsets.searchsorted(fi, side="right") - 1)
+        key, kind, layer, width = records[mod_i]
+        ch = fi - int(offsets[mod_i])
+        out.append(
+            {
+                "key": key,
+                "kind": kind,
+                "layer": layer,
+                "channel": int(ch),
+                "delta": float(deltas[fi]),
+                "rank": rank,
+            }
+        )
+    return out
+
+
+def _analyze_channels_numpy(
+    named: dict[str, Sequence[float]],
+    *,
+    p: float,
+    layer_types: Sequence[str] | None,
+) -> dict[str, Any]:
+    """Top-p mask without building a Python dict per channel (MoE is ~32M)."""
+    import numpy as np
+
+    records: list[tuple[str, str | None, int | None, int]] = []
+    parts: list[Any] = []
+    for key, vec in named.items():
+        arr = _as_np1d(vec)
+        records.append((key, hook_kind(key), layer_index(key), int(arr.size)))
+        parts.append(arr)
+    if not parts:
+        z = {
+            "p": p,
+            "n_channels": 0,
+            "n_channels_no_lm_head": 0,
+            "n_mask": 0,
+            "n_mask_no_lm_head": 0,
+            "mask_threshold": 0.0,
+            "global": _stats_ccdf([]),
+            "global_no_lm_head": _stats_ccdf([]),
+            "by_kind": {k: _stats_ccdf([]) for k in ("attn", "ffn", "ln", "embed", "lm_head")},
+            "by_layer": [],
+            "modules": [],
+            "mask": [],
+            "mask_no_lm_head": [],
+            "ranked": [],
+        }
+        return z
+    deltas = np.concatenate(parts)
+    n = int(deltas.size)
+    offsets = np.zeros(len(records) + 1, dtype=np.int64)
+    for i, rec in enumerate(records):
+        offsets[i + 1] = offsets[i] + rec[3]
+
+    p = min(1.0, max(0.0, float(p)))
+    n_mask = max(1, int(round(n * p))) if n else 0
+    order = np.argsort(-deltas, kind="stable") if n else np.array([], dtype=np.int64)
+    top_idx = order[:n_mask]
+    mask = _rows_from_flat_index(records, offsets, top_idx, deltas)
+
+    is_head = np.zeros(n, dtype=bool)
+    for i, rec in enumerate(records):
+        if rec[1] == "lm_head":
+            is_head[int(offsets[i]) : int(offsets[i + 1])] = True
+    no_head = deltas[~is_head]
+    n_no = int(no_head.size)
+    n_mask_no = max(1, int(round(n_no * p))) if n_no else 0
+    if n_no:
+        order_no = np.argsort(-no_head, kind="stable")
+        # map back to flat indices
+        no_head_flat = np.flatnonzero(~is_head)
+        top_no = no_head_flat[order_no[:n_mask_no]]
+        mask_no_head = _rows_from_flat_index(records, offsets, top_no, deltas)
+    else:
+        mask_no_head = []
+
+    keep_n = n if n <= 1_000_000 else max(n_mask, min(n, _RANKED_KEEP))
+    ranked = _rows_from_flat_index(records, offsets, order[:keep_n], deltas)
+
+    kinds = ("attn", "ffn", "ln", "embed", "lm_head")
+    by_kind = {}
+    for k in kinds:
+        sl = []
+        for rec, part in zip(records, parts, strict=True):
+            if rec[1] == k:
+                sl.append(part)
+        by_kind[k] = _stats_ccdf(np.concatenate(sl) if sl else np.array([]))
+
+    types = list(layer_types or [])
+    n_layers = max(N_LAYERS, max((rec[2] for rec in records if rec[2] is not None), default=-1) + 1)
+    mask_layer = [0] * n_layers
+    for r in mask:
+        li = r.get("layer")
+        if li is not None and 0 <= int(li) < n_layers:
+            mask_layer[int(li)] += 1
+    by_layer: list[dict[str, Any]] = []
+    for i in range(n_layers):
+        sl = [part for rec, part in zip(records, parts, strict=True) if rec[2] == i]
+        st = _stats_ccdf(np.concatenate(sl) if sl else np.array([]))
+        by_layer.append(
+            {
+                "layer": i,
+                "kind": types[i] if i < len(types) else "?",
+                "n_in_mask": mask_layer[i],
+                **st,
+            }
+        )
+
+    from collections import Counter
+
+    mask_count = Counter(str(r["key"]) for r in mask)
+    modules: list[dict[str, Any]] = []
+    for rec, part in zip(records, parts, strict=True):
+        st = channel_stats(part)
+        modules.append(
+            {
+                "key": rec[0],
+                "kind": rec[1],
+                "layer": rec[2],
+                "n_in_mask": int(mask_count[rec[0]]),
+                **st,
+            }
+        )
+    modules.sort(key=lambda r: float(r["p99"]), reverse=True)
+
+    def _np_stats(arr: Any) -> dict[str, Any]:
+        return _stats_ccdf(arr)
+
+    threshold = float(mask[-1]["delta"]) if mask else 0.0
+    return {
+        "p": p,
+        "n_channels": n,
+        "n_channels_no_lm_head": n_no,
+        "n_mask": len(mask),
+        "n_mask_no_lm_head": len(mask_no_head),
+        "mask_threshold": threshold,
+        "global": _np_stats(deltas),
+        "global_no_lm_head": _np_stats(no_head),
         "by_kind": by_kind,
         "by_layer": by_layer,
         "modules": modules,

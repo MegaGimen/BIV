@@ -48,6 +48,7 @@ from biv_wm.act import (  # noqa: E402
     canonical_module_key,
     channel_axis,
     hook_kind,
+    is_packed_experts_module,
     param_canonical_key,
 )
 
@@ -125,8 +126,8 @@ def merge_axis_note(key: str, shape: list[int]) -> dict[str, Any]:
         "shape": shape,
         "packed_3d": packed,
         "axis_meaning": (
-            "expert index (NOT an FFN output channel)"
-            if packed and len(shape) == 3 and axis == 0
+            "flatten [E,O,I] → [E*O, I]; ACT channel e*O+o"
+            if packed and len(shape) == 3
             else "Linear out_features / RMSNorm dim"
         ),
     }
@@ -261,11 +262,14 @@ def walk_named_modules(model_dir: Path) -> dict[str, Any]:
 
     registered: list[dict[str, Any]] = []
     skipped_moe: list[str] = []
+    packed_blocks: list[str] = []
     seen: set[str] = set()
     skipped_seen: set[str] = set()
-    for name, _mod in model.named_modules():
-        kind = hook_kind(name, include_experts=True)
+    for name, mod in model.named_modules():
         canon = canonical_module_key(name)
+        if is_packed_experts_module(mod, name) and canon not in packed_blocks:
+            packed_blocks.append(canon)
+        kind = hook_kind(name, include_experts=True)
         moeish = any(
             s in name
             for s in (
@@ -295,17 +299,14 @@ def walk_named_modules(model_dir: Path) -> dict[str, Any]:
         "moe_registered_examples": moe_reg[:24],
         "n_moe_skipped": len(skipped_moe),
         "moe_skipped_examples": skipped_moe[:40],
+        "n_packed_expert_blocks": len(packed_blocks),
+        "packed_expert_examples": packed_blocks[:8],
         "class_name": type(model).__name__,
     }
 
 
 def as_btc_verdict() -> dict[str, Any]:
-    """Document the 2-D drop without a 35B forward.
-
-    Qwen3_5MoeSparseMoeBlock does ``hidden.view(-1, hidden_dim)`` then
-    ``shared_expert`` / ``experts``. Linear then emits ``[S, C]``. compare_act
-    ``_as_btc`` keeps only ndim==3, so those hooks fire and discard.
-    """
+    """2-D MoE Linear output must be kept (view(-1, H) before shared_expert)."""
     try:
         import torch
         from compare_act import _as_btc
@@ -313,14 +314,14 @@ def as_btc_verdict() -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
     kept_3d = _as_btc(torch.zeros(1, 4, 8))
-    dropped_2d = _as_btc(torch.zeros(4, 8))
+    kept_2d = _as_btc(torch.zeros(4, 8))
     return {
         "ok": True,
         "keeps_btc_3d": kept_3d is not None,
-        "keeps_sc_2d": dropped_2d is not None,
+        "keeps_sc_2d": kept_2d is not None,
         "note": (
-            "MoE block reshapes to [S, H] before shared_expert / experts. "
-            "A Linear hook then sees [S, C]; _as_btc returns None."
+            "MoE block reshapes to [S, H] before shared_expert / router. "
+            "_as_btc unsqueezes [S, C] to [1, S, C] so those hooks keep activations."
         ),
     }
 
@@ -331,38 +332,30 @@ def verdict_text(world_sum: dict[str, Any], modules: dict[str, Any] | None) -> l
     n_shared = int(world_sum.get("n_shared_expert_ffn_tensors") or 0)
     hooked = world_sum.get("hooked_kinds_from_weights") or {}
     lines.append(
-        "结论：当前 compare_act 没有把 routed MoE 专家通道编进 ACT 掩码。"
+        "结论：权重侧 packed 专家是 3D Parameter；compare_act 用 answer-token hidden "
+        "dense-eval 全部专家，通道 e*O+o 对齐 flatten 后的权重行。shared_expert / router 走 2D hook。"
     )
     lines.append(
         f"  权重里的 packed expert 张量 = {n_pack}（3D Parameter，不是 experts.0.down_proj）。"
     )
     lines.append(
         f"  hook_kind 能对上的 FFN 权重 = {hooked.get('ffn', 0)} "
-        f"（这些是 shared_expert.gate/up/down_proj，不是 256 路 routed 专家）。"
+        f"（shared_expert Linear + gate_up_proj 名字；router/shared_expert_gate 现在也是 ffn）。"
     )
     lines.append(
-        f"  shared_expert 的 Linear 权重 = {n_shared}；"
-        "模块树里叶子名对得上，但 MoE 前向先 view 成 2D，_as_btc 丢掉，所以 smoke 的 kind 表里没有 ffn。"
-    )
-    lines.append(
-        "  路由 mlp.gate 和 shared_expert_gate 的叶子名不在 FFN_PROJ_LEAVES 里，也不会 hook。"
+        f"  shared_expert 的 Linear 权重 = {n_shared}；_as_btc 应收 2D。"
     )
     if modules and modules.get("ok"):
         lines.append(
             f"  meta named_modules 将注册 {modules['n_registered']} 个模块，"
-            f"kinds={modules.get('kinds')}；其中 MoE 相关 {modules.get('n_moe_registered')}。"
+            f"kinds={modules.get('kinds')}；其中 MoE 相关 {modules.get('n_moe_registered')}；"
+            f"packed expert 块 {modules.get('n_packed_expert_blocks')}。"
         )
-        if modules.get("n_registered") == SMOKE_CAPTURED_MODULES:
-            lines.append(
-                f"  这和 smoke 的 captured {SMOKE_CAPTURED_MODULES} 一致："
-                "就是注意力 + LN + embed，没有专家。"
-            )
     lines.append(
-        f"  smoke checksum：captured={SMOKE_CAPTURED_MODULES} kinds={list(SMOKE_KINDS)} ffn=0。"
+        f"  旧 smoke checksum（修复前）：captured={SMOKE_CAPTURED_MODULES} kinds={list(SMOKE_KINDS)} ffn=0。"
     )
     lines.append(
-        "  merge/act.py 即便拿到专家激活也接不上：packed 张量没有 .weight 后缀，"
-        "channel_axis 会把 3D 的第 0 轴当成专家编号，不是输出通道。"
+        "  merge/act.py 把 packed [E,O,I] flatten 成 [E*O,I]，通道 e*O+o 改对应专家的那一行。"
     )
     return lines
 
@@ -431,6 +424,7 @@ def dump_one(label: str, model_dir: Path, *, skip_modules: bool) -> dict[str, An
             log(
                 f"[{label}] registered={modules['n_registered']} "
                 f"kinds={modules['kinds']} moe_hooked={modules['n_moe_registered']} "
+                f"packed_blocks={modules.get('n_packed_expert_blocks')} "
                 f"moe_skipped={modules['n_moe_skipped']}"
             )
             for ex in modules.get("moe_skipped_examples") or []:

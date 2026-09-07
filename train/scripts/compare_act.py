@@ -47,6 +47,7 @@ from biv_wm.act import (  # noqa: E402
     canonical_module_key,
     finalize_running,
     hook_kind,
+    is_packed_experts_module,
     token_abs_sum,
 )
 from biv_wm.arch import language_model, lm_head_module  # noqa: E402
@@ -86,6 +87,11 @@ def load_layer_types(model_dir: Path) -> list[str]:
 
 
 def _as_btc(out: Any):
+    """Module output as ``[B, S, C]``.
+
+    MoE Linear / router run after ``view(-1, hidden)``, so the hook sees
+    ``[S, C]``. Treat that as batch=1. Router returns a tuple; take logits.
+    """
     import torch
 
     t = out[0] if isinstance(out, (tuple, list)) else out
@@ -94,6 +100,8 @@ def _as_btc(out: Any):
     if t.ndim == 4:
         b, s, h, d = t.shape
         t = t.reshape(b, s, h * d)
+    if t.ndim == 2:
+        t = t.unsqueeze(0)
     if t.ndim != 3:
         return None
     return t
@@ -472,6 +480,100 @@ def _answer_cpu(t, answer_idx):
     return sl.detach().to(device="cpu", dtype=torch.bfloat16)
 
 
+def _hidden_answer(hidden, answer_idx):
+    """Answer-token rows of a MoE hidden ``[S, H]`` or ``[B, S, H]``."""
+    import torch
+
+    if hidden is None or not torch.is_tensor(hidden) or answer_idx is None:
+        return None
+    h = hidden[0] if hidden.ndim == 3 else hidden
+    if h.ndim != 2:
+        return None
+    idx = answer_idx
+    if idx.device != h.device:
+        idx = idx.to(device=h.device)
+    if idx.numel() == 0 or int(idx[-1]) >= int(h.shape[0]):
+        return None
+    return h.index_select(0, idx).detach().to(device="cpu", dtype=torch.bfloat16)
+
+
+def packed_expert_outputs(mod, hidden_th):
+    """Dense-eval every packed expert on answer-token hiddens.
+
+    Same ``h`` for both models, ignoring routing, so channel ``e*O + o`` is
+    expert ``e``'s projection output dim ``o`` — the row merge writes in the
+    flattened 3D Parameter.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    Wgu = mod.gate_up_proj
+    Wd = mod.down_proj
+    device = Wgu.device
+    h = hidden_th
+    if h.ndim == 3:
+        h = h.reshape(-1, h.shape[-1])
+    h = h.to(device=device, dtype=Wgu.dtype)
+    t, _hin = h.shape
+    e, o, _ = Wgu.shape
+    hout = int(Wd.shape[1])
+    act = getattr(mod, "act_fn", None) or (lambda x: F.silu(x))
+    chunk = 32
+    gu_parts = []
+    dn_parts = []
+    for e0 in range(0, e, chunk):
+        sl = slice(e0, min(e, e0 + chunk))
+        gu = torch.einsum("th,eoh->teo", h, Wgu[sl])
+        gate, up = gu.chunk(2, dim=-1)
+        inter = act(gate) * up
+        dn = torch.einsum("tei,ehi->teh", inter, Wd[sl])
+        gu_parts.append(gu)
+        dn_parts.append(dn)
+        del gu, gate, up, inter, dn
+    gu = torch.cat(gu_parts, dim=1).reshape(t, e * o)
+    dn = torch.cat(dn_parts, dim=1).reshape(t, e * hout)
+    return (
+        gu.detach().to(device="cpu", dtype=torch.bfloat16),
+        dn.detach().to(device="cpu", dtype=torch.bfloat16),
+    )
+
+
+def acc_packed_experts(cap_w, cap_a, left, right, running, skipped) -> None:
+    """One layer at a time: |Pred_AW − Pred_Instruct| on packed expert channels."""
+    keys = sorted(k for k in left if str(k).startswith("_expert_h:"))
+    for hk in keys:
+        canon = str(hk).split(":", 1)[1]
+        if hk not in right:
+            skipped.add(str(hk))
+            continue
+        mod_w = cap_w.expert_mods.get(canon)
+        mod_a = cap_a.expert_mods.get(canon)
+        if mod_w is None or mod_a is None:
+            skipped.add(f"{canon}:missing_mod")
+            continue
+        gu_w, dn_w = packed_expert_outputs(mod_w, left[hk])
+        gu_a, dn_a = packed_expert_outputs(mod_a, right[hk])
+        d = (gu_w.float() - gu_a.float()).abs()
+        add_abs_sum(running, f"{canon}.gate_up_proj", d.sum(dim=0).reshape(-1), int(d.shape[0]))
+        d2 = (dn_w.float() - dn_a.float()).abs()
+        add_abs_sum(running, f"{canon}.down_proj", d2.sum(dim=0).reshape(-1), int(d2.shape[0]))
+        del gu_w, gu_a, dn_w, dn_a, d, d2
+
+
+def fill_packed_expert_captures(cap, captured: dict[str, Any]) -> None:
+    """1-GPU: turn saved hiddens into [T, E*O] activations before the model is freed."""
+    for hk in [k for k in list(captured) if str(k).startswith("_expert_h:")]:
+        canon = str(hk).split(":", 1)[1]
+        mod = cap.expert_mods.get(canon)
+        hidden = captured.pop(hk)
+        if mod is None or hidden is None:
+            continue
+        gu, dn = packed_expert_outputs(mod, hidden)
+        captured[f"{canon}.gate_up_proj"] = gu
+        captured[f"{canon}.down_proj"] = dn
+        del hidden, gu, dn
+
+
 class ActCapture:
     """Register ACT hooks once; reuse across samples on a resident model."""
 
@@ -481,24 +583,44 @@ class ActCapture:
         *,
         include_experts: bool = True,
         include_lm_head: bool = False,
+        eager_packed_experts: bool = False,
     ) -> None:
         self.model = model
         self.include_lm_head = include_lm_head
+        self.include_experts = include_experts
+        self.eager_packed_experts = eager_packed_experts
         self.captures: dict[str, Any] = {}
         self.answer_idx = None
         self.handles = []
+        self.expert_mods: dict[str, Any] = {}
         seen: set[str] = set()
         named = list(model.named_modules())
         named.sort(key=lambda x: (0 if "language_model." in x[0] else 1, x[0]))
         for name, mod in named:
+            canon = canonical_module_key(name)
+            if include_experts and is_packed_experts_module(mod, name):
+                if canon in seen:
+                    continue
+                seen.add(canon)
+                self.expert_mods[canon] = mod
+                self.handles.append(mod.register_forward_hook(self._make_expert_h_hook(canon)))
+                continue
             kind = hook_kind(name, include_experts=include_experts)
             if kind is None or kind == "lm_head":
                 continue
-            canon = canonical_module_key(name)
             if canon in seen:
                 continue
             seen.add(canon)
             self.handles.append(mod.register_forward_hook(self._make_hook(canon)))
+
+    def _make_expert_h_hook(self, canon: str):
+        def _hook(_mod, inp, _out):
+            hidden = inp[0] if isinstance(inp, (tuple, list)) else inp
+            sl = _hidden_answer(hidden, self.answer_idx)
+            if sl is not None:
+                self.captures[f"_expert_h:{canon}"] = sl
+
+        return _hook
 
     def _make_hook(self, name: str):
         def _hook(_mod, _inp, out):
@@ -551,6 +673,8 @@ class ActCapture:
                 self.captures["lm_head"] = logits.detach().to(
                     device="cpu", dtype=torch.bfloat16
                 )
+        if self.eager_packed_experts and self.expert_mods:
+            fill_packed_expert_captures(self, self.captures)
         return self.captures
 
     def close(self) -> None:
@@ -571,7 +695,10 @@ def capture_one(
 ) -> dict[str, Any]:
     """Forward once; keep only answer-token module outputs on CPU (bf16)."""
     cap = ActCapture(
-        model, include_experts=include_experts, include_lm_head=include_lm_head
+        model,
+        include_experts=include_experts,
+        include_lm_head=include_lm_head,
+        eager_packed_experts=True,
     )
     try:
         return cap.forward(input_ids, answer_pos)
@@ -876,8 +1003,9 @@ def run_compare_act(
         log("loading Instruct on cuda:1 (stays resident)")
         agent, aname = _load_model(agent_dir, dtype=dtype, device_map=1)
         log(f"  class={aname}")
-        cap_w = ActCapture(world, **cap_kw)
-        cap_a = ActCapture(agent, **cap_kw)
+        cap_w = ActCapture(world, eager_packed_experts=False, **cap_kw)
+        cap_a = ActCapture(agent, eager_packed_experts=False, **cap_kw)
+        log(f"  packed_expert_blocks={len(cap_w.expert_mods)} (dense-eval all experts on answer tokens)")
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 for idx, (ids, pos, _) in enumerate(jobs, start=1):
@@ -885,8 +1013,10 @@ def run_compare_act(
                     fut_w = pool.submit(cap_w.forward, ids, pos)
                     fut_a = pool.submit(cap_a.forward, ids, pos)
                     left, right = fut_w.result(), fut_a.result()
-                    n_inst = len(right)
+                    n_inst = sum(1 for k in right if not str(k).startswith("_"))
                     acc_pair(running, left, right, skipped)
+                    if include_experts:
+                        acc_packed_experts(cap_w, cap_a, left, right, running, skipped)
                     del left, right
         finally:
             cap_w.close()
@@ -898,8 +1028,13 @@ def run_compare_act(
         layout_note = (
             "Dual-GPU resident: AgentWorld on cuda:0, Instruct on cuda:1, "
             "parallel forward per sample, hooks registered once. "
+            "Packed routed experts: save answer-token hiddens, then dense-eval "
+            "all experts on that h so each (expert, out_dim) is an ACT channel. "
         )
     else:
+        if include_experts and chunk_size > 1:
+            log("packed MoE experts on 1-GPU: chunk_size=1 (activations must exist before unload)")
+            chunk_size = 1
         n_chunks = max(1, math.ceil(n_jobs / chunk_size))
         total_fwds = 2 * n_jobs
         fwds_done = 0
@@ -910,7 +1045,7 @@ def run_compare_act(
             world, wname = _load_model(world_dir, dtype=dtype, device_map=device_map)
             if c == 0:
                 log(f"  class={wname}")
-            cap_w = ActCapture(world, **cap_kw)
+            cap_w = ActCapture(world, eager_packed_experts=True, **cap_kw)
             world_caps: list[dict[str, Any]] = []
             try:
                 for j, (ids, pos, _) in enumerate(chunk):
@@ -926,13 +1061,13 @@ def run_compare_act(
             agent, aname = _load_model(agent_dir, dtype=dtype, device_map=device_map)
             if c == 0:
                 log(f"  class={aname}")
-            cap_a = ActCapture(agent, **cap_kw)
+            cap_a = ActCapture(agent, eager_packed_experts=True, **cap_kw)
             try:
                 for j, ((ids, pos, _), left) in enumerate(zip(chunk, world_caps, strict=True)):
                     idx = c * chunk_size + j + 1
                     _log_fwd("Instruct", idx, ids, pos, t0, fwds_done, total_fwds)
                     right = cap_a.forward(ids, pos)
-                    n_inst = len(right)
+                    n_inst = sum(1 for k in right if not str(k).startswith("_"))
                     acc_pair(running, left, right, skipped)
                     del left, right
                     fwds_done += 1
@@ -942,7 +1077,7 @@ def run_compare_act(
             del world_caps
         layout_note = (
             f"Chunked in-RAM (chunk_size={chunk_size}): World then Instruct per chunk, "
-            "accumulate Δa, drop activations. "
+            "accumulate Δa, drop activations. Packed experts materialized before unload. "
         )
 
     n_body = sum(1 for k in running if k != "lm_head")
@@ -964,9 +1099,13 @@ def run_compare_act(
         + layout_note
     )
     if include_experts:
-        method_note += "Routed MoE experts and shared experts are both hooked."
+        method_note += (
+            "Routed MoE: packed 3D experts dense-eval'd on answer-token hiddens "
+            "(channel e*O+o). Shared-expert Linear + mlp.gate router hooked; "
+            "2D MoE activations kept. "
+        )
     else:
-        method_note += "Routed MoE experts skipped. Shared-expert gate/up/down is the dense-MLP analog."
+        method_note += "Routed MoE experts skipped. Shared-expert gate/up/down is the dense-MLP analog. "
     if not include_lm_head:
         method_note += " lm_head not captured (merge default --no-lm-head)."
 
@@ -1046,7 +1185,7 @@ def parse_args() -> argparse.Namespace:
         "--skip-experts",
         action="store_true",
         default=False,
-        help="skip routed MoE experts.* (only hook shared_expert for FFN)",
+        help="skip packed routed experts (still hook shared_expert + router)",
     )
     p.add_argument(
         "--lm-head",

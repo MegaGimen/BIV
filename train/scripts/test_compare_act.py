@@ -82,6 +82,9 @@ def test_canonical_module_key_aligns_backbones() -> None:
 def test_hook_kind_act_modules_only() -> None:
     assert hook_kind("language_model.layers.3.self_attn.q_proj") == "attn"
     assert hook_kind("language_model.layers.1.mlp.shared_expert.down_proj") == "ffn"
+    assert hook_kind("language_model.layers.1.mlp.gate") == "ffn"
+    assert hook_kind("language_model.layers.1.mlp.shared_expert_gate") == "ffn"
+    assert hook_kind("language_model.layers.1.mlp.experts.gate_up_proj") == "ffn"
     assert hook_kind("language_model.layers.1.mlp.experts.0.down_proj") == "ffn"
     assert (
         hook_kind("language_model.layers.1.mlp.experts.0.down_proj", include_experts=False)
@@ -254,17 +257,16 @@ def test_packed_moe_is_not_hooked() -> None:
     router = "model.layers.1.mlp.gate.weight"
     shared = "model.layers.1.mlp.shared_expert.down_proj.weight"
     gate = "model.layers.1.mlp.shared_expert_gate.weight"
-    assert hook_kind(packed) is None
-    # leaf is down_proj so hook_kind says ffn — but it is a packed Parameter,
-    # not a Linear child. ActCapture never sees this path.
+    assert hook_kind(packed) == "ffn"
+    # leaf is down_proj so hook_kind says ffn — ActCapture still does not
+    # register a Linear named experts.down_proj; packed capture uses the 3D Parameter.
     assert hook_kind(down) == "ffn"
     assert hook_kind(experts_mod) is None
-    assert hook_kind(param_canonical_key(router)) is None
-    assert hook_kind(param_canonical_key(gate)) is None
+    assert hook_kind(param_canonical_key(router)) == "ffn"
+    assert hook_kind(param_canonical_key(gate)) == "ffn"
     assert hook_kind(param_canonical_key(shared)) == "ffn"
-    # skip_experts looks for '.experts.' — packed module path has no trailing child
     assert hook_kind(experts_mod, include_experts=False) is None
-    assert ".experts." not in "layers.1.mlp.experts"
+    assert hook_kind("layers.1.mlp.experts.gate_up_proj", include_experts=False) is None
     assert channel_axis(packed, 3) == 0
     from probe_act_moe import classify_weight_key, would_register_hook
 
@@ -277,15 +279,17 @@ def test_packed_moe_is_not_hooked() -> None:
     assert would_register_hook(shared) is True
 
 
-def test_as_btc_drops_moe_2d() -> None:
+def test_as_btc_keeps_moe_2d() -> None:
     try:
         import torch
     except Exception:
         return
     from compare_act import _as_btc
 
-    assert _as_btc(torch.zeros(1, 4, 8)) is not None
-    assert _as_btc(torch.zeros(4, 8)) is None
+    t3 = _as_btc(torch.zeros(1, 4, 8))
+    t2 = _as_btc(torch.zeros(4, 8))
+    assert t3 is not None and tuple(t3.shape) == (1, 4, 8)
+    assert t2 is not None and tuple(t2.shape) == (1, 4, 8)
 
 
 def main() -> None:
@@ -295,7 +299,7 @@ def main() -> None:
     test_canonical_module_key_aligns_backbones()
     test_hook_kind_act_modules_only()
     test_packed_moe_is_not_hooked()
-    test_as_btc_drops_moe_2d()
+    test_as_btc_keeps_moe_2d()
     test_top_p_mask_and_analyze()
     test_module_exec_device_skips_meta()
     test_language_model_only_flag()

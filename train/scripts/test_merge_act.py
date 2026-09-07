@@ -38,6 +38,24 @@ def test_world_param_candidates() -> None:
     assert "model.layers.0.self_attn.q_proj.weight" in cands
 
 
+def test_packed_expert_param_flat_channels() -> None:
+    from biv_wm.act import flatten_packed_expert_weight, is_packed_expert_param
+
+    assert is_packed_expert_param("model.language_model.layers.0.mlp.experts.gate_up_proj")
+    assert is_packed_expert_param("model.layers.0.mlp.experts.down_proj")
+    assert not is_packed_expert_param("model.layers.0.mlp.shared_expert.down_proj.weight")
+    torch = _torch()
+    if torch is None:
+        print("skip test_packed_expert_param_flat_channels (no torch)", flush=True)
+        return
+    w = torch.arange(2 * 3 * 4, dtype=torch.float32).reshape(2, 3, 4)
+    flat = flatten_packed_expert_weight(w)
+    assert tuple(flat.shape) == (6, 4)
+    # channel e*O+o is row of expert e, out dim o
+    assert float(flat[0, 0]) == float(w[0, 0, 0])
+    assert float(flat[4, 1]) == float(w[1, 1, 1])
+
+
 def test_channel_axis_linear_vs_embed() -> None:
     assert channel_axis("lm_head.weight", 2) == 0
     assert channel_axis("layers.0.self_attn.q_proj.weight", 2) == 0
@@ -222,6 +240,7 @@ def main() -> None:
     test_param_canonical_key()
     test_world_param_candidates()
     test_channel_axis_linear_vs_embed()
+    test_packed_expert_param_flat_channels()
     test_load_mask_rows_no_lm_head()
     test_blend_linear_rows()
     test_blend_embed_columns()

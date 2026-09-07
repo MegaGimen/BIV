@@ -415,6 +415,7 @@ cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
 # 等价：python train/scripts/compare_act.py --jsonl train/data/processed/mix_v2 --max-rows 1500 --max-length 32768
 # MoE 通道有没有真正被 hook：CPU 读权重头，不占卡
 #   cd train && bash scripts/probe_act_moe.sh
+# compare_act 修复后会 hook shared_expert / router，并对 packed 3D 专家做 answer-token dense-eval
 
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
 # 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（默认读 compare 的 train/outputs/act/mask.json，跳过 lm_head）
