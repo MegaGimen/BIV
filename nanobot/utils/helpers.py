@@ -582,44 +582,8 @@ def maybe_persist_tool_result(
     max_chars: int,
 ) -> Any:
     """Persist oversized tool output and replace it with a stable reference string."""
-    if workspace is None or max_chars <= 0:
-        return content
-
-    text_payload: str | None = None
-    suffix = "txt"
-    if isinstance(content, str):
-        text_payload = content
-    elif isinstance(content, list):
-        text_payload = stringify_text_blocks(cast(list[object], content))
-        if text_payload is None:
-            return cast(Any, content)
-        suffix = "json"
-    else:
-        return content
-
-    if len(text_payload) <= max_chars:
-        return cast(Any, content)
-
-    root = ensure_dir(workspace / _TOOL_RESULTS_DIR)
-    bucket = ensure_dir(root / safe_filename(session_key or "default"))
-    try:
-        _cleanup_tool_result_buckets(root, bucket)
-    except Exception:
-        logger.exception("Failed to clean stale tool result buckets in {}", root)
-    path = bucket / f"{safe_filename(tool_call_id)}.{suffix}"
-    if not path.exists():
-        if suffix == "json" and isinstance(content, list):
-            _write_text_atomic(path, json.dumps(content, ensure_ascii=False, indent=2))
-        else:
-            _write_text_atomic(path, text_payload)
-
-    preview = text_payload[:_TOOL_RESULT_PREVIEW_CHARS]
-    return _render_tool_result_reference(
-        path,
-        original_size=len(text_payload),
-        preview=preview,
-        truncated_preview=len(text_payload) > _TOOL_RESULT_PREVIEW_CHARS,
-    )
+    # Tool offloading/persistence to disk is completely disabled.
+    return content
 
 
 def split_message(content: str, max_len: int = 2000) -> list[str]:

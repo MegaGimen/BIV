@@ -40,6 +40,8 @@ function App() {
   const [inputText, setInputText] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
   const [globalPrompt, setGlobalPrompt] = useState('');
+  const [globalPresets, setGlobalPresets] = useState({});
+  const [presetList, setPresetList] = useState([]);
   const [isSavingGlobal, setIsSavingGlobal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [provider, setProvider] = useState(loadProvider);
@@ -159,8 +161,16 @@ function App() {
       const res = await fetch(`${import.meta.env.BASE_URL}api/demon-prompt`);
       const data = await res.json();
       if (data.prompt) setGlobalPrompt(data.prompt);
+      if (data.presets) setGlobalPresets(data.presets);
+      if (data.presetList) setPresetList(data.presetList);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const applyPresetGlobal = (presetKey) => {
+    if (globalPresets[presetKey]) {
+      setGlobalPrompt(globalPresets[presetKey]);
     }
   };
 
@@ -420,6 +430,60 @@ function App() {
                   {isSavingGlobal ? 'Saved!' : 'Update Global Reality'}
                 </button>
               </div>
+
+              {/* Matrix Law Version Selector */}
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-md backdrop-blur-sm">
+                <div className="flex items-center space-x-3">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Matrix Reality:</span>
+                  <div className="flex items-center space-x-2">
+                    {['Linux', '2077'].map((presetKey) => {
+                      const isMatched = globalPrompt.trim() === (globalPresets[presetKey] || '').trim();
+                      const is2077 = presetKey === '2077';
+                      return (
+                        <button
+                          key={presetKey}
+                          type="button"
+                          onClick={() => applyPresetGlobal(presetKey)}
+                          className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center space-x-2 border ${
+                            isMatched
+                              ? is2077
+                                ? 'bg-pink-500/20 border-pink-400 text-pink-200 shadow-lg shadow-pink-500/10'
+                                : 'bg-blue-500/20 border-blue-400 text-blue-200 shadow-lg shadow-blue-500/10'
+                              : 'bg-slate-900/60 border-slate-700/80 text-slate-300 hover:border-slate-500 hover:text-white hover:bg-slate-800'
+                          }`}
+                        >
+                          <span className="text-sm">{is2077 ? '⚡' : '🐧'}</span>
+                          <span>{presetKey}</span>
+                          {isMatched && (
+                            <span className={`w-2 h-2 rounded-full ${is2077 ? 'bg-pink-400 animate-pulse' : 'bg-blue-400 animate-pulse'}`}></span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-400 flex items-center space-x-2">
+                  <span className="text-slate-500">Current Law:</span>
+                  {globalPrompt.trim() === (globalPresets['Linux'] || '').trim() ? (
+                    <span className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono font-medium flex items-center space-x-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                      <span>Linux (Standard)</span>
+                    </span>
+                  ) : globalPrompt.trim() === (globalPresets['2077'] || '').trim() ? (
+                    <span className="px-2.5 py-1 rounded-md bg-pink-500/10 text-pink-300 border border-pink-500/20 font-mono font-medium flex items-center space-x-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-pink-400"></span>
+                      <span>2077 (Night City)</span>
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 font-mono font-medium flex items-center space-x-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                      <span>Custom Modified</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <textarea
                 value={globalPrompt}
                 onChange={(e) => setGlobalPrompt(e.target.value)}
@@ -440,6 +504,72 @@ function App() {
                   {isSaving ? 'Saved!' : 'Override Session'}
                 </button>
               </div>
+
+              {/* Session Override Preset Selector */}
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-md backdrop-blur-sm">
+                <div className="flex items-center space-x-3">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Load Preset:</span>
+                  <div className="flex items-center space-x-2">
+                    {['Linux', '2077'].map((presetKey) => {
+                      const isMatched = prompt.trim() === (globalPresets[presetKey] || '').trim();
+                      const is2077 = presetKey === '2077';
+                      return (
+                        <button
+                          key={presetKey}
+                          type="button"
+                          onClick={() => {
+                            if (globalPresets[presetKey]) setPrompt(globalPresets[presetKey]);
+                          }}
+                          className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center space-x-2 border ${
+                            isMatched
+                              ? is2077
+                                ? 'bg-pink-500/20 border-pink-400 text-pink-200 shadow-lg shadow-pink-500/10'
+                                : 'bg-blue-500/20 border-blue-400 text-blue-200 shadow-lg shadow-blue-500/10'
+                              : 'bg-slate-900/60 border-slate-700/80 text-slate-300 hover:border-slate-500 hover:text-white hover:bg-slate-800'
+                          }`}
+                        >
+                          <span className="text-sm">{is2077 ? '⚡' : '🐧'}</span>
+                          <span>{presetKey}</span>
+                          {isMatched && (
+                            <span className={`w-2 h-2 rounded-full ${is2077 ? 'bg-pink-400 animate-pulse' : 'bg-blue-400 animate-pulse'}`}></span>
+                          )}
+                        </button>
+                      );
+                    })}
+                    {prompt && (
+                      <button
+                        type="button"
+                        onClick={() => setPrompt('')}
+                        className="px-3 py-2 rounded-lg text-xs bg-slate-900/60 border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
+                      >
+                        Clear (Inherit Global)
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-400 flex items-center space-x-2">
+                  <span className="text-slate-500">Session Status:</span>
+                  {!prompt ? (
+                    <span className="px-2.5 py-1 rounded-md bg-slate-700/40 text-slate-300 border border-slate-600/40 font-mono">
+                      Inheriting Global Reality
+                    </span>
+                  ) : prompt.trim() === (globalPresets['Linux'] || '').trim() ? (
+                    <span className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono font-medium">
+                      Linux Preset
+                    </span>
+                  ) : prompt.trim() === (globalPresets['2077'] || '').trim() ? (
+                    <span className="px-2.5 py-1 rounded-md bg-pink-500/10 text-pink-300 border border-pink-500/20 font-mono font-medium">
+                      2077 Preset
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-mono font-medium">
+                      Custom Override
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}

@@ -25,7 +25,13 @@ from cartesian.demon import (
     set_global_demon_prompt,
     set_session_demon_prompt,
 )
-from cartesian.paths import SESSIONS_ROOT, ensure_dirs, session_dir
+from cartesian.paths import (
+    DEMON_PRESET_META,
+    DEMON_PROMPT_PRESETS,
+    SESSIONS_ROOT,
+    ensure_dirs,
+    session_dir,
+)
 
 # Load BIV .env for DEEPSEEK_API_KEY
 load_dotenv("/home/BIV/.env")
@@ -78,9 +84,26 @@ async def api_provider_defaults():
     }
 
 
+class SessionCreateBody(BaseModel):
+    prompt: str | None = None
+    preset: str | None = None
+
+
+@app.get("/api/demon-presets")
+async def api_get_presets():
+    return {
+        "presets": DEMON_PROMPT_PRESETS,
+        "presetList": DEMON_PRESET_META,
+    }
+
+
 @app.get("/api/demon-prompt")
 async def api_get_global_prompt():
-    return {"prompt": get_global_demon_prompt()}
+    return {
+        "prompt": get_global_demon_prompt(),
+        "presets": DEMON_PROMPT_PRESETS,
+        "presetList": DEMON_PRESET_META,
+    }
 
 
 @app.post("/api/demon-prompt")
@@ -104,10 +127,15 @@ async def api_list_sessions():
 
 
 @app.post("/api/sessions")
-async def api_create_session():
+async def api_create_session(body: SessionCreateBody | None = None):
     ensure_dirs()
     new_id = f"sess-{int(datetime.now().timestamp() * 1000)}-ui"
-    session_dir(new_id).mkdir(parents=True, exist_ok=True)
+    sdir = session_dir(new_id)
+    sdir.mkdir(parents=True, exist_ok=True)
+    if body and body.prompt:
+        set_session_demon_prompt(new_id, body.prompt)
+    elif body and body.preset and body.preset in DEMON_PROMPT_PRESETS:
+        set_session_demon_prompt(new_id, DEMON_PROMPT_PRESETS[body.preset])
     return {"id": new_id}
 
 

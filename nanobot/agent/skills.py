@@ -156,7 +156,11 @@ class SkillsLoader:
             if not entries:
                 continue
 
-            lines = [f"### {label} (`{root.expanduser().resolve()}`)"]
+            if source == "workspace":
+                display_root = "/workspace/skills" if "/home/BIV" in str(root) else str(root.expanduser().resolve())
+            else:
+                display_root = "/skills" if "/home/BIV" in str(root) else str(root.expanduser().resolve())
+            lines = [f"### {label} (`{display_root}`)"]
             for entry in entries:
                 skill_name = entry["name"]
                 meta = self._get_skill_meta(skill_name)

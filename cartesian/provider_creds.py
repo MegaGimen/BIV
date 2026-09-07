@@ -82,7 +82,7 @@ def build_agent_a_runtime(creds: ProviderCreds) -> LLMRuntime:
     provider.generation = GenerationSettings(
         temperature=0.2,
         max_tokens=8192,
-        reasoning_effort=None,
+        reasoning_effort="none",
     )
     return LLMRuntime.capture(
         provider,

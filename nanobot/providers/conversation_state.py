@@ -127,6 +127,7 @@ class ProviderConversationStateController:
             "stop",
             "tool_calls",
             "function_call",
+            "length",
         }
         if (
             candidate is not None

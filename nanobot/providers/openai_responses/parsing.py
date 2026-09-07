@@ -19,7 +19,7 @@ FINISH_REASON_MAP = {
     "failed": "error",
     "cancelled": "error",
 }
-REPLAYABLE_FINISH_REASONS = frozenset({"stop", "tool_calls", "function_call"})
+REPLAYABLE_FINISH_REASONS = frozenset({"stop", "tool_calls", "function_call", "length"})
 
 
 @dataclass(slots=True)
@@ -523,7 +523,7 @@ def parse_response_output(
         state_provider is not None
         and state_model is not None
         and state_input_items is not None
-        and (status is None or status == "completed")
+        and (status is None or status in ("completed", "incomplete"))
         and is_replayable_finish_reason(finish_reason)
     ):
         result.provider_state = build_responses_state(

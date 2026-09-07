@@ -21,6 +21,8 @@ PROXY_TOOL_NAMES = frozenset(
         "grep",
         "web_search",
         "web_fetch",
+        "webfetch",
+        "WebFetch",
         "apply_patch",
     }
 )
