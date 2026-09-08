@@ -149,7 +149,7 @@ flowchart LR
 
 Muse 线用的是同一组库里的 **TRL `SFTTrainer`**（观察 token 交叉熵）。旧 9B 线是 Unsloth。Coder-Next 是 Axolotl。这三条都不覆盖切鱼和 JEPA，本线不用它们当 trainer。
 
-`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。激活差探针：`python train/scripts/compare_act.py`（同一串 token 进 AgentWorld 和 Instruct；按 ACT 对**模块输出通道**在答案 token 上取 \(|a^{AW}-a^{Instruct}|\)，全局排序取 top \(p\%\) 掩码。写出 `train/outputs/act/`：`summary.txt`、`report.json`、`mask.json`、`channels.jsonl`）。把掩码行按 ACT 写进 Instruct：`python merge/act.py`（\(\theta_i^{\mathrm{Instruct}}+\lambda(\theta_i^{\mathrm{AW}}-\theta_i^{\mathrm{Instruct}})\)，默认 \(\lambda=0.4\)，输出 `merge/output/act`），再 `python merge/eval.py --act` 起 vLLM。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
+`probe.py`/`cut_stage1.py`/`compare.py` 是切鱼方案留下的测量工具，切鱼本身已经放弃（见「模型架构」），但这几个脚本作为**诊断/历史对照**继续保留、可以继续跑：`python train/scripts/probe.py`（读 `merge/output/cache` 里已下载的三个 checkpoint，写出 `train/outputs/probe/`，逐层量相对 Base 的位移比）；改得狠度的文本柱图：`python train/scripts/compare.py`（Layer Swapping 行均值绝对差，Base 缺权重会删残目录再下）。ACT 探针 / 合并脚本（`compare_act.py`、`merge/act.py`）已经挪到姐妹分支 **`agentworld-ACT-Qwen3.5-35B-A3B`**，本线不再维护。Harbor 计分板仍记那次 Naive ACT 的结果（见 **Terminal-Bench 2.1**）。它们不再决定任何切点 \(\ell\)——现在的 Stage 1/2 流水线里没有切点这个概念。
 
 盒子是 HuggingFace 的 `Qwen3_5MoeForConditionalGeneration`：40 层文本主干在 `model.language_model` 里，每层都是 MoE；30 层 Gated DeltaNet（`linear_attn`）+ 10 层完整注意力（`self_attn`，层号 3,7,…,39）；256 专家、每 token 8 个加 1 个共享专家。`lm_head` 独立。Instruct 另外还有 `model.visual`（ViT）和 `mtp.*`（官方投机解码草稿）。AgentWorld 的 `language_model_only=true`。
 
@@ -407,20 +407,13 @@ for s in traj["steps"]:
 # 可选诊断：相对 Base 的行-MAV 文本表（不再决定任何切点，纯测量）
 python train/scripts/compare.py
 
-# 可选诊断：同一段文本上 AgentWorld vs Instruct 的 ACT 激活差（默认 32k；双卡 World=GPU0、Instruct=GPU1）
-cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
-# 冒烟：MAX_ROWS=20 CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
-# 脚本会 echo 全部 flag；结束时读 outputs/act/report.json + mask.json 打 SELF-CHECK
-# MoE 通道有没有真正被 hook：CPU 读权重头，不占卡
-#   cd train && bash scripts/probe_act_moe.sh
-# compare_act 修复后会 hook shared_expert / router，并对 packed 3D 专家做 answer-token dense-eval
+# ACT 探针 / 合并脚本在姐妹分支 agentworld-ACT-Qwen3.5-35B-A3B
+#   git checkout agentworld-ACT-Qwen3.5-35B-A3B
+#   cd train && CUDA_VISIBLE_DEVICES=0,1 bash scripts/compare_act.sh
+#   python merge/act.py
+#   python merge/eval.py --act --max-model-len 32768
 
-# 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（启用 --no-lm-head 保护指令输出词表）
-# 按 ACT 掩码把 AgentWorld 的通道行写进 Instruct（默认读 compare 的 train/outputs/act/mask.json，跳过 lm_head）
-python merge/act.py
-
-# GPU 机起 vLLM：:6006 ACT 合并模型，:6008 原 Instruct
-python merge/eval.py --act --max-model-len 32768
+# GPU 机起原 Instruct（本线对照）
 python merge/eval.py --base --port 6008 --max-model-len 32768
 
 # 本机 Harbor（Docker 沙箱）打 TB 2.1；远端 GPU 提供模型
