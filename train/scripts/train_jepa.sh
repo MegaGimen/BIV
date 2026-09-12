@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
       CONFIG="$2"
       shift 2
       ;;
-    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps|--log-steps|--collapse-steps|--resume-from)
+    --model-dir|--mix-dir|--logging-dir|--max-steps|--save-steps|--log-steps|--collapse-steps|--resume-from|--grad-accum)
       [[ $# -ge 2 ]] || { echo "missing value for $1"; exit 1; }
       if [[ "$1" == "--resume-from" ]]; then
         EXTRA+=(--resume "$2")
@@ -76,6 +76,7 @@ Other GPU counts: single CP group, cp_size=NGPU.
      --resume             newest complete ckpt under output_dir
      --resume PATH / --resume-from PATH
      --max-steps N
+     --grad-accum N      (override yaml; smoke one optimizer step with 1)
 
 Optional 65536 / 4-way CP: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 EOF

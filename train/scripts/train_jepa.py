@@ -56,6 +56,25 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def log_cuda(tag: str, *, rank: int | None = None) -> None:
+    """Per-process CUDA allocator view. Other ranks' cards are invisible here."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    who = f" rank={rank}" if rank is not None else ""
+    cur = torch.cuda.current_device()
+    log(f"[jepa] mem {tag}{who} current=cuda:{cur}")
+    for i in range(torch.cuda.device_count()):
+        alloc = torch.cuda.memory_allocated(i) / 1024**3
+        reserved = torch.cuda.memory_reserved(i) / 1024**3
+        peak = torch.cuda.max_memory_allocated(i) / 1024**3
+        log(
+            f"[jepa] mem {tag}{who} cuda:{i} allocated={alloc:.1f}GiB "
+            f"reserved={reserved:.1f}GiB peak={peak:.1f}GiB"
+        )
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     import yaml
 
@@ -927,6 +946,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mix-dir", type=Path, default=None)
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument(
+        "--grad-accum",
+        type=int,
+        default=None,
+        help="Override yaml grad_accum (smoke one optimizer step with 1).",
+    )
+    p.add_argument(
         "--save-steps",
         type=int,
         default=None,
@@ -1177,7 +1202,7 @@ def main() -> None:
         raise SystemExit(f"config not found: {args.config} (tried {TRAIN / args.config})")
     cfg = _load_yaml(cfg_path)
     tcfg = cfg.get("train") or {}
-    accum = int(tcfg.get("grad_accum") or 8)
+    accum = int(args.grad_accum if args.grad_accum is not None else (tcfg.get("grad_accum") or 8))
     cp_size = resolve_cp_size(args.cp_size)
     if cp_size > 1:
         os.environ["ACCELERATE_USE_PARALLELISM_CONFIG"] = "true"
@@ -1314,18 +1339,24 @@ def main() -> None:
     assert_equal_loader_len(accelerator, len(loader))
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
-    model = accelerator.prepare(model)
     jepa = jepa.to(device=accelerator.device, dtype=dtype)
     ldad = ldad.to(device=accelerator.device, dtype=dtype)
+    # FSDP2 wants prepare(model, opt) together; extra params outside the
+    # prepared module are not in the shard/all-reduce. Hang Pred+LDAD on the
+    # backbone so every trainable tensor is in `model`.
+    model.add_module("_jepa", jepa)
+    model.add_module("_ldad", ldad)
     opt = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad]
-        + list(jepa.parameters())
-        + list(ldad.parameters()),
+        [p for p in model.parameters() if p.requires_grad],
         lr=backbone_lr,
         weight_decay=float(tcfg.get("weight_decay") or 0.01),
     )
-    opt = accelerator.prepare(opt)
-    lm_head = lm_head_module(accelerator.unwrap_model(model))
+    model, opt = accelerator.prepare(model, opt)
+    log_cuda("after_prepare", rank=accelerator.process_index)
+    unwrapped = accelerator.unwrap_model(model)
+    jepa = unwrapped._jepa
+    ldad = unwrapped._ldad
+    lm_head = lm_head_module(unwrapped)
     if lm_head is None:
         raise SystemExit("Stage 1 needs AgentWorld lm_head attached")
     embed = input_embeddings(accelerator.unwrap_model(model))
@@ -1543,6 +1574,7 @@ def main() -> None:
     hit_max = False
     last_log_time = time.monotonic()
     throughput_postfix: dict[str, str] = {}
+    t_step0 = 0.0
 
     try:
         for epoch in range(epochs):
@@ -1553,6 +1585,11 @@ def main() -> None:
                     micro_seen += 1
                     continue
                 micro_seen += 1
+                if (micro_seen - 1) % accum == 0:
+                    t_step0 = time.perf_counter()
+                    if torch.cuda.is_available():
+                        for i in range(torch.cuda.device_count()):
+                            torch.cuda.reset_peak_memory_stats(i)
                 batch = {
                     k: v.to(accelerator.device) if hasattr(v, "to") else v
                     for k, v in batch.items()
@@ -1608,7 +1645,11 @@ def main() -> None:
                         seen_z.append(z_next[i].detach().float().cpu())
                         seen_o.append(o_texts[i] if i < len(o_texts) else "")
                         seen_skip.append(skip_keys[i] if i < len(skip_keys) else "")
+                    if step == 0:
+                        log_cuda("after_forward", rank=accelerator.process_index)
                     accelerator.backward(loss)
+                    if step == 0:
+                        log_cuda("after_backward", rank=accelerator.process_index)
                     running += float(loss.detach().float().item())
                     run_ce += float(ce_loss.detach().float().item())
                     run_pred += float(pred_loss.detach().float().item())
@@ -1620,14 +1661,20 @@ def main() -> None:
                     run_nlab += n_lab
                     if accelerator.sync_gradients:
                         clip_params = [p for p in model.parameters() if p.requires_grad]
-                        clip_params.extend(jepa.parameters())
-                        clip_params.extend(ldad.parameters())
                         accelerator.clip_grad_norm_(clip_params, max_norm)
                         opt.step()
                         sched.step()
                         opt.zero_grad(set_to_none=True)
                         step += 1
                         epoch_opt += 1
+                        if step == 1:
+                            wall = time.perf_counter() - t_step0
+                            rank_log(
+                                f"[jepa] opt_step={step} wall_sec={wall:.2f} accum={accum} "
+                                f"cp_size={cp_size} full_len={full_len:.0f} "
+                                f"state_len={state_len:.0f} action_len={action_len:.0f}"
+                            )
+                            log_cuda("after_opt_step", rank=accelerator.process_index)
                         last_train_loss = running / max(n_loss, 1)
                         if pbar is not None:
                             pbar.update(1)
