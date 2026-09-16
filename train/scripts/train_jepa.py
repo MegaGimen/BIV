@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Stage 1 JEPA on AgentWorld: history-mediated targets + Delta-JEPA LDAD.
 
-z_t = Enc(chat(h)), u = Enc(chat(a)), z_{t+1} = Enc(chat(h,a,o)) last_token
-(shared with observation CE). Pred(z_t, u) aligns to z_{t+1} with both sides
-live. LDAD reconstructs the command tokens from Δz = z_{t+1} - z_t.
+z_t = Enc(chat(h)), u = Enc(chat(a)), z_{t+1} = Enc(chat(h,a,o)) last_token.
+Pred(z_t, u) aligns to z_{t+1} with both sides live. LDAD reconstructs the
+command tokens from Δz = z_{t+1} - z_t. Observation token CE is off
+(gamma=0): Stage 1 does not keep AgentWorld's stdout-writing mouth.
 
 Do not encode chat(o) alone. Do not reuse InverseDyn (concat + stop-grad).
 
@@ -233,7 +234,7 @@ def encode_texts(
 ) -> dict[str, Any]:
     """Live Stage 1 sequences. Observation is never encoded alone.
 
-    full   — chat(h + a + o): observation CE and z_{t+1} last_token
+    full   — chat(h + a + o): z_{t+1} last_token (optional observation CE if gamma>0)
     state  — chat(h): z_t
     action — chat([a]): u for Pred
     a_label_ids — raw command content tokens for LDAD
@@ -1382,7 +1383,7 @@ def main() -> None:
     gamma = float(
         tcfg["gamma"]
         if tcfg.get("gamma") is not None
-        else (tcfg["ce_weight"] if tcfg.get("ce_weight") is not None else 1.0)
+        else (tcfg["ce_weight"] if tcfg.get("ce_weight") is not None else 0.0)
     )
     pred_lbd = float(
         tcfg["pred_lbd"]
@@ -1422,7 +1423,8 @@ def main() -> None:
         "dp_replicate_size": dp_size,
         "run_tag": run_tag,
         "lm_head": "attached_frozen_base",
-        "recipe": "mediated Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD",
+        "recipe": "mediated Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD (no observation CE)",
+        "gamma": gamma,
         "pred_lbd": pred_lbd,
         "inv_lbd": inv_lbd,
         "last_token": last_token,
@@ -1602,7 +1604,11 @@ def main() -> None:
                     h_full = full_hidden(
                         model, batch["full_ids"], batch["full_mask"], cp_size
                     )
-                    ce_loss = shifted_ce(h_full, batch["full_labels"], lm_head)
+                    ce_loss = (
+                        shifted_ce(h_full, batch["full_labels"], lm_head)
+                        if gamma != 0.0
+                        else None
+                    )
                     z_next = gather_at(
                         h_full,
                         last_token_index(
@@ -1637,7 +1643,9 @@ def main() -> None:
                         embed,
                         lm_head,
                     )
-                    loss = gamma * ce_loss + pred_lbd * pred_loss + inv_lbd * inv_loss
+                    loss = pred_lbd * pred_loss + inv_lbd * inv_loss
+                    if ce_loss is not None:
+                        loss = loss + gamma * ce_loss
                     o_texts = batch.get("o_text") or []
                     skip_keys = batch.get("skip_key") or [""] * pred.size(0)
                     for i in range(pred.size(0)):
@@ -1651,7 +1659,9 @@ def main() -> None:
                     if step == 0:
                         log_cuda("after_backward", rank=accelerator.process_index)
                     running += float(loss.detach().float().item())
-                    run_ce += float(ce_loss.detach().float().item())
+                    run_ce += (
+                        float(ce_loss.detach().float().item()) if ce_loss is not None else 0.0
+                    )
                     run_pred += float(pred_loss.detach().float().item())
                     run_inv += float(inv_loss.detach().float().item())
                     n_loss += 1
@@ -1723,9 +1733,12 @@ def main() -> None:
                                 toks_s = toks / elapsed
                                 last_log_time = now
                                 throughput_postfix = {"rows/s": f"{rows_s:.2f}", "tok/s": f"{toks_s:.0f}"}
+                                ce_txt = (
+                                    f"ce={ce_g / denom_g:.4f} " if gamma != 0.0 else ""
+                                )
                                 emit(
                                     f"epoch={epoch} step={step} eff_step={eff_step} loss={loss_g:.4f} "
-                                    f"ce={ce_g / denom_g:.4f} pred={pred_g / denom_g:.4f} "
+                                    f"{ce_txt}pred={pred_g / denom_g:.4f} "
                                     f"inv={inv_g / denom_g:.4f} "
                                     f"len(h/a/full)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
                                     f"n_ce={nlab_g / denom_g:.0f} "
@@ -1734,7 +1747,10 @@ def main() -> None:
                                 )
                                 if writer is not None:
                                     writer.add_scalar("train/loss", loss_g, eff_step)
-                                    writer.add_scalar("train/loss_ce", ce_g / denom_g, eff_step)
+                                    if gamma != 0.0:
+                                        writer.add_scalar(
+                                            "train/loss_ce", ce_g / denom_g, eff_step
+                                        )
                                     writer.add_scalar("train/loss_pred", pred_g / denom_g, eff_step)
                                     writer.add_scalar("train/loss_inv", inv_g / denom_g, eff_step)
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], eff_step)

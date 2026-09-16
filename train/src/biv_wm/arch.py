@@ -207,7 +207,7 @@ def log_world_architecture(
     "world", LoRA'd or frozen as a block, not split by layer index.
 
     ``expect_lm_head``: ``detached`` (old cosine-MLP recipe) or ``attached``
-    (LLM-JEPA: observation token CE goes through AgentWorld's own lm_head).
+    (LDAD command-token CE goes through AgentWorld's own lm_head).
     """
     lm = language_model(model)
     layers = list(getattr(lm, "layers", []))
@@ -242,9 +242,9 @@ def log_world_architecture(
             dump_tree(mod, log, prefix="    ")
     if expect_lm_head == "attached":
         if attached:
-            log("lm_head: attached (observation CE goes through this table)")
+            log("lm_head: attached (LDAD command CE goes through this table)")
         else:
-            log("ERROR: lm_head missing; LLM-JEPA Stage 1 needs AgentWorld's own table")
+            log("ERROR: lm_head missing; Stage 1 LDAD needs AgentWorld's own table")
     elif attached:
         log("ERROR: lm_head still attached; Stage 1 must detach it")
     else:
