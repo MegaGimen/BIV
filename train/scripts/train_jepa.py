@@ -2,8 +2,11 @@
 """Stage 1 JEPA on AgentWorld: history-mediated targets + Delta-JEPA LDAD.
 
 z_t = Enc(chat(h)), u = Enc(chat(a)), z_{t+1} = Enc(chat(h,a,o)) last_token.
-Pred(z_t, u) aligns to z_{t+1} with both sides live. LDAD reconstructs the
-command tokens from Δz = z_{t+1} - z_t. Observation token CE is off
+Chat text is mix-JSON unwrapped before encode (assistant output/result
+payload; user tool/arguments body). Pred(z_t, u) aligns to z_{t+1} with
+both sides live. LDAD reconstructs the command tokens from
+Δz = z_{t+1} - z_t. SIGReg (LeJEPA Epps–Pulley) pushes the encoder token
+cloud toward an isotropic Gaussian. Observation token CE is off
 (gamma=0): Stage 1 does not keep AgentWorld's stdout-writing mouth.
 
 Do not encode chat(o) alone. Do not reuse InverseDyn (concat + stop-grad).
@@ -48,6 +51,8 @@ from biv_wm.hao import (  # noqa: E402
     messages_through_n_turns,
     split_hao,
 )
+from biv_wm.sigreg import sigreg_cloud, sigreg_loss  # noqa: E402
+from biv_wm.strip_json import unwrap_message, unwrap_messages  # noqa: E402
 from download import resolve_model  # noqa: E402
 
 DEFAULT_CONFIG = TRAIN / "configs" / "jepa" / "stage1.yaml"
@@ -131,8 +136,12 @@ def _content(msg: dict[str, Any]) -> str:
 
 
 def apply_template(tokenizer, messages: list) -> str:
-    """Same as llm-jepa: chat template, no generation prompt."""
-    msgs = list(messages) if messages else [{"role": "user", "content": ""}]
+    """Same as llm-jepa: chat template, no generation prompt.
+
+    Mix JSON wrappers are stripped here so token counts used by trim and
+    the three Enc(·) chats see payload text, not ``output``/``isError``.
+    """
+    msgs = unwrap_messages(messages) if messages else [{"role": "user", "content": ""}]
     try:
         return tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=False
@@ -237,8 +246,11 @@ def encode_texts(
     full   — chat(h + a + o): z_{t+1} last_token (optional observation CE if gamma>0)
     state  — chat(h): z_t
     action — chat([a]): u for Pred
-    a_label_ids — raw command content tokens for LDAD
+    a_label_ids — unwrapped command content tokens for LDAD
     """
+    h_msgs = unwrap_messages(h_msgs)
+    a_msg = unwrap_message(a_msg)
+    o_msg = unwrap_message(o_msg)
     full_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs) + [a_msg, o_msg])),
         max_length,
@@ -279,7 +291,11 @@ def encode_mediated(
 
     \(z_t=\mathrm{Enc}(h)\), \(z_{t+1}=\mathrm{Enc}(h,a,o)\). Observation is not
     encoded alone. Truncation still chops the right of each token list.
+    Mix JSON is unwrapped the same way as ``encode_texts``.
     """
+    h_msgs = unwrap_messages(h_msgs)
+    a_msg = unwrap_message(a_msg)
+    o_msg = unwrap_message(o_msg)
     state_ids = _fit(
         tokenize_ids(tokenizer, apply_template(tokenizer, list(h_msgs))),
         max_length,
@@ -1391,6 +1407,9 @@ def main() -> None:
         else (tcfg["lbd"] if tcfg.get("lbd") is not None else 1.0)
     )
     inv_lbd = float(tcfg["inv_lbd"] if tcfg.get("inv_lbd") is not None else 10.0)
+    sigreg_lbd = float(tcfg["sigreg_lbd"] if tcfg.get("sigreg_lbd") is not None else 0.1)
+    sigreg_slices = int(tcfg["sigreg_slices"] if tcfg.get("sigreg_slices") is not None else 1024)
+    sigreg_tokens = int(tcfg["sigreg_tokens"] if tcfg.get("sigreg_tokens") is not None else 512)
     last_token = int(tcfg["last_token"] if tcfg.get("last_token") is not None else -3)
     epochs = int(tcfg.get("num_epochs") or 2)
     max_steps = args.max_steps
@@ -1410,7 +1429,9 @@ def main() -> None:
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} warmup={warmup} "
         f"save_steps={save_every} log_steps={log_every} "
-        f"gamma={gamma} pred_lbd={pred_lbd} inv_lbd={inv_lbd} last_token={last_token} "
+        f"gamma={gamma} pred_lbd={pred_lbd} inv_lbd={inv_lbd} "
+        f"sigreg_lbd={sigreg_lbd} sigreg_slices={sigreg_slices} "
+        f"sigreg_tokens={sigreg_tokens} last_token={last_token} "
         f"hidden={hidden_size} save_total_limit={save_limit} resume_step={resume_step}"
     )
 
@@ -1423,10 +1444,13 @@ def main() -> None:
         "dp_replicate_size": dp_size,
         "run_tag": run_tag,
         "lm_head": "attached_frozen_base",
-        "recipe": "mediated Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD (no observation CE)",
+        "recipe": "strip-JSON Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD + SIGReg",
         "gamma": gamma,
         "pred_lbd": pred_lbd,
         "inv_lbd": inv_lbd,
+        "sigreg_lbd": sigreg_lbd,
+        "sigreg_slices": sigreg_slices,
+        "sigreg_tokens": sigreg_tokens,
         "last_token": last_token,
         "backbone": "AgentWorld only, no fish-cut, no Instruct tail",
     }
@@ -1533,6 +1557,7 @@ def main() -> None:
         writer.add_text("train/gamma", str(gamma), 0)
         writer.add_text("train/pred_lbd", str(pred_lbd), 0)
         writer.add_text("train/inv_lbd", str(inv_lbd), 0)
+        writer.add_text("train/sigreg_lbd", str(sigreg_lbd), 0)
         writer.add_text("train/last_token", str(last_token), 0)
 
     try:
@@ -1569,6 +1594,7 @@ def main() -> None:
     run_ce = 0.0
     run_pred = 0.0
     run_inv = 0.0
+    run_sigreg = 0.0
     n_loss = 0
     run_h = run_a = run_o = 0.0
     run_nlab = 0.0
@@ -1646,6 +1672,16 @@ def main() -> None:
                     loss = pred_lbd * pred_loss + inv_lbd * inv_loss
                     if ce_loss is not None:
                         loss = loss + gamma * ce_loss
+                    sig_loss = None
+                    if sigreg_lbd != 0.0:
+                        cloud = sigreg_cloud(
+                            h_full,
+                            batch["full_mask"],
+                            extra=(z_t, u, z_next),
+                            max_tokens=sigreg_tokens,
+                        )
+                        sig_loss = sigreg_loss(cloud, num_slices=sigreg_slices)
+                        loss = loss + sigreg_lbd * sig_loss
                     o_texts = batch.get("o_text") or []
                     skip_keys = batch.get("skip_key") or [""] * pred.size(0)
                     for i in range(pred.size(0)):
@@ -1664,6 +1700,9 @@ def main() -> None:
                     )
                     run_pred += float(pred_loss.detach().float().item())
                     run_inv += float(inv_loss.detach().float().item())
+                    run_sigreg += (
+                        float(sig_loss.detach().float().item()) if sig_loss is not None else 0.0
+                    )
                     n_loss += 1
                     run_h += state_len
                     run_a += action_len
@@ -1702,12 +1741,13 @@ def main() -> None:
                             # averaging) both groups' windowed accumulators and
                             # then taking a ratio gives the correct combined
                             # average regardless of cp_size.
-                            running_g, ce_g, pred_g, inv_g, h_g, a_g, o_g, nlab_g, n_g = merge_group_stats(
+                            running_g, ce_g, pred_g, inv_g, sig_g, h_g, a_g, o_g, nlab_g, n_g = merge_group_stats(
                                 accelerator,
                                 running,
                                 run_ce,
                                 run_pred,
                                 run_inv,
+                                run_sigreg,
                                 run_h,
                                 run_a,
                                 run_o,
@@ -1736,10 +1776,15 @@ def main() -> None:
                                 ce_txt = (
                                     f"ce={ce_g / denom_g:.4f} " if gamma != 0.0 else ""
                                 )
+                                sig_txt = (
+                                    f"sigreg={sig_g / denom_g:.4f} "
+                                    if sigreg_lbd != 0.0
+                                    else ""
+                                )
                                 emit(
                                     f"epoch={epoch} step={step} eff_step={eff_step} loss={loss_g:.4f} "
                                     f"{ce_txt}pred={pred_g / denom_g:.4f} "
-                                    f"inv={inv_g / denom_g:.4f} "
+                                    f"inv={inv_g / denom_g:.4f} {sig_txt}"
                                     f"len(h/a/full)={h_g / denom_g:.0f}/{a_g / denom_g:.0f}/{o_g / denom_g:.0f} "
                                     f"n_ce={nlab_g / denom_g:.0f} "
                                     f"throughput≈{rows_s:.2f} rows/s {toks_s:.0f} tok/s "
@@ -1753,6 +1798,10 @@ def main() -> None:
                                         )
                                     writer.add_scalar("train/loss_pred", pred_g / denom_g, eff_step)
                                     writer.add_scalar("train/loss_inv", inv_g / denom_g, eff_step)
+                                    if sigreg_lbd != 0.0:
+                                        writer.add_scalar(
+                                            "train/loss_sigreg", sig_g / denom_g, eff_step
+                                        )
                                     writer.add_scalar("train/lr_backbone", opt.param_groups[0]["lr"], eff_step)
                                     writer.add_scalar("train/len_h", h_g / denom_g, eff_step)
                                     writer.add_scalar("train/len_a", a_g / denom_g, eff_step)
@@ -1764,6 +1813,7 @@ def main() -> None:
                             run_ce = 0.0
                             run_pred = 0.0
                             run_inv = 0.0
+                            run_sigreg = 0.0
                             n_loss = 0
                             run_h = run_a = run_o = 0.0
                             run_nlab = 0.0

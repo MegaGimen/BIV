@@ -285,6 +285,74 @@ def test_shifted_ce_chunk_matches_unchunked() -> None:
     assert abs(float(loss_one - loss_chunk)) < 1e-5
 
 
+def test_encode_texts_strips_mix_json() -> None:
+    import json
+
+    tok = _FakeTok()
+    h = [
+        {
+            "role": "user",
+            "content": json.dumps({"tool": "execute_bash", "arguments": {"command": "ls"}}),
+        },
+        {
+            "role": "assistant",
+            "content": json.dumps({"output": "a.txt", "isError": False}),
+        },
+    ]
+    a = {
+        "role": "user",
+        "content": json.dumps(
+            {"tool": "execute_bash", "arguments": {"command": "rm a.txt"}}
+        ),
+    }
+    o = {"role": "assistant", "content": json.dumps({"output": "", "isError": False})}
+    row = tj.encode_texts(tok, h, a, o, max_length=65536)
+    assert "rm a.txt" in row["a_text"]
+    assert "execute_bash" in row["a_text"]
+    assert '"tool"' not in row["a_text"]
+    assert row["o_text"] == ""
+    full_txt = tok.apply_chat_template(h + [a, o])
+    wrapped_ids = tj.tokenize_ids(tok, full_txt)
+    assert row["full_ids"] != wrapped_ids
+
+    def _decode(ids: list[int]) -> str:
+        return "".join(chr(i) for i in ids if 32 <= i < 0x110000)
+
+    state_txt = _decode(row["state_ids"])
+    full_body = _decode(row["full_ids"])
+    assert "a.txt" in state_txt
+    assert "isError" not in state_txt and "isError" not in full_body
+    assert "isError" not in row["a_text"] and "isError" not in row["o_text"]
+
+
+def test_sigreg_matches_epps_pulley_gaussian_cf() -> None:
+    if torch is None:
+        return
+    from biv_wm.sigreg import _quadrature, sigreg_loss
+
+    t, phi, _w = _quadrature(3.0, 17, device=torch.device("cpu"), dtype=torch.float32)
+    assert t[0].item() == 0.0
+    assert abs(float(phi[0]) - 1.0) < 1e-6
+    # φ₀(t) = exp(-t²/2) at t=√2 → e^{-1}
+    t_sqrt2 = (2.0 ** 0.5)
+    idx = int(torch.argmin((t - t_sqrt2).abs()).item())
+    assert abs(float(phi[idx]) - float(torch.exp(torch.tensor(-0.5 * t[idx] ** 2)))) < 1e-6
+
+    torch.manual_seed(0)
+    gauss = torch.randn(256, 16)
+    const = torch.ones(256, 16)
+    g = torch.Generator().manual_seed(1)
+    loss_g = sigreg_loss(gauss, num_slices=32, generator=g)
+    g = torch.Generator().manual_seed(1)
+    loss_c = sigreg_loss(const, num_slices=32, generator=g)
+    assert torch.isfinite(loss_g) and torch.isfinite(loss_c)
+    assert float(loss_g) < float(loss_c)
+
+    live = torch.randn(64, 8, requires_grad=True)
+    sigreg_loss(live, num_slices=16).backward()
+    assert live.grad is not None and torch.any(live.grad != 0)
+
+
 def main() -> None:
     test_create_o_labels_last_span()
     test_fit_keeps_suffix_or_prefix()
@@ -301,6 +369,8 @@ def main() -> None:
     test_collate_keeps_text_and_device_move_skips_it()
     test_shifted_ce_only_labeled_rows()
     test_shifted_ce_chunk_matches_unchunked()
+    test_encode_texts_strips_mix_json()
+    test_sigreg_matches_epps_pulley_gaussian_cf()
     skipped = " (torch helpers skipped)" if torch is None else ""
     print("ok" + skipped, flush=True)
 

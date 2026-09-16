@@ -2,9 +2,11 @@
 """Forward-only collapse probe for Stage 1 JEPA. No backward, no LoRA.
 
 Left = concat(z_t, u) = [Enc(h); Enc(a)] (4096). Right = Enc(h,a,o) (2048).
+Same encode_texts path as training: mix JSON is unwrapped before encode.
 Takes the first N complete turns from each mix source in file order, then
 ranks cross-source cosine on each side separately. Writes two files:
-left top-20 and right top-20. Never stores history strings.
+left top-20 and right top-20. Never stores history strings. Output keys
+unchanged (left_zt_u / right_hao payloads).
 
   cd train
   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
@@ -291,7 +293,9 @@ def main() -> None:
         "note": (
             "Cross-dataset cosine only (wm_code vs wm_os). Same-source pairs dropped. "
             "Samples are the first complete turns in each JSONL, file order. "
-            "JSON stores clipped a/o only, never h."
+            "JSON stores clipped a/o only, never h. "
+            "Encodings and a/o snippets are after mix JSON unwrap "
+            "(assistant output/result payload; user tool/arguments body)."
         ),
     }
     left_payload: dict[str, Any] = {

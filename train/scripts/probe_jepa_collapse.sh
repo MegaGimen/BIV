@@ -2,6 +2,8 @@
 # Forward-only collapse probe on one GPU. No FSDP, no CP, no backward, no LoRA.
 # Training stays 4-GPU: CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
 # Left [Enc(h);Enc(a)] (4096) vs right Enc(h,a,o) (2048), cross-dataset top-20.
+# Mix JSON is unwrapped before encode (same path as train_jepa.py).
+# Output files: left_zt_u-*.json / right_hao-*.json, schema unchanged.
 #
 #   cd train
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh

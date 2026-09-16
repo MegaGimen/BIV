@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Stage 1 on AgentWorld: 32768 tokens, 4 GPUs as 2 groups of 2.
+# Enc(h)/Enc(a)/Enc(h,a,o) after mix JSON unwrap; Pred + LDAD + SIGReg.
 # Each group does Context Parallel (cp_size=2); the two groups train on
 # different rows (dp_replicate_size=2). Same 2x2 layout as JEPALLM's 32k path.
 #
