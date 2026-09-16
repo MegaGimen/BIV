@@ -82,8 +82,8 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 32768, 2x2 CP
-# Optional 65536 / 4-way CP:
-# PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+# 2-GPU 65536 (CP mesh shards weights; FSDP checkpoint_wrapper):
+# CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
 # --resume needs adapter + jepa.pt + ldad.pt. Do not resume Enc(o)-era

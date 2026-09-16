@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Stage 1 on AgentWorld: 32768 tokens, 4 GPUs as 2 groups of 2.
 # Enc(h)/Enc(a)/Enc(h,a,o) after mix JSON unwrap; Pred + LDAD + SIGReg.
-# Each group does Context Parallel (cp_size=2); the two groups train on
-# different rows (dp_replicate_size=2). Same 2x2 layout as JEPALLM's 32k path.
+# CP mesh folds into FSDP shard dim (weights split). Sequence is NOT split.
+# After prepare, decoder layers get FSDP checkpoint_wrapper (HF GC off).
+# Each pair of GPUs is the CAST Instruct layout: 2-way weight shard, full seq.
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -12,7 +13,9 @@
 #
 # 4 GPUs → 2x2 (needs qwen35_moe_fsdp2_cp2x2.yaml). Other GPU counts fall
 # back to a single CP group (cp_size=NGPU), no dp_replicate.
-# Optional long-context: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+# 2-GPU 65536 (same mesh as CAST Instruct on GPU1/GPU2):
+#   CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+# 4-GPU 65536 as one group still works; 2-GPU is twice the GPU efficiency.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -68,9 +71,9 @@ Stage 1: 32768 tokens, 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
   bash scripts/train_jepa.sh --resume
   bash scripts/train_jepa.sh --resume outputs/jepa_stage1/checkpoint-e0-s25
 
-4 GPUs: two groups of 2, each group CP-shards the sequence, groups eat
-different data. Losses all-reduce into one TensorBoard curve (prefix jepa-).
-Other GPU counts: single CP group, cp_size=NGPU.
+4 GPUs: two groups of 2. CP mesh shards weights, not the sequence.
+Groups eat different data. Losses all-reduce into one TensorBoard curve
+(prefix jepa-). Other GPU counts: single CP group, cp_size=NGPU.
 
      --save-steps N       (default yaml 25; 1 smokes FSDP save)
      --log-steps N        (default yaml 5; loss + collapse, not save)
@@ -79,7 +82,8 @@ Other GPU counts: single CP group, cp_size=NGPU.
      --max-steps N
      --grad-accum N      (override yaml; smoke one optimizer step with 1)
 
-Optional 65536 / 4-way CP: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+2-GPU 65536 (CAST Instruct mesh): CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+4-GPU 65536 one group: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 EOF
       exit 0
       ;;
@@ -143,7 +147,7 @@ if [[ "$USE_2X2" -eq 1 ]]; then
   CP_SIZE=2
   ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/qwen35_moe_fsdp2_cp2x2.yaml}"
   echo "  accelerate FSDP2+CP, 2 groups of 2 (dp_replicate=2, cp_size=$CP_SIZE)"
-  echo "    config=$ACCEL_CFG  max_length=$MAX_LENGTH (~$((MAX_LENGTH / CP_SIZE)) tokens/GPU)"
+  echo "    config=$ACCEL_CFG  max_length=$MAX_LENGTH (full seq/GPU; CP shards weights)"
   export ACCELERATE_USE_PARALLELISM_CONFIG=true
   export PARALLELISM_CONFIG_DP_REPLICATE_SIZE=2
   export PARALLELISM_CONFIG_DP_SHARD_SIZE=1
@@ -207,8 +211,11 @@ else
         CP_SIZE="$NGPU"
         ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/qwen35_moe_fsdp2_cp.yaml}"
         echo "  accelerate FSDP2+CP (single group)"
-        echo "    num_processes=$NGPU cp_size=$CP_SIZE (~max_length/$CP_SIZE tokens/GPU)"
+        echo "    num_processes=$NGPU cp_size=$CP_SIZE (full seq/GPU; CP shards weights)"
         echo "    config=$ACCEL_CFG"
+        if [[ "$NGPU" -eq 2 && "$MAX_LENGTH" -ge 65536 ]]; then
+          echo "    2-GPU ${MAX_LENGTH}: CAST Instruct-style mesh (checkpoint_wrapper after prepare)"
+        fi
         export ACCELERATE_USE_PARALLELISM_CONFIG=true
         export PARALLELISM_CONFIG_DP_REPLICATE_SIZE=1
         export PARALLELISM_CONFIG_DP_SHARD_SIZE=1

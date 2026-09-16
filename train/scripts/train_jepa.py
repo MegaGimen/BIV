@@ -12,6 +12,7 @@ cloud toward an isotropic Gaussian. Observation token CE is off
 Do not encode chat(o) alone. Do not reuse InverseDyn (concat + stop-grad).
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
+  CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 """
 
 from __future__ import annotations
@@ -45,6 +46,10 @@ from biv_wm.ckpt import (  # noqa: E402
     rotate_rolling,
     rolling_name,
     write_trainer_state,
+)
+from biv_wm.fsdp_ckpt import (  # noqa: E402
+    disable_hf_gradient_checkpoint,
+    wrap_fsdp_activation_checkpoint,
 )
 from biv_wm.hao import (  # noqa: E402
     complete_turn_end_indices,
@@ -506,7 +511,9 @@ def all_gather_seq(x, group=None):
 
 
 def gather_hidden(h, attention_mask, cp_size: int = 1):
-    """CP shards seq across ranks — gather to full length before indexing."""
+    """If a rank only holds a sequence shard, stitch it. Live FSDP2+CP mesh
+    shards *weights*; the sequence stays full unless something actually
+    splits it, so this is usually a no-op."""
     if cp_size > 1 and h.size(1) < attention_mask.size(1):
         return all_gather_seq(h)
     if cp_size > 1 and h.size(1) * cp_size == attention_mask.size(1):
@@ -743,12 +750,17 @@ def load_backbone(model_dir: Path, dtype, checkpointing: bool, *, attn_implement
         raise SystemExit(f"failed to load {model_dir}: {err}")
     if attn_implementation:
         force_attn_implementation(model, attn_implementation)
-    if checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+    if checkpointing:
         if hasattr(model, "config"):
             model.config.use_cache = False
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
+        if distributed:
+            # HF GradientCheckpointingLayer.forward skips FSDP2 unshard.
+            # Wrappers go on after accelerator.prepare.
+            disable_hf_gradient_checkpoint(model)
+        elif hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
     return model, tok
 
 
@@ -1260,6 +1272,7 @@ def main() -> None:
     pad_multiple = cp_size * 2 if cp_size > 1 else int(tcfg.get("pad_to_multiple_of") or 0)
     attn_impl = "sdpa" if cp_size > 1 else None
     distributed = accelerator.num_processes > 1
+    checkpointing = bool(tcfg.get("gradient_checkpointing", True))
     rank_log(f"model={model_dir}")
     rank_log(f"mix={mix_dir} sources={sources}")
     rank_log(
@@ -1270,7 +1283,7 @@ def main() -> None:
     model, tokenizer = load_backbone(
         model_dir,
         dtype,
-        bool(tcfg.get("gradient_checkpointing", True)),
+        checkpointing,
         attn_implementation=attn_impl,
         distributed=distributed,
     )
@@ -1371,6 +1384,19 @@ def main() -> None:
     model, opt = accelerator.prepare(model, opt)
     log_cuda("after_prepare", rank=accelerator.process_index)
     unwrapped = accelerator.unwrap_model(model)
+    if distributed and checkpointing:
+        n_ckpt = wrap_fsdp_activation_checkpoint(unwrapped)
+        if n_ckpt == 0:
+            n_ckpt = wrap_fsdp_activation_checkpoint(model)
+        if n_ckpt == 0:
+            raise SystemExit(
+                "FSDP activation checkpoint wrapped 0 decoder layers; "
+                "HF GC is off, so 40 layers would stack in activation memory"
+            )
+        rank_log(
+            f"FSDP ckpt wrappers={n_ckpt}; HF GC off; "
+            "CP mesh shards weights, sequence not split"
+        )
     jepa = unwrapped._jepa
     ldad = unwrapped._ldad
     lm_head = lm_head_module(unwrapped)
