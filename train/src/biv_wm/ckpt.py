@@ -156,6 +156,49 @@ def tree_map_local_cpu(obj: Any) -> Any:
     return local_cpu_value(obj)
 
 
+def align_optimizer_dtensor_state(opt) -> int:
+    """Wrap plain Adam buffers so they match DTensor params.
+
+    ``load_state_dict`` of a CPU blob succeeds but leaves ``exp_avg`` as
+    ``torch.Tensor`` while FSDP2 params are DTensor. The next
+    ``opt.step()`` then dies in ``_foreach_lerp_`` with mixed types.
+    """
+    try:
+        from torch.distributed.tensor import DTensor
+    except Exception:
+        return 0
+    n = 0
+    for p, st in opt.state.items():
+        if not isinstance(st, dict) or not hasattr(p, "to_local"):
+            continue
+        mesh = getattr(p, "device_mesh", None)
+        placements = getattr(p, "placements", None)
+        if mesh is None or placements is None:
+            continue
+        ref = p.to_local()
+        for k, v in list(st.items()):
+            if not hasattr(v, "detach") or hasattr(v, "to_local"):
+                continue
+            local = v.detach()
+            if k == "step":
+                st[k] = local.to(device=ref.device)
+                n += 1
+                continue
+            local = local.to(device=ref.device, dtype=ref.dtype)
+            if tuple(local.shape) != tuple(ref.shape):
+                continue
+            st[k] = DTensor.from_local(
+                local,
+                mesh,
+                placements,
+                run_check=False,
+                shape=p.shape,
+                stride=p.stride(),
+            )
+            n += 1
+    return n
+
+
 def copy_optimizer_state(
     opt,
     saved: dict[str, Any],
@@ -169,12 +212,18 @@ def copy_optimizer_state(
         if log_fn is not None:
             log_fn(msg)
 
+    def _finish() -> bool:
+        n = align_optimizer_dtensor_state(opt)
+        if n:
+            _log(f"AdamW aligned {n} state tensors to DTensor")
+        return True
+
     if not isinstance(saved, dict) or "state" not in saved or "param_groups" not in saved:
         _log("AdamW blob missing state/param_groups")
         return False
     try:
         opt.load_state_dict(saved)
-        return True
+        return _finish()
     except Exception as e:
         _log(f"AdamW load_state_dict: {e!r}; copying local shards")
     try:
@@ -216,7 +265,7 @@ def copy_optimizer_state(
                     dst.copy_(src.to(device=dst.device, dtype=dst.dtype))
                 else:
                     live[k] = v
-        return True
+        return _finish()
     except Exception as e:
         _log(f"AdamW local copy failed: {e!r}")
         return False

@@ -954,18 +954,29 @@ class ReplicaSampler:
     same integer `step` on every rank, computed off equal-length loaders, not
     negotiated at runtime."""
 
-    def __init__(self, n: int, dp_rank: int, dp_size: int, generator) -> None:
+    def __init__(
+        self,
+        n: int,
+        dp_rank: int,
+        dp_size: int,
+        generator,
+        skip_first: int = 0,
+    ) -> None:
         self.n = n
         self.dp_rank = dp_rank
         self.dp_size = dp_size
         self.generator = generator
+        self.skip_first = max(0, int(skip_first))
 
     def __iter__(self):
         import torch
 
+        skip = self.skip_first
+        self.skip_first = 0
         order = torch.randperm(self.n, generator=self.generator).tolist()
         usable = (self.n // self.dp_size) * self.dp_size
-        return iter(order[:usable][self.dp_rank :: self.dp_size])
+        sliced = order[:usable][self.dp_rank :: self.dp_size]
+        return iter(sliced[skip:] if skip else sliced)
 
     def __len__(self) -> int:
         return self.n // self.dp_size
@@ -1484,24 +1495,23 @@ def main() -> None:
         f"first run: check dp_rank groups match {{0,1}} and {{2,3}} (or your GPU order), "
         f"not all-0 or all-different."
     )
-    if dp_size > 1:
-        loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            sampler=ReplicaSampler(len(train_ds), dp_rank, dp_size, gen),
-            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-            num_workers=0,
-        )
-    else:
-        loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            shuffle=True,
-            generator=gen,
-            collate_fn=lambda b: collate(b, pad_id, pad_multiple),
-            num_workers=0,
-        )
+    skip_micro = resume_step * accum
+    sampler = ReplicaSampler(
+        len(train_ds), dp_rank, dp_size, gen, skip_first=skip_micro
+    )
+    loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=lambda b: collate(b, pad_id, pad_multiple),
+        num_workers=0,
+    )
     assert_equal_loader_len(accelerator, len(loader))
+    if skip_micro:
+        rank_log(
+            f"resume skip_first={skip_micro} rows in sampler "
+            f"(step={resume_step}×accum={accum}); skipped rows are not tokenized"
+        )
 
     backbone_lr = float(tcfg.get("lr") or 5e-5)
     jepa = jepa.to(device=accelerator.device, dtype=dtype)
@@ -1843,8 +1853,7 @@ def main() -> None:
     jepa.train()
     ldad.train()
     step = resume_step
-    skip_micro = resume_step * accum
-    micro_seen = 0
+    micro_seen = resume_step * accum
     opt.zero_grad(set_to_none=True)
     running = 0.0
     run_ce = 0.0
@@ -1865,9 +1874,6 @@ def main() -> None:
             epoch_base = epoch * steps_per_epoch
             epoch_opt = max(0, min(resume_step - epoch_base, steps_per_epoch))
             for batch in loader:
-                if micro_seen < skip_micro:
-                    micro_seen += 1
-                    continue
                 micro_seen += 1
                 if (micro_seen - 1) % accum == 0:
                     t_step0 = time.perf_counter()
