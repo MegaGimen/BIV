@@ -1462,6 +1462,9 @@ def main() -> None:
     warmup = max(0, min(warmup, max(total_opt - 1, 0)))
     # last_epoch = steps already done. Do not sched.step() here: that warns and
     # skips the first warmup value because optimizer has not stepped yet.
+    # PyTorch requires initial_lr when last_epoch >= 0 (fresh AdamW has none).
+    for group in opt.param_groups:
+        group.setdefault("initial_lr", group["lr"])
     sched = LambdaLR(
         opt,
         _warmup_lambda(warmup),
