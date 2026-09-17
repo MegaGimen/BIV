@@ -88,7 +88,19 @@ def _slice_cp(param: torch.Tensor, dim: int, group: dist.ProcessGroup) -> torch.
     return param[tuple(slc)]
 
 
-def _modeling():
+def a2a_seq_to_feat_sections(
+    x: torch.Tensor, sections: list[int], group: dist.ProcessGroup
+) -> torch.Tensor:
+    """All-to-all each Q/K/V (or similar) block, then concat. Megatron split_sections."""
+    parts = torch.split(x, sections, dim=-1)
+    return torch.cat([a2a_seq_to_feat(p, group) for p in parts], dim=-1)
+
+
+def _slice_sections(
+    param: torch.Tensor, sections: list[int], dim: int, group: dist.ProcessGroup
+) -> torch.Tensor:
+    parts = torch.split(param, sections, dim=dim)
+    return torch.cat([_slice_cp(p, dim, group) for p in parts], dim=dim)
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as m
 
     return m
@@ -113,8 +125,11 @@ def qwen_gdn_forward_cp(
     b = module.in_proj_b(hidden_states)
     a = module.in_proj_a(hidden_states)
 
+    key_dim = module.key_dim
+    value_dim = module.value_dim
+    qkv_sections = [key_dim, key_dim, value_dim]
     if world > 1:
-        mixed_qkv = a2a_seq_to_feat(mixed_qkv, group)
+        mixed_qkv = a2a_seq_to_feat_sections(mixed_qkv, qkv_sections, group)
         z = a2a_seq_to_feat(z, group)
         b = a2a_seq_to_feat(b, group)
         a = a2a_seq_to_feat(a, group)
@@ -127,9 +142,9 @@ def qwen_gdn_forward_cp(
     num_k = module.num_k_heads
     num_v = module.num_v_heads
     if world > 1:
-        conv_w = _slice_cp(conv_w, 0, group)
+        conv_w = _slice_sections(conv_w, qkv_sections, 0, group)
         if conv_b is not None:
-            conv_b = _slice_cp(conv_b, 0, group)
+            conv_b = _slice_sections(conv_b, qkv_sections, 0, group)
         a_log = _slice_cp(a_log, 0, group)
         dt_bias = _slice_cp(dt_bias, 0, group)
         num_k = num_k // world
@@ -144,9 +159,9 @@ def qwen_gdn_forward_cp(
     )
     mixed_qkv = mixed_qkv.transpose(1, 2)
 
-    key_dim = module.head_k_dim * num_k
-    value_dim = module.head_v_dim * num_v
-    query, key, value = torch.split(mixed_qkv, [key_dim, key_dim, value_dim], dim=-1)
+    query, key, value = torch.split(
+        mixed_qkv, [num_k * module.head_k_dim, num_k * module.head_k_dim, num_v * module.head_v_dim], dim=-1
+    )
     query = query.reshape(batch, seq_full, num_k, module.head_k_dim)
     key = key.reshape(batch, seq_full, num_k, module.head_k_dim)
     value = value.reshape(batch, seq_full, num_v, module.head_v_dim)
