@@ -44,6 +44,32 @@ def parse_ckpt_name(name: str) -> tuple[int, int, int] | None:
     return None
 
 
+def plain_cpu_tensor(param: Any):
+    """Detach a (possibly DTensor) value onto contiguous CPU storage.
+
+    ``torch.save(DTensor)`` round-trips as DTensor. ``load_state_dict`` into a
+    plain ``nn.Parameter`` then raises mixed Tensor/DTensor. Always persist and
+    reload the materialized full tensor. ``full_tensor`` is a collective: every
+    rank that holds the DTensor must call this together.
+    """
+    t = param.full_tensor() if hasattr(param, "full_tensor") else param
+    t = t.detach()
+    device = getattr(t, "device", None)
+    if getattr(device, "type", "cpu") != "cpu":
+        t = t.to("cpu")
+    return t.contiguous().clone()
+
+
+def plain_cpu_state_dict(sd: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in sd.items():
+        if hasattr(v, "full_tensor") or hasattr(v, "detach"):
+            out[k] = plain_cpu_tensor(v)
+        else:
+            out[k] = v
+    return out
+
+
 def canonical_lora_key(name: str) -> str:
     """Strip FSDP/checkpoint wrappers and PEFT ``.default.`` so save keys match live names."""
     out = name

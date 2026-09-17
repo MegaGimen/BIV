@@ -43,6 +43,8 @@ from biv_wm.ckpt import (  # noqa: E402
     canonical_lora_key,
     epoch_end_name,
     find_latest_ckpt,
+    plain_cpu_state_dict,
+    plain_cpu_tensor,
     rotate_rolling,
     rolling_name,
     write_trainer_state,
@@ -1032,11 +1034,20 @@ def parse_args() -> argparse.Namespace:
 
 def _full_cpu(param):
     """Materialize a (possibly DTensor) param on CPU. Collective if DTensor."""
-    t = param.full_tensor() if hasattr(param, "full_tensor") else param
-    t = t.detach()
-    if t.device.type != "cpu":
-        t = t.to("cpu")
-    return t.contiguous().clone()
+    return plain_cpu_tensor(param)
+
+
+def gather_module_cpu(module, *, keep: bool) -> dict:
+    """All ranks must call this when ``module`` params are DTensors."""
+    out: dict[str, Any] = {}
+    if module is None:
+        return out
+    for name, val in module.state_dict().items():
+        full = _full_cpu(val)
+        if keep:
+            out[name] = full
+        del full
+    return out
 
 
 def gather_lora_cpu(model, *, keep: bool) -> dict:
@@ -1078,9 +1089,12 @@ def _load_pt(path: Path):
     import torch
 
     try:
-        return torch.load(path, map_location="cpu", weights_only=True)
+        sd = torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
-        return torch.load(path, map_location="cpu")
+        sd = torch.load(path, map_location="cpu")
+    if not isinstance(sd, dict):
+        raise SystemExit(f"resume: {path} is not a state_dict")
+    return plain_cpu_state_dict(sd)
 
 
 def save_ckpt(
@@ -1097,6 +1111,8 @@ def save_ckpt(
 ) -> None:
     accelerator.wait_for_everyone()
     lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
+    jepa_cpu = gather_module_cpu(jepa, keep=accelerator.is_main_process)
+    ldad_cpu = gather_module_cpu(ldad, keep=accelerator.is_main_process)
     if accelerator.is_main_process:
         path.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
@@ -1106,9 +1122,9 @@ def save_ckpt(
         import torch
 
         if jepa is not None:
-            torch.save({k: v.detach().cpu() for k, v in jepa.state_dict().items()}, path / "jepa.pt")
+            torch.save(jepa_cpu, path / "jepa.pt")
         if ldad is not None:
-            torch.save({k: v.detach().cpu() for k, v in ldad.state_dict().items()}, path / "ldad.pt")
+            torch.save(ldad_cpu, path / "ldad.pt")
         meta = dict(extra or {})
         write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
         (path / "train_meta.json").write_text(

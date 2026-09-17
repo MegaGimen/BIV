@@ -17,6 +17,8 @@ from biv_wm.ckpt import (  # noqa: E402
     epoch_end_name,
     find_latest_ckpt,
     parse_ckpt_name,
+    plain_cpu_state_dict,
+    plain_cpu_tensor,
     rolling_name,
     rotate_rolling,
     write_trainer_state,
@@ -32,6 +34,45 @@ def _fake_ckpt(root: Path, name: str, *, with_jepa: bool = True) -> Path:
         (p / "jepa.pt").write_bytes(b"x")
         (p / "ldad.pt").write_bytes(b"x")
     return p
+
+
+class _CpuDev:
+    type = "cpu"
+
+
+class _FakeTensor:
+    device = _CpuDev()
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+    def detach(self) -> _FakeTensor:
+        return self
+
+    def contiguous(self) -> _FakeTensor:
+        return self
+
+    def clone(self) -> str:
+        return self.tag
+
+    def to(self, _device: object) -> _FakeTensor:
+        return self
+
+
+class _FakeDTensor:
+    def __init__(self, tag: str) -> None:
+        self._inner = _FakeTensor(tag)
+
+    def full_tensor(self) -> _FakeTensor:
+        return self._inner
+
+
+def test_plain_cpu_state_dict() -> None:
+    sd = {"net.0.weight": _FakeDTensor("full"), "meta": 1}
+    out = plain_cpu_state_dict(sd)
+    assert out["net.0.weight"] == "full"
+    assert out["meta"] == 1
+    assert plain_cpu_tensor(_FakeTensor("plain")) == "plain"
 
 
 def test_canonical_lora_key() -> None:
@@ -115,6 +156,7 @@ def main() -> None:
     import tempfile
 
     test_canonical_lora_key()
+    test_plain_cpu_state_dict()
     test_names()
     with tempfile.TemporaryDirectory() as d:
         test_rotate_keeps_epoch_end(Path(d))
