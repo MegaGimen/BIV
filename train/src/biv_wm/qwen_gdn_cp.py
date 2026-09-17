@@ -101,6 +101,9 @@ def _slice_sections(
 ) -> torch.Tensor:
     parts = torch.split(param, sections, dim=dim)
     return torch.cat([_slice_cp(p, dim, group) for p in parts], dim=dim)
+
+
+def _modeling():
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as m
 
     return m
