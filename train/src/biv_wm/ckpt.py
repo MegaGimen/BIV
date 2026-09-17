@@ -45,11 +45,12 @@ def parse_ckpt_name(name: str) -> tuple[int, int, int] | None:
 
 
 def canonical_lora_key(name: str) -> str:
-    """Strip FSDP prefixes and PEFT ``.default.`` so save keys match live names."""
+    """Strip FSDP/checkpoint wrappers and PEFT ``.default.`` so save keys match live names."""
     out = name
-    for pfx in ("_fsdp_wrapped_module.", "module."):
-        while out.startswith(pfx):
-            out = out[len(pfx) :]
+    for wrap in ("_fsdp_wrapped_module.", "_checkpoint_wrapped_module.", "module."):
+        while out.startswith(wrap):
+            out = out[len(wrap) :]
+        out = out.replace("." + wrap, ".")
     for src, dst in (
         (".lora_A.default.", ".lora_A."),
         (".lora_B.default.", ".lora_B."),

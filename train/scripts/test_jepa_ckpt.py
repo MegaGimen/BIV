@@ -38,7 +38,13 @@ def test_canonical_lora_key() -> None:
     saved = "base_model.model.layers.0.self_attn.q_proj.lora_A.weight"
     live = "base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight"
     fsdp = "_fsdp_wrapped_module." + live
+    ckpt = (
+        "base_model.model.model.layers.0._checkpoint_wrapped_module."
+        "linear_attn.in_proj_a.lora_A.weight"
+    )
+    ckpt_live = "base_model.model.model.layers.0.linear_attn.in_proj_a.lora_A.default.weight"
     assert canonical_lora_key(saved) == canonical_lora_key(live) == canonical_lora_key(fsdp)
+    assert canonical_lora_key(ckpt) == canonical_lora_key(ckpt_live)
 
 
 def test_names() -> None:
