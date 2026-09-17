@@ -528,15 +528,38 @@ def gather_hidden(h, attention_mask, cp_size: int = 1):
     return h
 
 
-def full_hidden(model, input_ids, attention_mask, cp_size: int = 1):
-    """Full last-layer hidden [B, S, D]. Forward is hidden-only (no full-seq logits)."""
-    out = model(
+def full_hidden(
+    model,
+    input_ids,
+    attention_mask,
+    cp_size: int = 1,
+    *,
+    seq_split: bool = False,
+):
+    """Full last-layer hidden [B, S, D]. Forward is hidden-only (no full-seq logits).
+
+    ``seq_split`` shards the token axis across the CP group and relies on
+    Qwen GDN all-to-all + SDPA-CP. Hidden is gathered back to full S.
+    """
+    kwargs = dict(
         input_ids=input_ids,
         attention_mask=attention_mask,
         output_hidden_states=True,
         use_cache=False,
         return_dict=True,
     )
+    if seq_split and cp_size > 1:
+        import torch.distributed as dist
+        from biv_wm.qwen_gdn_cp import global_position_ids, shard_sequence
+
+        group = dist.group.WORLD
+        seq_full = input_ids.size(1)
+        kwargs["input_ids"] = shard_sequence(input_ids, group, seq_dim=1)
+        kwargs["attention_mask"] = shard_sequence(attention_mask, group, seq_dim=1)
+        kwargs["position_ids"] = global_position_ids(
+            input_ids.size(0), seq_full, group, input_ids.device
+        )
+    out = model(**kwargs)
     hs = getattr(out, "hidden_states", None)
     if hs:
         h = hs[-1]
@@ -1028,6 +1051,17 @@ def parse_args() -> argparse.Namespace:
         help="TensorBoard root (default: $LOGGING_DIR or $TF_LOGS or /root/tf-logs)",
     )
     p.add_argument(
+        "--seq-split",
+        action="store_true",
+        help="Shard the sequence across CP ranks; GDN uses Megatron all-to-all.",
+    )
+    p.add_argument(
+        "--ghost",
+        action="store_true",
+        help="Feasibility run: no TensorBoard, no ckpt writes, "
+        "output_dir=outputs/jepa_ghost_seqcp (never jepa_stage1).",
+    )
+    p.add_argument(
         "--run-tag",
         type=str,
         default="jepa",
@@ -1314,6 +1348,14 @@ def main() -> None:
         raise SystemExit(f"config not found: {args.config} (tried {TRAIN / args.config})")
     cfg = _load_yaml(cfg_path)
     tcfg = cfg.get("train") or {}
+    if args.ghost:
+        args.resume = None
+        if args.max_steps is None:
+            args.max_steps = 2
+        if args.grad_accum is None:
+            args.grad_accum = 1
+        if args.log_steps is None:
+            args.log_steps = 1
     accum = int(args.grad_accum if args.grad_accum is not None else (tcfg.get("grad_accum") or 8))
     cp_size = resolve_cp_size(args.cp_size)
     if cp_size > 1:
@@ -1343,6 +1385,16 @@ def main() -> None:
     sources = list(cfg.get("sources") or ["wm_code", "wm_os"])
     mix_dir = resolve_mix(args.mix_dir or cfg["mix_dir"], sources)
     out_dir = _resolve(tcfg.get("output_dir") or "outputs/jepa_stage1")
+    if args.ghost:
+        ghost_dir = _resolve("outputs/jepa_ghost_seqcp")
+        if ghost_dir.resolve() == _resolve("outputs/jepa_stage1").resolve():
+            raise SystemExit("ghost output_dir must not be jepa_stage1")
+        out_dir = ghost_dir
+        rank_log(
+            f"ghost: out_dir={out_dir} max_steps={args.max_steps} "
+            f"grad_accum={accum} seq_split={bool(args.seq_split)} "
+            "(no ckpt, no tensorboard)"
+        )
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
@@ -1478,8 +1530,26 @@ def main() -> None:
             )
         rank_log(
             f"FSDP ckpt wrappers={n_ckpt}; HF GC off; "
-            "CP mesh shards weights, sequence not split"
+            f"CP mesh shards weights, seq_split={bool(args.seq_split)}"
         )
+    if args.seq_split and cp_size > 1:
+        import torch.distributed as dist
+        from torch.distributed.device_mesh import init_device_mesh
+        from biv_wm.qwen_gdn_cp import enable_sdpa_cp, patch_model_gdn_cp
+
+        world = dist.get_world_size()
+        if world != cp_size:
+            raise SystemExit(
+                f"seq-split needs a single CP group (world={world} cp_size={cp_size}); "
+                "do not combine with dp_replicate 2x2 yet"
+            )
+        group = dist.group.WORLD
+        n_gdn = patch_model_gdn_cp(unwrapped, group)
+        if n_gdn == 0:
+            raise SystemExit("seq-split: found 0 Qwen3_5MoeGatedDeltaNet layers to patch")
+        mesh = init_device_mesh("cuda", (cp_size,), mesh_dim_names=("cp",))
+        enable_sdpa_cp(mesh)
+        rank_log(f"seq-split: patched Qwen GDN layers={n_gdn} cp_size={cp_size}")
     jepa = unwrapped._jepa
     ldad = unwrapped._ldad
     lm_head = lm_head_module(unwrapped)
@@ -1694,6 +1764,9 @@ def main() -> None:
         _clear()
 
     def dump_ckpt(kind: str, epoch_i: int, step_i: int) -> None:
+        if args.ghost:
+            rank_log(f"ghost skip checkpoint ({kind}) step={step_i}")
+            return
         extra = {**ckpt_extra, "kind": kind}
         if kind == "epoch-end":
             dest = out_dir / epoch_end_name(epoch_i, step_i)
@@ -1718,7 +1791,8 @@ def main() -> None:
 
     tb_dir = resolve_tb_dir(tcfg, out_dir, args.logging_dir, run_tag)
     ckpt_extra["tensorboard"] = str(tb_dir)
-    if is_main:
+    writer = None
+    if is_main and not args.ghost:
         writer = open_tb(tb_dir)
         writer.add_text("data/mix_dir", str(mix_dir), 0)
         writer.add_text("data/sources", ", ".join(sources), 0)
@@ -1810,7 +1884,8 @@ def main() -> None:
                 n_lab = float((batch["full_labels"] != -100).sum().item())
                 with accelerator.accumulate(model):
                     h_full = full_hidden(
-                        model, batch["full_ids"], batch["full_mask"], cp_size
+                        model, batch["full_ids"], batch["full_mask"], cp_size,
+                        seq_split=bool(args.seq_split),
                     )
                     ce_loss = (
                         shifted_ce(h_full, batch["full_labels"], lm_head)
@@ -1824,10 +1899,12 @@ def main() -> None:
                         ),
                     )
                     h_state_seq = full_hidden(
-                        model, batch["state_ids"], batch["state_mask"], cp_size
+                        model, batch["state_ids"], batch["state_mask"], cp_size,
+                        seq_split=bool(args.seq_split),
                     )
                     h_act_seq = full_hidden(
-                        model, batch["action_ids"], batch["action_mask"], cp_size
+                        model, batch["action_ids"], batch["action_mask"], cp_size,
+                        seq_split=bool(args.seq_split),
                     )
                     z_t = gather_at(
                         h_state_seq,

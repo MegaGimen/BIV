@@ -60,6 +60,10 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    --ghost|--seq-split)
+      EXTRA+=("$1")
+      shift
+      ;;
     -h|--help)
       cat <<'EOF'
 Stage 1: 32768 tokens, 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
@@ -81,6 +85,11 @@ Groups eat different data. Losses all-reduce into one TensorBoard curve
      --resume PATH / --resume-from PATH
      --max-steps N
      --grad-accum N      (override yaml; smoke one optimizer step with 1)
+     --seq-split         shard the token axis; Qwen GDN all-to-all heads (single CP group)
+     --ghost             2-step feasibility run: no ckpt, no TensorBoard,
+                         output_dir=outputs/jepa_ghost_seqcp (never jepa_stage1)
+
+  CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp bash scripts/train_jepa.sh --ghost --seq-split
 
 2-GPU 65536 (CAST Instruct mesh): CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
 4-GPU 65536 one group: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
