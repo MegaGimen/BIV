@@ -41,12 +41,17 @@ if str(MERGE) not in sys.path:
 
 from biv_wm.ckpt import (  # noqa: E402
     canonical_lora_key,
+    capture_rng_state,
+    copy_optimizer_state,
     epoch_end_name,
     find_latest_ckpt,
     plain_cpu_state_dict,
     plain_cpu_tensor,
+    restore_rng_state,
     rotate_rolling,
     rolling_name,
+    train_state_name,
+    tree_map_local_cpu,
     write_trainer_state,
 )
 from biv_wm.fsdp_ckpt import (  # noqa: E402
@@ -1097,6 +1102,49 @@ def _load_pt(path: Path):
     return plain_cpu_state_dict(sd)
 
 
+def _load_train_state_blob(path: Path) -> dict[str, Any] | None:
+    import torch
+
+    try:
+        blob = torch.load(str(path), map_location="cpu", weights_only=False)
+    except TypeError:
+        blob = torch.load(str(path), map_location="cpu")
+    if not isinstance(blob, dict):
+        return None
+    return blob
+
+
+def all_ranks_true(accelerator, flag: bool) -> bool:
+    local = 1.0 if flag else 0.0
+    if accelerator.num_processes <= 1:
+        return local >= 1.0
+    import torch
+
+    t = torch.tensor([local], device=accelerator.device)
+    t = accelerator.reduce(t, reduction="sum")
+    return int(t.item()) == int(accelerator.num_processes)
+
+
+def all_ranks_count(accelerator, flag: bool) -> int:
+    local = 1.0 if flag else 0.0
+    if accelerator.num_processes <= 1:
+        return int(local)
+    import torch
+
+    t = torch.tensor([local], device=accelerator.device)
+    t = accelerator.reduce(t, reduction="sum")
+    return int(t.item())
+
+
+def all_ranks_have_local_file(accelerator, path: Path, name: str) -> bool:
+    """Each rank checks its own filename, then agree via reduce.
+
+    ``name`` may differ per rank (``train_state.rank{r}.pt``). Old checkpoints
+    omit these files; then every rank reports 0 and we cold-start Adam/RNG.
+    """
+    return all_ranks_true(accelerator, (path / name).is_file())
+
+
 def save_ckpt(
     accelerator,
     model,
@@ -1108,13 +1156,15 @@ def save_ckpt(
     step: int,
     jepa=None,
     ldad=None,
+    opt=None,
+    sched=None,
 ) -> None:
     accelerator.wait_for_everyone()
     lora_cpu = gather_lora_cpu(model, keep=accelerator.is_main_process)
     jepa_cpu = gather_module_cpu(jepa, keep=accelerator.is_main_process)
     ldad_cpu = gather_module_cpu(ldad, keep=accelerator.is_main_process)
+    path.mkdir(parents=True, exist_ok=True)
     if accelerator.is_main_process:
-        path.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
         save_adapter(unwrapped, lora_cpu, path)
         if tokenizer is not None:
@@ -1126,6 +1176,7 @@ def save_ckpt(
         if ldad is not None:
             torch.save(ldad_cpu, path / "ldad.pt")
         meta = dict(extra or {})
+        meta.setdefault("train_state", "per-rank AdamW+scheduler+RNG")
         write_trainer_state(path, epoch=epoch, global_step=step, extra=meta)
         (path / "train_meta.json").write_text(
             json.dumps({"epoch": epoch, "global_step": step, **meta}, indent=2, ensure_ascii=False)
@@ -1133,6 +1184,22 @@ def save_ckpt(
             encoding="utf-8",
         )
         log(f"saved {path}")
+    accelerator.wait_for_everyone()
+    if opt is not None:
+        import torch
+
+        rank = int(accelerator.process_index)
+        payload = {
+            "schema": 1,
+            "optimizer": tree_map_local_cpu(opt.state_dict()),
+            "scheduler": tree_map_local_cpu(sched.state_dict()) if sched is not None else None,
+            "rng": capture_rng_state(),
+            "rank": rank,
+            "world_size": int(accelerator.num_processes),
+            "step": int(step),
+            "epoch": int(epoch),
+        }
+        torch.save(payload, path / train_state_name(rank))
     accelerator.wait_for_everyone()
 
 
@@ -1465,11 +1532,77 @@ def main() -> None:
     # PyTorch requires initial_lr when last_epoch >= 0 (fresh AdamW has none).
     for group in opt.param_groups:
         group.setdefault("initial_lr", group["lr"])
+    train_blob: dict[str, Any] | None = None
+    loaded_opt = False
+    ts_name = train_state_name(accelerator.process_index)
+    have_all_ts = False
+    if resume_dir is not None:
+        have_all_ts = all_ranks_have_local_file(accelerator, resume_dir, ts_name)
+        if have_all_ts:
+            try:
+                train_blob = _load_train_state_blob(resume_dir / ts_name)
+            except Exception as e:
+                rank_log(f"resume {ts_name} read failed: {e!r}; AdamW/RNG cold-start")
+                train_blob = None
+            if train_blob is not None:
+                saved_ws = train_blob.get("world_size")
+                if saved_ws is not None and int(saved_ws) != int(accelerator.num_processes):
+                    rank_log(
+                        f"resume train_state world_size={saved_ws} != "
+                        f"{accelerator.num_processes}; skip AdamW/RNG"
+                    )
+                    train_blob = None
+            if not all_ranks_true(accelerator, train_blob is not None):
+                train_blob = None
+                rank_log("resume train_state unreadable on some rank; AdamW/RNG cold-start")
+        else:
+            rank_log(
+                f"resume {resume_dir.name}: no complete per-rank train_state "
+                f"({ts_name} missing on some rank); AdamW and RNG cold-start, "
+                "weights already loaded"
+            )
+    if have_all_ts and train_blob is not None:
+        if train_blob.get("optimizer") is not None:
+            loaded_opt = copy_optimizer_state(
+                opt, train_blob["optimizer"], log_fn=rank_log
+            )
+            if loaded_opt:
+                rank_log(f"resume AdamW from {ts_name}")
+                for group in opt.param_groups:
+                    group.setdefault("initial_lr", group["lr"])
+            else:
+                rank_log(f"resume AdamW from {ts_name} failed; optimizer cold-start")
+        n_ok = all_ranks_count(accelerator, loaded_opt)
+        if n_ok not in (0, int(accelerator.num_processes)):
+            raise SystemExit(
+                "resume AdamW disagreed across ranks; refusing to continue desynced"
+            )
+        if n_ok == 0:
+            loaded_opt = False
+    use_saved_sched = (
+        loaded_opt
+        and train_blob is not None
+        and train_blob.get("scheduler") is not None
+    )
     sched = LambdaLR(
         opt,
         _warmup_lambda(warmup),
-        last_epoch=(resume_step - 1) if resume_step > 0 else -1,
+        last_epoch=-1 if use_saved_sched else ((resume_step - 1) if resume_step > 0 else -1),
     )
+    if use_saved_sched:
+        try:
+            sched.load_state_dict(train_blob["scheduler"])
+            rank_log("resume LambdaLR")
+        except Exception as e:
+            rank_log(f"resume LambdaLR failed: {e!r}; last_epoch from trainer_state")
+            sched = LambdaLR(
+                opt,
+                _warmup_lambda(warmup),
+                last_epoch=(resume_step - 1) if resume_step > 0 else -1,
+            )
+    if train_blob is not None and train_blob.get("rng") is not None:
+        restore_rng_state(train_blob["rng"])
+        rank_log("resume RNG (python/numpy/torch/cuda)")
     rank_log(
         f"epochs={epochs} steps_per_epoch≈{steps_per_epoch} accum={accum} "
         f"lr_lora={backbone_lr} warmup={warmup} "
@@ -1477,7 +1610,9 @@ def main() -> None:
         f"gamma={gamma} pred_lbd={pred_lbd} inv_lbd={inv_lbd} "
         f"sigreg_lbd={sigreg_lbd} sigreg_slices={sigreg_slices} "
         f"sigreg_tokens={sigreg_tokens} last_token={last_token} "
-        f"hidden={hidden_size} save_total_limit={save_limit} resume_step={resume_step}"
+        f"hidden={hidden_size} save_total_limit={save_limit} resume_step={resume_step} "
+        f"resume_adam={'yes' if loaded_opt else 'no'} "
+        f"resume_rng={'yes' if (train_blob is not None and train_blob.get('rng') is not None) else 'no'}"
     )
 
     ckpt_extra = {
@@ -1574,6 +1709,8 @@ def main() -> None:
             step=step_i,
             jepa=jepa,
             ldad=ldad,
+            opt=opt,
+            sched=sched,
         )
         if is_main:
             emit(f"[{run_tag}] checkpoint ({kind}) → {dest.name}")

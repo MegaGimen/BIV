@@ -70,6 +70,158 @@ def plain_cpu_state_dict(sd: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def train_state_name(rank: int) -> str:
+    """Per-rank AdamW + scheduler + RNG. Optional: old ckpts omit this file."""
+    return f"train_state.rank{int(rank)}.pt"
+
+
+def capture_rng_state() -> dict[str, Any]:
+    """Python / NumPy / torch / CUDA generators. Call on every rank."""
+    import random
+
+    payload: dict[str, Any] = {"python": random.getstate()}
+    try:
+        import numpy as np
+
+        payload["numpy"] = np.random.get_state()
+    except Exception:
+        payload["numpy"] = None
+    try:
+        import torch
+
+        payload["torch"] = torch.get_rng_state()
+        payload["cuda"] = (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        )
+    except Exception:
+        payload["torch"] = None
+        payload["cuda"] = None
+    return payload
+
+
+def restore_rng_state(payload: dict[str, Any] | None) -> None:
+    if not payload:
+        return
+    import random
+
+    py = payload.get("python")
+    if py is not None:
+        random.setstate(py)
+    ns = payload.get("numpy")
+    if ns is not None:
+        try:
+            import numpy as np
+
+            np.random.set_state(ns)
+        except Exception:
+            pass
+    try:
+        import torch
+
+        t = payload.get("torch")
+        if t is not None:
+            torch.set_rng_state(t)
+        cuda = payload.get("cuda")
+        if cuda is not None and torch.cuda.is_available():
+            n = torch.cuda.device_count()
+            if len(cuda) == n:
+                torch.cuda.set_rng_state_all(cuda)
+            elif len(cuda) >= 1:
+                torch.cuda.set_rng_state(cuda[0])
+    except Exception:
+        pass
+
+
+def local_cpu_value(v: Any):
+    """Shard-local CPU clone. Optimizer DTensors use ``to_local``, never ``full_tensor``."""
+    if not (hasattr(v, "detach") and hasattr(v, "device")):
+        return v
+    t = v.to_local() if hasattr(v, "to_local") else v
+    t = t.detach()
+    device = getattr(t, "device", None)
+    if getattr(device, "type", "cpu") != "cpu":
+        t = t.to("cpu")
+    if hasattr(t, "contiguous"):
+        t = t.contiguous()
+    return t.clone() if hasattr(t, "clone") else t
+
+
+def tree_map_local_cpu(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: tree_map_local_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [tree_map_local_cpu(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(tree_map_local_cpu(v) for v in obj)
+    return local_cpu_value(obj)
+
+
+def copy_optimizer_state(
+    opt,
+    saved: dict[str, Any],
+    *,
+    log_fn: Callable[[str], None] | None = None,
+) -> bool:
+    """Load AdamW ``state_dict``; on DTensor mismatch copy local shards. False = leave opt as-is."""
+    import torch
+
+    def _log(msg: str) -> None:
+        if log_fn is not None:
+            log_fn(msg)
+
+    if not isinstance(saved, dict) or "state" not in saved or "param_groups" not in saved:
+        _log("AdamW blob missing state/param_groups")
+        return False
+    try:
+        opt.load_state_dict(saved)
+        return True
+    except Exception as e:
+        _log(f"AdamW load_state_dict: {e!r}; copying local shards")
+    try:
+        id_map: dict[Any, Any] = {}
+        for live_g, saved_g in zip(opt.param_groups, saved["param_groups"]):
+            for p, pid in zip(live_g["params"], saved_g["params"]):
+                id_map[pid] = p
+                try:
+                    id_map[int(pid)] = p
+                except (TypeError, ValueError):
+                    pass
+                id_map[str(pid)] = p
+            for k, v in saved_g.items():
+                if k != "params":
+                    live_g[k] = v
+        for pid, st in saved["state"].items():
+            p = id_map.get(pid)
+            if p is None:
+                try:
+                    p = id_map.get(int(pid))
+                except (TypeError, ValueError):
+                    p = None
+            if p is None or not isinstance(st, dict):
+                continue
+            live = opt.state.setdefault(p, {})
+            ref = p.to_local() if hasattr(p, "to_local") else p
+            for k, v in st.items():
+                if hasattr(v, "detach") and hasattr(v, "shape"):
+                    src = v.detach()
+                    if k == "step":
+                        live[k] = src.to(device=ref.device).clone()
+                        continue
+                    buf = live.get(k)
+                    need = tuple(src.shape)
+                    if buf is None or tuple(getattr(buf, "shape", ())) != need:
+                        buf = torch.zeros(need, dtype=ref.dtype, device=ref.device)
+                        live[k] = buf
+                    dst = buf.to_local() if hasattr(buf, "to_local") else buf
+                    dst.copy_(src.to(device=dst.device, dtype=dst.dtype))
+                else:
+                    live[k] = v
+        return True
+    except Exception as e:
+        _log(f"AdamW local copy failed: {e!r}")
+        return False
+
+
 def canonical_lora_key(name: str) -> str:
     """Strip FSDP/checkpoint wrappers and PEFT ``.default.`` so save keys match live names."""
     out = name
@@ -88,7 +240,11 @@ def canonical_lora_key(name: str) -> str:
 
 
 def ckpt_complete(path: Path, *, require_jepa: bool = True) -> bool:
-    """trainer_state.json + weights. Mediated Stage 1 also needs jepa.pt and ldad.pt."""
+    """trainer_state.json + weights. Mediated Stage 1 also needs jepa.pt and ldad.pt.
+
+    ``train_state.rank{N}.pt`` (AdamW + scheduler + RNG) is optional so older
+    weight-only checkpoints still count as complete.
+    """
     if not path.is_dir():
         return False
     if not (path / "trainer_state.json").is_file():

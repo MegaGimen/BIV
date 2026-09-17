@@ -13,14 +13,19 @@ if str(SRC) not in sys.path:
 
 from biv_wm.ckpt import (  # noqa: E402
     canonical_lora_key,
+    capture_rng_state,
     ckpt_complete,
+    copy_optimizer_state,
     epoch_end_name,
     find_latest_ckpt,
     parse_ckpt_name,
     plain_cpu_state_dict,
     plain_cpu_tensor,
+    restore_rng_state,
     rolling_name,
     rotate_rolling,
+    train_state_name,
+    tree_map_local_cpu,
     write_trainer_state,
 )
 
@@ -142,6 +147,78 @@ def test_adapter_only_ok_without_jepa(tmp: Path) -> None:
     assert picked.name == "checkpoint-e0-s25"
 
 
+def test_train_state_optional(tmp: Path) -> None:
+    p = _fake_ckpt(tmp, "checkpoint-e0-s25")
+    assert ckpt_complete(p) is True
+    assert not (p / train_state_name(0)).exists()
+    assert train_state_name(1) == "train_state.rank1.pt"
+
+
+def test_rng_python_roundtrip() -> None:
+    import random
+
+    random.seed(0)
+    capture = capture_rng_state()
+    first = random.random()
+    restore_rng_state(capture)
+    second = random.random()
+    assert first == second
+
+
+def test_tree_map_local_cpu() -> None:
+    tree = {"a": _FakeTensor("cpu-a"), "b": [1, {"c": _FakeTensor("cpu-c")}]}
+    out = tree_map_local_cpu(tree)
+    assert out["a"] == "cpu-a"
+    assert out["b"][0] == 1
+    assert out["b"][1]["c"] == "cpu-c"
+
+
+def _try_torch():
+    try:
+        import torch
+
+        return torch
+    except Exception:
+        return None
+
+
+def test_rng_roundtrip() -> None:
+    torch = _try_torch()
+    if torch is None:
+        return
+    torch.manual_seed(0)
+    capture = capture_rng_state()
+    first = torch.rand(4)
+    restore_rng_state(capture)
+    second = torch.rand(4)
+    assert torch.equal(first, second)
+
+
+def test_optimizer_roundtrip() -> None:
+    torch = _try_torch()
+    if torch is None:
+        return
+    from torch import nn
+
+    torch.manual_seed(1)
+    m = nn.Linear(4, 2)
+    opt = torch.optim.AdamW(m.parameters(), lr=1e-3)
+    loss = m(torch.randn(3, 4)).sum()
+    loss.backward()
+    opt.step()
+    blob = tree_map_local_cpu(opt.state_dict())
+    m2 = nn.Linear(4, 2)
+    m2.load_state_dict(m.state_dict())
+    opt2 = torch.optim.AdamW(m2.parameters(), lr=1e-3)
+    assert copy_optimizer_state(opt2, blob) is True
+    s1 = opt.state_dict()["state"]
+    s2 = opt2.state_dict()["state"]
+    assert s1.keys() == s2.keys()
+    for k in s1:
+        assert torch.allclose(s1[k]["exp_avg"], s2[k]["exp_avg"])
+        assert torch.allclose(s1[k]["exp_avg_sq"], s2[k]["exp_avg_sq"])
+
+
 def test_trainer_state(tmp: Path) -> None:
     p = tmp / "c"
     p.mkdir()
@@ -170,6 +247,12 @@ def main() -> None:
         test_adapter_only_ok_without_jepa(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_trainer_state(Path(d))
+    with tempfile.TemporaryDirectory() as d:
+        test_train_state_optional(Path(d))
+    test_rng_python_roundtrip()
+    test_tree_map_local_cpu()
+    test_rng_roundtrip()
+    test_optimizer_roundtrip()
     print("ok", flush=True)
 
 
