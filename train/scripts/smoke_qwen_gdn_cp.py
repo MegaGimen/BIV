@@ -126,6 +126,15 @@ def main() -> int:
     hidden = out.last_hidden_state
     loss = hidden.float().pow(2).mean()
     loss.backward()
+    gdn_in_grad = False
+    for mod in model.modules():
+        proj = getattr(mod, "in_proj_qkv", None)
+        weight = getattr(proj, "weight", None) if proj is not None else None
+        if weight is not None and weight.grad is not None and weight.grad.abs().sum() > 0:
+            gdn_in_grad = True
+            break
+    if not gdn_in_grad:
+        raise RuntimeError("Qwen GDN in_proj_qkv received no grad; all-to-all likely detached")
     elapsed = time.perf_counter() - t0
     peak = torch.cuda.max_memory_allocated(local_rank) / (1024 * 1024)
     full_h = _gather_seq(hidden.detach(), group)

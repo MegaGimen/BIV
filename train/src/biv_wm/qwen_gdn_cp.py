@@ -17,6 +17,28 @@ from torch.distributed.device_mesh import DeviceMesh
 _PATCHED = "_biv_qwen_gdn_cp_orig_forward"
 
 
+def _all_to_all_single(x: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+    """Dim-0 all-to-all that keeps autograd.
+
+    ``dist.all_to_all_single`` writes into a fresh buffer and drops the graph,
+    so GDN in-proj / conv / A_log would get no gradient. Prefer functional
+    collectives; fall back to ``torch.distributed.nn.functional``.
+    """
+    x = x.contiguous()
+    try:
+        import torch.distributed._functional_collectives as funcol
+
+        fn = getattr(funcol, "all_to_all_single_autograd", None) or funcol.all_to_all_single
+        y = fn(x, None, None, group)
+        wait = getattr(y, "wait", None)
+        return wait() if callable(wait) else y
+    except Exception:
+        from torch.distributed.nn.functional import all_to_all_single as a2a_fn
+
+        out = torch.empty_like(x)
+        return a2a_fn(out, x, group=group)
+
+
 def a2a_seq_to_feat(x: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
     """``[B, S_local, F]`` → ``[B, S_full, F_local]``."""
     world = dist.get_world_size(group)
@@ -27,8 +49,7 @@ def a2a_seq_to_feat(x: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
     batch, seq_local, feat = x.shape
     feat_local = feat // world
     x = x.reshape(batch, seq_local, world, feat_local).permute(2, 1, 0, 3).contiguous()
-    out = torch.empty_like(x)
-    dist.all_to_all_single(out, x, group=group)
+    out = _all_to_all_single(x, group)
     return out.permute(2, 0, 1, 3).reshape(batch, world * seq_local, feat_local).contiguous()
 
 
@@ -42,8 +63,7 @@ def a2a_feat_to_seq(x: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
         raise ValueError(f"seq {seq_full} not divisible by cp={world}")
     seq_local = seq_full // world
     x = x.reshape(batch, world, seq_local, feat_local).permute(1, 2, 0, 3).contiguous()
-    out = torch.empty_like(x)
-    dist.all_to_all_single(out, x, group=group)
+    out = _all_to_all_single(x, group)
     return out.permute(2, 1, 0, 3).reshape(batch, seq_local, world * feat_local).contiguous()
 
 
