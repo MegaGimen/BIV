@@ -286,13 +286,22 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/probe_jepa_collapse.sh
 
 **Stage 2 — 出字（Instruct 自己的 backbone + 草稿 / 打分 / \(W\)，冻死的 AgentWorld 当顾问）**
 
-单独加载 Instruct 自己完整的 checkpoint，不读切鱼输出；Stage 1 训好的 AgentWorld LoRA + Pred + LDAD 作为另一份独立权重加载进来，整段冻死。查询接口：对每个候选算 \(\hat z_k=\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，不要独立编码观察。
+Live 入口：`train/scripts/train_jepa_s2.sh` → `train_jepa_s2.py`，配置 `configs/jepa/stage2.yaml`。写出 `outputs/jepa_stage2`。当前只接了 **Step 1（门口）**：两条 40 层都冻死，只训草稿头 / 打分器 / \(W\)。Step 2（小步解冻 Instruct）还没接。
 
-- **Step 1（门口）。** 冻住 Instruct backbone 和 Instruct `lm_head`。加上草稿头、打分器、\(W\)。前向：Instruct → \(c_t\) → 草稿提出 \(K\) 个候选命令 → 冻死的 AgentWorld 对每个候选算 \(\hat z_k=\mathrm{Pred}(\mathrm{Enc}(h),\mathrm{Enc}(a_k))\)，真实命令同样走一遍当真实分支。两条损失：
-  - **打分器的排序损失**：\(K{+}1\) 路 softmax 交叉熵，标签是真实分支。
-  - **解码器的教师强制交叉熵**：真实命令过 \(W\to\) Instruct `lm_head`。AgentWorld 全程冻死，命令交叉熵不回流到它。
-- **Step 2（嘴巴和主干）。** Instruct `lm_head` 用很小的学习率或 LoRA 解开，Instruct backbone 也开一点 LoRA。AgentWorld 永远冻死。
+单独加载 Instruct 自己完整的 checkpoint，不读切鱼输出；Stage 1 训好的 AgentWorld LoRA + Pred 作为另一份独立权重加载进来，整段冻死（LDAD 查询路径不用）。查询：\(z_t=\mathrm{Enc}(h)\)，真实分支 \(u^\star=\mathrm{Enc}(a)\)，\(\hat z^\star=\mathrm{Pred}(z_t,u^\star)\)；草稿的 \(K\) 个候选用草稿头的 \(u_k^W\) 当动作向量，\(\hat z_k=\mathrm{Pred}(z_t,u_k^W)\)。不要独立 `Enc(o)`。
+
+- **Step 1（门口，live）。** 冻住 Instruct backbone 和 Instruct `lm_head`。加上草稿头、打分器、\(W\)。前向：Instruct → \(c_t\) → 草稿提出 \(K\) 个 \(u_k^W\) 和一张嘴 \(u^A\) → 冻死的 JEPA 对草稿和真实命令各算 \(\hat z\) → 打分器 \(K{+}1\) 路 softmax 交叉熵（标签是真实分支）+ 真实命令教师强制过 \(W\to\) Instruct `lm_head`。AgentWorld 全程冻死，命令交叉熵不回流到它。
+- **Step 2（嘴巴和主干，还没接）。** Instruct `lm_head` 用很小的学习率或 LoRA 解开，Instruct backbone 也开一点 LoRA。AgentWorld 永远冻死。
 - **推理时**才 \(\arg\max\) 选 \(u_i^A\)，过 \(W\to\) Instruct `lm_head` 生成命令。
+
+```bash
+cd train
+# auto = outputs/jepa_stage1 里最新完整检查点（epoch-end 优先）
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_jepa_s2.sh --jepa-ckpt auto
+# 钉死某一个 Stage 1 目录
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_jepa_s2.sh \
+  --jepa-ckpt outputs/jepa_stage1/checkpoint-epoch2-end-s13630
+```
 
 **Stage Eval — 同一套脚手架**
 

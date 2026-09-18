@@ -88,6 +88,12 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # N-way CP, seq-split
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
 # --resume needs adapter + jepa.pt + ldad.pt. Do not resume Enc(o)-era
 # checkpoints. Override: --save-steps N --log-steps N
+
+# Stage 2 Step 1: frozen World+JEPA + frozen Instruct; train draft/scorer/W.
+# --jepa-ckpt auto picks newest complete Stage 1 dir under outputs/jepa_stage1.
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_jepa_s2.sh --jepa-ckpt auto
+# CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_jepa_s2.sh \
+#   --jepa-ckpt outputs/jepa_stage1/checkpoint-epoch2-end-s13630
 ```
 
 `probe.py` / `cut_stage1.py` still work but are historical/diagnostic only — not read by
