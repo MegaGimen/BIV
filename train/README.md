@@ -16,7 +16,7 @@ train/
 ├── requirements-muse.txt              # Muse branch (TRL + PEFT)
 ├── requirements.txt                   # legacy Unsloth 9B
 ├── configs/
-│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 (32768 / 2x2 CP)
+│   ├── jepa/stage1.yaml               # Qwen3.5-35B Stage 1 (N-way FSDP2+CP)
 │   ├── jepa/stage1_32k.yaml           # alias of stage1.yaml
 │   ├── accelerate/qwen35_moe_{single,fsdp2}.yaml
 │   ├── accelerate/muse_{single,multi_ddp,fsdp2,fsdp2_cp}.yaml
@@ -81,9 +81,9 @@ python train/scripts/prepare_data.py --wm-code --wm-os --out-dir data/processed/
 # Stage 1: strip-JSON Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD + SIGReg. model_dir in
 # configs/jepa/stage1.yaml is a hub id, auto-downloaded into merge/output/cache.
 cd train
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # 32768, 2x2 CP
-# 2-GPU 65536 (CP mesh shards weights; FSDP checkpoint_wrapper):
-# CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh   # N-way CP, seq-split
+# 2-GPU 65536:
+# CUDA_VISIBLE_DEVICES=0,1 MAX_LENGTH=65536 bash scripts/train_jepa.sh
 # Checkpoints: 2 epochs, save_steps=25, log_steps=5 (loss + collapse), tqdm bar,
 # checkpoint-e{epoch}-s{step} (keep 3) + checkpoint-epoch{N}-end-s{step} (keep).
 # --resume needs adapter + jepa.pt + ldad.pt. Do not resume Enc(o)-era

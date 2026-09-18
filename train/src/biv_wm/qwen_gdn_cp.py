@@ -217,6 +217,23 @@ def qwen_gdn_forward_cp(
     return module.out_proj(core_attn_out)
 
 
+def _require_even_head_split(module: torch.nn.Module, world: int) -> None:
+    if world <= 1:
+        return
+    fields = (
+        ("num_k_heads", int(module.num_k_heads)),
+        ("num_v_heads", int(module.num_v_heads)),
+        ("key_dim", int(module.key_dim)),
+        ("value_dim", int(module.value_dim)),
+    )
+    bad = [f"{name}={value}" for name, value in fields if value % world != 0]
+    if bad:
+        raise ValueError(
+            "GatedDeltaNet context parallel needs even head/feat shards; "
+            f"cp={world} vs {', '.join(bad)}"
+        )
+
+
 def patch_gated_delta_net(module: torch.nn.Module, group: dist.ProcessGroup) -> None:
     if getattr(module, _PATCHED, None) is not None:
         return
@@ -237,6 +254,8 @@ def patch_model_gdn_cp(model: torch.nn.Module, group: dist.ProcessGroup) -> int:
     n = 0
     for mod in model.modules():
         if isinstance(mod, m.Qwen3_5MoeGatedDeltaNet):
+            if n == 0:
+                _require_even_head_split(mod, dist.get_world_size(group))
             patch_gated_delta_net(mod, group)
             n += 1
     return n

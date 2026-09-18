@@ -12,7 +12,7 @@ cloud toward an isotropic Gaussian. Observation token CE is off
 Do not encode chat(o) alone. Do not reuse InverseDyn (concat + stop-grad).
 
   cd train && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_jepa.sh
-  CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+  CUDA_VISIBLE_DEVICES=0,1 MAX_LENGTH=65536 bash scripts/train_jepa.sh
 """
 
 from __future__ import annotations
@@ -1063,8 +1063,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--seq-split",
-        action="store_true",
-        help="Shard the sequence across CP ranks; GDN uses Megatron all-to-all.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shard the sequence across CP ranks; GDN uses Megatron all-to-all. "
+        "Default on. --no-seq-split keeps the full sequence on each rank.",
     )
     p.add_argument(
         "--ghost",
@@ -1076,8 +1078,8 @@ def parse_args() -> argparse.Namespace:
         "--run-tag",
         type=str,
         default="jepa",
-        help="Console/TensorBoard prefix (default jepa). 2x2 and single-group "
-        "runs share this tag unless you override it.",
+        help="Console/TensorBoard prefix (default jepa). Single-group and "
+        "opt-in 2x2 runs share this tag unless you override it.",
     )
     return p.parse_args()
 
@@ -1554,7 +1556,10 @@ def main() -> None:
                 "do not combine with dp_replicate 2x2 yet"
             )
         group = dist.group.WORLD
-        n_gdn = patch_model_gdn_cp(unwrapped, group)
+        try:
+            n_gdn = patch_model_gdn_cp(unwrapped, group)
+        except ValueError as exc:
+            raise SystemExit(f"seq-split: {exc}") from exc
         if n_gdn == 0:
             raise SystemExit("seq-split: found 0 Qwen3_5MoeGatedDeltaNet layers to patch")
         mesh = init_device_mesh("cuda", (cp_size,), mesh_dim_names=("cp",))

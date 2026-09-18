@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Stage 1 on AgentWorld: 32768 tokens, 4 GPUs as 2 groups of 2.
-# Enc(h)/Enc(a)/Enc(h,a,o) after mix JSON unwrap; Pred + LDAD + SIGReg.
-# CP mesh folds into FSDP shard dim (weights split). Sequence is NOT split.
-# After prepare, decoder layers get FSDP checkpoint_wrapper (HF GC off).
-# Each pair of GPUs is the CAST Instruct layout: 2-way weight shard, full seq.
+# Stage 1 on AgentWorld: Enc(h)/Enc(a)/Enc(h,a,o) + Pred + LDAD + SIGReg.
+# Default multi-GPU: one FSDP2+CP group, cp_size=NGPU, sequence split N ways
+# (Qwen GDN all-to-alls heads). After prepare, checkpoint_wrapper (HF GC off).
 #
 #   cd train
 #   export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -11,11 +9,11 @@
 #   bash scripts/train_jepa.sh --save-steps 1 --max-steps 2
 #   bash scripts/train_jepa.sh --resume
 #
-# 4 GPUs → 2x2 (needs qwen35_moe_fsdp2_cp2x2.yaml). Other GPU counts fall
-# back to a single CP group (cp_size=NGPU), no dp_replicate.
-# 2-GPU 65536 (same mesh as CAST Instruct on GPU1/GPU2):
-#   CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
-# 4-GPU 65536 as one group still works; 2-GPU is twice the GPU efficiency.
+# N GPUs → single CP group (cp_size=N), seq-split on. GDN heads must divide N
+# (Qwen3.5-35B-A3B: 2 or 4, not 3). Opt-in 4-GPU 2x2 (weight-only CP, no seq
+# split): PARALLEL=fsdp2_cp2x2. Weight-only CP: --no-seq-split.
+# 2-GPU 65536:
+#   CUDA_VISIBLE_DEVICES=0,1 MAX_LENGTH=65536 bash scripts/train_jepa.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -27,6 +25,7 @@ CONFIG="${CONFIG:-configs/jepa/stage1.yaml}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
 RUN_TAG="${RUN_TAG:-jepa}"
 EXTRA=()
+SEQ_SPLIT_CLI=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,13 +59,16 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
-    --ghost|--seq-split)
+    --ghost|--seq-split|--no-seq-split)
       EXTRA+=("$1")
+      if [[ "$1" == "--seq-split" || "$1" == "--no-seq-split" ]]; then
+        SEQ_SPLIT_CLI="$1"
+      fi
       shift
       ;;
     -h|--help)
       cat <<'EOF'
-Stage 1: 32768 tokens, 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
+Stage 1: N GPUs as one FSDP2+CP group (cp_size=N, sequence split N ways).
 
   cd train
   export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -75,9 +77,9 @@ Stage 1: 32768 tokens, 4 GPUs as 2x2 (dp_replicate=2, cp=2 each).
   bash scripts/train_jepa.sh --resume
   bash scripts/train_jepa.sh --resume outputs/jepa_stage1/checkpoint-e0-s25
 
-4 GPUs: two groups of 2. CP mesh shards weights, not the sequence.
-Groups eat different data. Losses all-reduce into one TensorBoard curve
-(prefix jepa-). Other GPU counts: single CP group, cp_size=NGPU.
+Default: single CP group, cp_size=NGPU, seq-split on. TensorBoard prefix jepa-.
+GDN heads must divide N (this 35B: 2 or 4 GPUs). Opt-in 2x2:
+PARALLEL=fsdp2_cp2x2 (weight-only CP, two data groups).
 
      --save-steps N       (default yaml 25; 1 smokes FSDP save)
      --log-steps N        (default yaml 5; loss + collapse, not save)
@@ -85,14 +87,14 @@ Groups eat different data. Losses all-reduce into one TensorBoard curve
      --resume PATH / --resume-from PATH
      --max-steps N
      --grad-accum N      (override yaml; smoke one optimizer step with 1)
-     --seq-split         shard the token axis; Qwen GDN all-to-all heads (single CP group)
+     --seq-split         default on for FSDP+CP; shard tokens, GDN all-to-all
+     --no-seq-split      weight-only CP (full sequence on each rank)
      --ghost             2-step feasibility run: no ckpt, no TensorBoard,
                          output_dir=outputs/jepa_ghost_seqcp (never jepa_stage1)
 
-  CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp bash scripts/train_jepa.sh --ghost --seq-split
-
-2-GPU 65536 (CAST Instruct mesh): CUDA_VISIBLE_DEVICES=0,1 PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
-4-GPU 65536 one group: PARALLEL=fsdp2_cp MAX_LENGTH=65536 bash scripts/train_jepa.sh
+  CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_jepa.sh --ghost
+  CUDA_VISIBLE_DEVICES=0,1 MAX_LENGTH=65536 bash scripts/train_jepa.sh
+  CUDA_VISIBLE_DEVICES=0,1,2,3 MAX_LENGTH=65536 bash scripts/train_jepa.sh
 EOF
       exit 0
       ;;
@@ -135,10 +137,6 @@ PARALLEL="${PARALLEL:-auto}"
 USE_2X2=0
 if [[ "$PARALLEL" == "fsdp2_cp2x2" ]]; then
   USE_2X2=1
-elif [[ "$PARALLEL" == "auto" || -z "$PARALLEL" ]]; then
-  if [[ "$NGPU" -eq 4 ]]; then
-    USE_2X2=1
-  fi
 fi
 
 if [[ "$USE_2X2" -eq 1 ]]; then
@@ -156,7 +154,7 @@ if [[ "$USE_2X2" -eq 1 ]]; then
   CP_SIZE=2
   ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/qwen35_moe_fsdp2_cp2x2.yaml}"
   echo "  accelerate FSDP2+CP, 2 groups of 2 (dp_replicate=2, cp_size=$CP_SIZE)"
-  echo "    config=$ACCEL_CFG  max_length=$MAX_LENGTH (full seq/GPU; CP shards weights)"
+  echo "    config=$ACCEL_CFG  max_length=$MAX_LENGTH (weight-only CP; pass --seq-split to override)"
   export ACCELERATE_USE_PARALLELISM_CONFIG=true
   export PARALLELISM_CONFIG_DP_REPLICATE_SIZE=2
   export PARALLELISM_CONFIG_DP_SHARD_SIZE=1
@@ -165,6 +163,9 @@ if [[ "$USE_2X2" -eq 1 ]]; then
   export PARALLELISM_CONFIG_CP_BACKEND=torch
   export BIV_CP_SIZE="$CP_SIZE"
   export BIV_PARALLEL="fsdp2_cp2x2"
+  if [[ -z "$SEQ_SPLIT_CLI" ]]; then
+    EXTRA+=(--no-seq-split)
+  fi
   LAUNCH=(
     accelerate launch
     --config_file "$ACCEL_CFG"
@@ -220,10 +221,10 @@ else
         CP_SIZE="$NGPU"
         ACCEL_CFG="${ACCELERATE_CONFIG:-configs/accelerate/qwen35_moe_fsdp2_cp.yaml}"
         echo "  accelerate FSDP2+CP (single group)"
-        echo "    num_processes=$NGPU cp_size=$CP_SIZE (full seq/GPU; CP shards weights)"
+        echo "    num_processes=$NGPU cp_size=$CP_SIZE (seq-split $MAX_LENGTH/$CP_SIZE tokens/GPU; CP-folded FSDP shards weights)"
         echo "    config=$ACCEL_CFG"
         if [[ "$NGPU" -eq 2 && "$MAX_LENGTH" -ge 65536 ]]; then
-          echo "    2-GPU ${MAX_LENGTH}: CAST Instruct-style mesh (checkpoint_wrapper after prepare)"
+          echo "    2-GPU ${MAX_LENGTH}: seq-split + checkpoint_wrapper after prepare"
         fi
         export ACCELERATE_USE_PARALLELISM_CONFIG=true
         export PARALLELISM_CONFIG_DP_REPLICATE_SIZE=1
