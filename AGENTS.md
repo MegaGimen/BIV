@@ -2,6 +2,8 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## 给下一个 agent 的入口
 
+信念方案（小模型、从头训、用后文 \(e\) 训去噪器）的完整说明在 [`train/BELIEF_SCHEME.md`](train/BELIEF_SCHEME.md)。代码在分支 `agentworld-belief-Qwen3.5-35B-A3B`，不要为了读它而切走当前工作分支。逐步动画在 `train/demo/belief_train.html`。
+
 当前主线在分支 **`agentworld-JEPA-Qwen3.5-35B-A3B`**。要做的事：把 OS / 代码世界的转移律编进参数，再在这套表征上长出写命令的能力，用同一套脚手架看 agent 是否变强。Stage 1 入口是 `train/scripts/train_jepa.sh`（`train_jepa.py`）。**Live 图已经是改目标（\(z_t=\mathrm{Enc}(h)\)，\(z_{t+1}=\mathrm{Enc}(h,a,o)\)）+ LDAD 逆动力学**；不要把独立 `Enc(o)` 或旧 `InverseDyn` 接回去。本线脚本 / 配置 / 输出 / TensorBoard 前缀一律叫 **jepa**，不要写成 jepallm——那个名字是姐妹分支 **`agentworld-JEPALLM-Qwen3.5-35B-A3B`** 用的。
 
 读完下面三块就能动手。文末 **灵感来源** 写最终方案各零件对应哪些论文；**论文链接** 给出全部编号条目（含检索过但方案未直接引用的）。HTML 全文在 [`refs/`](./refs/)（只提交文本，不提交 PDF）。
